@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "إلغاء",
+    "confirm": "تأكيد",
+    "back": "رجوع",
+    "next": "التالي",
+    "done": "تم",
+    "save": "حفظ",
+    "copy": "نسخ",
+    "copied": "تم النسخ!",
+    "loading": "جار التحميل...",
+    "error": "خطأ",
+    "success": "نجاح",
+    "close": "إغلاق",
+    "delete": "حذف",
+    "edit": "تعديل",
+    "add": "إضافة",
+    "search": "بحث",
+    "export": "تصدير",
+    "update": "تحديث",
+    "verify": "تحقق",
+    "max": "الحد الأقصى",
+    "sal": "SAL",
+    "processing": "جار المعالجة..."
+  },
+  "navigation": {
+    "home": "الرئيسية",
+    "send": "إرسال",
+    "receive": "استلام",
+    "stake": "التخزين",
+    "staking": "التخزين",
+    "history": "السجل",
+    "settings": "الإعدادات",
+    "dashboard": "لوحة التحكم",
+    "lockWallet": "قفل المحفظة"
+  },
+  "dashboard": {
+    "balance": "الرصيد",
+    "unlocked": "متاح",
+    "primaryAddress": "العنوان الرئيسي",
+    "recentActivity": "النشاط الأخير",
+    "viewAll": "عرض الكل",
+    "walletPerformance": "أداء المحفظة",
+    "chartHidden": "الرسم البياني مخفي",
+    "activityHidden": "النشاط مخفي",
+    "activeStakes": "التخزينات النشطة",
+    "noActiveStakes": "لا توجد تخزينات نشطة",
+    "earnRewards": "اكسب مكافآت عن طريق تخزين SAL لمدة ~30 يوم.",
+    "createNewStake": "إنشاء تخزين جديد",
+    "unlocksIn": "يُفتح خلال {{time}} ({{blocks}} كتلة)"
+  },
+  "chart": {
+    "last24Hours": "آخر 24 ساعة",
+    "last7Days": "آخر 7 أيام",
+    "last30Days": "آخر 30 يوماً",
+    "last12Months": "آخر 12 شهراً",
+    "sinceMexcListing": "منذ الإدراج في MEXC",
+    "noHistoryData": "لا تتوفر بيانات تاريخية",
+    "walletValue": "قيمة المحفظة"
+  },
+  "send": {
+    "title": "إرسال الأصول",
+    "subtitle": "انقل SAL إلى محفظة أخرى بأمان.",
+    "recipientAddress": "عنوان المستلم",
+    "amount": "المبلغ",
+    "available": "متاح",
+    "paymentId": "معرف الدفع (اختياري)",
+    "enterPaymentId": "أدخل معرف الدفع",
+    "sendAssets": "إرسال الأصول",
+    "creatingTransaction": "جار إنشاء المعاملة...",
+    "transactionSent": "تم إرسال المعاملة!",
+    "amountSent": "تم إرسال {{amount}} SAL إلى الشبكة.",
+    "transactionHash": "هاش المعاملة",
+    "sendAnother": "إرسال معاملة أخرى",
+    "addressBook": "دفتر العناوين",
+    "addNewAddress": "إضافة عنوان جديد",
+    "searchContacts": "البحث في جهات الاتصال...",
+    "noContacts": "لا توجد جهات اتصال",
+    "loadingScanner": "جار تحميل الماسح...",
+    "errors": {
+      "fillRequired": "يرجى ملء جميع الحقول المطلوبة",
+      "exceedsBalance": "المبلغ يتجاوز الرصيد المتاح",
+      "insufficientFees": "رصيد غير كافٍ لتغطية رسوم المعاملة",
+      "adjustedForFee": "سيتم تعديل المبلغ لتغطية رسوم المعاملة"
+    }
+  },
+  "receive": {
+    "title": "استلام الأصول",
+    "subtitle": "امسح لإرسال SAL إلى هذه المحفظة.",
+    "primaryAddress": "العنوان الرئيسي",
+    "copyAddress": "نسخ العنوان",
+    "subaddresses": "العناوين الفرعية",
+    "manageSubaddresses": "إدارة العناوين الفرعية",
+    "addNewSubaddress": "إضافة عنوان فرعي جديد",
+    "addSubaddress": "إضافة عنوان فرعي",
+    "searchSubaddresses": "البحث في العناوين الفرعية...",
+    "noSubaddresses": "لا توجد عناوين فرعية",
+    "unlockedBalance": "الرصيد المتاح",
+    "label": "التسمية",
+    "labelPlaceholder": "مثال: حساب التوفير",
+    "qrUnavailable": "رمز QR غير متاح. انسخ العنوان أدناه.",
+    "creating": "جار الإنشاء..."
+  },
+  "staking": {
+    "title": "التخزين",
+    "subtitle": "خزّن SAL لكسب مكافآت خلال ~30 يوم.",
+    "currentlyStaked": "المخزّن حالياً",
+    "salStaked": "SAL مخزّن",
+    "yieldEarned": "العائد المكتسب",
+    "currentApy": "نسبة العائد السنوي الحالية",
+    "createNewStake": "إنشاء تخزين جديد",
+    "activeStakes": "التخزينات النشطة",
+    "stakeHistory": "سجل التخزين",
+    "amount": "المبلغ",
+    "blockHeightUnlock": "ارتفاع كتلة الإلغاء",
+    "estRewards": "المكافآت المقدرة",
+    "estRewardsTooltip": "هذا تقدير فقط بناءً على نسبة العائد السنوي الحالية. قد تختلف المكافآت الفعلية مع تقلب معدل التخزين في الشبكة.",
+    "unlockDate": "تاريخ الإلغاء (~30 يوم)",
+    "stakeAssets": "تخزين الأصول",
+    "creatingStake": "جار إنشاء التخزين...",
+    "stakeSubmitted": "تم إرسال معاملة التخزين!",
+    "noActiveStakes": "لا توجد تخزينات نشطة",
+    "createToEarn": "أنشئ تخزيناً لبدء كسب المكافآت",
+    "loadingStakes": "جار تحميل التخزينات...",
+    "noCompletedStakes": "لا توجد تخزينات مكتملة بعد",
+    "loadingHistory": "جار تحميل السجل...",
+    "unlocksIn": "يُفتح خلال {{time}}",
+    "blocksRemaining": "{{blocks}} كتلة متبقية",
+    "tableHeaders": {
+      "staked": "مخزّن",
+      "returned": "مُرتجع",
+      "amount": "المبلغ",
+      "rewards": "المكافآت",
+      "tx": "المعاملة"
+    },
+    "errors": {
+      "validAmount": "يرجى إدخال مبلغ صحيح وإيجابي",
+      "exceedsBalance": "المبلغ يتجاوز الرصيد المتاح"
+    }
+  },
+  "history": {
+    "title": "سجل المعاملات",
+    "transactionsFound": "تم العثور على {{count}} معاملة",
+    "searchPlaceholder": "البحث عن هاش أو مبلغ...",
+    "filter": "تصفية",
+    "export": "تصدير",
+    "clearFilters": "مسح الفلاتر",
+    "noTransactions": "لا توجد معاملات بعد",
+    "startSending": "ابدأ بإرسال أو استلام SAL",
+    "filterOptions": {
+      "received": "مستلم",
+      "sent": "مرسل",
+      "pending": "معلق",
+      "mining": "تعدين",
+      "stake": "تخزين"
+    }
+  },
+  "settings": {
+    "title": "الإعدادات",
+    "subtitle": "تكوين أمان المحفظة والشبكة والتفضيلات.",
+    "sections": {
+      "securityPrivacy": "الأمان والخصوصية",
+      "general": "عام",
+      "language": "اللغة"
+    },
+    "biometrics": {
+      "title": "فتح بالبيومترية",
+      "description": "استخدم البيومترية لفتح محفظتك بسرعة.",
+      "enableTitle": "تفعيل الفتح البيومتري",
+      "enableDescription": "أدخل كلمة المرور للسماح بإعداد البيومترية.",
+      "enableButton": "تفعيل الفتح البيومتري",
+      "cancelled": "تم إلغاء إعداد البيومترية",
+      "failed": "فشل تفعيل البيومترية",
+      "verifying": "جار التحقق..."
+    },
+    "autoLock": {
+      "title": "القفل التلقائي",
+      "description": "قفل المحفظة تلقائياً بعد فترة من عدم النشاط لحماية أموالك.",
+      "lockAfter": "قفل بعد",
+      "minutes": "دقائق"
+    },
+    "backup": {
+      "title": "تصدير النسخة الاحتياطية",
+      "description": "إنشاء ملف نسخة احتياطية مشفر يحتوي على محفظتك ودفتر العناوين والإعدادات.",
+      "export": "تصدير",
+      "modalTitle": "تصدير النسخة الاحتياطية",
+      "modalDescription": "أدخل كلمة مرور محفظتك لإنشاء ملف نسخة احتياطية مشفر.",
+      "walletPassword": "كلمة مرور المحفظة",
+      "enterPassword": "أدخل كلمة مرور محفظتك",
+      "warning": "سيتم تشفير ملف النسخة الاحتياطية بكلمة مرور محفظتك. احتفظ به بأمان - أي شخص لديه هذا الملف وكلمة المرور يمكنه الوصول إلى أموالك.",
+      "exporting": "جار التصدير...",
+      "downloadBackup": "تحميل النسخة الاحتياطية"
+    },
+    "password": {
+      "title": "تغيير كلمة مرور الخزنة",
+      "description": "تحديث كلمة المرور المستخدمة لتشفير مفاتيحك الخاصة.",
+      "update": "تحديث",
+      "modalTitle": "تغيير كلمة المرور",
+      "modalDescription": "إنشاء كلمة مرور قوية جديدة لخزنتك.",
+      "current": "كلمة المرور الحالية",
+      "currentPlaceholder": "أدخل كلمة المرور الحالية",
+      "new": "كلمة المرور الجديدة",
+      "newPlaceholder": "أدخل كلمة المرور الجديدة",
+      "confirm": "تأكيد كلمة المرور الجديدة",
+      "confirmPlaceholder": "أكد كلمة المرور الجديدة",
+      "updating": "جار التحديث...",
+      "updateButton": "تحديث كلمة المرور",
+      "successTitle": "تم تغيير كلمة المرور",
+      "successDescription": "تم تحديث كلمة مرور خزنتك بنجاح.",
+      "errors": {
+        "fillAll": "يرجى ملء جميع الحقول",
+        "mismatch": "كلمات المرور الجديدة غير متطابقة",
+        "empty": "لا يمكن أن تكون كلمة المرور فارغة"
+      }
+    },
+    "blockchain": {
+      "title": "بيانات البلوكتشين",
+      "syncedTo": "المحفظة متزامنة حتى الكتلة {{height}}",
+      "rescanHint": "إعادة مسح المحفظة للعثور على المعاملات المفقودة",
+      "rescan": "إعادة المسح",
+      "scanning": "جار المسح..."
+    },
+    "language": {
+      "title": "اللغة",
+      "description": "اختر لغتك المفضلة للتطبيق.",
+      "select": "اختر اللغة"
+    },
+    "donate": {
+      "title": "تبرع لـ Salvium.Tools",
+      "description": "ساعد في الحفاظ على تشغيل Salvium Vault. كل تبرع يدعم الخوادم والتطوير.",
+      "button": "تبرع الآن"
+    },
+    "resetWallet": {
+      "title": "إعادة تعيين المحفظة",
+      "description": "حذف بيانات المحفظة والبدء من جديد. تأكد من حفظ عبارة الاسترداد الخاصة بك.",
+      "button": "إعادة تعيين"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "الخصوصية بالتصميم.",
+      "subtitle": "خزّن وأرسل واستلم Salvium بأمان وخصوصية تامة."
+    },
+    "createWallet": {
+      "title": "إنشاء محفظة",
+      "description": "توليد عبارة استرداد جديدة من 25 كلمة"
+    },
+    "restoreWallet": {
+      "title": "استعادة محفظة",
+      "description": "استيراد من عبارة الاسترداد أو نسخة احتياطية"
+    },
+    "securityBanner": "مفاتيحك تبقى مشفرة على هذا الجهاز.",
+    "recoveryPhrase": {
+      "title": "عبارة الاسترداد الخاصة بك",
+      "description": "اكتب هذه الكلمات بالترتيب. هذه هي الطريقة <1>الوحيدة</1> لاستعادة أموالك.",
+      "generating": "جار توليد عبارة استرداد آمنة...",
+      "failed": "فشل توليد عبارة الاسترداد. يرجى المحاولة مرة أخرى.",
+      "tryAgain": "حاول مرة أخرى",
+      "warning": "لا تشارك هذه الكلمات مع أي شخص. دعم Salvium لن يطلب أبداً عبارة الاسترداد الخاصة بك. احتفظ بها في مكان آمن غير متصل بالإنترنت.",
+      "iSavedIt": "لقد حفظتها"
+    },
+    "verifySeed": {
+      "title": "تحقق من عبارتك",
+      "description": "أدخل الكلمات المطلوبة لتأكيد أنك حفظت عبارة الاسترداد.",
+      "wordNumber": "الكلمة #{{number}}",
+      "enterWord": "أدخل الكلمة #{{number}}",
+      "verify": "تحقق",
+      "incorrectWords": "كلمات غير صحيحة. يرجى التحقق من عبارتك والمحاولة مرة أخرى."
+    },
+    "setPassword": {
+      "title": "تعيين كلمة مرور الخزنة",
+      "description": "ستُستخدم كلمة المرور هذه لتشفير محفظتك على هذا الجهاز.",
+      "password": "كلمة المرور",
+      "enterPassword": "أدخل كلمة مرور قوية",
+      "confirmPassword": "تأكيد كلمة المرور",
+      "repeatPassword": "كرر كلمة المرور",
+      "finishSetup": "إنهاء الإعداد",
+      "creating": "جار الإنشاء...",
+      "errors": {
+        "minLength": "يجب أن تكون كلمة المرور 8 أحرف على الأقل",
+        "mismatch": "كلمات المرور غير متطابقة"
+      }
+    },
+    "restore": {
+      "title": "استعادة محفظة",
+      "description": "اختر كيف تريد استعادة محفظتك.",
+      "seedPhrase": {
+        "title": "عبارة الاسترداد",
+        "description": "أدخل عبارة الاسترداد المكونة من 25 كلمة"
+      },
+      "backupFile": {
+        "title": "ملف النسخة الاحتياطية",
+        "description": "استعادة من ملف salvium.vault"
+      },
+      "enterSeed": {
+        "title": "أدخل عبارة الاسترداد",
+        "description": "أدخل عبارتك المكونة من 25 كلمة لاستعادة محفظتك.",
+        "placeholder": "كلمة أولى كلمة ثانية كلمة ثالثة...",
+        "seedPhrase": "عبارة الاسترداد",
+        "restoreHeight": "ارتفاع الاستعادة",
+        "current": "الحالي: {{height}}",
+        "heightHint": "حدد ارتفاع كتلة معين. امسح من 0 إذا لم تكن متأكداً. قد يستغرق هذا عدة دقائق."
+      },
+      "uploadBackup": {
+        "title": "رفع ملف النسخة الاحتياطية",
+        "description": "اختر ملف .salvium-backup لاستعادة محفظتك.",
+        "selectFile": "انقر لاختيار الملف",
+        "filesOnly": "ملفات salvium.vault فقط",
+        "changeFile": "انقر لتغيير الملف"
+      },
+      "backupPassword": {
+        "title": "أدخل كلمة مرور النسخة الاحتياطية",
+        "description": "أدخل كلمة المرور التي استُخدمت لإنشاء هذه النسخة الاحتياطية.",
+        "backupPassword": "كلمة مرور النسخة الاحتياطية",
+        "enterPassword": "أدخل كلمة مرور النسخة الاحتياطية",
+        "readyToDecrypt": "جاهز لفك التشفير",
+        "decrypting": "جار فك التشفير..."
+      },
+      "restoring": "جار الاستعادة...",
+      "restoreButton": "استعادة المحفظة"
+    }
+  },
+  "lockScreen": {
+    "title": "المحفظة مقفلة",
+    "description": "أدخل كلمة المرور للوصول إلى لوحة التحكم.",
+    "enterPassword": "أدخل كلمة المرور",
+    "pleaseEnterPassword": "يرجى إدخال كلمة المرور",
+    "incorrectPassword": "كلمة مرور غير صحيحة",
+    "unlock": "فتح المحفظة",
+    "unlocking": "جار الفتح...",
+    "biometricUnlock": "فتح بالبيومترية",
+    "biometricFailed": "فشل الفتح البيومتري: هل تم تغيير كلمة المرور؟",
+    "resetWallet": "إعادة تعيين المحفظة (تسجيل الخروج)",
+    "resetConfirmTitle": "إعادة تعيين المحفظة؟",
+    "resetConfirmDescription": "سيؤدي هذا إلى حذف بيانات محفظتك نهائياً من هذا الجهاز.",
+    "resetConfirmWarning": "ستفقد الوصول إلى أموالك ما لم تكن قد حفظت عبارة الاسترداد المكونة من 25 كلمة أو صدّرت ملف نسخة احتياطية salvium.vault.",
+    "resetConfirmButton": "إعادة تعيين المحفظة",
+    "resetConfirmCheckbox": "أفهم أنني سأفقد الوصول بدون عبارة الاسترداد أو النسخة الاحتياطية"
+  },
+  "network": {
+    "status": "حالة الشبكة",
+    "synced": "متزامن",
+    "syncing": "جار المزامنة",
+    "fullySynced": "متزامن بالكامل",
+    "disconnected": "غير متصل",
+    "error": "خطأ",
+    "walletHeight": "ارتفاع المحفظة",
+    "daemonHeight": "ارتفاع الخادم",
+    "height": "الارتفاع",
+    "connectedTo": "متصل بشبكة Salvium",
+    "attemptingConnect": "جار محاولة الاتصال..."
+  },
+  "contacts": {
+    "addContact": "إضافة جهة اتصال",
+    "editContact": "تعديل جهة اتصال",
+    "addNewContact": "إضافة جهة اتصال جديدة",
+    "name": "الاسم",
+    "namePlaceholder": "مثال: أحمد محمد",
+    "salviumAddress": "عنوان Salvium",
+    "saveChanges": "حفظ التغييرات",
+    "deleteConfirm": "هل أنت متأكد أنك تريد حذف جهة الاتصال هذه؟"
+  },
+  "transactions": {
+    "received": "مستلم",
+    "sent": "مرسل",
+    "pending": "معلق",
+    "confirmed": "مؤكد",
+    "confirmations": "التأكيدات",
+    "confirmationsCount": "{{count}} تأكيدات",
+    "noTransactions": "لا توجد معاملات بعد",
+    "viewOnExplorer": "عرض في المستكشف",
+    "block": "كتلة",
+    "date": "التاريخ",
+    "typeHash": "النوع / الهاش",
+    "amount": "المبلغ",
+    "status": "الحالة",
+    "broadcasting": "جار البث",
+    "blocksRemaining": "{{count}} كتلة متبقية",
+    "loadMore": "تحميل المزيد",
+    "showing": "عرض {{start}}-{{end}} من {{total}} معاملة",
+    "page": "صفحة {{current}} من {{total}}",
+    "types": {
+      "mining": "تعدين",
+      "yield": "عائد",
+      "stake": "تخزين",
+      "transfer": "تحويل",
+      "transferIn": "وارد",
+      "transferOut": "صادر",
+      "audit": "تدقيق"
+    },
+    "details": "تفاصيل المعاملة",
+    "hash": "هاش المعاملة",
+    "poweredBy": "مدعوم من مستكشف salvium.tools",
+    "viewInExplorer": "عرض في المستكشف",
+    "viewFullDetails": "عرض التفاصيل الكاملة في المستكشف",
+    "openInExplorer": "فتح في المستكشف",
+    "unconfirmed": "غير مؤكد",
+    "fee": "الرسوم",
+    "returnTransaction": "إرجاع المعاملة",
+    "confirmReturn": "تأكيد الإرجاع",
+    "confirmReturnDescription": "هل أنت متأكد أنك تريد إرجاع هذه المعاملة؟ سيتم إرسال الأموال إلى المرسل الأصلي."
+  },
+  "errors": {
+    "failedToInitialize": "فشل التهيئة",
+    "wasmLimitations": "قد يحدث هذا في بعض متصفحات الجوال بسبب قيود WASM. جرب استخدام متصفح سطح المكتب أو Chrome على Android.",
+    "retry": "إعادة المحاولة",
+    "initializingWallet": "جار تهيئة المحفظة...",
+    "failedToCreate": "فشل إنشاء النسخة الاحتياطية",
+    "failedToUnlock": "فشل فتح المحفظة"
+  }
+}

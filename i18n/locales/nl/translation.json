@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "Annuleren",
+    "confirm": "Bevestigen",
+    "back": "Terug",
+    "next": "Volgende",
+    "done": "Klaar",
+    "save": "Opslaan",
+    "copy": "Kopiëren",
+    "copied": "Gekopieerd!",
+    "loading": "Laden...",
+    "error": "Fout",
+    "success": "Succes",
+    "close": "Sluiten",
+    "delete": "Verwijderen",
+    "edit": "Bewerken",
+    "add": "Toevoegen",
+    "search": "Zoeken",
+    "export": "Exporteren",
+    "update": "Bijwerken",
+    "verify": "Verifiëren",
+    "max": "Max",
+    "sal": "SAL",
+    "processing": "Verwerken..."
+  },
+  "navigation": {
+    "home": "Home",
+    "send": "Verzenden",
+    "receive": "Ontvangen",
+    "stake": "Staking",
+    "staking": "Staking",
+    "history": "Geschiedenis",
+    "settings": "Instellingen",
+    "dashboard": "Dashboard",
+    "lockWallet": "Wallet Vergrendelen"
+  },
+  "dashboard": {
+    "balance": "Saldo",
+    "unlocked": "Ontgrendeld",
+    "primaryAddress": "Primair Adres",
+    "recentActivity": "Recente Activiteit",
+    "viewAll": "Alles Bekijken",
+    "walletPerformance": "Wallet Prestaties",
+    "chartHidden": "Grafiek Verborgen",
+    "activityHidden": "Activiteit Verborgen",
+    "activeStakes": "Actieve Stakes",
+    "noActiveStakes": "Geen actieve stakes",
+    "earnRewards": "Verdien beloningen door SAL te staken voor ~30 dagen.",
+    "createNewStake": "Nieuwe Stake Maken",
+    "unlocksIn": "Ontgrendelt in {{time}} ({{blocks}} blokken)"
+  },
+  "chart": {
+    "last24Hours": "Laatste 24 Uur",
+    "last7Days": "Laatste 7 Dagen",
+    "last30Days": "Laatste 30 Dagen",
+    "last12Months": "Laatste 12 Maanden",
+    "sinceMexcListing": "Sinds MEXC Notering",
+    "noHistoryData": "Geen geschiedenisgegevens beschikbaar",
+    "walletValue": "Wallet Waarde"
+  },
+  "send": {
+    "title": "Assets Verzenden",
+    "subtitle": "Verstuur SAL veilig naar een andere wallet.",
+    "recipientAddress": "Ontvanger Adres",
+    "amount": "Bedrag",
+    "available": "Beschikbaar",
+    "paymentId": "Betalings-ID (Optioneel)",
+    "enterPaymentId": "Voer betalings-ID in",
+    "sendAssets": "Assets Verzenden",
+    "creatingTransaction": "Transactie Maken...",
+    "transactionSent": "Transactie Verzonden!",
+    "amountSent": "{{amount}} SAL is naar het netwerk verzonden.",
+    "transactionHash": "Transactie Hash",
+    "sendAnother": "Nog een Transactie Verzenden",
+    "addressBook": "Adresboek",
+    "addNewAddress": "Nieuw Adres Toevoegen",
+    "searchContacts": "Contacten zoeken...",
+    "noContacts": "Geen contacten gevonden",
+    "loadingScanner": "Scanner laden...",
+    "errors": {
+      "fillRequired": "Vul alle verplichte velden in",
+      "exceedsBalance": "Bedrag overschrijdt beschikbaar saldo",
+      "insufficientFees": "Onvoldoende saldo voor transactiekosten",
+      "adjustedForFee": "Bedrag wordt aangepast voor transactiekosten"
+    }
+  },
+  "receive": {
+    "title": "Assets Ontvangen",
+    "subtitle": "Scan om SAL naar deze wallet te sturen.",
+    "primaryAddress": "Primair Adres",
+    "copyAddress": "Adres Kopiëren",
+    "subaddresses": "Subadressen",
+    "manageSubaddresses": "Subadressen Beheren",
+    "addNewSubaddress": "Nieuw Subadres Toevoegen",
+    "addSubaddress": "Subadres Toevoegen",
+    "searchSubaddresses": "Subadressen zoeken...",
+    "noSubaddresses": "Geen subadressen gevonden",
+    "unlockedBalance": "Ontgrendeld Saldo",
+    "label": "Label",
+    "labelPlaceholder": "bijv. Spaarrekening",
+    "qrUnavailable": "QR-code niet beschikbaar. Kopieer het adres hieronder.",
+    "creating": "Maken..."
+  },
+  "staking": {
+    "title": "Staking",
+    "subtitle": "Stake je SAL om beloningen te verdienen over ~30 dagen.",
+    "currentlyStaked": "Momenteel Gestaked",
+    "salStaked": "SAL Gestaked",
+    "yieldEarned": "Verdiende Opbrengst",
+    "currentApy": "Huidige APY",
+    "createNewStake": "Nieuwe Stake Maken",
+    "activeStakes": "Actieve Stakes",
+    "stakeHistory": "Staking Geschiedenis",
+    "amount": "Bedrag",
+    "blockHeightUnlock": "Blok Hoogte Ontgrendeling",
+    "estRewards": "Gesch. Beloningen",
+    "estRewardsTooltip": "Dit is slechts een schatting op basis van de huidige APY. Daadwerkelijke beloningen kunnen variëren naarmate het netwerk staking tarief fluctueert.",
+    "unlockDate": "Ontgrendeldatum (~30 Dagen)",
+    "stakeAssets": "Assets Staken",
+    "creatingStake": "Stake Maken...",
+    "stakeSubmitted": "Stake transactie ingediend!",
+    "noActiveStakes": "Geen actieve stakes",
+    "createToEarn": "Maak een stake om beloningen te verdienen",
+    "loadingStakes": "Stakes laden...",
+    "noCompletedStakes": "Nog geen voltooide stakes",
+    "loadingHistory": "Geschiedenis laden...",
+    "unlocksIn": "Ontgrendelt in {{time}}",
+    "blocksRemaining": "{{blocks}} blokken resterend",
+    "tableHeaders": {
+      "staked": "Gestaked",
+      "returned": "Teruggegeven",
+      "amount": "Bedrag",
+      "rewards": "Beloningen",
+      "tx": "TX"
+    },
+    "errors": {
+      "validAmount": "Voer een geldig positief bedrag in",
+      "exceedsBalance": "Bedrag overschrijdt beschikbaar saldo"
+    }
+  },
+  "history": {
+    "title": "Transactie Geschiedenis",
+    "transactionsFound": "{{count}} transacties gevonden",
+    "searchPlaceholder": "Zoek hash of bedrag...",
+    "filter": "Filteren",
+    "export": "Exporteren",
+    "clearFilters": "Filters Wissen",
+    "noTransactions": "Nog geen transacties",
+    "startSending": "Begin met het verzenden of ontvangen van SAL",
+    "filterOptions": {
+      "received": "Ontvangen",
+      "sent": "Verzonden",
+      "pending": "In Behandeling",
+      "mining": "Mining",
+      "stake": "Stake"
+    }
+  },
+  "settings": {
+    "title": "Instellingen",
+    "subtitle": "Configureer wallet beveiliging, netwerk en voorkeuren.",
+    "sections": {
+      "securityPrivacy": "Beveiliging & Privacy",
+      "general": "Algemeen",
+      "language": "Taal"
+    },
+    "biometrics": {
+      "title": "Ontgrendelen met Biometrie",
+      "description": "Gebruik biometrie om je wallet snel te ontgrendelen.",
+      "enableTitle": "Biometrische Ontgrendeling Inschakelen",
+      "enableDescription": "Voer je wachtwoord in om biometrie-instelling te autoriseren.",
+      "enableButton": "Biometrische Ontgrendeling Inschakelen",
+      "cancelled": "Biometrie-instelling geannuleerd",
+      "failed": "Biometrie inschakelen mislukt",
+      "verifying": "Verifiëren..."
+    },
+    "autoLock": {
+      "title": "Auto-Vergrendeling",
+      "description": "Vergrendelt de wallet automatisch na een periode van inactiviteit om je fondsen te beschermen.",
+      "lockAfter": "Vergrendelen na",
+      "minutes": "minuten"
+    },
+    "backup": {
+      "title": "Back-up Exporteren",
+      "description": "Maak een versleuteld back-upbestand met je wallet, adresboek en instellingen.",
+      "export": "Exporteren",
+      "modalTitle": "Back-up Exporteren",
+      "modalDescription": "Voer je wallet wachtwoord in om een versleuteld back-upbestand te maken.",
+      "walletPassword": "Wallet Wachtwoord",
+      "enterPassword": "Voer je wallet wachtwoord in",
+      "warning": "Het back-upbestand wordt versleuteld met je wallet wachtwoord. Bewaar het veilig - iedereen met dit bestand en je wachtwoord kan toegang krijgen tot je fondsen.",
+      "exporting": "Exporteren...",
+      "downloadBackup": "Back-up Downloaden"
+    },
+    "password": {
+      "title": "Kluis Wachtwoord Wijzigen",
+      "description": "Werk het wachtwoord bij dat wordt gebruikt om je privésleutels te versleutelen.",
+      "update": "Bijwerken",
+      "modalTitle": "Wachtwoord Wijzigen",
+      "modalDescription": "Maak een nieuw sterk wachtwoord voor je kluis.",
+      "current": "Huidig Wachtwoord",
+      "currentPlaceholder": "Voer huidig wachtwoord in",
+      "new": "Nieuw Wachtwoord",
+      "newPlaceholder": "Voer nieuw wachtwoord in",
+      "confirm": "Nieuw Wachtwoord Bevestigen",
+      "confirmPlaceholder": "Bevestig nieuw wachtwoord",
+      "updating": "Bijwerken...",
+      "updateButton": "Wachtwoord Bijwerken",
+      "successTitle": "Wachtwoord Gewijzigd",
+      "successDescription": "Je kluis wachtwoord is succesvol bijgewerkt.",
+      "errors": {
+        "fillAll": "Vul alle velden in",
+        "mismatch": "Nieuwe wachtwoorden komen niet overeen",
+        "empty": "Wachtwoord mag niet leeg zijn"
+      }
+    },
+    "blockchain": {
+      "title": "Blockchain Data",
+      "syncedTo": "Wallet gesynchroniseerd tot blok {{height}}",
+      "rescanHint": "Herscan wallet om ontbrekende transacties te vinden",
+      "rescan": "Herscannen",
+      "scanning": "Scannen..."
+    },
+    "language": {
+      "title": "Taal",
+      "description": "Kies je voorkeurstaal voor de applicatie.",
+      "select": "Taal Selecteren"
+    },
+    "donate": {
+      "title": "Doneer aan Salvium.Tools",
+      "description": "Help Salvium Vault draaiende te houden. Elke donatie ondersteunt servers en ontwikkeling.",
+      "button": "Nu Doneren"
+    },
+    "resetWallet": {
+      "title": "Wallet Resetten",
+      "description": "Verwijder wallet gegevens en begin opnieuw. Zorg dat je je seed phrase hebt opgeslagen.",
+      "button": "Resetten"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "Privacy by Design.",
+      "subtitle": "Bewaar, verzend en ontvang Salvium veilig met volledige privacy."
+    },
+    "createWallet": {
+      "title": "Wallet Maken",
+      "description": "Genereer een nieuwe 25-woorden seed"
+    },
+    "restoreWallet": {
+      "title": "Wallet Herstellen",
+      "description": "Importeer van seed of back-up"
+    },
+    "securityBanner": "Je sleutels blijven versleuteld op dit apparaat.",
+    "recoveryPhrase": {
+      "title": "Je Herstelzin",
+      "description": "Schrijf deze woorden op volgorde op. Dit is de <1>ENIGE</1> manier om je fondsen te herstellen.",
+      "generating": "Veilige seed phrase genereren...",
+      "failed": "Seed phrase genereren mislukt. Probeer opnieuw.",
+      "tryAgain": "Opnieuw Proberen",
+      "warning": "Deel deze woorden met niemand. Salvium support zal nooit om je herstelzin vragen. Bewaar ze offline op een veilige plaats.",
+      "iSavedIt": "Ik Heb Het Opgeslagen"
+    },
+    "verifySeed": {
+      "title": "Verifieer Je Seed",
+      "description": "Voer de gevraagde woorden in om te bevestigen dat je je herstelzin hebt opgeslagen.",
+      "wordNumber": "Woord #{{number}}",
+      "enterWord": "Voer woord #{{number}} in",
+      "verify": "Verifiëren",
+      "incorrectWords": "Onjuiste woorden. Controleer je seed phrase en probeer opnieuw."
+    },
+    "setPassword": {
+      "title": "Kluis Wachtwoord Instellen",
+      "description": "Dit wachtwoord wordt gebruikt om je wallet op dit apparaat te versleutelen.",
+      "password": "Wachtwoord",
+      "enterPassword": "Voer sterk wachtwoord in",
+      "confirmPassword": "Wachtwoord Bevestigen",
+      "repeatPassword": "Herhaal wachtwoord",
+      "finishSetup": "Installatie Voltooien",
+      "creating": "Maken...",
+      "errors": {
+        "minLength": "Wachtwoord moet minimaal 8 tekens zijn",
+        "mismatch": "Wachtwoorden komen niet overeen"
+      }
+    },
+    "restore": {
+      "title": "Wallet Herstellen",
+      "description": "Kies hoe je je wallet wilt herstellen.",
+      "seedPhrase": {
+        "title": "Seed Phrase",
+        "description": "Voer je 25-woorden herstelzin in"
+      },
+      "backupFile": {
+        "title": "Back-upbestand",
+        "description": "Herstellen van salvium.vault bestand"
+      },
+      "enterSeed": {
+        "title": "Voer Herstelzin In",
+        "description": "Voer je 25-woorden seed phrase in om je wallet te herstellen.",
+        "placeholder": "piano gitaar drum viool fluit...",
+        "seedPhrase": "Seed Phrase",
+        "restoreHeight": "Herstel Hoogte",
+        "current": "Huidig: {{height}}",
+        "heightHint": "Stel een specifieke blokhoogte in. Scan vanaf 0 als je het niet zeker weet. Dit kan enkele minuten duren."
+      },
+      "uploadBackup": {
+        "title": "Back-upbestand Uploaden",
+        "description": "Selecteer je .salvium-backup bestand om je wallet te herstellen.",
+        "selectFile": "Klik om bestand te selecteren",
+        "filesOnly": "Alleen salvium.vault bestanden",
+        "changeFile": "Klik om bestand te wijzigen"
+      },
+      "backupPassword": {
+        "title": "Voer Back-up Wachtwoord In",
+        "description": "Voer het wachtwoord in dat is gebruikt om deze back-up te maken.",
+        "backupPassword": "Back-up Wachtwoord",
+        "enterPassword": "Voer back-up wachtwoord in",
+        "readyToDecrypt": "Klaar om te ontsleutelen",
+        "decrypting": "Ontsleutelen..."
+      },
+      "restoring": "Herstellen...",
+      "restoreButton": "Wallet Herstellen"
+    }
+  },
+  "lockScreen": {
+    "title": "Wallet Vergrendeld",
+    "description": "Voer je wachtwoord in om toegang te krijgen tot je dashboard.",
+    "enterPassword": "Voer wachtwoord in",
+    "pleaseEnterPassword": "Voer je wachtwoord in",
+    "incorrectPassword": "Onjuist wachtwoord",
+    "unlock": "Wallet Ontgrendelen",
+    "unlocking": "Ontgrendelen...",
+    "biometricUnlock": "Ontgrendelen met Biometrie",
+    "biometricFailed": "Biometrische ontgrendeling mislukt: Wachtwoord gewijzigd?",
+    "resetWallet": "Wallet Resetten (Uitloggen)",
+    "resetConfirmTitle": "Wallet Resetten?",
+    "resetConfirmDescription": "Dit zal je wallet gegevens permanent van dit apparaat verwijderen.",
+    "resetConfirmWarning": "Je verliest toegang tot je fondsen tenzij je je 25-woorden seed phrase hebt opgeslagen of een salvium.vault back-upbestand hebt geëxporteerd.",
+    "resetConfirmButton": "Wallet Resetten",
+    "resetConfirmCheckbox": "Ik begrijp dat ik zonder mijn seed phrase of back-up geen toegang meer heb"
+  },
+  "network": {
+    "status": "Netwerk Status",
+    "synced": "Gesynchroniseerd",
+    "syncing": "Synchroniseren",
+    "fullySynced": "Volledig Gesynchroniseerd",
+    "disconnected": "Niet Verbonden",
+    "error": "Fout",
+    "walletHeight": "Wallet Hoogte",
+    "daemonHeight": "Daemon Hoogte",
+    "height": "Hoogte",
+    "connectedTo": "Verbonden met Salvium Netwerk",
+    "attemptingConnect": "Verbinding proberen..."
+  },
+  "contacts": {
+    "addContact": "Contact Toevoegen",
+    "editContact": "Contact Bewerken",
+    "addNewContact": "Nieuw Contact Toevoegen",
+    "name": "Naam",
+    "namePlaceholder": "bijv. Jan Jansen",
+    "salviumAddress": "Salvium Adres",
+    "saveChanges": "Wijzigingen Opslaan",
+    "deleteConfirm": "Weet je zeker dat je dit contact wilt verwijderen?"
+  },
+  "transactions": {
+    "received": "Ontvangen",
+    "sent": "Verzonden",
+    "pending": "In Behandeling",
+    "confirmed": "Bevestigd",
+    "confirmations": "Bevestigingen",
+    "confirmationsCount": "{{count}} bevestigingen",
+    "noTransactions": "Nog geen transacties",
+    "viewOnExplorer": "Bekijken in Explorer",
+    "block": "Blok",
+    "date": "Datum",
+    "typeHash": "Type / Hash",
+    "amount": "Bedrag",
+    "status": "Status",
+    "broadcasting": "Uitzenden",
+    "blocksRemaining": "{{count}} blokken resterend",
+    "loadMore": "Meer Laden",
+    "showing": "Toon {{start}}-{{end}} van {{total}} transacties",
+    "page": "Pagina {{current}} van {{total}}",
+    "types": {
+      "mining": "Mining",
+      "yield": "Opbrengst",
+      "stake": "Stake",
+      "transfer": "Overdracht",
+      "transferIn": "Inkomend",
+      "transferOut": "Uitgaand",
+      "audit": "Audit"
+    },
+    "details": "Transactiedetails",
+    "hash": "Transactie Hash",
+    "poweredBy": "Aangedreven door salvium.tools explorer",
+    "viewInExplorer": "Bekijk in explorer",
+    "viewFullDetails": "Bekijk volledige details in explorer",
+    "openInExplorer": "Openen in explorer",
+    "unconfirmed": "Onbevestigd",
+    "fee": "Kosten",
+    "returnTransaction": "Transactie terugsturen",
+    "confirmReturn": "Bevestig terugsturen",
+    "confirmReturnDescription": "Weet u zeker dat u deze transactie wilt terugsturen? Dit stuurt de fondsen terug naar de oorspronkelijke afzender."
+  },
+  "errors": {
+    "failedToInitialize": "Initialisatie Mislukt",
+    "wasmLimitations": "Dit kan voorkomen op sommige mobiele browsers door WASM-beperkingen. Probeer een desktopbrowser of Chrome op Android.",
+    "retry": "Opnieuw Proberen",
+    "initializingWallet": "Wallet initialiseren...",
+    "failedToCreate": "Back-up maken mislukt",
+    "failedToUnlock": "Wallet ontgrendelen mislukt"
+  }
+}

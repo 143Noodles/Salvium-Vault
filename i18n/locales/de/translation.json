@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "Abbrechen",
+    "confirm": "Bestätigen",
+    "back": "Zurück",
+    "next": "Weiter",
+    "done": "Fertig",
+    "save": "Speichern",
+    "copy": "Kopieren",
+    "copied": "Kopiert!",
+    "loading": "Lädt...",
+    "error": "Fehler",
+    "success": "Erfolg",
+    "close": "Schließen",
+    "delete": "Löschen",
+    "edit": "Bearbeiten",
+    "add": "Hinzufügen",
+    "search": "Suchen",
+    "export": "Exportieren",
+    "update": "Aktualisieren",
+    "verify": "Verifizieren",
+    "max": "Max",
+    "sal": "SAL",
+    "processing": "Verarbeitung..."
+  },
+  "navigation": {
+    "home": "Start",
+    "send": "Senden",
+    "receive": "Empfangen",
+    "stake": "Staking",
+    "staking": "Staking",
+    "history": "Verlauf",
+    "settings": "Einstellungen",
+    "dashboard": "Dashboard",
+    "lockWallet": "Wallet Sperren"
+  },
+  "dashboard": {
+    "balance": "Guthaben",
+    "unlocked": "Verfügbar",
+    "primaryAddress": "Primäre Adresse",
+    "recentActivity": "Letzte Aktivität",
+    "viewAll": "Alle Anzeigen",
+    "walletPerformance": "Wallet-Performance",
+    "chartHidden": "Diagramm Ausgeblendet",
+    "activityHidden": "Aktivität Ausgeblendet",
+    "activeStakes": "Aktive Stakes",
+    "noActiveStakes": "Keine aktiven Stakes",
+    "earnRewards": "Verdienen Sie Belohnungen durch Staking Ihrer SAL für ~30 Tage.",
+    "createNewStake": "Neuen Stake Erstellen",
+    "unlocksIn": "Entsperrt in {{time}} ({{blocks}} Blöcke)"
+  },
+  "chart": {
+    "last24Hours": "Letzte 24 Stunden",
+    "last7Days": "Letzte 7 Tage",
+    "last30Days": "Letzte 30 Tage",
+    "last12Months": "Letzte 12 Monate",
+    "sinceMexcListing": "Seit MEXC-Listing",
+    "noHistoryData": "Keine Verlaufsdaten verfügbar",
+    "walletValue": "Wallet-Wert"
+  },
+  "send": {
+    "title": "Assets Senden",
+    "subtitle": "Übertragen Sie SAL sicher an ein anderes Wallet.",
+    "recipientAddress": "Empfängeradresse",
+    "amount": "Betrag",
+    "available": "Verfügbar",
+    "paymentId": "Zahlungs-ID (Optional)",
+    "enterPaymentId": "Zahlungs-ID eingeben",
+    "sendAssets": "Assets Senden",
+    "creatingTransaction": "Transaktion wird erstellt...",
+    "transactionSent": "Transaktion Gesendet!",
+    "amountSent": "{{amount}} SAL wurde an das Netzwerk gesendet.",
+    "transactionHash": "Transaktions-Hash",
+    "sendAnother": "Weitere Transaktion Senden",
+    "addressBook": "Adressbuch",
+    "addNewAddress": "Neue Adresse Hinzufügen",
+    "searchContacts": "Kontakte suchen...",
+    "noContacts": "Keine Kontakte gefunden",
+    "loadingScanner": "Scanner wird geladen...",
+    "errors": {
+      "fillRequired": "Bitte füllen Sie alle erforderlichen Felder aus",
+      "exceedsBalance": "Betrag übersteigt verfügbares Guthaben",
+      "insufficientFees": "Unzureichende Mittel für Transaktionsgebühr",
+      "adjustedForFee": "Betrag wird für Transaktionsgebühr angepasst"
+    }
+  },
+  "receive": {
+    "title": "Assets Empfangen",
+    "subtitle": "Scannen, um SAL an dieses Wallet zu senden.",
+    "primaryAddress": "Primäre Adresse",
+    "copyAddress": "Adresse Kopieren",
+    "subaddresses": "Unteradressen",
+    "manageSubaddresses": "Unteradressen Verwalten",
+    "addNewSubaddress": "Neue Unteradresse Hinzufügen",
+    "addSubaddress": "Unteradresse Hinzufügen",
+    "searchSubaddresses": "Unteradressen suchen...",
+    "noSubaddresses": "Keine Unteradressen gefunden",
+    "unlockedBalance": "Verfügbares Guthaben",
+    "label": "Bezeichnung",
+    "labelPlaceholder": "z.B. Sparkonto",
+    "qrUnavailable": "QR-Code nicht verfügbar. Kopieren Sie die Adresse unten.",
+    "creating": "Wird erstellt..."
+  },
+  "staking": {
+    "title": "Staking",
+    "subtitle": "Staken Sie Ihre SAL, um Belohnungen über ~30 Tage zu verdienen.",
+    "currentlyStaked": "Aktuell Gestaked",
+    "salStaked": "SAL Gestaked",
+    "yieldEarned": "Verdiente Rendite",
+    "currentApy": "Aktueller APY",
+    "createNewStake": "Neuen Stake Erstellen",
+    "activeStakes": "Aktive Stakes",
+    "stakeHistory": "Staking-Verlauf",
+    "amount": "Betrag",
+    "blockHeightUnlock": "Block-Höhe Entsperrung",
+    "estRewards": "Gesch. Belohnungen",
+    "estRewardsTooltip": "Dies ist nur eine Schätzung basierend auf dem aktuellen APY. Tatsächliche Belohnungen können je nach Netzwerk-Staking-Rate variieren.",
+    "unlockDate": "Entsperrdatum (~30 Tage)",
+    "stakeAssets": "Assets Staken",
+    "creatingStake": "Stake wird erstellt...",
+    "stakeSubmitted": "Stake-Transaktion übermittelt!",
+    "noActiveStakes": "Keine aktiven Stakes",
+    "createToEarn": "Erstellen Sie einen Stake, um Belohnungen zu verdienen",
+    "loadingStakes": "Stakes werden geladen...",
+    "noCompletedStakes": "Noch keine abgeschlossenen Stakes",
+    "loadingHistory": "Verlauf wird geladen...",
+    "unlocksIn": "Entsperrt in {{time}}",
+    "blocksRemaining": "{{blocks}} Blöcke verbleibend",
+    "tableHeaders": {
+      "staked": "Gestaked",
+      "returned": "Zurückgegeben",
+      "amount": "Betrag",
+      "rewards": "Belohnungen",
+      "tx": "TX"
+    },
+    "errors": {
+      "validAmount": "Bitte geben Sie einen gültigen positiven Betrag ein",
+      "exceedsBalance": "Betrag übersteigt verfügbares Guthaben"
+    }
+  },
+  "history": {
+    "title": "Transaktionsverlauf",
+    "transactionsFound": "{{count}} Transaktionen gefunden",
+    "searchPlaceholder": "Hash oder Betrag suchen...",
+    "filter": "Filtern",
+    "export": "Exportieren",
+    "clearFilters": "Filter Löschen",
+    "noTransactions": "Noch keine Transaktionen",
+    "startSending": "Beginnen Sie mit dem Senden oder Empfangen von SAL",
+    "filterOptions": {
+      "received": "Empfangen",
+      "sent": "Gesendet",
+      "pending": "Ausstehend",
+      "mining": "Mining",
+      "stake": "Stake"
+    }
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "subtitle": "Konfigurieren Sie Wallet-Sicherheit, Netzwerk und Präferenzen.",
+    "sections": {
+      "securityPrivacy": "Sicherheit & Datenschutz",
+      "general": "Allgemein",
+      "language": "Sprache"
+    },
+    "biometrics": {
+      "title": "Mit Biometrie Entsperren",
+      "description": "Verwenden Sie Biometrie, um Ihr Wallet schnell zu entsperren.",
+      "enableTitle": "Biometrische Entsperrung Aktivieren",
+      "enableDescription": "Geben Sie Ihr Passwort ein, um die Biometrie-Einrichtung zu autorisieren.",
+      "enableButton": "Biometrische Entsperrung Aktivieren",
+      "cancelled": "Biometrie-Einrichtung abgebrochen",
+      "failed": "Biometrie konnte nicht aktiviert werden",
+      "verifying": "Verifizierung..."
+    },
+    "autoLock": {
+      "title": "Auto-Sperre",
+      "description": "Sperrt das Wallet automatisch nach einer Inaktivitätsperiode zum Schutz Ihrer Mittel.",
+      "lockAfter": "Sperren nach",
+      "minutes": "Minuten"
+    },
+    "backup": {
+      "title": "Backup Exportieren",
+      "description": "Erstellen Sie eine verschlüsselte Backup-Datei mit Wallet, Adressbuch und Einstellungen.",
+      "export": "Exportieren",
+      "modalTitle": "Backup Exportieren",
+      "modalDescription": "Geben Sie Ihr Wallet-Passwort ein, um eine verschlüsselte Backup-Datei zu erstellen.",
+      "walletPassword": "Wallet-Passwort",
+      "enterPassword": "Geben Sie Ihr Wallet-Passwort ein",
+      "warning": "Die Backup-Datei wird mit Ihrem Wallet-Passwort verschlüsselt. Bewahren Sie sie sicher auf - jeder mit dieser Datei und Ihrem Passwort kann auf Ihre Mittel zugreifen.",
+      "exporting": "Exportiert...",
+      "downloadBackup": "Backup Herunterladen"
+    },
+    "password": {
+      "title": "Tresor-Passwort Ändern",
+      "description": "Aktualisieren Sie das Passwort zur Verschlüsselung Ihrer privaten Schlüssel.",
+      "update": "Aktualisieren",
+      "modalTitle": "Passwort Ändern",
+      "modalDescription": "Erstellen Sie ein neues starkes Passwort für Ihren Tresor.",
+      "current": "Aktuelles Passwort",
+      "currentPlaceholder": "Aktuelles Passwort eingeben",
+      "new": "Neues Passwort",
+      "newPlaceholder": "Neues Passwort eingeben",
+      "confirm": "Neues Passwort Bestätigen",
+      "confirmPlaceholder": "Neues Passwort bestätigen",
+      "updating": "Aktualisiert...",
+      "updateButton": "Passwort Aktualisieren",
+      "successTitle": "Passwort Geändert",
+      "successDescription": "Ihr Tresor-Passwort wurde erfolgreich aktualisiert.",
+      "errors": {
+        "fillAll": "Bitte füllen Sie alle Felder aus",
+        "mismatch": "Neue Passwörter stimmen nicht überein",
+        "empty": "Passwort darf nicht leer sein"
+      }
+    },
+    "blockchain": {
+      "title": "Blockchain-Daten",
+      "syncedTo": "Wallet synchronisiert bis Block {{height}}",
+      "rescanHint": "Wallet neu scannen, um fehlende Transaktionen zu finden",
+      "rescan": "Neu Scannen",
+      "scanning": "Scannt..."
+    },
+    "language": {
+      "title": "Sprache",
+      "description": "Wählen Sie Ihre bevorzugte Anwendungssprache.",
+      "select": "Sprache Auswählen"
+    },
+    "donate": {
+      "title": "An Salvium.Tools Spenden",
+      "description": "Hilf dabei, Salvium Vault am Laufen zu halten. Jede Spende unterstützt Server und Entwicklung.",
+      "button": "Jetzt Spenden"
+    },
+    "resetWallet": {
+      "title": "Wallet Zurücksetzen",
+      "description": "Wallet-Daten löschen und neu beginnen. Stellen Sie sicher, dass Sie Ihre Seed-Phrase gespeichert haben.",
+      "button": "Zurücksetzen"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "Privatsphäre durch Design.",
+      "subtitle": "Speichern, senden und empfangen Sie Salvium sicher mit voller Privatsphäre."
+    },
+    "createWallet": {
+      "title": "Wallet Erstellen",
+      "description": "Generieren Sie einen neuen 25-Wort-Seed"
+    },
+    "restoreWallet": {
+      "title": "Wallet Wiederherstellen",
+      "description": "Importieren aus Seed oder Backup"
+    },
+    "securityBanner": "Ihre Schlüssel bleiben auf diesem Gerät verschlüsselt.",
+    "recoveryPhrase": {
+      "title": "Ihre Wiederherstellungsphrase",
+      "description": "Schreiben Sie diese Wörter der Reihe nach auf. Dies ist der <1>EINZIGE</1> Weg, Ihre Mittel wiederherzustellen.",
+      "generating": "Sichere Seed-Phrase wird generiert...",
+      "failed": "Seed-Phrase konnte nicht generiert werden. Bitte erneut versuchen.",
+      "tryAgain": "Erneut Versuchen",
+      "warning": "Teilen Sie diese Wörter mit niemandem. Der Salvium-Support wird niemals nach Ihrer Wiederherstellungsphrase fragen. Bewahren Sie sie offline an einem sicheren Ort auf.",
+      "iSavedIt": "Ich Habe Gespeichert"
+    },
+    "verifySeed": {
+      "title": "Seed Verifizieren",
+      "description": "Geben Sie die angeforderten Wörter ein, um zu bestätigen, dass Sie Ihre Wiederherstellungsphrase gespeichert haben.",
+      "wordNumber": "Wort #{{number}}",
+      "enterWord": "Wort #{{number}} eingeben",
+      "verify": "Verifizieren",
+      "incorrectWords": "Falsche Wörter. Bitte überprüfen Sie Ihre Seed-Phrase und versuchen Sie es erneut."
+    },
+    "setPassword": {
+      "title": "Tresor-Passwort Festlegen",
+      "description": "Dieses Passwort wird verwendet, um Ihr Wallet auf diesem Gerät zu verschlüsseln.",
+      "password": "Passwort",
+      "enterPassword": "Starkes Passwort eingeben",
+      "confirmPassword": "Passwort Bestätigen",
+      "repeatPassword": "Passwort wiederholen",
+      "finishSetup": "Einrichtung Abschließen",
+      "creating": "Wird erstellt...",
+      "errors": {
+        "minLength": "Passwort muss mindestens 8 Zeichen lang sein",
+        "mismatch": "Passwörter stimmen nicht überein"
+      }
+    },
+    "restore": {
+      "title": "Wallet Wiederherstellen",
+      "description": "Wählen Sie, wie Sie Ihr Wallet wiederherstellen möchten.",
+      "seedPhrase": {
+        "title": "Seed-Phrase",
+        "description": "Geben Sie Ihre 25-Wort-Wiederherstellungsphrase ein"
+      },
+      "backupFile": {
+        "title": "Backup-Datei",
+        "description": "Aus salvium.vault-Datei wiederherstellen"
+      },
+      "enterSeed": {
+        "title": "Wiederherstellungsphrase Eingeben",
+        "description": "Geben Sie Ihre 25-Wort-Seed-Phrase ein, um Ihr Wallet wiederherzustellen.",
+        "placeholder": "klavier gitarre trommel geige flöte...",
+        "seedPhrase": "Seed-Phrase",
+        "restoreHeight": "Wiederherstellungshöhe",
+        "current": "Aktuell: {{height}}",
+        "heightHint": "Legen Sie eine bestimmte Blockhöhe fest. Bei Unsicherheit ab 0 scannen. Dies kann einige Minuten dauern."
+      },
+      "uploadBackup": {
+        "title": "Backup-Datei Hochladen",
+        "description": "Wählen Sie Ihre .salvium-backup-Datei, um Ihr Wallet wiederherzustellen.",
+        "selectFile": "Klicken Sie zur Dateiauswahl",
+        "filesOnly": "Nur salvium.vault-Dateien",
+        "changeFile": "Klicken Sie zum Ändern der Datei"
+      },
+      "backupPassword": {
+        "title": "Backup-Passwort Eingeben",
+        "description": "Geben Sie das Passwort ein, das zur Erstellung dieses Backups verwendet wurde.",
+        "backupPassword": "Backup-Passwort",
+        "enterPassword": "Backup-Passwort eingeben",
+        "readyToDecrypt": "Bereit zum Entschlüsseln",
+        "decrypting": "Entschlüsselt..."
+      },
+      "restoring": "Wiederherstellung...",
+      "restoreButton": "Wallet Wiederherstellen"
+    }
+  },
+  "lockScreen": {
+    "title": "Wallet Gesperrt",
+    "description": "Geben Sie Ihr Passwort ein, um auf Ihr Dashboard zuzugreifen.",
+    "enterPassword": "Passwort eingeben",
+    "pleaseEnterPassword": "Bitte geben Sie Ihr Passwort ein",
+    "incorrectPassword": "Falsches Passwort",
+    "unlock": "Wallet Entsperren",
+    "unlocking": "Entsperren...",
+    "biometricUnlock": "Mit Biometrie Entsperren",
+    "biometricFailed": "Biometrische Entsperrung fehlgeschlagen: Passwort geändert?",
+    "resetWallet": "Wallet Zurücksetzen (Abmelden)",
+    "resetConfirmTitle": "Wallet Zurücksetzen?",
+    "resetConfirmDescription": "Dies wird Ihre Wallet-Daten dauerhaft von diesem Gerät löschen.",
+    "resetConfirmWarning": "Sie verlieren den Zugriff auf Ihre Mittel, wenn Sie Ihre 25-Wort-Seed-Phrase nicht gespeichert oder eine salvium.vault-Backup-Datei exportiert haben.",
+    "resetConfirmButton": "Wallet Zurücksetzen",
+    "resetConfirmCheckbox": "Ich verstehe, dass ich ohne meine Seed-Phrase oder Backup den Zugriff verliere"
+  },
+  "network": {
+    "status": "Netzwerkstatus",
+    "synced": "Synchronisiert",
+    "syncing": "Synchronisiert",
+    "fullySynced": "Vollständig Synchronisiert",
+    "disconnected": "Getrennt",
+    "error": "Fehler",
+    "walletHeight": "Wallet-Höhe",
+    "daemonHeight": "Daemon-Höhe",
+    "height": "Höhe",
+    "connectedTo": "Mit Salvium-Netzwerk Verbunden",
+    "attemptingConnect": "Verbindungsversuch..."
+  },
+  "contacts": {
+    "addContact": "Kontakt Hinzufügen",
+    "editContact": "Kontakt Bearbeiten",
+    "addNewContact": "Neuen Kontakt Hinzufügen",
+    "name": "Name",
+    "namePlaceholder": "z.B. Max Mustermann",
+    "salviumAddress": "Salvium-Adresse",
+    "saveChanges": "Änderungen Speichern",
+    "deleteConfirm": "Sind Sie sicher, dass Sie diesen Kontakt löschen möchten?"
+  },
+  "transactions": {
+    "received": "Empfangen",
+    "sent": "Gesendet",
+    "pending": "Ausstehend",
+    "confirmed": "Bestätigt",
+    "confirmations": "Bestätigungen",
+    "confirmationsCount": "{{count}} Bestätigungen",
+    "noTransactions": "Noch keine Transaktionen",
+    "viewOnExplorer": "Im Explorer Anzeigen",
+    "block": "Block",
+    "date": "Datum",
+    "typeHash": "Typ / Hash",
+    "amount": "Betrag",
+    "status": "Status",
+    "broadcasting": "Übertragung",
+    "blocksRemaining": "{{count}} Blöcke verbleibend",
+    "loadMore": "Mehr Laden",
+    "showing": "Zeige {{start}}-{{end}} von {{total}} Transaktionen",
+    "page": "Seite {{current}} von {{total}}",
+    "types": {
+      "mining": "Mining",
+      "yield": "Ertrag",
+      "stake": "Stake",
+      "transfer": "Überweisung",
+      "transferIn": "Eingang",
+      "transferOut": "Ausgang",
+      "audit": "Audit"
+    },
+    "details": "Transaktionsdetails",
+    "hash": "Transaktions-Hash",
+    "poweredBy": "Betrieben von salvium.tools Explorer",
+    "viewInExplorer": "Im Explorer anzeigen",
+    "viewFullDetails": "Vollständige Details im Explorer anzeigen",
+    "openInExplorer": "Im Explorer öffnen",
+    "unconfirmed": "Unbestätigt",
+    "fee": "Gebühr",
+    "returnTransaction": "Transaktion zurücksenden",
+    "confirmReturn": "Rücksendung bestätigen",
+    "confirmReturnDescription": "Sind Sie sicher, dass Sie diese Transaktion zurücksenden möchten? Dies sendet die Mittel an den ursprünglichen Absender zurück."
+  },
+  "errors": {
+    "failedToInitialize": "Initialisierung Fehlgeschlagen",
+    "wasmLimitations": "Dies kann bei einigen mobilen Browsern aufgrund von WASM-Einschränkungen auftreten. Versuchen Sie einen Desktop-Browser oder Chrome auf Android.",
+    "retry": "Erneut Versuchen",
+    "initializingWallet": "Wallet wird initialisiert...",
+    "failedToCreate": "Backup konnte nicht erstellt werden",
+    "failedToUnlock": "Wallet konnte nicht entsperrt werden"
+  }
+}

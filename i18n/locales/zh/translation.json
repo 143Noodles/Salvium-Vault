@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "取消",
+    "confirm": "确认",
+    "back": "返回",
+    "next": "下一步",
+    "done": "完成",
+    "save": "保存",
+    "copy": "复制",
+    "copied": "已复制！",
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功",
+    "close": "关闭",
+    "delete": "删除",
+    "edit": "编辑",
+    "add": "添加",
+    "search": "搜索",
+    "export": "导出",
+    "update": "更新",
+    "verify": "验证",
+    "max": "最大",
+    "sal": "SAL",
+    "processing": "处理中..."
+  },
+  "navigation": {
+    "home": "首页",
+    "send": "发送",
+    "receive": "接收",
+    "stake": "质押",
+    "staking": "质押",
+    "history": "历史",
+    "settings": "设置",
+    "dashboard": "仪表盘",
+    "lockWallet": "锁定钱包"
+  },
+  "dashboard": {
+    "balance": "余额",
+    "unlocked": "可用",
+    "primaryAddress": "主地址",
+    "recentActivity": "最近活动",
+    "viewAll": "查看全部",
+    "walletPerformance": "钱包表现",
+    "chartHidden": "图表已隐藏",
+    "activityHidden": "活动已隐藏",
+    "activeStakes": "活跃质押",
+    "noActiveStakes": "暂无活跃质押",
+    "earnRewards": "质押SAL约30天即可获得奖励。",
+    "createNewStake": "创建新质押",
+    "unlocksIn": "{{time}}后解锁（{{blocks}}个区块）"
+  },
+  "chart": {
+    "last24Hours": "过去24小时",
+    "last7Days": "过去7天",
+    "last30Days": "过去30天",
+    "last12Months": "过去12个月",
+    "sinceMexcListing": "自MEXC上市以来",
+    "noHistoryData": "暂无历史数据",
+    "walletValue": "钱包价值"
+  },
+  "send": {
+    "title": "发送资产",
+    "subtitle": "安全地将SAL转移到另一个钱包。",
+    "recipientAddress": "收款地址",
+    "amount": "金额",
+    "available": "可用",
+    "paymentId": "付款ID（可选）",
+    "enterPaymentId": "输入付款ID",
+    "sendAssets": "发送资产",
+    "creatingTransaction": "正在创建交易...",
+    "transactionSent": "交易已发送！",
+    "amountSent": "{{amount}} SAL已发送到网络。",
+    "transactionHash": "交易哈希",
+    "sendAnother": "发送另一笔交易",
+    "addressBook": "地址簿",
+    "addNewAddress": "添加新地址",
+    "searchContacts": "搜索联系人...",
+    "noContacts": "未找到联系人",
+    "loadingScanner": "正在加载扫描器...",
+    "errors": {
+      "fillRequired": "请填写所有必填字段",
+      "exceedsBalance": "金额超过可用余额",
+      "insufficientFees": "余额不足以支付交易费用",
+      "adjustedForFee": "金额将调整以支付交易费用"
+    }
+  },
+  "receive": {
+    "title": "接收资产",
+    "subtitle": "扫描以向此钱包发送SAL。",
+    "primaryAddress": "主地址",
+    "copyAddress": "复制地址",
+    "subaddresses": "子地址",
+    "manageSubaddresses": "管理子地址",
+    "addNewSubaddress": "添加新子地址",
+    "addSubaddress": "添加子地址",
+    "searchSubaddresses": "搜索子地址...",
+    "noSubaddresses": "未找到子地址",
+    "unlockedBalance": "可用余额",
+    "label": "标签",
+    "labelPlaceholder": "例如：储蓄账户",
+    "qrUnavailable": "二维码不可用。请复制下方地址。",
+    "creating": "正在创建..."
+  },
+  "staking": {
+    "title": "质押",
+    "subtitle": "质押SAL约30天即可获得奖励。",
+    "currentlyStaked": "当前质押",
+    "salStaked": "已质押SAL",
+    "yieldEarned": "已获收益",
+    "currentApy": "当前年化收益",
+    "createNewStake": "创建新质押",
+    "activeStakes": "活跃质押",
+    "stakeHistory": "质押历史",
+    "amount": "金额",
+    "blockHeightUnlock": "解锁区块高度",
+    "estRewards": "预估奖励",
+    "estRewardsTooltip": "这只是基于当前年化收益的估算。实际奖励可能因网络质押率波动而变化。",
+    "unlockDate": "解锁日期（约30天）",
+    "stakeAssets": "质押资产",
+    "creatingStake": "正在创建质押...",
+    "stakeSubmitted": "质押交易已提交！",
+    "noActiveStakes": "暂无活跃质押",
+    "createToEarn": "创建质押以开始获得奖励",
+    "loadingStakes": "正在加载质押...",
+    "noCompletedStakes": "暂无已完成的质押",
+    "loadingHistory": "正在加载历史...",
+    "unlocksIn": "{{time}}后解锁",
+    "blocksRemaining": "剩余{{blocks}}个区块",
+    "tableHeaders": {
+      "staked": "已质押",
+      "returned": "已返还",
+      "amount": "金额",
+      "rewards": "奖励",
+      "tx": "交易"
+    },
+    "errors": {
+      "validAmount": "请输入有效的正数金额",
+      "exceedsBalance": "金额超过可用余额"
+    }
+  },
+  "history": {
+    "title": "交易历史",
+    "transactionsFound": "找到{{count}}笔交易",
+    "searchPlaceholder": "搜索哈希或金额...",
+    "filter": "筛选",
+    "export": "导出",
+    "clearFilters": "清除筛选",
+    "noTransactions": "暂无交易",
+    "startSending": "开始发送或接收SAL",
+    "filterOptions": {
+      "received": "已接收",
+      "sent": "已发送",
+      "pending": "待处理",
+      "mining": "挖矿",
+      "stake": "质押"
+    }
+  },
+  "settings": {
+    "title": "设置",
+    "subtitle": "配置您的钱包安全、网络和偏好设置。",
+    "sections": {
+      "securityPrivacy": "安全与隐私",
+      "general": "通用",
+      "language": "语言"
+    },
+    "biometrics": {
+      "title": "生物识别解锁",
+      "description": "使用生物识别快速解锁您的钱包。",
+      "enableTitle": "启用生物识别解锁",
+      "enableDescription": "输入密码以授权生物识别设置。",
+      "enableButton": "启用生物识别解锁",
+      "cancelled": "生物识别设置已取消",
+      "failed": "启用生物识别失败",
+      "verifying": "正在验证..."
+    },
+    "autoLock": {
+      "title": "自动锁定钱包",
+      "description": "在一段时间不活动后自动锁定钱包以保护您的资金。",
+      "lockAfter": "锁定时间",
+      "minutes": "分钟"
+    },
+    "backup": {
+      "title": "导出备份",
+      "description": "创建包含您的钱包、地址簿和设置的加密备份文件。",
+      "export": "导出",
+      "modalTitle": "导出备份",
+      "modalDescription": "输入您的钱包密码以创建加密备份文件。",
+      "walletPassword": "钱包密码",
+      "enterPassword": "输入您的钱包密码",
+      "warning": "备份文件将使用您的钱包密码加密。请安全保存 - 任何拥有此文件和您密码的人都可以访问您的资金。",
+      "exporting": "正在导出...",
+      "downloadBackup": "下载备份"
+    },
+    "password": {
+      "title": "更改密码",
+      "description": "更新用于加密您私钥的密码。",
+      "update": "更新",
+      "modalTitle": "更改密码",
+      "modalDescription": "为您的保险库创建一个新的强密码。",
+      "current": "当前密码",
+      "currentPlaceholder": "输入当前密码",
+      "new": "新密码",
+      "newPlaceholder": "输入新密码",
+      "confirm": "确认新密码",
+      "confirmPlaceholder": "确认新密码",
+      "updating": "正在更新...",
+      "updateButton": "更新密码",
+      "successTitle": "密码已更改",
+      "successDescription": "您的保险库密码已成功更新。",
+      "errors": {
+        "fillAll": "请填写所有字段",
+        "mismatch": "新密码不匹配",
+        "empty": "密码不能为空"
+      }
+    },
+    "blockchain": {
+      "title": "区块链数据",
+      "syncedTo": "钱包已同步到区块{{height}}",
+      "rescanHint": "重新扫描钱包以查找丢失的交易",
+      "rescan": "重新扫描",
+      "scanning": "正在扫描..."
+    },
+    "language": {
+      "title": "语言",
+      "description": "选择您的首选应用程序语言。",
+      "select": "选择语言"
+    },
+    "donate": {
+      "title": "捐赠给Salvium.Tools",
+      "description": "帮助保持Salvium Vault运行。每一笔捐款都支持服务器和开发。",
+      "button": "立即捐赠"
+    },
+    "resetWallet": {
+      "title": "重置钱包",
+      "description": "删除钱包数据并重新开始。请确保您已保存助记词。",
+      "button": "重置"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "隐私设计。",
+      "subtitle": "安全存储、发送和接收Salvium，完全保护隐私。"
+    },
+    "createWallet": {
+      "title": "创建钱包",
+      "description": "生成新的25词助记词"
+    },
+    "restoreWallet": {
+      "title": "恢复钱包",
+      "description": "从助记词或备份导入"
+    },
+    "securityBanner": "您的密钥在此设备上保持加密。",
+    "recoveryPhrase": {
+      "title": "您的恢复短语",
+      "description": "按顺序写下这些词。这是恢复您资金的<1>唯一</1>方式。",
+      "generating": "正在生成安全助记词...",
+      "failed": "生成助记词失败。请重试。",
+      "tryAgain": "重试",
+      "warning": "不要与任何人分享这些词。Salvium支持人员永远不会要求您的恢复短语。请将它们离线存储在安全的地方。",
+      "iSavedIt": "我已保存"
+    },
+    "verifySeed": {
+      "title": "验证您的助记词",
+      "description": "输入请求的词以确认您已保存恢复短语。",
+      "wordNumber": "第{{number}}个词",
+      "enterWord": "输入第{{number}}个词",
+      "verify": "验证",
+      "incorrectWords": "词不正确。请检查您的助记词并重试。"
+    },
+    "setPassword": {
+      "title": "设置保险库密码",
+      "description": "此密码将用于在此设备上加密您的钱包。",
+      "password": "密码",
+      "enterPassword": "输入强密码",
+      "confirmPassword": "确认密码",
+      "repeatPassword": "重复密码",
+      "finishSetup": "完成设置",
+      "creating": "正在创建...",
+      "errors": {
+        "minLength": "密码必须至少8个字符",
+        "mismatch": "密码不匹配"
+      }
+    },
+    "restore": {
+      "title": "恢复钱包",
+      "description": "选择您想要恢复钱包的方式。",
+      "seedPhrase": {
+        "title": "助记词",
+        "description": "输入您的25词恢复短语"
+      },
+      "backupFile": {
+        "title": "备份文件",
+        "description": "从salvium.vault文件恢复"
+      },
+      "enterSeed": {
+        "title": "输入恢复短语",
+        "description": "输入您的25词助记词以恢复您的钱包。",
+        "placeholder": "钢琴 吉他 鼓 小提琴 长笛...",
+        "seedPhrase": "助记词",
+        "restoreHeight": "恢复高度",
+        "current": "当前：{{height}}",
+        "heightHint": "设置特定的区块高度。如果不确定，从0开始扫描。这可能需要几分钟。"
+      },
+      "uploadBackup": {
+        "title": "上传备份文件",
+        "description": "选择您的.salvium-backup文件以恢复您的钱包。",
+        "selectFile": "点击选择文件",
+        "filesOnly": "仅限salvium.vault文件",
+        "changeFile": "点击更换文件"
+      },
+      "backupPassword": {
+        "title": "输入备份密码",
+        "description": "输入创建此备份时使用的密码。",
+        "backupPassword": "备份密码",
+        "enterPassword": "输入备份密码",
+        "readyToDecrypt": "准备解密",
+        "decrypting": "正在解密..."
+      },
+      "restoring": "正在恢复...",
+      "restoreButton": "恢复钱包"
+    }
+  },
+  "lockScreen": {
+    "title": "钱包已锁定",
+    "description": "输入密码以访问您的仪表盘。",
+    "enterPassword": "输入密码",
+    "pleaseEnterPassword": "请输入您的密码",
+    "incorrectPassword": "密码错误",
+    "unlock": "解锁钱包",
+    "unlocking": "正在解锁...",
+    "biometricUnlock": "生物识别解锁",
+    "biometricFailed": "生物识别解锁失败：密码已更改？",
+    "resetWallet": "重置钱包（退出登录）",
+    "resetConfirmTitle": "重置钱包？",
+    "resetConfirmDescription": "这将永久删除此设备上的钱包数据。",
+    "resetConfirmWarning": "除非您已保存25词助记词或导出了salvium.vault备份文件，否则您将无法访问您的资金。",
+    "resetConfirmButton": "重置钱包",
+    "resetConfirmCheckbox": "我理解没有助记词或备份我将无法访问"
+  },
+  "network": {
+    "status": "网络状态",
+    "synced": "已同步",
+    "syncing": "同步中",
+    "fullySynced": "完全同步",
+    "disconnected": "已断开",
+    "error": "错误",
+    "walletHeight": "钱包高度",
+    "daemonHeight": "守护进程高度",
+    "height": "高度",
+    "connectedTo": "已连接到Salvium网络",
+    "attemptingConnect": "正在尝试连接..."
+  },
+  "contacts": {
+    "addContact": "添加联系人",
+    "editContact": "编辑联系人",
+    "addNewContact": "添加新联系人",
+    "name": "姓名",
+    "namePlaceholder": "例如：张三",
+    "salviumAddress": "Salvium地址",
+    "saveChanges": "保存更改",
+    "deleteConfirm": "您确定要删除此联系人吗？"
+  },
+  "transactions": {
+    "received": "已接收",
+    "sent": "已发送",
+    "pending": "待处理",
+    "confirmed": "已确认",
+    "confirmations": "确认数",
+    "confirmationsCount": "{{count}}次确认",
+    "noTransactions": "暂无交易",
+    "viewOnExplorer": "在浏览器中查看",
+    "block": "区块",
+    "date": "日期",
+    "typeHash": "类型 / 哈希",
+    "amount": "金额",
+    "status": "状态",
+    "broadcasting": "正在广播...",
+    "blocksRemaining": "{{count}}个区块",
+    "loadMore": "加载更多",
+    "showing": "显示第{{start}}-{{end}}条，共{{total}}条交易",
+    "page": "第{{current}}页，共{{total}}页",
+    "types": {
+      "mining": "挖矿",
+      "yield": "收益",
+      "stake": "质押",
+      "transfer": "转账",
+      "transferIn": "转入",
+      "transferOut": "转出",
+      "audit": "审计"
+    },
+    "details": "交易详情",
+    "hash": "交易哈希",
+    "poweredBy": "由salvium.tools浏览器提供支持",
+    "viewInExplorer": "在浏览器中查看",
+    "viewFullDetails": "在浏览器中查看完整详情",
+    "openInExplorer": "在浏览器中打开",
+    "unconfirmed": "未确认",
+    "fee": "手续费",
+    "returnTransaction": "退回交易",
+    "confirmReturn": "确认退回",
+    "confirmReturnDescription": "您确定要退回此交易吗？这将把资金发送回原始发送者。"
+  },
+  "errors": {
+    "failedToInitialize": "初始化失败",
+    "wasmLimitations": "这可能是由于某些移动浏览器的WASM限制造成的。请尝试使用桌面浏览器或Android上的Chrome。",
+    "retry": "重试",
+    "initializingWallet": "正在初始化钱包...",
+    "failedToCreate": "创建备份失败",
+    "failedToUnlock": "解锁钱包失败"
+  }
+}

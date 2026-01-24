@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "back": "Atrás",
+    "next": "Siguiente",
+    "done": "Hecho",
+    "save": "Guardar",
+    "copy": "Copiar",
+    "copied": "¡Copiado!",
+    "loading": "Cargando...",
+    "error": "Error",
+    "success": "Éxito",
+    "close": "Cerrar",
+    "delete": "Eliminar",
+    "edit": "Editar",
+    "add": "Añadir",
+    "search": "Buscar",
+    "export": "Exportar",
+    "update": "Actualizar",
+    "verify": "Verificar",
+    "max": "Máx",
+    "sal": "SAL",
+    "processing": "Procesando..."
+  },
+  "navigation": {
+    "home": "Inicio",
+    "send": "Enviar",
+    "receive": "Recibir",
+    "stake": "Stake",
+    "staking": "Staking",
+    "history": "Historial",
+    "settings": "Ajustes",
+    "dashboard": "Panel",
+    "lockWallet": "Bloquear Billetera"
+  },
+  "dashboard": {
+    "balance": "Saldo",
+    "unlocked": "Desbloqueado",
+    "primaryAddress": "Dirección Principal",
+    "recentActivity": "Actividad Reciente",
+    "viewAll": "Ver Todo",
+    "walletPerformance": "Rendimiento de Billetera",
+    "chartHidden": "Gráfico Oculto",
+    "activityHidden": "Actividad Oculta",
+    "activeStakes": "Stakes Activos",
+    "noActiveStakes": "Sin stakes activos",
+    "earnRewards": "Gana recompensas haciendo stake de SAL durante ~30 días.",
+    "createNewStake": "Crear Nuevo Stake",
+    "unlocksIn": "Se desbloquea en {{time}} ({{blocks}} bloques)"
+  },
+  "chart": {
+    "last24Hours": "Últimas 24 Horas",
+    "last7Days": "Últimos 7 Días",
+    "last30Days": "Últimos 30 Días",
+    "last12Months": "Últimos 12 Meses",
+    "sinceMexcListing": "Desde Listado en MEXC",
+    "noHistoryData": "Sin datos históricos disponibles",
+    "walletValue": "Valor de Billetera"
+  },
+  "send": {
+    "title": "Enviar Activos",
+    "subtitle": "Transfiere SAL a otra billetera de forma segura.",
+    "recipientAddress": "Dirección del Destinatario",
+    "amount": "Cantidad",
+    "available": "Disponible",
+    "paymentId": "ID de Pago (Opcional)",
+    "enterPaymentId": "Ingresa ID de pago",
+    "sendAssets": "Enviar Activos",
+    "creatingTransaction": "Creando Transacción...",
+    "transactionSent": "¡Transacción Enviada!",
+    "amountSent": "{{amount}} SAL ha sido enviado a la red.",
+    "transactionHash": "Hash de Transacción",
+    "sendAnother": "Enviar Otra Transacción",
+    "addressBook": "Libreta de Direcciones",
+    "addNewAddress": "Añadir Nueva Dirección",
+    "searchContacts": "Buscar contactos...",
+    "noContacts": "No se encontraron contactos",
+    "loadingScanner": "Cargando escáner...",
+    "errors": {
+      "fillRequired": "Por favor completa todos los campos requeridos",
+      "exceedsBalance": "La cantidad excede el saldo disponible",
+      "insufficientFees": "Fondos insuficientes para cubrir la comisión",
+      "adjustedForFee": "La cantidad se ajustará para cubrir la comisión"
+    }
+  },
+  "receive": {
+    "title": "Recibir Activos",
+    "subtitle": "Escanea para enviar SAL a esta billetera.",
+    "primaryAddress": "Dirección Principal",
+    "copyAddress": "Copiar Dirección",
+    "subaddresses": "Subdirecciones",
+    "manageSubaddresses": "Gestionar Subdirecciones",
+    "addNewSubaddress": "Añadir Nueva Subdirección",
+    "addSubaddress": "Añadir Subdirección",
+    "searchSubaddresses": "Buscar subdirecciones...",
+    "noSubaddresses": "No se encontraron subdirecciones",
+    "unlockedBalance": "Saldo Desbloqueado",
+    "label": "Etiqueta",
+    "labelPlaceholder": "ej. Cuenta de Ahorros",
+    "qrUnavailable": "Código QR no disponible. Copia la dirección abajo.",
+    "creating": "Creando..."
+  },
+  "staking": {
+    "title": "Staking",
+    "subtitle": "Haz stake de tu SAL para ganar recompensas en ~30 días.",
+    "currentlyStaked": "Actualmente en Stake",
+    "salStaked": "SAL en Stake",
+    "yieldEarned": "Rendimiento Ganado",
+    "currentApy": "APY Actual",
+    "createNewStake": "Crear Nuevo Stake",
+    "activeStakes": "Stakes Activos",
+    "stakeHistory": "Historial de Staking",
+    "amount": "Cantidad",
+    "blockHeightUnlock": "Altura de Bloque de Desbloqueo",
+    "estRewards": "Recompensas Est.",
+    "estRewardsTooltip": "Esta es solo una estimación basada en el APY actual. Las recompensas reales pueden variar según fluctúe la tasa de staking de la red.",
+    "unlockDate": "Fecha de Desbloqueo (~30 Días)",
+    "stakeAssets": "Hacer Stake",
+    "creatingStake": "Creando Stake...",
+    "stakeSubmitted": "¡Transacción de stake enviada!",
+    "noActiveStakes": "Sin stakes activos",
+    "createToEarn": "Crea un stake para empezar a ganar recompensas",
+    "loadingStakes": "Cargando stakes...",
+    "noCompletedStakes": "Aún no hay stakes completados",
+    "loadingHistory": "Cargando historial...",
+    "unlocksIn": "Se desbloquea en {{time}}",
+    "blocksRemaining": "{{blocks}} bloques restantes",
+    "tableHeaders": {
+      "staked": "En Stake",
+      "returned": "Devuelto",
+      "amount": "Cantidad",
+      "rewards": "Recompensas",
+      "tx": "TX"
+    },
+    "errors": {
+      "validAmount": "Por favor ingresa una cantidad positiva válida",
+      "exceedsBalance": "La cantidad excede el saldo disponible"
+    }
+  },
+  "history": {
+    "title": "Historial de Transacciones",
+    "transactionsFound": "{{count}} transacciones encontradas",
+    "searchPlaceholder": "Buscar hash o cantidad...",
+    "filter": "Filtrar",
+    "export": "Exportar",
+    "clearFilters": "Limpiar Filtros",
+    "noTransactions": "Aún no hay transacciones",
+    "startSending": "Empieza enviando o recibiendo SAL",
+    "filterOptions": {
+      "received": "Recibido",
+      "sent": "Enviado",
+      "pending": "Pendiente",
+      "mining": "Minería",
+      "stake": "Stake"
+    }
+  },
+  "settings": {
+    "title": "Ajustes",
+    "subtitle": "Configura la seguridad, red y preferencias de tu billetera.",
+    "sections": {
+      "securityPrivacy": "Seguridad y Privacidad",
+      "general": "General",
+      "language": "Idioma"
+    },
+    "biometrics": {
+      "title": "Desbloquear con Biometría",
+      "description": "Usa biometría para desbloquear tu billetera rápidamente.",
+      "enableTitle": "Habilitar Desbloqueo Biométrico",
+      "enableDescription": "Ingresa tu contraseña para autorizar la configuración biométrica.",
+      "enableButton": "Habilitar Desbloqueo Biométrico",
+      "cancelled": "Configuración biométrica cancelada",
+      "failed": "Error al habilitar biometría",
+      "verifying": "Verificando..."
+    },
+    "autoLock": {
+      "title": "Bloqueo Automático",
+      "description": "Bloquea automáticamente la billetera después de un período de inactividad para proteger tus fondos.",
+      "lockAfter": "Bloquear después de",
+      "minutes": "minutos"
+    },
+    "backup": {
+      "title": "Exportar Respaldo",
+      "description": "Crea un archivo de respaldo cifrado que contiene tu billetera, libreta de direcciones y ajustes.",
+      "export": "Exportar",
+      "modalTitle": "Exportar Respaldo",
+      "modalDescription": "Ingresa tu contraseña de billetera para crear un archivo de respaldo cifrado.",
+      "walletPassword": "Contraseña de Billetera",
+      "enterPassword": "Ingresa tu contraseña de billetera",
+      "warning": "El archivo de respaldo será cifrado con tu contraseña de billetera. Guárdalo de forma segura - cualquiera con este archivo y tu contraseña puede acceder a tus fondos.",
+      "exporting": "Exportando...",
+      "downloadBackup": "Descargar Respaldo"
+    },
+    "password": {
+      "title": "Cambiar Contraseña",
+      "description": "Actualiza la contraseña usada para cifrar tus claves privadas.",
+      "update": "Actualizar",
+      "modalTitle": "Cambiar Contraseña",
+      "modalDescription": "Crea una nueva contraseña fuerte para tu bóveda.",
+      "current": "Contraseña Actual",
+      "currentPlaceholder": "Ingresa contraseña actual",
+      "new": "Nueva Contraseña",
+      "newPlaceholder": "Ingresa nueva contraseña",
+      "confirm": "Confirmar Nueva Contraseña",
+      "confirmPlaceholder": "Confirmar nueva contraseña",
+      "updating": "Actualizando...",
+      "updateButton": "Actualizar Contraseña",
+      "successTitle": "Contraseña Cambiada",
+      "successDescription": "Tu contraseña de bóveda ha sido actualizada exitosamente.",
+      "errors": {
+        "fillAll": "Por favor completa todos los campos",
+        "mismatch": "Las nuevas contraseñas no coinciden",
+        "empty": "La contraseña no puede estar vacía"
+      }
+    },
+    "blockchain": {
+      "title": "Datos de Blockchain",
+      "syncedTo": "Billetera sincronizada hasta el bloque {{height}}",
+      "rescanHint": "Reescanear billetera para encontrar transacciones faltantes",
+      "rescan": "Reescanear",
+      "scanning": "Escaneando..."
+    },
+    "language": {
+      "title": "Idioma",
+      "description": "Elige tu idioma preferido para la aplicación.",
+      "select": "Seleccionar Idioma"
+    },
+    "donate": {
+      "title": "Donar a Salvium.Tools",
+      "description": "Ayuda a mantener Salvium Vault funcionando. Cada donación apoya los servidores y el desarrollo.",
+      "button": "Donar Ahora"
+    },
+    "resetWallet": {
+      "title": "Reiniciar Billetera",
+      "description": "Eliminar datos de billetera y comenzar de nuevo. Asegúrate de tener tu frase semilla guardada.",
+      "button": "Reiniciar"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "Privado por Diseño.",
+      "subtitle": "Almacena, envía y recibe Salvium de forma segura con total privacidad."
+    },
+    "createWallet": {
+      "title": "Crear Billetera",
+      "description": "Genera una nueva semilla de 25 palabras"
+    },
+    "restoreWallet": {
+      "title": "Restaurar Billetera",
+      "description": "Importar desde semilla o respaldo"
+    },
+    "securityBanner": "Tus claves permanecen cifradas en este dispositivo.",
+    "recoveryPhrase": {
+      "title": "Tu Frase de Recuperación",
+      "description": "Escribe estas palabras en orden. Esta es la <1>ÚNICA</1> forma de recuperar tus fondos.",
+      "generating": "Generando frase semilla segura...",
+      "failed": "Error al generar frase semilla. Por favor intenta de nuevo.",
+      "tryAgain": "Intentar de Nuevo",
+      "warning": "No compartas estas palabras con nadie. El soporte de Salvium nunca pedirá tu frase de recuperación. Guárdalas sin conexión en un lugar seguro.",
+      "iSavedIt": "La Guardé"
+    },
+    "verifySeed": {
+      "title": "Verifica Tu Semilla",
+      "description": "Ingresa las palabras solicitadas para confirmar que guardaste tu frase de recuperación.",
+      "wordNumber": "Palabra #{{number}}",
+      "enterWord": "Ingresa palabra #{{number}}",
+      "verify": "Verificar",
+      "incorrectWords": "Palabras incorrectas. Por favor verifica tu frase semilla e intenta de nuevo."
+    },
+    "setPassword": {
+      "title": "Establecer Contraseña",
+      "description": "Esta contraseña se usará para cifrar tu billetera en este dispositivo.",
+      "password": "Contraseña",
+      "enterPassword": "Ingresa contraseña fuerte",
+      "confirmPassword": "Confirmar Contraseña",
+      "repeatPassword": "Repetir contraseña",
+      "finishSetup": "Finalizar Configuración",
+      "creating": "Creando...",
+      "errors": {
+        "minLength": "La contraseña debe tener al menos 8 caracteres",
+        "mismatch": "Las contraseñas no coinciden"
+      }
+    },
+    "restore": {
+      "title": "Restaurar Billetera",
+      "description": "Elige cómo te gustaría restaurar tu billetera.",
+      "seedPhrase": {
+        "title": "Frase Semilla",
+        "description": "Ingresa tu frase de recuperación de 25 palabras"
+      },
+      "backupFile": {
+        "title": "Archivo de Respaldo",
+        "description": "Restaurar desde archivo salvium.vault"
+      },
+      "enterSeed": {
+        "title": "Ingresa Frase de Recuperación",
+        "description": "Ingresa tu frase semilla de 25 palabras para restaurar tu billetera.",
+        "placeholder": "piano guitarra tambor violín flauta...",
+        "seedPhrase": "Frase Semilla",
+        "restoreHeight": "Altura de Restauración",
+        "current": "Actual: {{height}}",
+        "heightHint": "Establece una altura de bloque específica. Escanea desde 0 si no estás seguro. Esto puede tomar varios minutos."
+      },
+      "uploadBackup": {
+        "title": "Subir Archivo de Respaldo",
+        "description": "Selecciona tu archivo .salvium-backup para restaurar tu billetera.",
+        "selectFile": "Haz clic para seleccionar archivo",
+        "filesOnly": "Solo archivos salvium.vault",
+        "changeFile": "Haz clic para cambiar archivo"
+      },
+      "backupPassword": {
+        "title": "Ingresa Contraseña de Respaldo",
+        "description": "Ingresa la contraseña que se usó para crear este respaldo.",
+        "backupPassword": "Contraseña de Respaldo",
+        "enterPassword": "Ingresa contraseña de respaldo",
+        "readyToDecrypt": "Listo para descifrar",
+        "decrypting": "Descifrando..."
+      },
+      "restoring": "Restaurando...",
+      "restoreButton": "Restaurar Billetera"
+    }
+  },
+  "lockScreen": {
+    "title": "Billetera Bloqueada",
+    "description": "Ingresa tu contraseña para acceder a tu panel.",
+    "enterPassword": "Ingresa contraseña",
+    "pleaseEnterPassword": "Por favor ingresa tu contraseña",
+    "incorrectPassword": "Contraseña incorrecta",
+    "unlock": "Desbloquear Billetera",
+    "unlocking": "Desbloqueando...",
+    "biometricUnlock": "Desbloquear con Biometría",
+    "biometricFailed": "Error biométrico: ¿Cambió la contraseña?",
+    "resetWallet": "Reiniciar Billetera (Cerrar Sesión)",
+    "resetConfirmTitle": "¿Reiniciar Billetera?",
+    "resetConfirmDescription": "Esto eliminará permanentemente los datos de tu billetera de este dispositivo.",
+    "resetConfirmWarning": "Perderás acceso a tus fondos a menos que hayas guardado tu frase semilla de 25 palabras o exportado un archivo de respaldo salvium.vault.",
+    "resetConfirmButton": "Reiniciar Billetera",
+    "resetConfirmCheckbox": "Entiendo que perderé acceso sin mi frase semilla o respaldo"
+  },
+  "network": {
+    "status": "Estado de Red",
+    "synced": "Sincronizado",
+    "syncing": "Sincronizando",
+    "fullySynced": "Totalmente Sincronizado",
+    "disconnected": "Desconectado",
+    "error": "Error",
+    "walletHeight": "Altura de Billetera",
+    "daemonHeight": "Altura del Daemon",
+    "height": "Altura",
+    "connectedTo": "Conectado a la Red Salvium",
+    "attemptingConnect": "Intentando conectar..."
+  },
+  "contacts": {
+    "addContact": "Añadir Contacto",
+    "editContact": "Editar Contacto",
+    "addNewContact": "Añadir Nuevo Contacto",
+    "name": "Nombre",
+    "namePlaceholder": "ej. Juan Pérez",
+    "salviumAddress": "Dirección Salvium",
+    "saveChanges": "Guardar Cambios",
+    "deleteConfirm": "¿Estás seguro de que quieres eliminar este contacto?"
+  },
+  "transactions": {
+    "received": "Recibido",
+    "sent": "Enviado",
+    "pending": "Pendiente",
+    "confirmed": "Confirmado",
+    "confirmations": "Confirmaciones",
+    "confirmationsCount": "{{count}} confirmaciones",
+    "noTransactions": "Aún no hay transacciones",
+    "viewOnExplorer": "Ver en Explorador",
+    "block": "Bloque",
+    "date": "Fecha",
+    "typeHash": "Tipo / Hash",
+    "amount": "Cantidad",
+    "status": "Estado",
+    "broadcasting": "Transmitiendo",
+    "blocksRemaining": "{{count}} bloques restantes",
+    "loadMore": "Cargar Más",
+    "showing": "Mostrando {{start}}-{{end}} de {{total}} transacciones",
+    "page": "Página {{current}} de {{total}}",
+    "types": {
+      "mining": "Minería",
+      "yield": "Rendimiento",
+      "stake": "Stake",
+      "transfer": "Transferencia",
+      "transferIn": "Entrada",
+      "transferOut": "Salida",
+      "audit": "Auditoría"
+    },
+    "details": "Detalles de Transacción",
+    "hash": "Hash de Transacción",
+    "poweredBy": "Impulsado por el explorador salvium.tools",
+    "viewInExplorer": "Ver en Explorador",
+    "viewFullDetails": "Ver detalles completos en el explorador",
+    "openInExplorer": "Abrir en Explorador",
+    "unconfirmed": "Sin confirmar",
+    "fee": "Comisión",
+    "returnTransaction": "Devolver Transacción",
+    "confirmReturn": "Confirmar Devolución",
+    "confirmReturnDescription": "¿Estás seguro de que deseas devolver esta transacción? Esto enviará los fondos de vuelta al remitente original."
+  },
+  "errors": {
+    "failedToInitialize": "Error al Inicializar",
+    "wasmLimitations": "Esto puede ocurrir en algunos navegadores móviles debido a limitaciones de WASM. Intenta usar un navegador de escritorio o Chrome en Android.",
+    "retry": "Reintentar",
+    "initializingWallet": "Inicializando billetera...",
+    "failedToCreate": "Error al crear respaldo",
+    "failedToUnlock": "Error al desbloquear billetera"
+  }
+}

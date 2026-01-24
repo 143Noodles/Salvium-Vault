@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "취소",
+    "confirm": "확인",
+    "back": "뒤로",
+    "next": "다음",
+    "done": "완료",
+    "save": "저장",
+    "copy": "복사",
+    "copied": "복사됨!",
+    "loading": "로딩 중...",
+    "error": "오류",
+    "success": "성공",
+    "close": "닫기",
+    "delete": "삭제",
+    "edit": "편집",
+    "add": "추가",
+    "search": "검색",
+    "export": "내보내기",
+    "update": "업데이트",
+    "verify": "확인",
+    "max": "최대",
+    "sal": "SAL",
+    "processing": "처리 중..."
+  },
+  "navigation": {
+    "home": "홈",
+    "send": "보내기",
+    "receive": "받기",
+    "stake": "스테이킹",
+    "staking": "스테이킹",
+    "history": "내역",
+    "settings": "설정",
+    "dashboard": "대시보드",
+    "lockWallet": "지갑 잠금"
+  },
+  "dashboard": {
+    "balance": "잔액",
+    "unlocked": "사용 가능",
+    "primaryAddress": "기본 주소",
+    "recentActivity": "최근 활동",
+    "viewAll": "전체 보기",
+    "walletPerformance": "지갑 성과",
+    "chartHidden": "차트 숨김",
+    "activityHidden": "활동 숨김",
+    "activeStakes": "활성 스테이크",
+    "noActiveStakes": "활성 스테이크 없음",
+    "earnRewards": "SAL을 ~30일간 스테이킹하여 보상을 받으세요.",
+    "createNewStake": "새 스테이크 생성",
+    "unlocksIn": "{{time}} 후 잠금 해제 ({{blocks}}블록)"
+  },
+  "chart": {
+    "last24Hours": "최근 24시간",
+    "last7Days": "최근 7일",
+    "last30Days": "최근 30일",
+    "last12Months": "최근 12개월",
+    "sinceMexcListing": "MEXC 상장 이후",
+    "noHistoryData": "이용 가능한 내역 데이터 없음",
+    "walletValue": "지갑 가치"
+  },
+  "send": {
+    "title": "자산 보내기",
+    "subtitle": "SAL을 다른 지갑으로 안전하게 전송합니다.",
+    "recipientAddress": "받는 사람 주소",
+    "amount": "금액",
+    "available": "사용 가능",
+    "paymentId": "결제 ID (선택사항)",
+    "enterPaymentId": "결제 ID 입력",
+    "sendAssets": "자산 보내기",
+    "creatingTransaction": "트랜잭션 생성 중...",
+    "transactionSent": "트랜잭션 전송됨!",
+    "amountSent": "{{amount}} SAL이 네트워크로 전송되었습니다.",
+    "transactionHash": "트랜잭션 해시",
+    "sendAnother": "다른 트랜잭션 보내기",
+    "addressBook": "주소록",
+    "addNewAddress": "새 주소 추가",
+    "searchContacts": "연락처 검색...",
+    "noContacts": "연락처를 찾을 수 없음",
+    "loadingScanner": "스캐너 로딩 중...",
+    "errors": {
+      "fillRequired": "모든 필수 항목을 입력해 주세요",
+      "exceedsBalance": "금액이 사용 가능한 잔액을 초과합니다",
+      "insufficientFees": "트랜잭션 수수료를 충당할 잔액이 부족합니다",
+      "adjustedForFee": "트랜잭션 수수료를 충당하기 위해 금액이 조정됩니다"
+    }
+  },
+  "receive": {
+    "title": "자산 받기",
+    "subtitle": "이 지갑으로 SAL을 보내려면 스캔하세요.",
+    "primaryAddress": "기본 주소",
+    "copyAddress": "주소 복사",
+    "subaddresses": "하위 주소",
+    "manageSubaddresses": "하위 주소 관리",
+    "addNewSubaddress": "새 하위 주소 추가",
+    "addSubaddress": "하위 주소 추가",
+    "searchSubaddresses": "하위 주소 검색...",
+    "noSubaddresses": "하위 주소를 찾을 수 없음",
+    "unlockedBalance": "사용 가능 잔액",
+    "label": "라벨",
+    "labelPlaceholder": "예: 저축 계좌",
+    "qrUnavailable": "QR 코드를 사용할 수 없습니다. 아래 주소를 복사하세요.",
+    "creating": "생성 중..."
+  },
+  "staking": {
+    "title": "스테이킹",
+    "subtitle": "SAL을 스테이킹하여 ~30일 동안 보상을 받으세요.",
+    "currentlyStaked": "현재 스테이킹",
+    "salStaked": "스테이킹된 SAL",
+    "yieldEarned": "획득한 수익",
+    "currentApy": "현재 APY",
+    "createNewStake": "새 스테이크 생성",
+    "activeStakes": "활성 스테이크",
+    "stakeHistory": "스테이킹 내역",
+    "amount": "금액",
+    "blockHeightUnlock": "잠금 해제 블록 높이",
+    "estRewards": "예상 보상",
+    "estRewardsTooltip": "현재 APY를 기준으로 한 추정치입니다. 실제 보상은 네트워크 스테이킹 비율 변동에 따라 다를 수 있습니다.",
+    "unlockDate": "잠금 해제 날짜 (~30일)",
+    "stakeAssets": "자산 스테이킹",
+    "creatingStake": "스테이크 생성 중...",
+    "stakeSubmitted": "스테이크 트랜잭션이 제출되었습니다!",
+    "noActiveStakes": "활성 스테이크 없음",
+    "createToEarn": "보상을 받으려면 스테이크를 생성하세요",
+    "loadingStakes": "스테이크 로딩 중...",
+    "noCompletedStakes": "완료된 스테이크 없음",
+    "loadingHistory": "내역 로딩 중...",
+    "unlocksIn": "{{time}} 후 잠금 해제",
+    "blocksRemaining": "{{blocks}}블록 남음",
+    "tableHeaders": {
+      "staked": "스테이킹됨",
+      "returned": "반환됨",
+      "amount": "금액",
+      "rewards": "보상",
+      "tx": "TX"
+    },
+    "errors": {
+      "validAmount": "유효한 양수 금액을 입력하세요",
+      "exceedsBalance": "금액이 사용 가능한 잔액을 초과합니다"
+    }
+  },
+  "history": {
+    "title": "트랜잭션 내역",
+    "transactionsFound": "{{count}}개의 트랜잭션 발견",
+    "searchPlaceholder": "해시 또는 금액 검색...",
+    "filter": "필터",
+    "export": "내보내기",
+    "clearFilters": "필터 초기화",
+    "noTransactions": "트랜잭션이 없습니다",
+    "startSending": "SAL 보내기 또는 받기를 시작하세요",
+    "filterOptions": {
+      "received": "받음",
+      "sent": "보냄",
+      "pending": "대기 중",
+      "mining": "채굴",
+      "stake": "스테이크"
+    }
+  },
+  "settings": {
+    "title": "설정",
+    "subtitle": "지갑 보안, 네트워크 및 환경설정을 구성합니다.",
+    "sections": {
+      "securityPrivacy": "보안 및 개인정보",
+      "general": "일반",
+      "language": "언어"
+    },
+    "biometrics": {
+      "title": "생체 인식으로 잠금 해제",
+      "description": "생체 인식을 사용하여 지갑을 빠르게 잠금 해제합니다.",
+      "enableTitle": "생체 인식 잠금 해제 활성화",
+      "enableDescription": "생체 인식 설정을 승인하려면 비밀번호를 입력하세요.",
+      "enableButton": "생체 인식 잠금 해제 활성화",
+      "cancelled": "생체 인식 설정 취소됨",
+      "failed": "생체 인식 활성화 실패",
+      "verifying": "확인 중..."
+    },
+    "autoLock": {
+      "title": "자동 잠금",
+      "description": "자금을 보호하기 위해 비활성 기간 후 지갑을 자동으로 잠급니다.",
+      "lockAfter": "잠금 시간",
+      "minutes": "분"
+    },
+    "backup": {
+      "title": "백업 내보내기",
+      "description": "지갑, 주소록 및 설정이 포함된 암호화된 백업 파일을 생성합니다.",
+      "export": "내보내기",
+      "modalTitle": "백업 내보내기",
+      "modalDescription": "암호화된 백업 파일을 생성하려면 지갑 비밀번호를 입력하세요.",
+      "walletPassword": "지갑 비밀번호",
+      "enterPassword": "지갑 비밀번호를 입력하세요",
+      "warning": "백업 파일은 지갑 비밀번호로 암호화됩니다. 안전하게 보관하세요 - 이 파일과 비밀번호가 있으면 누구나 자금에 접근할 수 있습니다.",
+      "exporting": "내보내는 중...",
+      "downloadBackup": "백업 다운로드"
+    },
+    "password": {
+      "title": "금고 비밀번호 변경",
+      "description": "개인 키를 암호화하는 데 사용되는 비밀번호를 업데이트합니다.",
+      "update": "업데이트",
+      "modalTitle": "비밀번호 변경",
+      "modalDescription": "금고에 대한 새로운 강력한 비밀번호를 만드세요.",
+      "current": "현재 비밀번호",
+      "currentPlaceholder": "현재 비밀번호 입력",
+      "new": "새 비밀번호",
+      "newPlaceholder": "새 비밀번호 입력",
+      "confirm": "새 비밀번호 확인",
+      "confirmPlaceholder": "새 비밀번호 확인",
+      "updating": "업데이트 중...",
+      "updateButton": "비밀번호 업데이트",
+      "successTitle": "비밀번호 변경됨",
+      "successDescription": "금고 비밀번호가 성공적으로 업데이트되었습니다.",
+      "errors": {
+        "fillAll": "모든 항목을 입력하세요",
+        "mismatch": "새 비밀번호가 일치하지 않습니다",
+        "empty": "비밀번호는 비워둘 수 없습니다"
+      }
+    },
+    "blockchain": {
+      "title": "블록체인 데이터",
+      "syncedTo": "지갑이 블록 {{height}}까지 동기화됨",
+      "rescanHint": "누락된 트랜잭션을 찾으려면 지갑을 다시 스캔하세요",
+      "rescan": "다시 스캔",
+      "scanning": "스캔 중..."
+    },
+    "language": {
+      "title": "언어",
+      "description": "앱에서 선호하는 언어를 선택하세요.",
+      "select": "언어 선택"
+    },
+    "donate": {
+      "title": "Salvium.Tools에 기부",
+      "description": "Salvium Vault 운영을 도와주세요. 모든 기부는 서버와 개발을 지원합니다.",
+      "button": "지금 기부"
+    },
+    "resetWallet": {
+      "title": "지갑 초기화",
+      "description": "지갑 데이터를 삭제하고 새로 시작합니다. 시드 문구를 저장했는지 확인하세요.",
+      "button": "초기화"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "설계부터 프라이버시.",
+      "subtitle": "완전한 프라이버시와 함께 Salvium을 안전하게 저장, 전송 및 수신합니다."
+    },
+    "createWallet": {
+      "title": "지갑 생성",
+      "description": "새로운 25단어 시드 생성"
+    },
+    "restoreWallet": {
+      "title": "지갑 복원",
+      "description": "시드 또는 백업에서 가져오기"
+    },
+    "securityBanner": "키는 이 기기에서 암호화된 상태로 유지됩니다.",
+    "recoveryPhrase": {
+      "title": "복구 문구",
+      "description": "이 단어들을 순서대로 적으세요. 이것이 자금을 복구하는 <1>유일한</1> 방법입니다.",
+      "generating": "안전한 시드 문구 생성 중...",
+      "failed": "시드 문구 생성 실패. 다시 시도하세요.",
+      "tryAgain": "다시 시도",
+      "warning": "이 단어들을 누구와도 공유하지 마세요. Salvium 지원팀은 절대로 복구 문구를 요청하지 않습니다. 오프라인의 안전한 곳에 보관하세요.",
+      "iSavedIt": "저장했습니다"
+    },
+    "verifySeed": {
+      "title": "시드 확인",
+      "description": "복구 문구를 저장했는지 확인하려면 요청된 단어를 입력하세요.",
+      "wordNumber": "단어 #{{number}}",
+      "enterWord": "단어 #{{number}} 입력",
+      "verify": "확인",
+      "incorrectWords": "단어가 올바르지 않습니다. 시드 문구를 확인하고 다시 시도하세요."
+    },
+    "setPassword": {
+      "title": "금고 비밀번호 설정",
+      "description": "이 비밀번호는 이 기기에서 지갑을 암호화하는 데 사용됩니다.",
+      "password": "비밀번호",
+      "enterPassword": "강력한 비밀번호 입력",
+      "confirmPassword": "비밀번호 확인",
+      "repeatPassword": "비밀번호 반복",
+      "finishSetup": "설정 완료",
+      "creating": "생성 중...",
+      "errors": {
+        "minLength": "비밀번호는 최소 8자 이상이어야 합니다",
+        "mismatch": "비밀번호가 일치하지 않습니다"
+      }
+    },
+    "restore": {
+      "title": "지갑 복원",
+      "description": "지갑을 복원할 방법을 선택하세요.",
+      "seedPhrase": {
+        "title": "시드 문구",
+        "description": "25단어 복구 문구 입력"
+      },
+      "backupFile": {
+        "title": "백업 파일",
+        "description": "salvium.vault 파일에서 복원"
+      },
+      "enterSeed": {
+        "title": "복구 문구 입력",
+        "description": "지갑을 복원하려면 25단어 시드 문구를 입력하세요.",
+        "placeholder": "피아노 기타 드럼 바이올린 플루트...",
+        "seedPhrase": "시드 문구",
+        "restoreHeight": "복원 높이",
+        "current": "현재: {{height}}",
+        "heightHint": "특정 블록 높이를 설정하세요. 확실하지 않으면 0부터 스캔하세요. 몇 분이 걸릴 수 있습니다."
+      },
+      "uploadBackup": {
+        "title": "백업 파일 업로드",
+        "description": ".salvium-backup 파일을 선택하여 지갑을 복원하세요.",
+        "selectFile": "파일 선택 클릭",
+        "filesOnly": "salvium.vault 파일만",
+        "changeFile": "파일 변경 클릭"
+      },
+      "backupPassword": {
+        "title": "백업 비밀번호 입력",
+        "description": "이 백업을 만들 때 사용한 비밀번호를 입력하세요.",
+        "backupPassword": "백업 비밀번호",
+        "enterPassword": "백업 비밀번호 입력",
+        "readyToDecrypt": "복호화 준비됨",
+        "decrypting": "복호화 중..."
+      },
+      "restoring": "복원 중...",
+      "restoreButton": "지갑 복원"
+    }
+  },
+  "lockScreen": {
+    "title": "지갑 잠김",
+    "description": "대시보드에 접근하려면 비밀번호를 입력하세요.",
+    "enterPassword": "비밀번호 입력",
+    "pleaseEnterPassword": "비밀번호를 입력하세요",
+    "incorrectPassword": "비밀번호가 올바르지 않습니다",
+    "unlock": "지갑 잠금 해제",
+    "unlocking": "잠금 해제 중...",
+    "biometricUnlock": "생체 인식으로 잠금 해제",
+    "biometricFailed": "생체 인식 잠금 해제 실패: 비밀번호가 변경되었나요?",
+    "resetWallet": "지갑 초기화 (로그아웃)",
+    "resetConfirmTitle": "지갑을 초기화하시겠습니까?",
+    "resetConfirmDescription": "이 기기에서 지갑 데이터가 영구적으로 삭제됩니다.",
+    "resetConfirmWarning": "25단어 시드 문구를 저장하거나 salvium.vault 백업 파일을 내보내지 않은 경우 자금에 대한 접근 권한을 잃게 됩니다.",
+    "resetConfirmButton": "지갑 초기화",
+    "resetConfirmCheckbox": "시드 문구나 백업 없이는 접근할 수 없음을 이해합니다"
+  },
+  "network": {
+    "status": "네트워크 상태",
+    "synced": "동기화됨",
+    "syncing": "동기화 중",
+    "fullySynced": "완전 동기화됨",
+    "disconnected": "연결 끊김",
+    "error": "오류",
+    "walletHeight": "지갑 높이",
+    "daemonHeight": "데몬 높이",
+    "height": "높이",
+    "connectedTo": "Salvium 네트워크에 연결됨",
+    "attemptingConnect": "연결 시도 중..."
+  },
+  "contacts": {
+    "addContact": "연락처 추가",
+    "editContact": "연락처 편집",
+    "addNewContact": "새 연락처 추가",
+    "name": "이름",
+    "namePlaceholder": "예: 홍길동",
+    "salviumAddress": "Salvium 주소",
+    "saveChanges": "변경 사항 저장",
+    "deleteConfirm": "이 연락처를 삭제하시겠습니까?"
+  },
+  "transactions": {
+    "received": "받음",
+    "sent": "보냄",
+    "pending": "대기 중",
+    "confirmed": "확인됨",
+    "confirmations": "확인",
+    "confirmationsCount": "{{count}}개 확인",
+    "noTransactions": "트랜잭션이 없습니다",
+    "viewOnExplorer": "탐색기에서 보기",
+    "block": "블록",
+    "date": "날짜",
+    "typeHash": "유형 / 해시",
+    "amount": "금액",
+    "status": "상태",
+    "broadcasting": "브로드캐스팅",
+    "blocksRemaining": "{{count}}블록 남음",
+    "loadMore": "더 보기",
+    "showing": "{{total}}개 중 {{start}}-{{end}} 표시",
+    "page": "{{total}} 중 {{current}} 페이지",
+    "types": {
+      "mining": "채굴",
+      "yield": "수익",
+      "stake": "스테이크",
+      "transfer": "전송",
+      "transferIn": "입금",
+      "transferOut": "출금",
+      "audit": "감사"
+    },
+    "details": "트랜잭션 상세",
+    "hash": "트랜잭션 해시",
+    "poweredBy": "salvium.tools 탐색기 제공",
+    "viewInExplorer": "탐색기에서 보기",
+    "viewFullDetails": "탐색기에서 전체 세부 정보 보기",
+    "openInExplorer": "탐색기에서 열기",
+    "unconfirmed": "미확인",
+    "fee": "수수료",
+    "returnTransaction": "트랜잭션 반환",
+    "confirmReturn": "반환 확인",
+    "confirmReturnDescription": "이 트랜잭션을 반환하시겠습니까? 자금이 원래 발신자에게 다시 전송됩니다."
+  },
+  "errors": {
+    "failedToInitialize": "초기화 실패",
+    "wasmLimitations": "일부 모바일 브라우저에서 WASM 제한으로 인해 발생할 수 있습니다. 데스크톱 브라우저나 Android의 Chrome을 사용해 보세요.",
+    "retry": "다시 시도",
+    "initializingWallet": "지갑 초기화 중...",
+    "failedToCreate": "백업 생성 실패",
+    "failedToUnlock": "지갑 잠금 해제 실패"
+  }
+}

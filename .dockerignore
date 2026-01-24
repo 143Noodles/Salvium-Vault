@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Git
+.git/
+.gitignore
+
+# Build output (rebuilt in Docker)
+dist/
+
+# WASM build directory
+wasm-build/
+
+# IDE and editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local env files
+.env.local
+.env*.local
+
+# Test and debug files
+*.stackdump

@@ -1,0 +1,20 @@
+{
+    "name": "Salvium Vault",
+    "short_name": "Salvium Vault",
+    "start_url": "/vault/",
+    "display": "standalone",
+    "background_color": "#0f0f1a",
+    "theme_color": "#0f0f1a",
+    "icons": [
+        {
+            "src": "/vault/salvium-icon.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/vault/salvium-icon.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}

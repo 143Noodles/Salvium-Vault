@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "back": "Voltar",
+    "next": "Próximo",
+    "done": "Concluído",
+    "save": "Salvar",
+    "copy": "Copiar",
+    "copied": "Copiado!",
+    "loading": "Carregando...",
+    "error": "Erro",
+    "success": "Sucesso",
+    "close": "Fechar",
+    "delete": "Excluir",
+    "edit": "Editar",
+    "add": "Adicionar",
+    "search": "Pesquisar",
+    "export": "Exportar",
+    "update": "Atualizar",
+    "verify": "Verificar",
+    "max": "Máx",
+    "sal": "SAL",
+    "processing": "Processando..."
+  },
+  "navigation": {
+    "home": "Início",
+    "send": "Enviar",
+    "receive": "Receber",
+    "stake": "Staking",
+    "staking": "Staking",
+    "history": "Histórico",
+    "settings": "Configurações",
+    "dashboard": "Painel",
+    "lockWallet": "Bloquear Carteira"
+  },
+  "dashboard": {
+    "balance": "Saldo",
+    "unlocked": "Desbloqueado",
+    "primaryAddress": "Endereço Principal",
+    "recentActivity": "Atividade Recente",
+    "viewAll": "Ver Tudo",
+    "walletPerformance": "Desempenho da Carteira",
+    "chartHidden": "Gráfico Oculto",
+    "activityHidden": "Atividade Oculta",
+    "activeStakes": "Stakes Ativos",
+    "noActiveStakes": "Sem stakes ativos",
+    "earnRewards": "Ganhe recompensas fazendo stake de SAL por ~30 dias.",
+    "createNewStake": "Criar Novo Stake",
+    "unlocksIn": "Desbloqueia em {{time}} ({{blocks}} blocos)"
+  },
+  "chart": {
+    "last24Hours": "Últimas 24 Horas",
+    "last7Days": "Últimos 7 Dias",
+    "last30Days": "Últimos 30 Dias",
+    "last12Months": "Últimos 12 Meses",
+    "sinceMexcListing": "Desde Listagem na MEXC",
+    "noHistoryData": "Nenhum dado histórico disponível",
+    "walletValue": "Valor da Carteira"
+  },
+  "send": {
+    "title": "Enviar Ativos",
+    "subtitle": "Transfira SAL para outra carteira com segurança.",
+    "recipientAddress": "Endereço do Destinatário",
+    "amount": "Valor",
+    "available": "Disponível",
+    "paymentId": "ID de Pagamento (Opcional)",
+    "enterPaymentId": "Digite o ID de pagamento",
+    "sendAssets": "Enviar Ativos",
+    "creatingTransaction": "Criando Transação...",
+    "transactionSent": "Transação Enviada!",
+    "amountSent": "{{amount}} SAL foi enviado para a rede.",
+    "transactionHash": "Hash da Transação",
+    "sendAnother": "Enviar Outra Transação",
+    "addressBook": "Livro de Endereços",
+    "addNewAddress": "Adicionar Novo Endereço",
+    "searchContacts": "Pesquisar contatos...",
+    "noContacts": "Nenhum contato encontrado",
+    "loadingScanner": "Carregando scanner...",
+    "errors": {
+      "fillRequired": "Por favor, preencha todos os campos obrigatórios",
+      "exceedsBalance": "O valor excede o saldo disponível",
+      "insufficientFees": "Saldo insuficiente para cobrir a taxa de transação",
+      "adjustedForFee": "O valor será ajustado para cobrir a taxa de transação"
+    }
+  },
+  "receive": {
+    "title": "Receber Ativos",
+    "subtitle": "Escaneie para enviar SAL para esta carteira.",
+    "primaryAddress": "Endereço Principal",
+    "copyAddress": "Copiar Endereço",
+    "subaddresses": "Subendereços",
+    "manageSubaddresses": "Gerenciar Subendereços",
+    "addNewSubaddress": "Adicionar Novo Subendereço",
+    "addSubaddress": "Adicionar Subendereço",
+    "searchSubaddresses": "Pesquisar subendereços...",
+    "noSubaddresses": "Nenhum subendereço encontrado",
+    "unlockedBalance": "Saldo Desbloqueado",
+    "label": "Rótulo",
+    "labelPlaceholder": "ex. Conta Poupança",
+    "qrUnavailable": "Código QR indisponível. Copie o endereço abaixo.",
+    "creating": "Criando..."
+  },
+  "staking": {
+    "title": "Staking",
+    "subtitle": "Faça stake de SAL para ganhar recompensas em ~30 dias.",
+    "currentlyStaked": "Atualmente em Stake",
+    "salStaked": "SAL em Stake",
+    "yieldEarned": "Rendimento Ganho",
+    "currentApy": "APY Atual",
+    "createNewStake": "Criar Novo Stake",
+    "activeStakes": "Stakes Ativos",
+    "stakeHistory": "Histórico de Staking",
+    "amount": "Valor",
+    "blockHeightUnlock": "Altura do Bloco de Desbloqueio",
+    "estRewards": "Recomp. Est.",
+    "estRewardsTooltip": "Esta é apenas uma estimativa baseada no APY atual. As recompensas reais podem variar conforme a taxa de staking da rede flutua.",
+    "unlockDate": "Data de Desbloqueio (~30 Dias)",
+    "stakeAssets": "Fazer Stake",
+    "creatingStake": "Criando Stake...",
+    "stakeSubmitted": "Transação de stake enviada!",
+    "noActiveStakes": "Sem stakes ativos",
+    "createToEarn": "Crie um stake para começar a ganhar recompensas",
+    "loadingStakes": "Carregando stakes...",
+    "noCompletedStakes": "Nenhum stake concluído ainda",
+    "loadingHistory": "Carregando histórico...",
+    "unlocksIn": "Desbloqueia em {{time}}",
+    "blocksRemaining": "{{blocks}} blocos restantes",
+    "tableHeaders": {
+      "staked": "Em Stake",
+      "returned": "Devolvido",
+      "amount": "Valor",
+      "rewards": "Recompensas",
+      "tx": "TX"
+    },
+    "errors": {
+      "validAmount": "Por favor, insira um valor positivo válido",
+      "exceedsBalance": "O valor excede o saldo disponível"
+    }
+  },
+  "history": {
+    "title": "Histórico de Transações",
+    "transactionsFound": "{{count}} transações encontradas",
+    "searchPlaceholder": "Pesquisar hash ou valor...",
+    "filter": "Filtrar",
+    "export": "Exportar",
+    "clearFilters": "Limpar Filtros",
+    "noTransactions": "Nenhuma transação ainda",
+    "startSending": "Comece enviando ou recebendo SAL",
+    "filterOptions": {
+      "received": "Recebido",
+      "sent": "Enviado",
+      "pending": "Pendente",
+      "mining": "Mineração",
+      "stake": "Stake"
+    }
+  },
+  "settings": {
+    "title": "Configurações",
+    "subtitle": "Configure a segurança da carteira, rede e preferências.",
+    "sections": {
+      "securityPrivacy": "Segurança e Privacidade",
+      "general": "Geral",
+      "language": "Idioma"
+    },
+    "biometrics": {
+      "title": "Desbloquear com Biometria",
+      "description": "Use biometria para desbloquear sua carteira rapidamente.",
+      "enableTitle": "Ativar Desbloqueio Biométrico",
+      "enableDescription": "Digite sua senha para autorizar a configuração biométrica.",
+      "enableButton": "Ativar Desbloqueio Biométrico",
+      "cancelled": "Configuração biométrica cancelada",
+      "failed": "Falha ao ativar biometria",
+      "verifying": "Verificando..."
+    },
+    "autoLock": {
+      "title": "Bloqueio Automático",
+      "description": "Bloqueia automaticamente a carteira após um período de inatividade para proteger seus fundos.",
+      "lockAfter": "Bloquear após",
+      "minutes": "minutos"
+    },
+    "backup": {
+      "title": "Exportar Backup",
+      "description": "Crie um arquivo de backup criptografado contendo sua carteira, livro de endereços e configurações.",
+      "export": "Exportar",
+      "modalTitle": "Exportar Backup",
+      "modalDescription": "Digite a senha da sua carteira para criar um arquivo de backup criptografado.",
+      "walletPassword": "Senha da Carteira",
+      "enterPassword": "Digite a senha da sua carteira",
+      "warning": "O arquivo de backup será criptografado com a senha da sua carteira. Guarde-o com segurança - qualquer pessoa com este arquivo e sua senha pode acessar seus fundos.",
+      "exporting": "Exportando...",
+      "downloadBackup": "Baixar Backup"
+    },
+    "password": {
+      "title": "Alterar Senha do Cofre",
+      "description": "Atualize a senha usada para criptografar suas chaves privadas.",
+      "update": "Atualizar",
+      "modalTitle": "Alterar Senha",
+      "modalDescription": "Crie uma nova senha forte para seu cofre.",
+      "current": "Senha Atual",
+      "currentPlaceholder": "Digite a senha atual",
+      "new": "Nova Senha",
+      "newPlaceholder": "Digite a nova senha",
+      "confirm": "Confirmar Nova Senha",
+      "confirmPlaceholder": "Confirme a nova senha",
+      "updating": "Atualizando...",
+      "updateButton": "Atualizar Senha",
+      "successTitle": "Senha Alterada",
+      "successDescription": "A senha do seu cofre foi atualizada com sucesso.",
+      "errors": {
+        "fillAll": "Por favor, preencha todos os campos",
+        "mismatch": "As novas senhas não coincidem",
+        "empty": "A senha não pode estar vazia"
+      }
+    },
+    "blockchain": {
+      "title": "Dados da Blockchain",
+      "syncedTo": "Carteira sincronizada até o bloco {{height}}",
+      "rescanHint": "Reescanear carteira para encontrar transações perdidas",
+      "rescan": "Reescanear",
+      "scanning": "Escaneando..."
+    },
+    "language": {
+      "title": "Idioma",
+      "description": "Escolha seu idioma preferido para o aplicativo.",
+      "select": "Selecionar Idioma"
+    },
+    "donate": {
+      "title": "Doar para Salvium.Tools",
+      "description": "Ajude a manter o Salvium Vault funcionando. Cada doação apoia os servidores e o desenvolvimento.",
+      "button": "Doar Agora"
+    },
+    "resetWallet": {
+      "title": "Resetar Carteira",
+      "description": "Apagar dados da carteira e recomeçar. Certifique-se de ter salvado sua frase seed.",
+      "button": "Resetar"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "Privacidade por Design.",
+      "subtitle": "Armazene, envie e receba Salvium com segurança e total privacidade."
+    },
+    "createWallet": {
+      "title": "Criar Carteira",
+      "description": "Gere uma nova seed de 25 palavras"
+    },
+    "restoreWallet": {
+      "title": "Restaurar Carteira",
+      "description": "Importar de seed ou backup"
+    },
+    "securityBanner": "Suas chaves permanecem criptografadas neste dispositivo.",
+    "recoveryPhrase": {
+      "title": "Sua Frase de Recuperação",
+      "description": "Anote estas palavras em ordem. Esta é a <1>ÚNICA</1> forma de recuperar seus fundos.",
+      "generating": "Gerando frase seed segura...",
+      "failed": "Falha ao gerar frase seed. Por favor, tente novamente.",
+      "tryAgain": "Tentar Novamente",
+      "warning": "Não compartilhe estas palavras com ninguém. O suporte Salvium nunca pedirá sua frase de recuperação. Guarde-as offline em um local seguro.",
+      "iSavedIt": "Eu Salvei"
+    },
+    "verifySeed": {
+      "title": "Verifique Sua Seed",
+      "description": "Digite as palavras solicitadas para confirmar que você salvou sua frase de recuperação.",
+      "wordNumber": "Palavra #{{number}}",
+      "enterWord": "Digite a palavra #{{number}}",
+      "verify": "Verificar",
+      "incorrectWords": "Palavras incorretas. Por favor, verifique sua frase seed e tente novamente."
+    },
+    "setPassword": {
+      "title": "Definir Senha do Cofre",
+      "description": "Esta senha será usada para criptografar sua carteira neste dispositivo.",
+      "password": "Senha",
+      "enterPassword": "Digite uma senha forte",
+      "confirmPassword": "Confirmar Senha",
+      "repeatPassword": "Repita a senha",
+      "finishSetup": "Concluir Configuração",
+      "creating": "Criando...",
+      "errors": {
+        "minLength": "A senha deve ter pelo menos 8 caracteres",
+        "mismatch": "As senhas não coincidem"
+      }
+    },
+    "restore": {
+      "title": "Restaurar Carteira",
+      "description": "Escolha como você gostaria de restaurar sua carteira.",
+      "seedPhrase": {
+        "title": "Frase Seed",
+        "description": "Digite sua frase de recuperação de 25 palavras"
+      },
+      "backupFile": {
+        "title": "Arquivo de Backup",
+        "description": "Restaurar do arquivo salvium.vault"
+      },
+      "enterSeed": {
+        "title": "Digite a Frase de Recuperação",
+        "description": "Digite sua frase seed de 25 palavras para restaurar sua carteira.",
+        "placeholder": "piano guitarra bateria violino flauta...",
+        "seedPhrase": "Frase Seed",
+        "restoreHeight": "Altura de Restauração",
+        "current": "Atual: {{height}}",
+        "heightHint": "Defina uma altura de bloco específica. Escaneie a partir de 0 se não tiver certeza. Isso pode levar vários minutos."
+      },
+      "uploadBackup": {
+        "title": "Enviar Arquivo de Backup",
+        "description": "Selecione seu arquivo .salvium-backup para restaurar sua carteira.",
+        "selectFile": "Clique para selecionar o arquivo",
+        "filesOnly": "Apenas arquivos salvium.vault",
+        "changeFile": "Clique para alterar o arquivo"
+      },
+      "backupPassword": {
+        "title": "Digite a Senha do Backup",
+        "description": "Digite a senha que foi usada para criar este backup.",
+        "backupPassword": "Senha do Backup",
+        "enterPassword": "Digite a senha do backup",
+        "readyToDecrypt": "Pronto para descriptografar",
+        "decrypting": "Descriptografando..."
+      },
+      "restoring": "Restaurando...",
+      "restoreButton": "Restaurar Carteira"
+    }
+  },
+  "lockScreen": {
+    "title": "Carteira Bloqueada",
+    "description": "Digite sua senha para acessar seu painel.",
+    "enterPassword": "Digite a senha",
+    "pleaseEnterPassword": "Por favor, digite sua senha",
+    "incorrectPassword": "Senha incorreta",
+    "unlock": "Desbloquear Carteira",
+    "unlocking": "Desbloqueando...",
+    "biometricUnlock": "Desbloquear com Biometria",
+    "biometricFailed": "Desbloqueio biométrico falhou: Senha alterada?",
+    "resetWallet": "Resetar Carteira (Sair)",
+    "resetConfirmTitle": "Resetar Carteira?",
+    "resetConfirmDescription": "Isso excluirá permanentemente os dados da sua carteira deste dispositivo.",
+    "resetConfirmWarning": "Você perderá acesso aos seus fundos a menos que tenha salvado sua frase seed de 25 palavras ou exportado um arquivo de backup salvium.vault.",
+    "resetConfirmButton": "Resetar Carteira",
+    "resetConfirmCheckbox": "Eu entendo que perderei acesso sem minha frase seed ou backup"
+  },
+  "network": {
+    "status": "Status da Rede",
+    "synced": "Sincronizado",
+    "syncing": "Sincronizando",
+    "fullySynced": "Totalmente Sincronizado",
+    "disconnected": "Desconectado",
+    "error": "Erro",
+    "walletHeight": "Altura da Carteira",
+    "daemonHeight": "Altura do Daemon",
+    "height": "Altura",
+    "connectedTo": "Conectado à Rede Salvium",
+    "attemptingConnect": "Tentando conectar..."
+  },
+  "contacts": {
+    "addContact": "Adicionar Contato",
+    "editContact": "Editar Contato",
+    "addNewContact": "Adicionar Novo Contato",
+    "name": "Nome",
+    "namePlaceholder": "ex. João Silva",
+    "salviumAddress": "Endereço Salvium",
+    "saveChanges": "Salvar Alterações",
+    "deleteConfirm": "Tem certeza de que deseja excluir este contato?"
+  },
+  "transactions": {
+    "received": "Recebido",
+    "sent": "Enviado",
+    "pending": "Pendente",
+    "confirmed": "Confirmado",
+    "confirmations": "Confirmações",
+    "confirmationsCount": "{{count}} confirmações",
+    "noTransactions": "Nenhuma transação ainda",
+    "viewOnExplorer": "Ver no Explorador",
+    "block": "Bloco",
+    "date": "Data",
+    "typeHash": "Tipo / Hash",
+    "amount": "Valor",
+    "status": "Status",
+    "broadcasting": "Transmitindo",
+    "blocksRemaining": "{{count}} blocos restantes",
+    "loadMore": "Carregar Mais",
+    "showing": "Mostrando {{start}}-{{end}} de {{total}} transações",
+    "page": "Página {{current}} de {{total}}",
+    "types": {
+      "mining": "Mineração",
+      "yield": "Rendimento",
+      "stake": "Stake",
+      "transfer": "Transferência",
+      "transferIn": "Entrada",
+      "transferOut": "Saída",
+      "audit": "Auditoria"
+    },
+    "details": "Detalhes da Transação",
+    "hash": "Hash da Transação",
+    "poweredBy": "Alimentado pelo explorador salvium.tools",
+    "viewInExplorer": "Ver no explorador",
+    "viewFullDetails": "Ver detalhes completos no explorador",
+    "openInExplorer": "Abrir no explorador",
+    "unconfirmed": "Não confirmado",
+    "fee": "Taxa",
+    "returnTransaction": "Devolver Transação",
+    "confirmReturn": "Confirmar Devolução",
+    "confirmReturnDescription": "Tem certeza de que deseja devolver esta transação? Isso enviará os fundos de volta ao remetente original."
+  },
+  "errors": {
+    "failedToInitialize": "Falha na Inicialização",
+    "wasmLimitations": "Isso pode ocorrer em alguns navegadores móveis devido a limitações do WASM. Tente usar um navegador desktop ou Chrome no Android.",
+    "retry": "Tentar Novamente",
+    "initializingWallet": "Inicializando carteira...",
+    "failedToCreate": "Falha ao criar backup",
+    "failedToUnlock": "Falha ao desbloquear carteira"
+  }
+}

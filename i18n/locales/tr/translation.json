@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "İptal",
+    "confirm": "Onayla",
+    "back": "Geri",
+    "next": "İleri",
+    "done": "Tamam",
+    "save": "Kaydet",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı!",
+    "loading": "Yükleniyor...",
+    "error": "Hata",
+    "success": "Başarılı",
+    "close": "Kapat",
+    "delete": "Sil",
+    "edit": "Düzenle",
+    "add": "Ekle",
+    "search": "Ara",
+    "export": "Dışa Aktar",
+    "update": "Güncelle",
+    "verify": "Doğrula",
+    "max": "Maks",
+    "sal": "SAL",
+    "processing": "İşleniyor..."
+  },
+  "navigation": {
+    "home": "Ana Sayfa",
+    "send": "Gönder",
+    "receive": "Al",
+    "stake": "Stake",
+    "staking": "Staking",
+    "history": "Geçmiş",
+    "settings": "Ayarlar",
+    "dashboard": "Panel",
+    "lockWallet": "Cüzdanı Kilitle"
+  },
+  "dashboard": {
+    "balance": "Bakiye",
+    "unlocked": "Kullanılabilir",
+    "primaryAddress": "Ana Adres",
+    "recentActivity": "Son Aktivite",
+    "viewAll": "Tümünü Gör",
+    "walletPerformance": "Cüzdan Performansı",
+    "chartHidden": "Grafik Gizli",
+    "activityHidden": "Aktivite Gizli",
+    "activeStakes": "Aktif Stake'ler",
+    "noActiveStakes": "Aktif stake yok",
+    "earnRewards": "SAL'ınızı ~30 gün stake ederek ödül kazanın.",
+    "createNewStake": "Yeni Stake Oluştur",
+    "unlocksIn": "{{time}} içinde açılır ({{blocks}} blok)"
+  },
+  "chart": {
+    "last24Hours": "Son 24 Saat",
+    "last7Days": "Son 7 Gün",
+    "last30Days": "Son 30 Gün",
+    "last12Months": "Son 12 Ay",
+    "sinceMexcListing": "MEXC Listelemesinden Beri",
+    "noHistoryData": "Geçmiş verisi bulunamadı",
+    "walletValue": "Cüzdan Değeri"
+  },
+  "send": {
+    "title": "Varlık Gönder",
+    "subtitle": "SAL'ı güvenli bir şekilde başka bir cüzdana aktarın.",
+    "recipientAddress": "Alıcı Adresi",
+    "amount": "Miktar",
+    "available": "Kullanılabilir",
+    "paymentId": "Ödeme ID (İsteğe Bağlı)",
+    "enterPaymentId": "Ödeme ID girin",
+    "sendAssets": "Varlık Gönder",
+    "creatingTransaction": "İşlem Oluşturuluyor...",
+    "transactionSent": "İşlem Gönderildi!",
+    "amountSent": "{{amount}} SAL ağa gönderildi.",
+    "transactionHash": "İşlem Hash'i",
+    "sendAnother": "Başka İşlem Gönder",
+    "addressBook": "Adres Defteri",
+    "addNewAddress": "Yeni Adres Ekle",
+    "searchContacts": "Kişileri ara...",
+    "noContacts": "Kişi bulunamadı",
+    "loadingScanner": "Tarayıcı yükleniyor...",
+    "errors": {
+      "fillRequired": "Lütfen tüm gerekli alanları doldurun",
+      "exceedsBalance": "Miktar kullanılabilir bakiyeyi aşıyor",
+      "insufficientFees": "İşlem ücretini karşılamak için yetersiz bakiye",
+      "adjustedForFee": "Miktar işlem ücreti için ayarlanacak"
+    }
+  },
+  "receive": {
+    "title": "Varlık Al",
+    "subtitle": "Bu cüzdana SAL göndermek için tarayın.",
+    "primaryAddress": "Ana Adres",
+    "copyAddress": "Adresi Kopyala",
+    "subaddresses": "Alt Adresler",
+    "manageSubaddresses": "Alt Adresleri Yönet",
+    "addNewSubaddress": "Yeni Alt Adres Ekle",
+    "addSubaddress": "Alt Adres Ekle",
+    "searchSubaddresses": "Alt adresleri ara...",
+    "noSubaddresses": "Alt adres bulunamadı",
+    "unlockedBalance": "Kullanılabilir Bakiye",
+    "label": "Etiket",
+    "labelPlaceholder": "örn. Tasarruf Hesabı",
+    "qrUnavailable": "QR kodu kullanılamıyor. Aşağıdaki adresi kopyalayın.",
+    "creating": "Oluşturuluyor..."
+  },
+  "staking": {
+    "title": "Staking",
+    "subtitle": "~30 gün boyunca SAL stake ederek ödül kazanın.",
+    "currentlyStaked": "Şu An Stake'te",
+    "salStaked": "Stake Edilen SAL",
+    "yieldEarned": "Kazanılan Getiri",
+    "currentApy": "Mevcut APY",
+    "createNewStake": "Yeni Stake Oluştur",
+    "activeStakes": "Aktif Stake'ler",
+    "stakeHistory": "Staking Geçmişi",
+    "amount": "Miktar",
+    "blockHeightUnlock": "Açılma Blok Yüksekliği",
+    "estRewards": "Tah. Ödüller",
+    "estRewardsTooltip": "Bu sadece mevcut APY'ye dayalı bir tahmindir. Gerçek ödüller ağ staking oranı dalgalandıkça değişebilir.",
+    "unlockDate": "Açılma Tarihi (~30 Gün)",
+    "stakeAssets": "Varlık Stake Et",
+    "creatingStake": "Stake Oluşturuluyor...",
+    "stakeSubmitted": "Stake işlemi gönderildi!",
+    "noActiveStakes": "Aktif stake yok",
+    "createToEarn": "Ödül kazanmaya başlamak için stake oluşturun",
+    "loadingStakes": "Stake'ler yükleniyor...",
+    "noCompletedStakes": "Henüz tamamlanmış stake yok",
+    "loadingHistory": "Geçmiş yükleniyor...",
+    "unlocksIn": "{{time}} içinde açılır",
+    "blocksRemaining": "{{blocks}} blok kaldı",
+    "tableHeaders": {
+      "staked": "Stake Edilen",
+      "returned": "İade Edilen",
+      "amount": "Miktar",
+      "rewards": "Ödüller",
+      "tx": "TX"
+    },
+    "errors": {
+      "validAmount": "Lütfen geçerli bir pozitif miktar girin",
+      "exceedsBalance": "Miktar kullanılabilir bakiyeyi aşıyor"
+    }
+  },
+  "history": {
+    "title": "İşlem Geçmişi",
+    "transactionsFound": "{{count}} işlem bulundu",
+    "searchPlaceholder": "Hash veya miktar ara...",
+    "filter": "Filtrele",
+    "export": "Dışa Aktar",
+    "clearFilters": "Filtreleri Temizle",
+    "noTransactions": "Henüz işlem yok",
+    "startSending": "SAL göndererek veya alarak başlayın",
+    "filterOptions": {
+      "received": "Alınan",
+      "sent": "Gönderilen",
+      "pending": "Beklemede",
+      "mining": "Madencilik",
+      "stake": "Stake"
+    }
+  },
+  "settings": {
+    "title": "Ayarlar",
+    "subtitle": "Cüzdan güvenliğini, ağı ve tercihlerinizi yapılandırın.",
+    "sections": {
+      "securityPrivacy": "Güvenlik ve Gizlilik",
+      "general": "Genel",
+      "language": "Dil"
+    },
+    "biometrics": {
+      "title": "Biyometri ile Aç",
+      "description": "Cüzdanınızı hızlıca açmak için biyometri kullanın.",
+      "enableTitle": "Biyometrik Kilidi Etkinleştir",
+      "enableDescription": "Biyometri kurulumunu yetkilendirmek için şifrenizi girin.",
+      "enableButton": "Biyometrik Kilidi Etkinleştir",
+      "cancelled": "Biyometri kurulumu iptal edildi",
+      "failed": "Biyometri etkinleştirilemedi",
+      "verifying": "Doğrulanıyor..."
+    },
+    "autoLock": {
+      "title": "Otomatik Kilitleme",
+      "description": "Fonlarınızı korumak için bir süre hareketsizlikten sonra cüzdanı otomatik olarak kilitler.",
+      "lockAfter": "Kilitleme süresi",
+      "minutes": "dakika"
+    },
+    "backup": {
+      "title": "Yedek Dışa Aktar",
+      "description": "Cüzdanınızı, adres defterinizi ve ayarlarınızı içeren şifreli bir yedek dosyası oluşturun.",
+      "export": "Dışa Aktar",
+      "modalTitle": "Yedek Dışa Aktar",
+      "modalDescription": "Şifreli bir yedek dosyası oluşturmak için cüzdan şifrenizi girin.",
+      "walletPassword": "Cüzdan Şifresi",
+      "enterPassword": "Cüzdan şifrenizi girin",
+      "warning": "Yedek dosyası cüzdan şifrenizle şifrelenecektir. Güvenli bir şekilde saklayın - bu dosya ve şifreniz olan herkes fonlarınıza erişebilir.",
+      "exporting": "Dışa aktarılıyor...",
+      "downloadBackup": "Yedeği İndir"
+    },
+    "password": {
+      "title": "Kasa Şifresini Değiştir",
+      "description": "Özel anahtarlarınızı şifrelemek için kullanılan şifreyi güncelleyin.",
+      "update": "Güncelle",
+      "modalTitle": "Şifreyi Değiştir",
+      "modalDescription": "Kasanız için yeni güçlü bir şifre oluşturun.",
+      "current": "Mevcut Şifre",
+      "currentPlaceholder": "Mevcut şifreyi girin",
+      "new": "Yeni Şifre",
+      "newPlaceholder": "Yeni şifreyi girin",
+      "confirm": "Yeni Şifreyi Onayla",
+      "confirmPlaceholder": "Yeni şifreyi onaylayın",
+      "updating": "Güncelleniyor...",
+      "updateButton": "Şifreyi Güncelle",
+      "successTitle": "Şifre Değiştirildi",
+      "successDescription": "Kasa şifreniz başarıyla güncellendi.",
+      "errors": {
+        "fillAll": "Lütfen tüm alanları doldurun",
+        "mismatch": "Yeni şifreler eşleşmiyor",
+        "empty": "Şifre boş olamaz"
+      }
+    },
+    "blockchain": {
+      "title": "Blockchain Verileri",
+      "syncedTo": "Cüzdan {{height}} bloğuna senkronize edildi",
+      "rescanHint": "Eksik işlemleri bulmak için cüzdanı yeniden tarayın",
+      "rescan": "Yeniden Tara",
+      "scanning": "Taranıyor..."
+    },
+    "language": {
+      "title": "Dil",
+      "description": "Uygulama için tercih ettiğiniz dili seçin.",
+      "select": "Dil Seçin"
+    },
+    "donate": {
+      "title": "Salvium.Tools'a Bağış Yapın",
+      "description": "Salvium Vault'un çalışmasına yardım edin. Her bağış sunucuları ve geliştirmeyi destekler.",
+      "button": "Şimdi Bağış Yap"
+    },
+    "resetWallet": {
+      "title": "Cüzdanı Sıfırla",
+      "description": "Cüzdan verilerini sil ve yeniden başla. Tohum ifadenizi kaydettiğinizden emin olun.",
+      "button": "Sıfırla"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "Tasarımda Gizlilik.",
+      "subtitle": "Salvium'u tam gizlilikle güvenle saklayın, gönderin ve alın."
+    },
+    "createWallet": {
+      "title": "Cüzdan Oluştur",
+      "description": "Yeni 25 kelimelik tohum oluştur"
+    },
+    "restoreWallet": {
+      "title": "Cüzdanı Geri Yükle",
+      "description": "Tohumdan veya yedekten içe aktar"
+    },
+    "securityBanner": "Anahtarlarınız bu cihazda şifreli kalır.",
+    "recoveryPhrase": {
+      "title": "Kurtarma İfadeniz",
+      "description": "Bu kelimeleri sırayla yazın. Bu, fonlarınızı kurtarmanın <1>TEK</1> yoludur.",
+      "generating": "Güvenli tohum ifadesi oluşturuluyor...",
+      "failed": "Tohum ifadesi oluşturulamadı. Lütfen tekrar deneyin.",
+      "tryAgain": "Tekrar Dene",
+      "warning": "Bu kelimeleri kimseyle paylaşmayın. Salvium desteği asla kurtarma ifadenizi istemeyecektir. Bunları çevrimdışı güvenli bir yerde saklayın.",
+      "iSavedIt": "Kaydettim"
+    },
+    "verifySeed": {
+      "title": "Tohumunuzu Doğrulayın",
+      "description": "Kurtarma ifadenizi kaydettiğinizi onaylamak için istenen kelimeleri girin.",
+      "wordNumber": "Kelime #{{number}}",
+      "enterWord": "Kelime #{{number}} girin",
+      "verify": "Doğrula",
+      "incorrectWords": "Yanlış kelimeler. Lütfen tohum ifadenizi kontrol edin ve tekrar deneyin."
+    },
+    "setPassword": {
+      "title": "Kasa Şifresi Belirle",
+      "description": "Bu şifre, bu cihazda cüzdanınızı şifrelemek için kullanılacaktır.",
+      "password": "Şifre",
+      "enterPassword": "Güçlü şifre girin",
+      "confirmPassword": "Şifreyi Onayla",
+      "repeatPassword": "Şifreyi tekrarlayın",
+      "finishSetup": "Kurulumu Tamamla",
+      "creating": "Oluşturuluyor...",
+      "errors": {
+        "minLength": "Şifre en az 8 karakter olmalıdır",
+        "mismatch": "Şifreler eşleşmiyor"
+      }
+    },
+    "restore": {
+      "title": "Cüzdanı Geri Yükle",
+      "description": "Cüzdanınızı nasıl geri yüklemek istediğinizi seçin.",
+      "seedPhrase": {
+        "title": "Tohum İfadesi",
+        "description": "25 kelimelik kurtarma ifadenizi girin"
+      },
+      "backupFile": {
+        "title": "Yedek Dosyası",
+        "description": "salvium.vault dosyasından geri yükle"
+      },
+      "enterSeed": {
+        "title": "Kurtarma İfadesini Girin",
+        "description": "Cüzdanınızı geri yüklemek için 25 kelimelik tohum ifadenizi girin.",
+        "placeholder": "piyano gitar davul keman flüt...",
+        "seedPhrase": "Tohum İfadesi",
+        "restoreHeight": "Geri Yükleme Yüksekliği",
+        "current": "Mevcut: {{height}}",
+        "heightHint": "Belirli bir blok yüksekliği ayarlayın. Emin değilseniz 0'dan tarayın. Bu birkaç dakika sürebilir."
+      },
+      "uploadBackup": {
+        "title": "Yedek Dosyası Yükle",
+        "description": "Cüzdanınızı geri yüklemek için .salvium-backup dosyanızı seçin.",
+        "selectFile": "Dosya seçmek için tıklayın",
+        "filesOnly": "Sadece salvium.vault dosyaları",
+        "changeFile": "Dosyayı değiştirmek için tıklayın"
+      },
+      "backupPassword": {
+        "title": "Yedek Şifresini Girin",
+        "description": "Bu yedeği oluşturmak için kullanılan şifreyi girin.",
+        "backupPassword": "Yedek Şifresi",
+        "enterPassword": "Yedek şifresini girin",
+        "readyToDecrypt": "Şifre çözmeye hazır",
+        "decrypting": "Şifre çözülüyor..."
+      },
+      "restoring": "Geri yükleniyor...",
+      "restoreButton": "Cüzdanı Geri Yükle"
+    }
+  },
+  "lockScreen": {
+    "title": "Cüzdan Kilitli",
+    "description": "Panelinize erişmek için şifrenizi girin.",
+    "enterPassword": "Şifreyi girin",
+    "pleaseEnterPassword": "Lütfen şifrenizi girin",
+    "incorrectPassword": "Yanlış şifre",
+    "unlock": "Cüzdanı Aç",
+    "unlocking": "Açılıyor...",
+    "biometricUnlock": "Biyometri ile Aç",
+    "biometricFailed": "Biyometrik kilit açma başarısız: Şifre değişti mi?",
+    "resetWallet": "Cüzdanı Sıfırla (Çıkış Yap)",
+    "resetConfirmTitle": "Cüzdanı Sıfırla?",
+    "resetConfirmDescription": "Bu, cüzdan verilerinizi bu cihazdan kalıcı olarak silecektir.",
+    "resetConfirmWarning": "25 kelimelik tohum ifadenizi kaydetmediyseniz veya salvium.vault yedek dosyası dışa aktarmadıysanız fonlarınıza erişiminizi kaybedeceksiniz.",
+    "resetConfirmButton": "Cüzdanı Sıfırla",
+    "resetConfirmCheckbox": "Tohum ifadem veya yedeğim olmadan erişimi kaybedeceğimi anlıyorum"
+  },
+  "network": {
+    "status": "Ağ Durumu",
+    "synced": "Senkronize",
+    "syncing": "Senkronize Ediliyor",
+    "fullySynced": "Tamamen Senkronize",
+    "disconnected": "Bağlantı Kesildi",
+    "error": "Hata",
+    "walletHeight": "Cüzdan Yüksekliği",
+    "daemonHeight": "Daemon Yüksekliği",
+    "height": "Yükseklik",
+    "connectedTo": "Salvium Ağına Bağlı",
+    "attemptingConnect": "Bağlanmaya çalışılıyor..."
+  },
+  "contacts": {
+    "addContact": "Kişi Ekle",
+    "editContact": "Kişiyi Düzenle",
+    "addNewContact": "Yeni Kişi Ekle",
+    "name": "İsim",
+    "namePlaceholder": "örn. Ahmet Yılmaz",
+    "salviumAddress": "Salvium Adresi",
+    "saveChanges": "Değişiklikleri Kaydet",
+    "deleteConfirm": "Bu kişiyi silmek istediğinizden emin misiniz?"
+  },
+  "transactions": {
+    "received": "Alınan",
+    "sent": "Gönderilen",
+    "pending": "Beklemede",
+    "confirmed": "Onaylandı",
+    "confirmations": "Onaylar",
+    "confirmationsCount": "{{count}} onay",
+    "noTransactions": "Henüz işlem yok",
+    "viewOnExplorer": "Explorer'da Görüntüle",
+    "block": "Blok",
+    "date": "Tarih",
+    "typeHash": "Tür / Hash",
+    "amount": "Miktar",
+    "status": "Durum",
+    "broadcasting": "Yayınlanıyor",
+    "blocksRemaining": "{{count}} blok kaldı",
+    "loadMore": "Daha Fazla Yükle",
+    "showing": "{{total}} işlemden {{start}}-{{end}} gösteriliyor",
+    "page": "Sayfa {{current}} / {{total}}",
+    "types": {
+      "mining": "Madencilik",
+      "yield": "Getiri",
+      "stake": "Stake",
+      "transfer": "Transfer",
+      "transferIn": "Gelen",
+      "transferOut": "Giden",
+      "audit": "Denetim"
+    },
+    "details": "İşlem Detayları",
+    "hash": "İşlem Hash'i",
+    "poweredBy": "salvium.tools explorer tarafından desteklenmektedir",
+    "viewInExplorer": "Explorer'da görüntüle",
+    "viewFullDetails": "Explorer'da tam detayları görüntüle",
+    "openInExplorer": "Explorer'da aç",
+    "unconfirmed": "Onaylanmadı",
+    "fee": "Ücret",
+    "returnTransaction": "İşlemi İade Et",
+    "confirmReturn": "İadeyi Onayla",
+    "confirmReturnDescription": "Bu işlemi iade etmek istediğinizden emin misiniz? Bu, fonları orijinal gönderene geri gönderecektir."
+  },
+  "errors": {
+    "failedToInitialize": "Başlatma Başarısız",
+    "wasmLimitations": "Bu, WASM sınırlamaları nedeniyle bazı mobil tarayıcılarda oluşabilir. Masaüstü tarayıcı veya Android'de Chrome kullanmayı deneyin.",
+    "retry": "Tekrar Dene",
+    "initializingWallet": "Cüzdan başlatılıyor...",
+    "failedToCreate": "Yedek oluşturulamadı",
+    "failedToUnlock": "Cüzdan kilidi açılamadı"
+  }
+}

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en" style="background-color:#0f0f1a;">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="description" content="Salvium Vault - Private Web Wallet for Salvium (SAL)">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://salvium.tools/vault" />
+  <link rel="icon" type="image/png" href="/vault/salvium-icon.png" />
+  <meta property="og:title" content="Salvium Vault">
+  <meta property="og:description" content="Private Web Wallet for Salvium (SAL)">
+  <meta property="og:url" content="https://salvium.tools/vault">
+  <title>Salvium Vault</title>
+
+  <link rel="manifest" href="/vault/manifest.json">
+  <link rel="apple-touch-icon" sizes="180x180" href="/vault/salvium-icon.png?v=4">
+  <meta name="apple-mobile-web-app-title" content="Salvium Vault">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="theme-color" content="#0f0f1a">
+  <meta name="color-scheme" content="dark">
+
+  <link href="./assets/css/modern.css" rel="stylesheet">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+
+  <!-- Tailwind CSS -->
+
+  <style>
+    html, body {
+      background-color: #0f0f1a;
+      color: #f8fafc;
+    }
+    body {
+      background-image:
+        radial-gradient(circle at 15% 50%, rgba(99, 102, 241, 0.03) 0%, transparent 25%),
+        radial-gradient(circle at 85% 30%, rgba(139, 92, 246, 0.03) 0%, transparent 25%);
+    }
+
+    /* Clean scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #1e293b;
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #6366f1;
+    }
+
+    .glass-panel {
+      background: #131320;
+      /* Solid dark background like screenshot */
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      /* Crisp neutral border */
+    }
+  </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "lucide-react": "https://esm.sh/lucide-react@^0.561.0",
+    "recharts": "https://esm.sh/recharts@^3.6.0"
+  }
+}
+</script>
+</head>
+
+<body style="background-color:#0f0f1a;">
+  <!-- Site Header - Hidden on Mobile via JS -->
+  <header class="header" id="staticHeader">
+    <div class="header-content">
+      <a href="/" class="logo">
+        <img src="/vault/assets/img/salvium.png" alt="Salvium Logo" />
+        <span class="logo-text">SALVIUM VAULT</span>
+      </a>
+      <!-- Mobile menu toggle removed here, handled by React app on mobile -->
+      <nav>
+        <ul class="nav" id="navMenu">
+          <li class="nav-dropdown">
+            <a href="/">
+              Explorer
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </a>
+            <div class="dropdown-menu">
+              <ul>
+                <li><a href="/">Home</a></li>
+                <li><a href="/blocks">Blocks</a></li>
+                <li><a href="/transactions">Transactions</a></li>
+                <li><a href="/staking">Staking</a></li>
+              </ul>
+            </div>
+          </li>
+          <li class="nav-dropdown vault-dropdown">
+            <a href="/vault" class="active">
+              Vault
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </a>
+            <div class="dropdown-menu">
+              <ul>
+                <li><a href="/vault#dashboard">Dashboard</a></li>
+                <li><a href="/vault#send">Send</a></li>
+                <li><a href="/vault#receive">Receive</a></li>
+                <li><a href="/vault#staking">Staking</a></li>
+                <li><a href="/vault#history">History</a></li>
+              </ul>
+            </div>
+          </li>
+          <li><a href="https://miningpoolstats.stream/salvium" target="_blank">Pools</a></li>
+          <li>
+            <a href="https://www.coingecko.com/en/coins/salvium" target="_blank">
+              <span id="priceData" class="price-badge">Loading...</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <script>
+    (function () {
+      var isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Tablet|Kindle|Silk|PlayBook/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      if (isMobile) {
+        var header = document.getElementById('staticHeader');
+        if (header) header.style.display = 'none';
+      }
+    })();
+
+    (function() {
+      function setAppHeight() {
+        document.documentElement.style.setProperty('--app-height', window.innerHeight + 'px');
+      }
+      setAppHeight();
+      window.addEventListener('resize', setAppHeight);
+    })();
+  </script>
+
+  <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+  <script>
+    async function fetchPriceData() {
+      try {
+        const response = await fetch('https://salvium.tools/api/price');
+        const data = await response.json();
+        if (data.price) {
+          const price = parseFloat(data.price);
+          const priceEl = document.getElementById('priceData');
+          if (priceEl) {
+            priceEl.textContent = `$${price.toFixed(6)}`;
+            priceEl.className = 'price-badge';
+          }
+        }
+      } catch (e) {
+        const priceEl = document.getElementById('priceData');
+        if (priceEl) priceEl.textContent = 'Price N/A';
+      }
+    }
+    if (!(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Tablet|Kindle|Silk|PlayBook/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))) {
+      fetchPriceData();
+      setInterval(fetchPriceData, 120000);
+    }
+  </script>
+</body>
+
+</html>

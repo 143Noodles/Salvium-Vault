@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "Anuluj",
+    "confirm": "Potwierdź",
+    "back": "Wstecz",
+    "next": "Dalej",
+    "done": "Gotowe",
+    "save": "Zapisz",
+    "copy": "Kopiuj",
+    "copied": "Skopiowano!",
+    "loading": "Ładowanie...",
+    "error": "Błąd",
+    "success": "Sukces",
+    "close": "Zamknij",
+    "delete": "Usuń",
+    "edit": "Edytuj",
+    "add": "Dodaj",
+    "search": "Szukaj",
+    "export": "Eksportuj",
+    "update": "Aktualizuj",
+    "verify": "Zweryfikuj",
+    "max": "Maks",
+    "sal": "SAL",
+    "processing": "Przetwarzanie..."
+  },
+  "navigation": {
+    "home": "Start",
+    "send": "Wyślij",
+    "receive": "Odbierz",
+    "stake": "Stake",
+    "staking": "Staking",
+    "history": "Historia",
+    "settings": "Ustawienia",
+    "dashboard": "Panel",
+    "lockWallet": "Zablokuj Portfel"
+  },
+  "dashboard": {
+    "balance": "Saldo",
+    "unlocked": "Odblokowane",
+    "primaryAddress": "Główny Adres",
+    "recentActivity": "Ostatnia Aktywność",
+    "viewAll": "Zobacz Wszystko",
+    "walletPerformance": "Wydajność Portfela",
+    "chartHidden": "Wykres Ukryty",
+    "activityHidden": "Aktywność Ukryta",
+    "activeStakes": "Aktywne Stake'i",
+    "noActiveStakes": "Brak aktywnych stake'ów",
+    "earnRewards": "Zarabiaj nagrody stakując SAL przez ~30 dni.",
+    "createNewStake": "Utwórz Nowy Stake",
+    "unlocksIn": "Odblokowanie za {{time}} ({{blocks}} bloków)"
+  },
+  "chart": {
+    "last24Hours": "Ostatnie 24 Godziny",
+    "last7Days": "Ostatnie 7 Dni",
+    "last30Days": "Ostatnie 30 Dni",
+    "last12Months": "Ostatnie 12 Miesięcy",
+    "sinceMexcListing": "Od Listingu na MEXC",
+    "noHistoryData": "Brak danych historycznych",
+    "walletValue": "Wartość Portfela"
+  },
+  "send": {
+    "title": "Wyślij Aktywa",
+    "subtitle": "Bezpiecznie prześlij SAL do innego portfela.",
+    "recipientAddress": "Adres Odbiorcy",
+    "amount": "Kwota",
+    "available": "Dostępne",
+    "paymentId": "ID Płatności (Opcjonalne)",
+    "enterPaymentId": "Wprowadź ID płatności",
+    "sendAssets": "Wyślij Aktywa",
+    "creatingTransaction": "Tworzenie Transakcji...",
+    "transactionSent": "Transakcja Wysłana!",
+    "amountSent": "{{amount}} SAL zostało wysłane do sieci.",
+    "transactionHash": "Hash Transakcji",
+    "sendAnother": "Wyślij Kolejną Transakcję",
+    "addressBook": "Książka Adresowa",
+    "addNewAddress": "Dodaj Nowy Adres",
+    "searchContacts": "Szukaj kontaktów...",
+    "noContacts": "Nie znaleziono kontaktów",
+    "loadingScanner": "Ładowanie skanera...",
+    "errors": {
+      "fillRequired": "Proszę wypełnić wszystkie wymagane pola",
+      "exceedsBalance": "Kwota przekracza dostępne saldo",
+      "insufficientFees": "Niewystarczające środki na pokrycie opłaty transakcyjnej",
+      "adjustedForFee": "Kwota zostanie dostosowana do pokrycia opłaty transakcyjnej"
+    }
+  },
+  "receive": {
+    "title": "Odbierz Aktywa",
+    "subtitle": "Zeskanuj, aby wysłać SAL do tego portfela.",
+    "primaryAddress": "Główny Adres",
+    "copyAddress": "Kopiuj Adres",
+    "subaddresses": "Podadresy",
+    "manageSubaddresses": "Zarządzaj Podadresami",
+    "addNewSubaddress": "Dodaj Nowy Podadres",
+    "addSubaddress": "Dodaj Podadres",
+    "searchSubaddresses": "Szukaj podadresów...",
+    "noSubaddresses": "Nie znaleziono podadresów",
+    "unlockedBalance": "Odblokowane Saldo",
+    "label": "Etykieta",
+    "labelPlaceholder": "np. Konto Oszczędnościowe",
+    "qrUnavailable": "Kod QR niedostępny. Skopiuj adres poniżej.",
+    "creating": "Tworzenie..."
+  },
+  "staking": {
+    "title": "Staking",
+    "subtitle": "Stakuj SAL, aby zarabiać nagrody przez ~30 dni.",
+    "currentlyStaked": "Obecnie Stakowane",
+    "salStaked": "Stakowane SAL",
+    "yieldEarned": "Zarobiony Zysk",
+    "currentApy": "Aktualne APY",
+    "createNewStake": "Utwórz Nowy Stake",
+    "activeStakes": "Aktywne Stake'i",
+    "stakeHistory": "Historia Stakingu",
+    "amount": "Kwota",
+    "blockHeightUnlock": "Wysokość Bloku Odblokowania",
+    "estRewards": "Sza. Nagrody",
+    "estRewardsTooltip": "To tylko szacunek oparty na aktualnym APY. Rzeczywiste nagrody mogą się różnić w zależności od wahań stopy stakingu sieci.",
+    "unlockDate": "Data Odblokowania (~30 Dni)",
+    "stakeAssets": "Stakuj Aktywa",
+    "creatingStake": "Tworzenie Stake'a...",
+    "stakeSubmitted": "Transakcja stake wysłana!",
+    "noActiveStakes": "Brak aktywnych stake'ów",
+    "createToEarn": "Utwórz stake, aby zacząć zarabiać nagrody",
+    "loadingStakes": "Ładowanie stake'ów...",
+    "noCompletedStakes": "Brak zakończonych stake'ów",
+    "loadingHistory": "Ładowanie historii...",
+    "unlocksIn": "Odblokowanie za {{time}}",
+    "blocksRemaining": "{{blocks}} bloków pozostało",
+    "tableHeaders": {
+      "staked": "Stakowane",
+      "returned": "Zwrócone",
+      "amount": "Kwota",
+      "rewards": "Nagrody",
+      "tx": "TX"
+    },
+    "errors": {
+      "validAmount": "Proszę wprowadzić prawidłową dodatnią kwotę",
+      "exceedsBalance": "Kwota przekracza dostępne saldo"
+    }
+  },
+  "history": {
+    "title": "Historia Transakcji",
+    "transactionsFound": "Znaleziono {{count}} transakcji",
+    "searchPlaceholder": "Szukaj hash lub kwoty...",
+    "filter": "Filtruj",
+    "export": "Eksportuj",
+    "clearFilters": "Wyczyść Filtry",
+    "noTransactions": "Brak transakcji",
+    "startSending": "Zacznij wysyłać lub odbierać SAL",
+    "filterOptions": {
+      "received": "Odebrane",
+      "sent": "Wysłane",
+      "pending": "Oczekujące",
+      "mining": "Wydobycie",
+      "stake": "Stake"
+    }
+  },
+  "settings": {
+    "title": "Ustawienia",
+    "subtitle": "Skonfiguruj bezpieczeństwo portfela, sieć i preferencje.",
+    "sections": {
+      "securityPrivacy": "Bezpieczeństwo i Prywatność",
+      "general": "Ogólne",
+      "language": "Język"
+    },
+    "biometrics": {
+      "title": "Odblokuj Biometrią",
+      "description": "Użyj biometrii, aby szybko odblokować portfel.",
+      "enableTitle": "Włącz Odblokowanie Biometryczne",
+      "enableDescription": "Wprowadź hasło, aby autoryzować konfigurację biometrii.",
+      "enableButton": "Włącz Odblokowanie Biometryczne",
+      "cancelled": "Konfiguracja biometrii anulowana",
+      "failed": "Nie udało się włączyć biometrii",
+      "verifying": "Weryfikowanie..."
+    },
+    "autoLock": {
+      "title": "Automatyczne Blokowanie",
+      "description": "Automatycznie blokuj portfel po okresie nieaktywności, aby chronić środki.",
+      "lockAfter": "Blokuj po",
+      "minutes": "minutach"
+    },
+    "backup": {
+      "title": "Eksportuj Kopię Zapasową",
+      "description": "Utwórz zaszyfrowany plik kopii zapasowej zawierający portfel, książkę adresową i ustawienia.",
+      "export": "Eksportuj",
+      "modalTitle": "Eksportuj Kopię Zapasową",
+      "modalDescription": "Wprowadź hasło portfela, aby utworzyć zaszyfrowany plik kopii zapasowej.",
+      "walletPassword": "Hasło Portfela",
+      "enterPassword": "Wprowadź hasło portfela",
+      "warning": "Plik kopii zapasowej będzie zaszyfrowany hasłem portfela. Przechowuj go bezpiecznie - każdy z tym plikiem i hasłem może uzyskać dostęp do Twoich środków.",
+      "exporting": "Eksportowanie...",
+      "downloadBackup": "Pobierz Kopię Zapasową"
+    },
+    "password": {
+      "title": "Zmień Hasło Sejfu",
+      "description": "Zaktualizuj hasło używane do szyfrowania kluczy prywatnych.",
+      "update": "Aktualizuj",
+      "modalTitle": "Zmień Hasło",
+      "modalDescription": "Utwórz nowe silne hasło dla sejfu.",
+      "current": "Obecne Hasło",
+      "currentPlaceholder": "Wprowadź obecne hasło",
+      "new": "Nowe Hasło",
+      "newPlaceholder": "Wprowadź nowe hasło",
+      "confirm": "Potwierdź Nowe Hasło",
+      "confirmPlaceholder": "Potwierdź nowe hasło",
+      "updating": "Aktualizowanie...",
+      "updateButton": "Aktualizuj Hasło",
+      "successTitle": "Hasło Zmienione",
+      "successDescription": "Hasło sejfu zostało pomyślnie zaktualizowane.",
+      "errors": {
+        "fillAll": "Proszę wypełnić wszystkie pola",
+        "mismatch": "Nowe hasła nie są zgodne",
+        "empty": "Hasło nie może być puste"
+      }
+    },
+    "blockchain": {
+      "title": "Dane Blockchain",
+      "syncedTo": "Portfel zsynchronizowany do bloku {{height}}",
+      "rescanHint": "Przeskanuj portfel, aby znaleźć brakujące transakcje",
+      "rescan": "Przeskanuj",
+      "scanning": "Skanowanie..."
+    },
+    "language": {
+      "title": "Język",
+      "description": "Wybierz preferowany język aplikacji.",
+      "select": "Wybierz Język"
+    },
+    "donate": {
+      "title": "Wspomóż Salvium.Tools",
+      "description": "Pomóż utrzymać Salvium Vault w działaniu. Każda darowizna wspiera serwery i rozwój.",
+      "button": "Wspomóż Teraz"
+    },
+    "resetWallet": {
+      "title": "Resetuj Portfel",
+      "description": "Usuń dane portfela i zacznij od nowa. Upewnij się, że zapisałeś frazę seed.",
+      "button": "Resetuj"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "Prywatność z Założenia.",
+      "subtitle": "Bezpiecznie przechowuj, wysyłaj i odbieraj Salvium z pełną prywatnością."
+    },
+    "createWallet": {
+      "title": "Utwórz Portfel",
+      "description": "Wygeneruj nowe 25-słowowe seed"
+    },
+    "restoreWallet": {
+      "title": "Przywróć Portfel",
+      "description": "Importuj z seed lub kopii zapasowej"
+    },
+    "securityBanner": "Twoje klucze pozostają zaszyfrowane na tym urządzeniu.",
+    "recoveryPhrase": {
+      "title": "Twoja Fraza Odzyskiwania",
+      "description": "Zapisz te słowa w kolejności. To <1>JEDYNY</1> sposób na odzyskanie środków.",
+      "generating": "Generowanie bezpiecznej frazy seed...",
+      "failed": "Nie udało się wygenerować frazy seed. Spróbuj ponownie.",
+      "tryAgain": "Spróbuj Ponownie",
+      "warning": "Nie udostępniaj tych słów nikomu. Wsparcie Salvium nigdy nie poprosi o Twoją frazę odzyskiwania. Przechowuj je offline w bezpiecznym miejscu.",
+      "iSavedIt": "Zapisałem"
+    },
+    "verifySeed": {
+      "title": "Zweryfikuj Swoje Seed",
+      "description": "Wprowadź żądane słowa, aby potwierdzić zapisanie frazy odzyskiwania.",
+      "wordNumber": "Słowo #{{number}}",
+      "enterWord": "Wprowadź słowo #{{number}}",
+      "verify": "Zweryfikuj",
+      "incorrectWords": "Nieprawidłowe słowa. Sprawdź frazę seed i spróbuj ponownie."
+    },
+    "setPassword": {
+      "title": "Ustaw Hasło Sejfu",
+      "description": "To hasło będzie używane do szyfrowania portfela na tym urządzeniu.",
+      "password": "Hasło",
+      "enterPassword": "Wprowadź silne hasło",
+      "confirmPassword": "Potwierdź Hasło",
+      "repeatPassword": "Powtórz hasło",
+      "finishSetup": "Zakończ Konfigurację",
+      "creating": "Tworzenie...",
+      "errors": {
+        "minLength": "Hasło musi mieć co najmniej 8 znaków",
+        "mismatch": "Hasła nie są zgodne"
+      }
+    },
+    "restore": {
+      "title": "Przywróć Portfel",
+      "description": "Wybierz sposób przywrócenia portfela.",
+      "seedPhrase": {
+        "title": "Fraza Seed",
+        "description": "Wprowadź 25-słowową frazę odzyskiwania"
+      },
+      "backupFile": {
+        "title": "Plik Kopii Zapasowej",
+        "description": "Przywróć z pliku salvium.vault"
+      },
+      "enterSeed": {
+        "title": "Wprowadź Frazę Odzyskiwania",
+        "description": "Wprowadź 25-słowową frazę seed, aby przywrócić portfel.",
+        "placeholder": "piano gitara perkusja skrzypce flet...",
+        "seedPhrase": "Fraza Seed",
+        "restoreHeight": "Wysokość Przywrócenia",
+        "current": "Aktualna: {{height}}",
+        "heightHint": "Ustaw konkretną wysokość bloku. Skanuj od 0, jeśli nie jesteś pewien. To może potrwać kilka minut."
+      },
+      "uploadBackup": {
+        "title": "Prześlij Plik Kopii Zapasowej",
+        "description": "Wybierz plik .salvium-backup, aby przywrócić portfel.",
+        "selectFile": "Kliknij, aby wybrać plik",
+        "filesOnly": "Tylko pliki salvium.vault",
+        "changeFile": "Kliknij, aby zmienić plik"
+      },
+      "backupPassword": {
+        "title": "Wprowadź Hasło Kopii Zapasowej",
+        "description": "Wprowadź hasło użyte do utworzenia tej kopii zapasowej.",
+        "backupPassword": "Hasło Kopii Zapasowej",
+        "enterPassword": "Wprowadź hasło kopii zapasowej",
+        "readyToDecrypt": "Gotowe do odszyfrowania",
+        "decrypting": "Odszyfrowywanie..."
+      },
+      "restoring": "Przywracanie...",
+      "restoreButton": "Przywróć Portfel"
+    }
+  },
+  "lockScreen": {
+    "title": "Portfel Zablokowany",
+    "description": "Wprowadź hasło, aby uzyskać dostęp do panelu.",
+    "enterPassword": "Wprowadź hasło",
+    "pleaseEnterPassword": "Proszę wprowadzić hasło",
+    "incorrectPassword": "Nieprawidłowe hasło",
+    "unlock": "Odblokuj Portfel",
+    "unlocking": "Odblokowywanie...",
+    "biometricUnlock": "Odblokuj Biometrią",
+    "biometricFailed": "Odblokowanie biometryczne nie powiodło się: Hasło zmienione?",
+    "resetWallet": "Resetuj Portfel (Wyloguj)",
+    "resetConfirmTitle": "Zresetować Portfel?",
+    "resetConfirmDescription": "To trwale usunie dane portfela z tego urządzenia.",
+    "resetConfirmWarning": "Stracisz dostęp do swoich środków, jeśli nie zapisałeś 25-słowowej frazy seed lub nie wyeksportowałeś pliku kopii zapasowej salvium.vault.",
+    "resetConfirmButton": "Resetuj Portfel",
+    "resetConfirmCheckbox": "Rozumiem, że bez frazy seed lub kopii zapasowej stracę dostęp"
+  },
+  "network": {
+    "status": "Status Sieci",
+    "synced": "Zsynchronizowany",
+    "syncing": "Synchronizacja",
+    "fullySynced": "W Pełni Zsynchronizowany",
+    "disconnected": "Rozłączony",
+    "error": "Błąd",
+    "walletHeight": "Wysokość Portfela",
+    "daemonHeight": "Wysokość Demona",
+    "height": "Wysokość",
+    "connectedTo": "Połączony z Siecią Salvium",
+    "attemptingConnect": "Próba połączenia..."
+  },
+  "contacts": {
+    "addContact": "Dodaj Kontakt",
+    "editContact": "Edytuj Kontakt",
+    "addNewContact": "Dodaj Nowy Kontakt",
+    "name": "Nazwa",
+    "namePlaceholder": "np. Jan Kowalski",
+    "salviumAddress": "Adres Salvium",
+    "saveChanges": "Zapisz Zmiany",
+    "deleteConfirm": "Czy na pewno chcesz usunąć ten kontakt?"
+  },
+  "transactions": {
+    "received": "Odebrane",
+    "sent": "Wysłane",
+    "pending": "Oczekujące",
+    "confirmed": "Potwierdzone",
+    "confirmations": "Potwierdzenia",
+    "confirmationsCount": "{{count}} potwierdzeń",
+    "noTransactions": "Brak transakcji",
+    "viewOnExplorer": "Zobacz w Eksploratorze",
+    "block": "Blok",
+    "date": "Data",
+    "typeHash": "Typ / Hash",
+    "amount": "Kwota",
+    "status": "Status",
+    "broadcasting": "Nadawanie",
+    "blocksRemaining": "{{count}} bloków pozostało",
+    "loadMore": "Załaduj Więcej",
+    "showing": "Pokazano {{start}}-{{end}} z {{total}} transakcji",
+    "page": "Strona {{current}} z {{total}}",
+    "types": {
+      "mining": "Wydobycie",
+      "yield": "Zysk",
+      "stake": "Stake",
+      "transfer": "Przelew",
+      "transferIn": "Przychodzący",
+      "transferOut": "Wychodzący",
+      "audit": "Audyt"
+    },
+    "details": "Szczegóły Transakcji",
+    "hash": "Hash Transakcji",
+    "poweredBy": "Obsługiwane przez eksplorator salvium.tools",
+    "viewInExplorer": "Zobacz w eksploratorze",
+    "viewFullDetails": "Zobacz pełne szczegóły w eksploratorze",
+    "openInExplorer": "Otwórz w eksploratorze",
+    "unconfirmed": "Niepotwierdzone",
+    "fee": "Opłata",
+    "returnTransaction": "Zwróć transakcję",
+    "confirmReturn": "Potwierdź zwrot",
+    "confirmReturnDescription": "Czy na pewno chcesz zwrócić tę transakcję? Spowoduje to wysłanie środków z powrotem do pierwotnego nadawcy."
+  },
+  "errors": {
+    "failedToInitialize": "Inicjalizacja Nie Powiodła Się",
+    "wasmLimitations": "Może to wystąpić w niektórych przeglądarkach mobilnych z powodu ograniczeń WASM. Spróbuj użyć przeglądarki desktopowej lub Chrome na Androidzie.",
+    "retry": "Ponów",
+    "initializingWallet": "Inicjalizowanie portfela...",
+    "failedToCreate": "Nie udało się utworzyć kopii zapasowej",
+    "failedToUnlock": "Nie udało się odblokować portfela"
+  }
+}

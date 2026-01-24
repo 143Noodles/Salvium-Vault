@@ -1,0 +1,411 @@
+{
+  "common": {
+    "cancel": "Avbryt",
+    "confirm": "Bekräfta",
+    "back": "Tillbaka",
+    "next": "Nästa",
+    "done": "Klar",
+    "save": "Spara",
+    "copy": "Kopiera",
+    "copied": "Kopierat!",
+    "loading": "Laddar...",
+    "error": "Fel",
+    "success": "Lyckades",
+    "close": "Stäng",
+    "delete": "Ta bort",
+    "edit": "Redigera",
+    "add": "Lägg till",
+    "search": "Sök",
+    "export": "Exportera",
+    "update": "Uppdatera",
+    "verify": "Verifiera",
+    "max": "Max",
+    "sal": "SAL",
+    "processing": "Bearbetar..."
+  },
+  "navigation": {
+    "home": "Hem",
+    "send": "Skicka",
+    "receive": "Ta emot",
+    "stake": "Staking",
+    "staking": "Staking",
+    "history": "Historik",
+    "settings": "Inställningar",
+    "dashboard": "Översikt",
+    "lockWallet": "Lås Plånbok"
+  },
+  "dashboard": {
+    "balance": "Saldo",
+    "unlocked": "Tillgängligt",
+    "primaryAddress": "Primär Adress",
+    "recentActivity": "Senaste Aktivitet",
+    "viewAll": "Visa Alla",
+    "walletPerformance": "Plånbokens Prestanda",
+    "chartHidden": "Diagram Dolt",
+    "activityHidden": "Aktivitet Dold",
+    "activeStakes": "Aktiva Stakes",
+    "noActiveStakes": "Inga aktiva stakes",
+    "earnRewards": "Tjäna belöningar genom att staka dina SAL i ~30 dagar.",
+    "createNewStake": "Skapa Ny Stake",
+    "unlocksIn": "Låses upp om {{time}} ({{blocks}} block)"
+  },
+  "chart": {
+    "last24Hours": "Senaste 24 Timmarna",
+    "last7Days": "Senaste 7 Dagarna",
+    "last30Days": "Senaste 30 Dagarna",
+    "last12Months": "Senaste 12 Månaderna",
+    "sinceMexcListing": "Sedan MEXC-Notering",
+    "noHistoryData": "Ingen historikdata tillgänglig",
+    "walletValue": "Plånboksvärde"
+  },
+  "send": {
+    "title": "Skicka Tillgångar",
+    "subtitle": "Överför SAL säkert till en annan plånbok.",
+    "recipientAddress": "Mottagaradress",
+    "amount": "Belopp",
+    "available": "Tillgängligt",
+    "paymentId": "Betalnings-ID (Valfritt)",
+    "enterPaymentId": "Ange betalnings-ID",
+    "sendAssets": "Skicka Tillgångar",
+    "creatingTransaction": "Skapar Transaktion...",
+    "transactionSent": "Transaktion Skickad!",
+    "amountSent": "{{amount}} SAL har skickats till nätverket.",
+    "transactionHash": "Transaktions-Hash",
+    "sendAnother": "Skicka En Annan Transaktion",
+    "addressBook": "Adressbok",
+    "addNewAddress": "Lägg Till Ny Adress",
+    "searchContacts": "Sök kontakter...",
+    "noContacts": "Inga kontakter hittades",
+    "loadingScanner": "Laddar skanner...",
+    "errors": {
+      "fillRequired": "Vänligen fyll i alla obligatoriska fält",
+      "exceedsBalance": "Beloppet överskrider tillgängligt saldo",
+      "insufficientFees": "Otillräckligt saldo för transaktionsavgift",
+      "adjustedForFee": "Beloppet kommer att justeras för transaktionsavgift"
+    }
+  },
+  "receive": {
+    "title": "Ta Emot Tillgångar",
+    "subtitle": "Skanna för att skicka SAL till denna plånbok.",
+    "primaryAddress": "Primär Adress",
+    "copyAddress": "Kopiera Adress",
+    "subaddresses": "Underadresser",
+    "manageSubaddresses": "Hantera Underadresser",
+    "addNewSubaddress": "Lägg Till Ny Underadress",
+    "addSubaddress": "Lägg Till Underadress",
+    "searchSubaddresses": "Sök underadresser...",
+    "noSubaddresses": "Inga underadresser hittades",
+    "unlockedBalance": "Tillgängligt Saldo",
+    "label": "Etikett",
+    "labelPlaceholder": "t.ex. Sparkonto",
+    "qrUnavailable": "QR-kod inte tillgänglig. Kopiera adressen nedan.",
+    "creating": "Skapar..."
+  },
+  "staking": {
+    "title": "Staking",
+    "subtitle": "Staka dina SAL för att tjäna belöningar över ~30 dagar.",
+    "currentlyStaked": "För Närvarande Stakat",
+    "salStaked": "SAL Stakat",
+    "yieldEarned": "Intjänad Avkastning",
+    "currentApy": "Nuvarande APY",
+    "createNewStake": "Skapa Ny Stake",
+    "activeStakes": "Aktiva Stakes",
+    "stakeHistory": "Staking-Historik",
+    "amount": "Belopp",
+    "blockHeightUnlock": "Blockhöjd för Upplåsning",
+    "estRewards": "Uppsk. Belöningar",
+    "estRewardsTooltip": "Detta är endast en uppskattning baserad på nuvarande APY. Faktiska belöningar kan variera beroende på nätverkets staking-rate.",
+    "unlockDate": "Upplåsningsdatum (~30 Dagar)",
+    "stakeAssets": "Staka Tillgångar",
+    "creatingStake": "Skapar Stake...",
+    "stakeSubmitted": "Stake-transaktion skickad!",
+    "noActiveStakes": "Inga aktiva stakes",
+    "createToEarn": "Skapa en stake för att börja tjäna belöningar",
+    "loadingStakes": "Laddar stakes...",
+    "noCompletedStakes": "Inga avslutade stakes än",
+    "loadingHistory": "Laddar historik...",
+    "unlocksIn": "Låses upp om {{time}}",
+    "blocksRemaining": "{{blocks}} block kvar",
+    "tableHeaders": {
+      "staked": "Stakat",
+      "returned": "Returnerat",
+      "amount": "Belopp",
+      "rewards": "Belöningar",
+      "tx": "TX"
+    },
+    "errors": {
+      "validAmount": "Vänligen ange ett giltigt positivt belopp",
+      "exceedsBalance": "Beloppet överskrider tillgängligt saldo"
+    }
+  },
+  "history": {
+    "title": "Transaktionshistorik",
+    "transactionsFound": "{{count}} transaktioner hittades",
+    "searchPlaceholder": "Sök hash eller belopp...",
+    "filter": "Filtrera",
+    "export": "Exportera",
+    "clearFilters": "Rensa Filter",
+    "noTransactions": "Inga transaktioner än",
+    "startSending": "Börja med att skicka eller ta emot SAL",
+    "filterOptions": {
+      "received": "Mottaget",
+      "sent": "Skickat",
+      "pending": "Väntande",
+      "mining": "Mining",
+      "stake": "Stake"
+    }
+  },
+  "settings": {
+    "title": "Inställningar",
+    "subtitle": "Konfigurera plånbokens säkerhet, nätverk och preferenser.",
+    "sections": {
+      "securityPrivacy": "Säkerhet & Integritet",
+      "general": "Allmänt",
+      "language": "Språk"
+    },
+    "biometrics": {
+      "title": "Lås Upp med Biometri",
+      "description": "Använd biometri för att snabbt låsa upp din plånbok.",
+      "enableTitle": "Aktivera Biometrisk Upplåsning",
+      "enableDescription": "Ange ditt lösenord för att auktorisera biometri-inställning.",
+      "enableButton": "Aktivera Biometrisk Upplåsning",
+      "cancelled": "Biometri-inställning avbruten",
+      "failed": "Kunde inte aktivera biometri",
+      "verifying": "Verifierar..."
+    },
+    "autoLock": {
+      "title": "Automatisk Låsning",
+      "description": "Lås automatiskt plånboken efter en period av inaktivitet för att skydda dina medel.",
+      "lockAfter": "Lås efter",
+      "minutes": "minuter"
+    },
+    "backup": {
+      "title": "Exportera Säkerhetskopia",
+      "description": "Skapa en krypterad säkerhetskopia som innehåller din plånbok, adressbok och inställningar.",
+      "export": "Exportera",
+      "modalTitle": "Exportera Säkerhetskopia",
+      "modalDescription": "Ange ditt plånbokslösenord för att skapa en krypterad säkerhetskopia.",
+      "walletPassword": "Plånbokslösenord",
+      "enterPassword": "Ange ditt plånbokslösenord",
+      "warning": "Säkerhetskopian kommer att krypteras med ditt plånbokslösenord. Förvara den säkert - vem som helst med denna fil och ditt lösenord kan komma åt dina medel.",
+      "exporting": "Exporterar...",
+      "downloadBackup": "Ladda Ner Säkerhetskopia"
+    },
+    "password": {
+      "title": "Ändra Valvlösenord",
+      "description": "Uppdatera lösenordet som används för att kryptera dina privata nycklar.",
+      "update": "Uppdatera",
+      "modalTitle": "Ändra Lösenord",
+      "modalDescription": "Skapa ett nytt starkt lösenord för ditt valv.",
+      "current": "Nuvarande Lösenord",
+      "currentPlaceholder": "Ange nuvarande lösenord",
+      "new": "Nytt Lösenord",
+      "newPlaceholder": "Ange nytt lösenord",
+      "confirm": "Bekräfta Nytt Lösenord",
+      "confirmPlaceholder": "Bekräfta nytt lösenord",
+      "updating": "Uppdaterar...",
+      "updateButton": "Uppdatera Lösenord",
+      "successTitle": "Lösenord Ändrat",
+      "successDescription": "Ditt valvlösenord har uppdaterats framgångsrikt.",
+      "errors": {
+        "fillAll": "Vänligen fyll i alla fält",
+        "mismatch": "Nya lösenord matchar inte",
+        "empty": "Lösenord kan inte vara tomt"
+      }
+    },
+    "blockchain": {
+      "title": "Blockchain-Data",
+      "syncedTo": "Plånbok synkroniserad till block {{height}}",
+      "rescanHint": "Skanna om plånboken för att hitta saknade transaktioner",
+      "rescan": "Skanna Om",
+      "scanning": "Skannar..."
+    },
+    "language": {
+      "title": "Språk",
+      "description": "Välj ditt föredragna språk för applikationen.",
+      "select": "Välj Språk"
+    },
+    "donate": {
+      "title": "Donera till Salvium.Tools",
+      "description": "Hjälp till att hålla Salvium Vault igång. Varje donation stöder servrar och utveckling.",
+      "button": "Donera Nu"
+    },
+    "resetWallet": {
+      "title": "Återställ Plånbok",
+      "description": "Ta bort plånboksdata och börja om. Se till att du har sparat din seed-fras.",
+      "button": "Återställ"
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "Integritet i Designen.",
+      "subtitle": "Lagra, skicka och ta emot Salvium säkert med full integritet."
+    },
+    "createWallet": {
+      "title": "Skapa Plånbok",
+      "description": "Generera ett nytt 25-ords seed"
+    },
+    "restoreWallet": {
+      "title": "Återställ Plånbok",
+      "description": "Importera från seed eller säkerhetskopia"
+    },
+    "securityBanner": "Dina nycklar förblir krypterade på denna enhet.",
+    "recoveryPhrase": {
+      "title": "Din Återställningsfras",
+      "description": "Skriv ner dessa ord i ordning. Detta är det <1>ENDA</1> sättet att återställa dina medel.",
+      "generating": "Genererar säker seed-fras...",
+      "failed": "Misslyckades med att generera seed-fras. Försök igen.",
+      "tryAgain": "Försök Igen",
+      "warning": "Dela inte dessa ord med någon. Salvium support kommer aldrig att be om din återställningsfras. Förvara dem offline på en säker plats.",
+      "iSavedIt": "Jag Har Sparat"
+    },
+    "verifySeed": {
+      "title": "Verifiera Din Seed",
+      "description": "Ange de begärda orden för att bekräfta att du har sparat din återställningsfras.",
+      "wordNumber": "Ord #{{number}}",
+      "enterWord": "Ange ord #{{number}}",
+      "verify": "Verifiera",
+      "incorrectWords": "Felaktiga ord. Kontrollera din seed-fras och försök igen."
+    },
+    "setPassword": {
+      "title": "Ställ In Valvlösenord",
+      "description": "Detta lösenord kommer att användas för att kryptera din plånbok på denna enhet.",
+      "password": "Lösenord",
+      "enterPassword": "Ange starkt lösenord",
+      "confirmPassword": "Bekräfta Lösenord",
+      "repeatPassword": "Upprepa lösenord",
+      "finishSetup": "Slutför Installation",
+      "creating": "Skapar...",
+      "errors": {
+        "minLength": "Lösenord måste vara minst 8 tecken",
+        "mismatch": "Lösenorden matchar inte"
+      }
+    },
+    "restore": {
+      "title": "Återställ Plånbok",
+      "description": "Välj hur du vill återställa din plånbok.",
+      "seedPhrase": {
+        "title": "Seed-Fras",
+        "description": "Ange din 25-ords återställningsfras"
+      },
+      "backupFile": {
+        "title": "Säkerhetskopia",
+        "description": "Återställ från salvium.vault-fil"
+      },
+      "enterSeed": {
+        "title": "Ange Återställningsfras",
+        "description": "Ange din 25-ords seed-fras för att återställa din plånbok.",
+        "placeholder": "piano gitarr trummor fiol flöjt...",
+        "seedPhrase": "Seed-Fras",
+        "restoreHeight": "Återställningshöjd",
+        "current": "Nuvarande: {{height}}",
+        "heightHint": "Ställ in en specifik blockhöjd. Skanna från 0 om osäker. Detta kan ta flera minuter."
+      },
+      "uploadBackup": {
+        "title": "Ladda Upp Säkerhetskopia",
+        "description": "Välj din .salvium-backup-fil för att återställa din plånbok.",
+        "selectFile": "Klicka för att välja fil",
+        "filesOnly": "Endast salvium.vault-filer",
+        "changeFile": "Klicka för att byta fil"
+      },
+      "backupPassword": {
+        "title": "Ange Lösenord för Säkerhetskopia",
+        "description": "Ange lösenordet som användes för att skapa denna säkerhetskopia.",
+        "backupPassword": "Lösenord för Säkerhetskopia",
+        "enterPassword": "Ange lösenord för säkerhetskopia",
+        "readyToDecrypt": "Redo att dekryptera",
+        "decrypting": "Dekrypterar..."
+      },
+      "restoring": "Återställer...",
+      "restoreButton": "Återställ Plånbok"
+    }
+  },
+  "lockScreen": {
+    "title": "Plånbok Låst",
+    "description": "Ange ditt lösenord för att komma åt din översikt.",
+    "enterPassword": "Ange lösenord",
+    "pleaseEnterPassword": "Vänligen ange ditt lösenord",
+    "incorrectPassword": "Felaktigt lösenord",
+    "unlock": "Lås Upp Plånbok",
+    "unlocking": "Låser upp...",
+    "biometricUnlock": "Lås Upp med Biometri",
+    "biometricFailed": "Biometrisk upplåsning misslyckades: Lösenord ändrat?",
+    "resetWallet": "Återställ Plånbok (Logga Ut)",
+    "resetConfirmTitle": "Återställ Plånbok?",
+    "resetConfirmDescription": "Detta kommer att permanent radera din plånboksdata från denna enhet.",
+    "resetConfirmWarning": "Du kommer att förlora åtkomst till dina medel om du inte har sparat din 25-ords seed-fras eller exporterat en salvium.vault-säkerhetskopia.",
+    "resetConfirmButton": "Återställ Plånbok",
+    "resetConfirmCheckbox": "Jag förstår att jag kommer att förlora åtkomst utan min seed-fras eller säkerhetskopia"
+  },
+  "network": {
+    "status": "Nätverksstatus",
+    "synced": "Synkroniserad",
+    "syncing": "Synkroniserar",
+    "fullySynced": "Helt Synkroniserad",
+    "disconnected": "Frånkopplad",
+    "error": "Fel",
+    "walletHeight": "Plånbokshöjd",
+    "daemonHeight": "Daemon-Höjd",
+    "height": "Höjd",
+    "connectedTo": "Ansluten till Salvium-Nätverket",
+    "attemptingConnect": "Försöker ansluta..."
+  },
+  "contacts": {
+    "addContact": "Lägg Till Kontakt",
+    "editContact": "Redigera Kontakt",
+    "addNewContact": "Lägg Till Ny Kontakt",
+    "name": "Namn",
+    "namePlaceholder": "t.ex. Anna Svensson",
+    "salviumAddress": "Salvium-Adress",
+    "saveChanges": "Spara Ändringar",
+    "deleteConfirm": "Är du säker på att du vill ta bort denna kontakt?"
+  },
+  "transactions": {
+    "received": "Mottaget",
+    "sent": "Skickat",
+    "pending": "Väntande",
+    "confirmed": "Bekräftad",
+    "confirmations": "Bekräftelser",
+    "confirmationsCount": "{{count}} bekräftelser",
+    "noTransactions": "Inga transaktioner än",
+    "viewOnExplorer": "Visa i Explorer",
+    "block": "Block",
+    "date": "Datum",
+    "typeHash": "Typ / Hash",
+    "amount": "Belopp",
+    "status": "Status",
+    "broadcasting": "Sänder",
+    "blocksRemaining": "{{count}} block kvar",
+    "loadMore": "Ladda Mer",
+    "showing": "Visar {{start}}-{{end}} av {{total}} transaktioner",
+    "page": "Sida {{current}} av {{total}}",
+    "types": {
+      "mining": "Mining",
+      "yield": "Avkastning",
+      "stake": "Stake",
+      "transfer": "Överföring",
+      "transferIn": "Inkommande",
+      "transferOut": "Utgående",
+      "audit": "Granskning"
+    },
+    "details": "Transaktionsdetaljer",
+    "hash": "Transaktions-Hash",
+    "poweredBy": "Drivs av salvium.tools explorer",
+    "viewInExplorer": "Visa i explorer",
+    "viewFullDetails": "Visa fullständiga detaljer i explorer",
+    "openInExplorer": "Öppna i explorer",
+    "unconfirmed": "Obekräftad",
+    "fee": "Avgift",
+    "returnTransaction": "Returnera transaktion",
+    "confirmReturn": "Bekräfta retur",
+    "confirmReturnDescription": "Är du säker på att du vill returnera denna transaktion? Detta kommer att skicka tillbaka pengarna till den ursprungliga avsändaren."
+  },
+  "errors": {
+    "failedToInitialize": "Initialisering Misslyckades",
+    "wasmLimitations": "Detta kan inträffa på vissa mobila webbläsare på grund av WASM-begränsningar. Prova att använda en desktop-webbläsare eller Chrome på Android.",
+    "retry": "Försök Igen",
+    "initializingWallet": "Initialiserar plånbok...",
+    "failedToCreate": "Kunde inte skapa säkerhetskopia",
+    "failedToUnlock": "Kunde inte låsa upp plånbok"
+  }
+}
