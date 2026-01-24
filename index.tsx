@@ -6,6 +6,13 @@ import './index.css';
 // Initialize i18n before app renders
 import './i18n';
 
+// Suppress Recharts dimension warning (appears when chart container is initially hidden)
+const originalWarn = console.warn;
+console.warn = (...args) => {
+  if (args[0]?.includes?.('width(-1) and height(-1)')) return;
+  originalWarn.apply(console, args);
+};
+
 import PWAOnlyGate from './components/PWAOnlyGate';
 
 // Service worker status tracking for offline support

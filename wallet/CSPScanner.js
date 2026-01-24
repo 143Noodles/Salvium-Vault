@@ -89,6 +89,7 @@ class CSPScanner {
         this.allMatches = [];
         this.matchedBlocks = new Set();  // Heights with view tag matches
         this.matchedChunks = new Set();  // Chunk start heights that had matches (for targeted rescan)
+        this.scannedChunks = new Set();  // ALL successfully scanned chunks (for gap detection after interruption)
 
         // Statistics
         this.stats = {
@@ -1045,6 +1046,13 @@ class CSPScanner {
         // Track blocks processed
         this.scannedBlocks += blocksProcessed;
 
+        // Track ALL successfully scanned chunks (for gap detection)
+        // Calculate all chunk start heights covered by this batch
+        for (let i = 0; i < chunksProcessed; i++) {
+            const chunkStartHeight = startHeight + (i * this.chunkSize);
+            this.scannedChunks.add(chunkStartHeight);
+        }
+
         // Store matches + spent matches
         const spentArr = Array.isArray(spent) ? spent : [];
         const matchArr = Array.isArray(matches) ? matches : [];
@@ -1165,6 +1173,9 @@ class CSPScanner {
         // Track blocks processed - use actualCount if provided (for cache-aligned requests)
         const blocksInChunk = actualCount || (endHeight - startHeight) || this.chunkSize;
         this.scannedBlocks += blocksInChunk;
+
+        // Track this chunk as successfully scanned (for gap detection after interruption)
+        this.scannedChunks.add(startHeight);
 
         const spentArr = Array.isArray(spent) ? spent : [];
         const matchArr = Array.isArray(matches) ? matches : [];
@@ -1478,6 +1489,7 @@ class CSPScanner {
         this.taskQueue = [];
         this.allMatches = [];
         this.matchedBlocks.clear();
+        this.scannedChunks.clear();  // Reset scanned chunks tracking
         this.scannedBlocks = 0;
         this.totalBlocks = endHeight - startHeight;
         this.startTime = performance.now();
@@ -1657,6 +1669,7 @@ class CSPScanner {
             matches: this.allMatches,
             matchCount: this.stats.viewTagMatches,
             matchedChunks: Array.from(this.matchedChunks).sort((a, b) => a - b),  // Sorted chunk start heights
+            scannedChunks: Array.from(this.scannedChunks).sort((a, b) => a - b),  // ALL scanned chunks for gap detection
             blocksScanned: this.scannedBlocks,
             blocksPerSecond: blocksPerSec,
             stats: { ...this.stats },
@@ -1697,6 +1710,86 @@ class CSPScanner {
             workerState.worker.terminate();
         }
         this.workers = [];
+    }
+
+    /**
+     * Verify all workers are healthy after suspension/backgrounding.
+     * Returns true if all workers respond successfully, false if any are unhealthy.
+     * Uses adaptive timeout: 5000ms on mobile, 2000ms on desktop.
+     */
+    async verifyWorkerHealth() {
+        if (!this.workers || this.workers.length === 0) {
+            return false;
+        }
+
+        const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
+        const timeoutMs = isMobile ? 5000 : 2000;
+
+        const healthChecks = this.workers.map((w) => {
+            return new Promise((resolve) => {
+                const timeout = setTimeout(() => {
+                    resolve({ workerId: w.id, healthy: false, reason: 'timeout' });
+                }, timeoutMs);
+
+                const handler = (e) => {
+                    const msg = e.data;
+                    if (msg && msg.type === 'HEALTH_CHECK_RESPONSE' && msg.workerId === w.id) {
+                        clearTimeout(timeout);
+                        w.worker.removeEventListener('message', handler);
+                        resolve({
+                            workerId: w.id,
+                            healthy: msg.healthy,
+                            reason: msg.error || null
+                        });
+                    }
+                };
+
+                w.worker.addEventListener('message', handler);
+                w.worker.postMessage({ type: 'HEALTH_CHECK' });
+            });
+        });
+
+        const results = await Promise.all(healthChecks);
+        const allHealthy = results.every(r => r.healthy);
+
+        if (!allHealthy) {
+            const unhealthy = results.filter(r => !r.healthy);
+            console.warn(`[CSPScanner] ⚠️ Worker health check failed: ${unhealthy.length}/${results.length} workers unhealthy`);
+            for (const r of unhealthy) {
+                console.warn(`  - Worker ${r.workerId}: ${r.reason || 'unknown'}`);
+            }
+        } else if (this.DEBUG) {
+            console.log(`[CSPScanner] ✅ All ${results.length} workers healthy`);
+        }
+
+        return allHealthy;
+    }
+
+    /**
+     * Reinitialize all workers (use after health check failure).
+     * Terminates existing workers and creates new ones.
+     */
+    async reinitializeWorkers() {
+        console.log('[CSPScanner] 🔄 Reinitializing workers...');
+
+        // Terminate existing workers
+        for (const workerState of this.workers) {
+            try {
+                workerState.worker.terminate();
+            } catch {
+                // Ignore termination errors
+            }
+        }
+        this.workers = [];
+
+        // Clear cached WASM to force reload
+        this.wasmBinary = null;
+        this.patchedJsCode = null;
+
+        // Reinitialize
+        await this.init();
+
+        console.log('[CSPScanner] ✅ Workers reinitialized');
     }
 }
 

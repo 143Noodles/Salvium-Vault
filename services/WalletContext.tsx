@@ -10,6 +10,7 @@ import { flushSync } from 'react-dom';
 import { walletService, WalletKeys, WalletTransaction, BalanceInfo, SyncStatus } from './WalletService';
 import { cspScanService, ScanProgress, ScanResult } from './CSPScanService';
 import { encrypt, decrypt } from './CryptoService';
+import { initDesktopSilentAudio } from './SilentAudio';
 
 // ============================================================================
 // UI Performance: Non-blocking throttle helper for progress updates
@@ -635,7 +636,7 @@ interface WalletContextType {
     generateMnemonic: () => Promise<string>;
     createWallet: (mnemonic: string, password: string) => Promise<WalletKeys>;
     restoreWallet: (mnemonic: string, password: string, restoreHeight: number, hasReturnedTransfers?: boolean) => Promise<WalletKeys>;
-    unlockWallet: (password: string) => Promise<boolean>;
+    unlockWallet: (password: string, isVaultRestore?: boolean) => Promise<boolean>;
     lockWallet: () => void;
     startScan: (fromHeight?: number) => Promise<void>;
     sendTransaction: (address: string, amount: number, paymentId?: string, sweepAll?: boolean) => Promise<string>;
@@ -700,13 +701,14 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const balanceVersionRef = React.useRef(0);
     const setBalance = useCallback((newBalance: BalanceInfo | ((prev: BalanceInfo) => BalanceInfo)) => {
         const version = ++balanceVersionRef.current;
-        // Small delay to allow any pending updates to complete
-        requestAnimationFrame(() => {
+        // Use setTimeout instead of requestAnimationFrame
+        // RAF is paused for background tabs, causing balance updates to never fire!
+        setTimeout(() => {
             // Only apply if this is still the latest version
             if (balanceVersionRef.current === version) {
                 setBalanceInternal(newBalance);
             }
-        });
+        }, 0);
     }, []);
 
     // Sync state
@@ -1060,6 +1062,13 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             saveToIndexedDB(`wallet_history_${address}`, JSON.stringify(walletHistory));
         }
     }, [walletHistory, isWalletReady, address]);
+
+    // Start silent audio on desktop to prevent tab throttling (always on)
+    useEffect(() => {
+        if (isWalletReady) {
+            initDesktopSilentAudio();
+        }
+    }, [isWalletReady]);
 
     // Fetch real block timestamps for transactions with estimated timestamps
     // This runs once when wallet is ready and transactions are loaded
@@ -1714,7 +1723,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     };
 
     // Unlock existing wallet with password
-    const unlockWallet = async (password: string): Promise<boolean> => {
+    const unlockWallet = async (password: string, isVaultRestore: boolean = false): Promise<boolean> => {
         const walletJson = localStorage.getItem('salvium_wallet');
         if (!walletJson) {
             throw new Error('No wallet found');
@@ -1724,6 +1733,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
         // Decrypt the seed - this verifies the password is correct
         const mnemonic = await decrypt(wallet.encryptedSeed, wallet.iv, wallet.salt, password);
+
+        // If this is a vault restore, mark it so recovery check is skipped
+        if (isVaultRestore) {
+            restoredFromVaultRef.current = true;
+        }
 
         // If matches, we are good
         isResettingRef.current = false; // Allow saving again
@@ -2355,8 +2369,45 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 }));
             }, 150); // Update UI at most every 150ms
 
+            // v5.50.0: CONSERVATIVE RECOVERY CHECK
+            // Before starting scan, validate that previous scan state is safe to continue from.
+            // If ANY issues detected (interrupted chunks, too many gaps, stale state), force full rescan.
+            // This is CRITICAL for preventing wrong balances after interruptions.
+            // EXCEPTION: Skip recovery check if we just restored from vault file - vault has all data,
+            // we only need incremental scan for new blocks since the backup was created.
+            let actualStartHeight = finalScanStartHeight;
+            if (fromHeight === undefined && address && !restoredFromVaultRef.current) {
+                try {
+                    const recoveryCheck = await cspScanService.resumeScanSafely(address, networkHeight);
+
+                    if (recoveryCheck.needsFullRescan) {
+                        console.warn(`[WalletContext] Recovery check forcing full rescan: ${recoveryCheck.reason}`);
+                        actualStartHeight = 0;
+                        // Clear local wallet height to start fresh
+                        walletService.setWalletHeight(0);
+                        // Clear any cached data that might be stale
+                        clearCompletedChunks();
+                    } else if (recoveryCheck.action === 'rescan_gaps' && recoveryCheck.gaps.length > 0) {
+                        // Have gaps to fill - start from earliest gap
+                        const earliestGap = Math.min(...recoveryCheck.gaps);
+                        console.log(`[WalletContext] Recovery check found ${recoveryCheck.gaps.length} gaps - starting from ${earliestGap}`);
+                        actualStartHeight = earliestGap;
+                    }
+                    // else: continue with finalScanStartHeight (safe to resume)
+                } catch (e) {
+                    // Error in recovery check - be conservative and force full rescan
+                    console.error('[WalletContext] Recovery check failed - forcing full rescan:', e);
+                    actualStartHeight = 0;
+                    walletService.setWalletHeight(0);
+                    clearCompletedChunks();
+                }
+            } else if (fromHeight !== undefined) {
+                // Explicit fromHeight provided - use it
+                actualStartHeight = fromHeight;
+            }
+
             const result = await cspScanService.startScan(
-                finalScanStartHeight,
+                actualStartHeight,
                 networkHeight,
                 (progress) => {
                     try {
@@ -2368,7 +2419,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         throttledProgressUpdate(progress);
 
                         // Calculate height for localStorage save check (not throttled)
-                        const currentScannedHeight = Math.min(networkHeight, finalScanStartHeight + Math.floor(progress.scannedBlocks));
+                        const currentScannedHeight = Math.min(networkHeight, actualStartHeight + Math.floor(progress.scannedBlocks));
                         // Update lastKnownWasmHeightRef so fallback logic is accurate during scan
                         lastKnownWasmHeightRef.current = currentScannedHeight;
 
@@ -2558,12 +2609,22 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         // WASM balance is authoritative when:
                         // 1. Vault restore: WASM has imported full cache
                         // 2. Sleep/wake mismatch: scan found outputs, filter empty, but WASM balance > cached
-                        finalBalance = currentBalance;
-                    } else if (!wasmLostState && isIncrementalScan && cachedBalance && cachedBalance.balance > 0) {
+                        // FIX: After vault restore, WASM's get_unlocked_balance() may not correctly
+                        // track unlock status for imported outputs. Use cached unlocked as floor
+                        // since maturation doesn't go backwards, and WASM may find more unlocked.
+                        const cachedUnlocked = cachedBalance?.unlockedBalance || 0;
+                        const correctedUnlocked = Math.max(currentBalance.unlockedBalance, cachedUnlocked);
+                        finalBalance = {
+                            ...currentBalance,
+                            unlockedBalance: correctedUnlocked,
+                            unlockedBalanceSAL: correctedUnlocked / 1e8
+                        };
+                    } else if (!wasmLostState && isIncrementalScan && cachedBalance && cachedBalance.balance >= 0) {
                         // INCREMENTAL SCAN after page reload or backup restore
                         // ALWAYS use cached balance + delta from new transactions
                         // WASM balance after incremental scan only includes recently scanned outputs,
                         // NOT the full wallet history from the imported cache
+                        // NOTE: cachedBalance.balance === 0 is valid (empty wallet receiving first TX)
 
                         if (hasNewTxs) {
                             // Calculate delta from genuinely new transactions

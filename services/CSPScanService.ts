@@ -7,10 +7,35 @@
  * v3.5.20-csv-fix: Fixed worker init - pass CSV string directly to init_view_only_with_map
  * Same pattern as Phase 1: multiple workers process batches independently,
  * results fed back to main wallet.
+ *
+ * v5.50.0: Added ScanJournal for reliable scan state persistence
  */
 
 // Note: walletService is imported lazily inside methods to avoid circular dependency
 // at module initialization time
+
+import {
+  startScanJournal,
+  recordScannedChunks,
+  completeScanJournal,
+  flushPendingUpdates,
+  validateAndResume,
+  recordScanError,
+  cleanupOldJournals,
+  getCheckpoint,
+  markChunksInProgress,
+  markChunksCompleted,
+  wasInterrupted,
+  isRecoverySafe,
+  forceCleanSlate,
+  saveBalanceCheckpoint,
+  type ScanCheckpoint,
+} from './ScanJournal';
+
+import {
+  startMobileScanAudio,
+  stopMobileScanAudio,
+} from './SilentAudio';
 
 /**
  * IndexedDB helpers for return address persistence
@@ -80,6 +105,52 @@ async function loadReturnAddresses(walletAddress: string): Promise<string | null
  * Uses the Web Locks API to signal the browser that important work is in progress.
  */
 let activeScanLock: { release: () => void } | null = null;
+
+/**
+ * Wake Lock to prevent screen dimming during scan.
+ * This is CRITICAL for mobile devices - iOS/Android will suspend the PWA if screen turns off.
+ * Browser Support: Chrome 84+, Edge 84+, Safari 16.4+, Opera 70+
+ */
+let activeWakeLock: WakeLockSentinel | null = null;
+
+async function acquireWakeLock(): Promise<void> {
+  if (activeWakeLock) return; // Already have lock
+
+  if ('wakeLock' in navigator) {
+    try {
+      activeWakeLock = await (navigator as any).wakeLock.request('screen');
+      activeWakeLock!.addEventListener('release', () => {
+        activeWakeLock = null;
+      });
+    } catch (err: any) {
+      // Wake lock request failed (low battery, not visible, etc.)
+      console.warn('[CSPScanService] Wake lock unavailable:', err?.message || err);
+    }
+  }
+}
+
+function releaseWakeLock(): void {
+  if (activeWakeLock) {
+    try {
+      activeWakeLock.release();
+    } catch {
+      // Ignore release errors
+    }
+    activeWakeLock = null;
+  }
+}
+
+/**
+ * Re-acquire wake lock when page becomes visible again.
+ * iOS/Safari releases wake lock when page is hidden - we need to re-acquire on visibility change.
+ */
+async function reacquireWakeLockOnVisibility(): Promise<void> {
+  if (!document.hidden && !activeWakeLock && 'wakeLock' in navigator) {
+    // Only re-acquire if we're in a scan
+    // The calling code should check if scan is in progress before calling this
+    await acquireWakeLock();
+  }
+}
 
 function acquireScanLock(): void {
   if (activeScanLock) return; // Already have lock
@@ -274,7 +345,202 @@ class CSPScanService {
   private isPhase2bRunning: boolean = false;
   private phase2bPromise: Promise<void> | null = null;
 
+  // Scan session tracking - prevents cross-contamination between interrupted/restarted scans
+  private currentScanId: string | null = null;
+
   private constructor() { }
+
+  /**
+   * Generate a unique scan session ID.
+   * Used to prevent mixing results from interrupted and new scans.
+   */
+  private generateScanId(): string {
+    return `scan_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+  }
+
+  /**
+   * Get the current scan session ID.
+   */
+  getCurrentScanId(): string | null {
+    return this.currentScanId;
+  }
+
+  /**
+   * Safely resume scanning after an interruption.
+   *
+   * CONSERVATIVE BY DESIGN: When in doubt, forces full rescan.
+   * It is better to rescan unnecessarily than to show wrong balance.
+   *
+   * Forces full rescan if ANY of these are true:
+   * - Previous scan has in-progress chunks (interrupted mid-operation)
+   * - Too many gaps detected (> 5% of chunks missing)
+   * - Journal timestamp is too old (> 24 hours)
+   * - Error count in journal is high (> 3 errors)
+   * - Worker health check fails
+   * - WASM wallet state is corrupted
+   *
+   * @param walletAddress - The wallet address to check
+   * @param targetEndHeight - Target height to scan to
+   * @returns Resume information including recommended start height
+   */
+  async resumeScanSafely(
+    walletAddress: string,
+    targetEndHeight: number
+  ): Promise<{
+    shouldResume: boolean;
+    resumeFromHeight: number;
+    gaps: number[];
+    needsFullRescan: boolean;
+    reason: string;
+    checkpoint?: ScanCheckpoint | null;
+    action: 'continue' | 'full_rescan' | 'rescan_gaps';
+  }> {
+    try {
+      // Step 1: Check for interruption with in-progress chunks
+      const interruptCheck = await wasInterrupted(walletAddress);
+      if (interruptCheck.interrupted && interruptCheck.inProgressChunks.length > 0) {
+        console.error(`[CSPScanService] CRITICAL: Found ${interruptCheck.inProgressChunks.length} chunks in-progress at interruption`);
+        console.error('[CSPScanService] These chunks may have partial/corrupted data - forcing full rescan');
+
+        // Clear all state and force fresh start
+        await forceCleanSlate(walletAddress);
+
+        return {
+          shouldResume: false,
+          resumeFromHeight: 0,
+          gaps: [],
+          needsFullRescan: true,
+          reason: `Interrupted with ${interruptCheck.inProgressChunks.length} chunks in-progress - data may be corrupted`,
+          checkpoint: null,
+          action: 'full_rescan',
+        };
+      }
+
+      // Step 2: Run comprehensive safety validation
+      const safetyCheck = await isRecoverySafe(walletAddress, targetEndHeight, 1000);
+
+      if (!safetyCheck.safe && safetyCheck.action === 'full_rescan') {
+        // Clear state and force fresh start
+        await forceCleanSlate(walletAddress);
+
+        return {
+          shouldResume: false,
+          resumeFromHeight: 0,
+          gaps: safetyCheck.gaps || [],
+          needsFullRescan: true,
+          reason: safetyCheck.reason,
+          checkpoint: null,
+          action: 'full_rescan',
+        };
+      }
+
+      // Step 3: Verify worker health (critical after suspension)
+      if (this.scanner) {
+        const workersHealthy = await this.scanner.verifyWorkerHealth();
+        if (!workersHealthy) {
+          console.warn('[CSPScanService] Workers unhealthy - attempting reinit');
+          await this.scanner.reinitializeWorkers();
+
+          const recheckHealthy = await this.scanner.verifyWorkerHealth();
+          if (!recheckHealthy) {
+            console.error('[CSPScanService] Workers still unhealthy after reinit - forcing full rescan');
+            await forceCleanSlate(walletAddress);
+
+            return {
+              shouldResume: false,
+              resumeFromHeight: 0,
+              gaps: [],
+              needsFullRescan: true,
+              reason: 'Worker health check failed after reinit - WASM may be corrupted',
+              checkpoint: null,
+              action: 'full_rescan',
+            };
+          }
+          console.log('[CSPScanService] Workers recovered after reinit');
+        }
+      }
+
+      // Step 4: Verify WASM wallet state
+      try {
+        const { walletService } = await import('./WalletService');
+        const wallet = walletService.getWallet();
+        if (wallet) {
+          const addr = wallet.get_address();
+          if (typeof addr !== 'string' || addr.length === 0) {
+            console.error('[CSPScanService] WASM wallet state invalid - forcing full rescan');
+            await forceCleanSlate(walletAddress);
+
+            return {
+              shouldResume: false,
+              resumeFromHeight: 0,
+              gaps: [],
+              needsFullRescan: true,
+              reason: 'WASM wallet state corrupted',
+              checkpoint: null,
+              action: 'full_rescan',
+            };
+          }
+        }
+      } catch (e) {
+        console.error('[CSPScanService] Failed to validate WASM wallet - forcing full rescan');
+        await forceCleanSlate(walletAddress);
+
+        return {
+          shouldResume: false,
+          resumeFromHeight: 0,
+          gaps: [],
+          needsFullRescan: true,
+          reason: `WASM validation error: ${e}`,
+          checkpoint: null,
+          action: 'full_rescan',
+        };
+      }
+
+      // All checks passed - safe to resume or rescan gaps
+      const checkpoint = await getCheckpoint(walletAddress);
+
+      if (safetyCheck.action === 'rescan_gaps' && safetyCheck.gaps && safetyCheck.gaps.length > 0) {
+        return {
+          shouldResume: true,
+          resumeFromHeight: checkpoint?.lastCompletedHeight || 0,
+          gaps: safetyCheck.gaps,
+          needsFullRescan: false,
+          reason: safetyCheck.reason,
+          checkpoint,
+          action: 'rescan_gaps',
+        };
+      }
+
+      return {
+        shouldResume: true,
+        resumeFromHeight: checkpoint?.lastCompletedHeight || 0,
+        gaps: [],
+        needsFullRescan: false,
+        reason: safetyCheck.reason,
+        checkpoint,
+        action: 'continue',
+      };
+
+    } catch (error) {
+      // ANY error during validation = force full rescan
+      console.error('[CSPScanService] Error during resume validation - forcing full rescan:', error);
+      try {
+        await forceCleanSlate(walletAddress);
+      } catch {
+        // Ignore cleanup errors
+      }
+
+      return {
+        shouldResume: false,
+        resumeFromHeight: 0,
+        gaps: [],
+        needsFullRescan: true,
+        reason: `Validation error: ${error}`,
+        checkpoint: null,
+        action: 'full_rescan',
+      };
+    }
+  }
 
   private isWalletValid(wallet: any): boolean {
     if (!wallet) return false;
@@ -416,8 +682,42 @@ class CSPScanService {
 
     this.isCancelled = false;
 
+    // Generate unique scan session ID to prevent cross-contamination
+    this.currentScanId = this.generateScanId();
+
+    // Start scan journal for reliable persistence
+    // Get wallet address for journal (lazy import to avoid circular dependency)
+    let walletAddressForJournal = '';
+    try {
+      const { walletService } = await import('./WalletService');
+      const wallet = walletService.getWallet();
+      if (wallet) {
+        walletAddressForJournal = wallet.get_address();
+
+        // Start journal entry
+        await startScanJournal(
+          this.currentScanId,
+          walletAddressForJournal,
+          startHeight,
+          endHeight
+        );
+
+        // Cleanup old journal entries (async, don't await)
+        cleanupOldJournals(walletAddressForJournal, 7).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[CSPScanService] Failed to start scan journal:', e);
+      // Continue without journal - not critical
+    }
+
     // Acquire Web Lock to prevent browser throttling in background tabs
     acquireScanLock();
+
+    // Acquire Wake Lock to prevent screen dimming (CRITICAL for mobile PWA reliability)
+    await acquireWakeLock();
+
+    // Start silent audio on mobile to prevent iOS/Android suspension during scan
+    await startMobileScanAudio();
 
     // Load script if needed
     await this.loadScript();
@@ -659,8 +959,11 @@ class CSPScanService {
         // Matches are aggregated - no per-match logging for performance
         onMatch?.(data);
       },
-      onError: () => {
-        // Scan error
+      onError: (err: any) => {
+        // Scan error - record to journal
+        if (this.currentScanId) {
+          recordScanError(this.currentScanId, err?.error || err?.message || 'Unknown scan error').catch(() => {});
+        }
       }
     });
 
@@ -668,6 +971,23 @@ class CSPScanService {
 
     this.activePhase = '1';
     const result = await this.scanner.scan(startHeight, endHeight);
+
+    // Record scanned chunks to journal for gap detection
+    if (this.currentScanId && result.scannedChunks && result.scannedChunks.length > 0) {
+      const hasMatches = result.matchedChunks && result.matchedChunks.length > 0;
+      try {
+        await recordScannedChunks(
+          this.currentScanId,
+          result.scannedChunks,
+          hasMatches,
+          result.matchCount || 0
+        );
+        // Flush immediately after phase 1 completes
+        await flushPendingUpdates();
+      } catch (e) {
+        console.warn('[CSPScanService] Failed to record scanned chunks:', e);
+      }
+    }
 
     // Validate Phase 1 actually scanned blocks
     const expectedBlocks = endHeight - startHeight;
@@ -960,6 +1280,17 @@ class CSPScanService {
     // Mark main scan as complete
     this.isScanning = false;
     releaseScanLock();
+    releaseWakeLock();
+    stopMobileScanAudio();
+
+    // Complete the scan journal
+    if (this.currentScanId) {
+      try {
+        await completeScanJournal(this.currentScanId, endHeight);
+      } catch (e) {
+        console.warn('[CSPScanService] Failed to complete scan journal:', e);
+      }
+    }
 
     return {
       success: true,
@@ -1161,6 +1492,8 @@ class CSPScanService {
     this.stopScan();
     this.isScanning = false;
     releaseScanLock();
+    releaseWakeLock();
+    stopMobileScanAudio();
   }
 
   async cancelScanAndWait(timeoutMs: number = 5000): Promise<void> {
@@ -1179,6 +1512,8 @@ class CSPScanService {
           clearInterval(checkInterval);
           this.isScanning = false;
           releaseScanLock();
+          releaseWakeLock();
+          stopMobileScanAudio();
           resolve();
         }
       }, 50);

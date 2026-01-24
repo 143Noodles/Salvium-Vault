@@ -103,6 +103,31 @@ self.onmessage = async function (e) {
             });
             break;
 
+        case 'HEALTH_CHECK':
+            // Health check to verify WASM module is still responsive after suspension/backgrounding
+            // Returns healthy=true if WASM can be called successfully
+            {
+                let healthy = false;
+                let errorMsg = null;
+                try {
+                    if (Module && typeof Module.get_version === 'function') {
+                        // Quick WASM call to verify heap is not corrupted
+                        const version = Module.get_version();
+                        healthy = typeof version === 'string' && version.length > 0;
+                    }
+                } catch (e) {
+                    healthy = false;
+                    errorMsg = e?.message || 'WASM call failed';
+                }
+                self.postMessage({
+                    type: 'HEALTH_CHECK_RESPONSE',
+                    workerId,
+                    healthy,
+                    error: errorMsg
+                });
+            }
+            break;
+
         case 'STOP':
             self.postMessage({ type: 'STOPPED' });
             break;

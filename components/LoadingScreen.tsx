@@ -280,6 +280,16 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
             </div>
           </div>
 
+          {/* Foreground Warning - Shows during active scan on mobile */}
+          {isScanning && percentage < 95 && (
+            <div className="mt-6 px-4 py-3 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-sm text-center max-w-md">
+              <p className="font-medium">Please keep this app in the foreground</p>
+              <p className="text-yellow-400/80 text-xs mt-1">
+                Closing or backgrounding the app during sync may cause incomplete scans or incorrect balances.
+              </p>
+            </div>
+          )}
+
         </div>
       )}
 

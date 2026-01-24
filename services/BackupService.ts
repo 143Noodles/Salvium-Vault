@@ -1,4 +1,5 @@
 import { encrypt, decrypt, arrayBufferToBase64, base64ToArrayBuffer } from './CryptoService';
+import { populateCheckpointFromVaultRestore } from './ScanJournal';
 
 // Version 2: Added m_recovered_spend_pubkey serialization to transfer_details
 // Old vault files (version 1) are incompatible and must be restored from seed
@@ -613,6 +614,17 @@ export async function restoreFromBackup(backupData: BackupData): Promise<void> {
             void 0 && console.log(`[BackupService] Restored ${count} return addresses from backup`);
         } catch (e) {
             void 0 && console.warn('[BackupService] Failed to restore return addresses:', e);
+        }
+    }
+
+    // Populate scan journal checkpoint so gap detection knows these blocks are already scanned
+    // Use snapshotHeight (when cache was generated) or height (wallet height) from the backup
+    const scannedHeight = backupData.wallet?.snapshotHeight || backupData.wallet?.height || 0;
+    if (backupData.wallet?.address && scannedHeight > 0) {
+        try {
+            await populateCheckpointFromVaultRestore(backupData.wallet.address, scannedHeight);
+        } catch (e) {
+            void 0 && console.warn('[BackupService] Failed to populate scan checkpoint:', e);
         }
     }
 }

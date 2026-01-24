@@ -153,6 +153,8 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
     setIsLoading(true);
     setError('');
+    // Small delay to ensure UI updates with spinner before heavy WASM work starts
+    await new Promise(r => setTimeout(r, 50));
     try {
       await wallet.createWallet(generatedSeed, password);
       onComplete('create');
@@ -176,6 +178,8 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
     setIsLoading(true);
     setError('');
+    // Small delay to ensure UI updates with spinner before heavy WASM work starts
+    await new Promise(r => setTimeout(r, 50));
     try {
       const height = parseInt(restoreHeight) || 0;
       await wallet.restoreWallet(restoreSeed.trim(), password, height, hasReturnedTransfers === true);
@@ -218,8 +222,9 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
       // Auto-unlock the wallet with the backup password
       // This skips the lock screen and goes directly to the dashboard
+      // Pass isVaultRestore=true to skip recovery check (vault has all data)
       try {
-        await wallet.unlockWallet(backupPassword);
+        await wallet.unlockWallet(backupPassword, true);
         setIsDecrypting(false);
         onComplete('restore');
       } catch (unlockErr: any) {
