@@ -60,7 +60,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   useEffect(() => {
     const fetchHeight = async () => {
       try {
-        const response = await fetch('/vault/api/wallet-rpc/json_rpc', {
+        const response = await fetch('/api/wallet-rpc/json_rpc', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ jsonrpc: '2.0', id: '0', method: 'get_info' })

@@ -19,7 +19,7 @@ const getTips = () => {
 
   // Add desktop-only tip
   if (isDesktop) {
-    tips.push("Try our Progressive Web App on mobile for a native app-like experience. Just go to salvium.tools/vault on your mobile browser and follow the instructions.");
+    tips.push("Try our Progressive Web App on mobile for a native app-like experience. Just go to vault.salvium.tools on your mobile browser and follow the instructions.");
   }
 
   return tips;

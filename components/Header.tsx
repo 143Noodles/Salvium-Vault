@@ -37,38 +37,45 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Fetch price from Explorer API
+  // Fetch price from backend proxy (handles CORS, fallbacks to CoinGecko)
+  // Uses AbortController for timeout to prevent hanging requests
   useEffect(() => {
     const fetchPrice = async () => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+
       try {
-        // Use Explorer API for consistent pricing
-        const response = await fetch('https://salvium.tools/api/price');
+        // Use our backend proxy which handles CORS and has fallback sources
+        const response = await fetch('/api/price', { signal: controller.signal });
+        clearTimeout(timeoutId);
         const data = await response.json();
-        if (data.price) {
+        if (data.success && data.price) {
           setPrice(parseFloat(data.price).toFixed(6));
         }
       } catch (e) {
+        clearTimeout(timeoutId);
+        // Silently fail - price display is optional, wallet should still work
         void 0 && console.error('Failed to fetch price:', e);
       }
     };
 
     fetchPrice();
-    // Refresh every 2 minutes (matches Explorer cache)
+    // Refresh every 2 minutes
     const interval = setInterval(fetchPrice, 120000);
     return () => clearInterval(interval);
   }, []);
 
   // Explorer dropdown items
   const explorerItems = [
-    { label: 'Home', href: 'https://salvium.tools/' },
-    { label: 'Blocks', href: 'https://salvium.tools/blocks' },
-    { label: 'Transactions', href: 'https://salvium.tools/transactions' },
-    { label: 'Staking', href: 'https://salvium.tools/staking' },
+    { label: 'Home', href: 'https://explorer.salvium.tools/' },
+    { label: 'Blocks', href: 'https://explorer.salvium.tools/blocks' },
+    { label: 'Transactions', href: 'https://explorer.salvium.tools/transactions' },
+    { label: 'Staking', href: 'https://explorer.salvium.tools/staking' },
   ];
 
   const navItems = [
-    { label: 'Vault', href: '/vault/', active: true },
-    { label: 'Pools', href: 'https://miningpoolstats.stream/salvium', active: false, external: true },
+    { label: 'Vault', href: '/', active: true },
+    { label: 'Pools', href: 'https://pool.salvium.tools', active: false, external: true },
   ];
 
   return (
@@ -76,9 +83,9 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
       <div className="max-w-[1400px] mx-auto px-4 md:px-8">
         <div className="flex justify-between items-center h-16">
           {/* Logo */}
-          <a href="/vault/" className="flex items-center gap-3 text-dark-400 hover:text-dark-400 no-underline z-50">
+          <a href="/" className="flex items-center gap-3 text-dark-400 hover:text-dark-400 no-underline z-50">
             <img
-              src="/vault/assets/img/salvium.png"
+              src="/assets/img/salvium.png"
               alt="Salvium"
               className="w-8 h-8"
             />

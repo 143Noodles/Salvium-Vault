@@ -12,6 +12,9 @@
  * 5. Coalesced checkpoints: Batches updates to reduce write overhead
  */
 
+// PRODUCTION: Set to false to suppress verbose debug logs
+const DEBUG = false;
+
 const SCAN_JOURNAL_DB_NAME = 'salvium-scan-journal';
 const SCAN_JOURNAL_DB_VERSION = 1;
 const JOURNAL_STORE = 'journal';
@@ -66,7 +69,7 @@ async function openJournalDB(): Promise<IDBDatabase> {
     const request = indexedDB.open(SCAN_JOURNAL_DB_NAME, SCAN_JOURNAL_DB_VERSION);
 
     request.onerror = () => {
-      console.error('[ScanJournal] Failed to open database:', request.error);
+      void DEBUG && console.error('[ScanJournal] Failed to open database:', request.error);
       reject(request.error);
     };
 
@@ -253,7 +256,7 @@ export async function flushPendingUpdates(): Promise<void> {
     }
 
     tx.onerror = () => {
-      console.error('[ScanJournal] Failed to flush pending updates:', tx.error);
+      void DEBUG && console.error('[ScanJournal] Failed to flush pending updates:', tx.error);
       reject(tx.error);
     };
   });
@@ -316,7 +319,7 @@ export async function completeScanJournal(
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      console.error('[ScanJournal] Failed to complete scan journal:', tx.error);
+      void DEBUG && console.error('[ScanJournal] Failed to complete scan journal:', tx.error);
       reject(tx.error);
     };
   });
@@ -347,7 +350,7 @@ export async function getIncompleteJournal(walletAddress: string): Promise<ScanJ
     };
 
     request.onerror = () => {
-      console.error('[ScanJournal] Failed to get incomplete journal:', request.error);
+      void DEBUG && console.error('[ScanJournal] Failed to get incomplete journal:', request.error);
       reject(request.error);
     };
   });
@@ -370,7 +373,7 @@ export async function getCheckpoint(walletAddress: string): Promise<ScanCheckpoi
     };
 
     request.onerror = () => {
-      console.error('[ScanJournal] Failed to get checkpoint:', request.error);
+      void DEBUG && console.error('[ScanJournal] Failed to get checkpoint:', request.error);
       reject(request.error);
     };
   });
@@ -441,7 +444,7 @@ export async function validateAndResume(
 
       // If the scan is too old, don't try to resume - start fresh
       if (timeSinceUpdate > staleScanThreshold) {
-        console.warn(`[ScanJournal] Incomplete scan is ${Math.round(timeSinceUpdate / 3600000)}h old - starting fresh`);
+        void DEBUG && console.warn(`[ScanJournal] Incomplete scan is ${Math.round(timeSinceUpdate / 3600000)}h old - starting fresh`);
         return {
           canResume: false,
           gaps: [],
@@ -460,7 +463,7 @@ export async function validateAndResume(
       );
 
       if (gaps.length > 0) {
-        console.warn(`[ScanJournal] Found ${gaps.length} gaps in interrupted scan ${incompleteJournal.scanId}`);
+        void DEBUG && console.warn(`[ScanJournal] Found ${gaps.length} gaps in interrupted scan ${incompleteJournal.scanId}`);
       }
 
       return {
@@ -506,7 +509,7 @@ export async function validateAndResume(
     };
 
   } catch (error) {
-    console.error('[ScanJournal] Error validating resume:', error);
+    void DEBUG && console.error('[ScanJournal] Error validating resume:', error);
     return {
       canResume: false,
       gaps: [],
@@ -545,7 +548,7 @@ export async function recordScanError(scanId: string, error: string): Promise<vo
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      console.error('[ScanJournal] Failed to record error:', tx.error);
+      void DEBUG && console.error('[ScanJournal] Failed to record error:', tx.error);
       reject(tx.error);
     };
   });
@@ -577,7 +580,7 @@ export async function cleanupOldJournals(walletAddress: string, keepDays: number
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      console.error('[ScanJournal] Failed to cleanup old journals:', tx.error);
+      void DEBUG && console.error('[ScanJournal] Failed to cleanup old journals:', tx.error);
       reject(tx.error);
     };
   });
@@ -617,7 +620,7 @@ export async function markChunksInProgress(scanId: string, chunkStartHeights: nu
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      console.error('[ScanJournal] Failed to mark chunks in progress:', tx.error);
+      void DEBUG && console.error('[ScanJournal] Failed to mark chunks in progress:', tx.error);
       reject(tx.error);
     };
   });
@@ -669,7 +672,7 @@ export async function markChunksCompleted(
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      console.error('[ScanJournal] Failed to mark chunks completed:', tx.error);
+      void DEBUG && console.error('[ScanJournal] Failed to mark chunks completed:', tx.error);
       reject(tx.error);
     };
   });
@@ -693,7 +696,7 @@ export async function wasInterrupted(walletAddress: string): Promise<{
   const inProgress = journal.inProgressChunks || [];
 
   if (inProgress.length > 0) {
-    console.warn(`[ScanJournal] Found ${inProgress.length} chunks that were in-progress when interrupted`);
+    void DEBUG && console.warn(`[ScanJournal] Found ${inProgress.length} chunks that were in-progress when interrupted`);
     return {
       interrupted: true,
       inProgressChunks: inProgress,
@@ -718,7 +721,7 @@ export async function wasInterrupted(walletAddress: string): Promise<{
  * Use this when corruption is detected and we need to start completely fresh.
  */
 export async function forceCleanSlate(walletAddress: string): Promise<void> {
-  console.warn(`[ScanJournal] Forcing clean slate for wallet ${walletAddress.substring(0, 16)}...`);
+  void DEBUG && console.warn(`[ScanJournal] Forcing clean slate for wallet ${walletAddress.substring(0, 16)}...`);
 
   const db = await openJournalDB();
 
@@ -745,7 +748,7 @@ export async function forceCleanSlate(walletAddress: string): Promise<void> {
       resolve();
     };
     tx.onerror = () => {
-      console.error('[ScanJournal] Failed to force clean slate:', tx.error);
+      void DEBUG && console.error('[ScanJournal] Failed to force clean slate:', tx.error);
       reject(tx.error);
     };
   });
@@ -755,10 +758,14 @@ export async function forceCleanSlate(walletAddress: string): Promise<void> {
  * Validate recovery is safe to proceed with incremental scan.
  * Returns false (forcing full rescan) if ANY of these conditions are true:
  * 1. Previous scan has in-progress chunks (interrupted mid-operation)
- * 2. Too many gaps detected (> 5% of chunks missing)
+ * 2. Too many gaps detected (> 5% of chunks missing, only when >= 20 chunks in range)
  * 3. Journal timestamp is too old (> 24 hours)
  * 4. Error count in journal is high (> 3 errors)
  *
+ * Returns action='rescan_gaps' for small numbers of gaps (<= 50) instead of full_rescan.
+ * This prevents vault restore + tab suspend from triggering unnecessary full rescans.
+ *
+ * FIX v5.52.0: Small gap counts now use rescan_gaps before percentage threshold check.
  * This is CONSERVATIVE by design - when in doubt, force full rescan.
  */
 export async function isRecoverySafe(
@@ -837,7 +844,23 @@ export async function isRecoverySafe(
       const totalChunks = Math.ceil((journal.targetEndHeight - journal.startHeight) / chunkSize);
       const gapPercentage = totalChunks > 0 ? (gaps.length / totalChunks) * 100 : 0;
       
-      if (gapPercentage > 5) {
+      // FIX v5.52.0: Check for small gap counts BEFORE percentage threshold
+      // When scan range is small (e.g., 1-10 chunks after vault restore), even 1 missing
+      // chunk = high percentage (10-100%). This was incorrectly triggering full rescans.
+      // Small numbers of gaps should use rescan_gaps, not full_rescan.
+      if (gaps.length > 0 && gaps.length <= 50) {
+        return {
+          safe: true,
+          reason: `${gaps.length} gaps detected in scan range - will rescan specific chunks`,
+          action: 'rescan_gaps',
+          gaps
+        };
+      }
+      
+      // Only apply percentage threshold when there's a significant number of total chunks
+      // This prevents small scan ranges (common after vault restore) from triggering full rescan
+      const MIN_CHUNKS_FOR_PERCENTAGE_CHECK = 20;
+      if (totalChunks >= MIN_CHUNKS_FOR_PERCENTAGE_CHECK && gapPercentage > 5) {
         return {
           safe: false,
           reason: `Too many gaps in scan range: ${gaps.length} chunks missing (${gapPercentage.toFixed(1)}% of ${journal.startHeight}-${journal.targetEndHeight})`,
@@ -845,16 +868,6 @@ export async function isRecoverySafe(
           gaps
         };
       }
-    }
-    
-    // Check 5: Small number of gaps within the scanned range - can rescan just those
-    if (gaps.length > 0 && gaps.length <= 50) {
-      return {
-        safe: true,
-        reason: `${gaps.length} gaps detected in scan range - will rescan specific chunks`,
-        action: 'rescan_gaps',
-        gaps
-      };
     }
 
     // All checks passed

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { isMobile, isIOS, isIPad13, isTablet } from 'react-device-detect';
 import { Download, Share, PlusSquare, Copy, Check } from 'lucide-react';
 import { Button } from './UIComponents';
@@ -19,9 +19,14 @@ const isSafari = /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.use
 
 // Capture the install prompt globally in case it fires before React mounts
 let globalDeferredPrompt: any = null;
+// Track callbacks to notify React components when the prompt is captured
+const promptCallbacks: Set<(prompt: any) => void> = new Set();
+
 window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     globalDeferredPrompt = e;
+    // Notify all registered callbacks (React components)
+    promptCallbacks.forEach(cb => cb(e));
 });
 
 // Generate Chrome intent URL for Android
@@ -136,34 +141,96 @@ const useIsPWA = () => {
 
 const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const isPWA = useIsPWA();
-    // Initialize with globally captured prompt if available
-    const [deferredPrompt, setDeferredPrompt] = useState<any>(globalDeferredPrompt);
+    // Use ref to avoid stale closure issues with the prompt
+    const deferredPromptRef = useRef<any>(globalDeferredPrompt);
+    // State just for triggering re-renders when prompt availability changes
+    const [hasPrompt, setHasPrompt] = useState<boolean>(!!globalDeferredPrompt);
+    // Track if we've waited too long for the prompt
+    const [promptTimedOut, setPromptTimedOut] = useState(false);
 
     useEffect(() => {
         // Check if we already have a global prompt captured before mount
-        if (globalDeferredPrompt && !deferredPrompt) {
-            setDeferredPrompt(globalDeferredPrompt);
+        if (globalDeferredPrompt && !deferredPromptRef.current) {
+            deferredPromptRef.current = globalDeferredPrompt;
+            setHasPrompt(true);
+            console.log('[PWA] Found existing global prompt on mount');
         }
 
+        // Handler for when the global listener captures the prompt
+        // This handles the race condition where the event fires before this useEffect runs
+        const handleGlobalCapture = (e: any) => {
+            deferredPromptRef.current = e;
+            setHasPrompt(true);
+            console.log('[PWA] Notified of global prompt capture');
+        };
+        promptCallbacks.add(handleGlobalCapture);
+
+        // Also listen directly for future events
         const handleBeforeInstallPrompt = (e: any) => {
             e.preventDefault();
             globalDeferredPrompt = e;
-            setDeferredPrompt(e);
+            deferredPromptRef.current = e;
+            setHasPrompt(true);
+            console.log('[PWA] beforeinstallprompt captured directly');
         };
 
         window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-        return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+        // Set a timeout - if we don't get the prompt in 5 seconds, something's wrong
+        const timeoutId = setTimeout(() => {
+            if (!deferredPromptRef.current && !globalDeferredPrompt) {
+                console.warn('[PWA] Install prompt did not arrive within 5 seconds');
+                setPromptTimedOut(true);
+            }
+        }, 5000);
+
+        return () => {
+            clearTimeout(timeoutId);
+            promptCallbacks.delete(handleGlobalCapture);
+            window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+        };
     }, []);
 
-    const handleInstallClick = async () => {
-        if (deferredPrompt) {
-            deferredPrompt.prompt();
-            const { outcome } = await deferredPrompt.userChoice;
-            if (outcome === 'accepted') {
-                setDeferredPrompt(null);
-            }
+    const handleInstallClick = useCallback(async () => {
+        // Try ref first, fall back to global (handles any sync issues)
+        const prompt = deferredPromptRef.current || globalDeferredPrompt;
+        console.log('[PWA] Install clicked, prompt available:', !!prompt, 'ref:', !!deferredPromptRef.current, 'global:', !!globalDeferredPrompt);
+        
+        if (!prompt) {
+            console.warn('[PWA] No install prompt available. User may need to reload the page.');
+            // Try to alert the user
+            alert('Installation prompt not available. Please reload the page and try again.');
+            return;
         }
-    };
+
+        try {
+            // Show the install prompt
+            console.log('[PWA] Calling prompt()...');
+            await prompt.prompt();
+            
+            // Wait for the user's response
+            console.log('[PWA] Waiting for user choice...');
+            const { outcome } = await prompt.userChoice;
+            console.log('[PWA] User choice:', outcome);
+            
+            // Clear the prompt - it can only be used once
+            deferredPromptRef.current = null;
+            globalDeferredPrompt = null;
+            setHasPrompt(false);
+            
+            if (outcome === 'accepted') {
+                console.log('[PWA] User accepted installation');
+            } else {
+                console.log('[PWA] User dismissed installation');
+            }
+        } catch (error) {
+            console.error('[PWA] Install prompt error:', error);
+            // Clear on error too - prompt is likely consumed
+            deferredPromptRef.current = null;
+            globalDeferredPrompt = null;
+            setHasPrompt(false);
+        }
+    }, []);
 
     // Check if device is mobile OR tablet (including iPad13+)
     const isMobileOrTablet = isMobile || isTablet || isIPad13;
@@ -184,7 +251,7 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
             <div className="relative z-10 flex flex-col items-center max-w-md w-full animate-fade-in">
                 <img
-                    src="/vault/assets/img/salvium.png"
+                    src="/assets/img/salvium.png"
                     alt="Salvium Vault"
                     className="w-20 h-20 mb-6 drop-shadow-[0_0_15px_rgba(99,102,241,0.5)]"
                 />
@@ -220,15 +287,30 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     ) : isChromium ? (
                         <div className="flex flex-col gap-4">
                             <p className="text-sm text-text-muted mb-2">Install the app to access your wallet</p>
-                            <Button
-                                variant="primary"
-                                onClick={handleInstallClick}
-                                disabled={!deferredPrompt}
-                                className="w-full flex items-center justify-center gap-2 py-3"
-                            >
-                                <Download size={18} />
-                                {deferredPrompt ? 'Install App' : 'Loading...'}
-                            </Button>
+                            {promptTimedOut && !hasPrompt ? (
+                                <>
+                                    <p className="text-sm text-yellow-400 mb-2">
+                                        Install prompt not available. Try reloading the page or use Chrome's menu (⋮) → "Install app" or "Add to Home screen".
+                                    </p>
+                                    <Button
+                                        variant="secondary"
+                                        onClick={() => window.location.reload()}
+                                        className="w-full flex items-center justify-center gap-2 py-3"
+                                    >
+                                        Reload Page
+                                    </Button>
+                                </>
+                            ) : (
+                                <Button
+                                    variant="primary"
+                                    onClick={handleInstallClick}
+                                    disabled={!hasPrompt}
+                                    className="w-full flex items-center justify-center gap-2 py-3"
+                                >
+                                    <Download size={18} />
+                                    {hasPrompt ? 'Install App' : 'Loading...'}
+                                </Button>
+                            )}
                         </div>
                     ) : (
                         <div className="flex flex-col gap-4">

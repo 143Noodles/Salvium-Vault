@@ -845,25 +845,36 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         };
     }, []);
 
-    // Fetch SAL price from Explorer API (CoinGecko)
+    // Fetch SAL price via server proxy (bypasses CORS restrictions from MEXC/CoinGecko)
+    // CRITICAL: This fetch must NEVER block wallet initialization
+    // Uses AbortController for timeout + fallback to cached price
     useEffect(() => {
         const fetchPrice = async () => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+
             try {
-                const response = await fetch('https://salvium.tools/api/price');
+                const response = await fetch('/api/price', { signal: controller.signal });
+                clearTimeout(timeoutId);
                 const data = await response.json();
-                if (data.price) {
-                    const price = parseFloat(data.price);
+                if (data.success && data.price) {
+                    const price = data.price;
                     setSalPrice(price);
-                    // Cache price for instant availability on reload/re-render
-                    localStorage.setItem('salvium_sal_price', price.toString());
+                    // Only cache fresh prices, not stale/fallback ones
+                    if (!data.stale) {
+                        localStorage.setItem('salvium_sal_price', price.toString());
+                    }
                 }
-            } catch {
-                // Failed to fetch price
+            } catch (e) {
+                clearTimeout(timeoutId);
+                // Price fetch failed - wallet continues with cached price from localStorage
+                // This is fine - USD display will use last known price or show 0
+                console.warn('[Price] Fetch failed, using cached price:', e instanceof Error ? e.message : 'Unknown error');
             }
         };
 
         fetchPrice();
-        // Refresh price every 2 minutes (matches Explorer cache)
+        // Refresh price every 2 minutes
         const interval = setInterval(fetchPrice, 120000);
         return () => clearInterval(interval);
     }, []);
@@ -885,26 +896,33 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         generateWalletHistory(transactions, totalBalance);
     }, [priceHistory, transactions, balance.balanceSAL, stakes, isWalletReady]);
 
-    // Fetch historical price data from Explorer API (MEXC hourly prices)
+    // Fetch historical price data via server proxy (bypasses CORS restrictions)
+    // Uses AbortController for timeout to prevent hanging requests
     useEffect(() => {
         const fetchPriceHistory = async () => {
-            // Fetch price history from Explorer API
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout (longer for history data)
+
             try {
-                // Use a cache-busting parameter to ensure we get fresh data
-                const response = await fetch(`https://salvium.tools/api/price-history?_t=${Date.now()}`);
+                // Fetch 7 days of hourly data via proxy (MEXC uses 60m for hourly)
+                const response = await fetch('/api/price-history?interval=60m&limit=168', { signal: controller.signal });
+                clearTimeout(timeoutId);
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-                const data = await response.json();
-                if (data.data && Array.isArray(data.data)) {
-                    setPriceHistory(data.data);
+                const result = await response.json();
+                if (result.success && Array.isArray(result.data)) {
+                    // Data is already transformed by proxy: [[timestamp, closePrice], ...]
+                    setPriceHistory(result.data);
                 }
-            } catch {
-                // Failed to fetch price history
+            } catch (e) {
+                clearTimeout(timeoutId);
+                // Price history fetch failed - chart will work without it
+                console.warn('[PriceHistory] Fetch failed:', e instanceof Error ? e.message : 'Unknown error');
             }
         };
 
         fetchPriceHistory();
-        // Refresh price history every 10 minutes (API updates hourly, but we want to catch it relatively soon)
+        // Refresh price history every 10 minutes (API updates hourly)
         const interval = setInterval(fetchPriceHistory, 10 * 60 * 1000);
         return () => clearInterval(interval);
     }, []);
@@ -1166,7 +1184,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         const heights = [...new Set(txsNeedingTimestamps.map(tx => tx.height))];
 
         try {
-            const response = await fetch('/vault/api/block-timestamps', {
+            const response = await fetch('/api/block-timestamps', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ heights })
@@ -1201,7 +1219,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         if (stakes.length === 0) return stakes;
 
         try {
-            const response = await fetch('/vault/api/yield-info');
+            const response = await fetch('/api/yield-info');
             if (!response.ok) {
                 return stakes;
             }
@@ -2201,7 +2219,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     if (lastKnownHash && lastKnownHeight > 0 && lastKnownHeight < networkHeight) {
                         // Fetch the current block hash at our last known height
                         try {
-                            const response = await fetch('/vault/api/wallet/get_block_header_by_height', {
+                            const response = await fetch('/api/wallet/get_block_header_by_height', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ height: lastKnownHeight })
@@ -2381,7 +2399,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     const recoveryCheck = await cspScanService.resumeScanSafely(address, networkHeight);
 
                     if (recoveryCheck.needsFullRescan) {
-                        console.warn(`[WalletContext] Recovery check forcing full rescan: ${recoveryCheck.reason}`);
+                        void 0 && console.warn(`[WalletContext] Recovery check forcing full rescan: ${recoveryCheck.reason}`);
                         actualStartHeight = 0;
                         // Clear local wallet height to start fresh
                         walletService.setWalletHeight(0);
@@ -2396,7 +2414,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     // else: continue with finalScanStartHeight (safe to resume)
                 } catch (e) {
                     // Error in recovery check - be conservative and force full rescan
-                    console.error('[WalletContext] Recovery check failed - forcing full rescan:', e);
+                    void 0 && console.error('[WalletContext] Recovery check failed - forcing full rescan:', e);
                     actualStartHeight = 0;
                     walletService.setWalletHeight(0);
                     clearCompletedChunks();

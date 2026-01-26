@@ -35,6 +35,54 @@ function safeJsonParse<T>(jsonString: string, defaultValue: T, context: string =
 }
 
 // ============================================================================
+// CSRF Token Management - Required for transaction endpoints
+// ============================================================================
+let csrfToken: string | null = null;
+let csrfSessionId: string | null = null;
+let csrfTokenPromise: Promise<void> | null = null;
+
+async function ensureCsrfToken(): Promise<void> {
+  // Return cached token if valid
+  if (csrfToken && csrfSessionId) return;
+
+  // Prevent multiple simultaneous fetches
+  if (csrfTokenPromise) return csrfTokenPromise;
+
+  csrfTokenPromise = (async () => {
+    try {
+      const response = await fetch('/api/csrf-token');
+      if (response.ok) {
+        const data = await response.json();
+        csrfToken = data.token;
+        csrfSessionId = data.sessionId;
+      }
+    } catch {
+      // CSRF fetch failed - will be retried on transaction
+    } finally {
+      csrfTokenPromise = null;
+    }
+  })();
+
+  return csrfTokenPromise;
+}
+
+function getCsrfHeaders(): Record<string, string> {
+  if (csrfToken && csrfSessionId) {
+    return {
+      'X-CSRF-Token': csrfToken,
+      'X-Session-ID': csrfSessionId,
+    };
+  }
+  return {};
+}
+
+// Invalidate CSRF token (call on 403 to refresh)
+function invalidateCsrfToken(): void {
+  csrfToken = null;
+  csrfSessionId = null;
+}
+
+// ============================================================================
 // Fetch with timeout helper
 // ============================================================================
 const DEFAULT_FETCH_TIMEOUT = 30000; // 30 seconds default
@@ -368,7 +416,7 @@ export class WalletService {
       // Load the WASM script via API endpoint to bypass CDN caching
       // Add timestamp to force cache invalidation
       const cacheBuster = Date.now();
-      const wasmUrl = `/vault/api/wasm/SalviumWallet.js?v=${WASM_VERSION}&t=${cacheBuster}`;
+      const wasmUrl = `/api/wasm/SalviumWallet.js?v=${WASM_VERSION}&t=${cacheBuster}`;
 
 
       const script = document.createElement('script');
@@ -409,12 +457,12 @@ export class WalletService {
       this.wasmModule = await window.SalviumWallet({
         locateFile: (path: string) => {
           if (path.endsWith('.wasm')) {
-            return `/vault/api/wasm/SalviumWallet.wasm?v=${WASM_VERSION}&t=${wasmCacheBuster}`;
+            return `/api/wasm/SalviumWallet.wasm?v=${WASM_VERSION}&t=${wasmCacheBuster}`;
           }
           if (path.endsWith('.worker.js')) {
-            return `/vault/api/wasm/SalviumWallet.worker.js?v=${WASM_VERSION}&t=${wasmCacheBuster}`;
+            return `/api/wasm/SalviumWallet.worker.js?v=${WASM_VERSION}&t=${wasmCacheBuster}`;
           }
-          return `/vault/wallet/${path}`;
+          return `/wallet/${path}`;
         },
         print: () => {},
         printErr: (text: string) => {
@@ -877,7 +925,7 @@ export class WalletService {
   async estimateFee(address: string, amount: number, priority: number = 1): Promise<number> {
     try {
       // Fetch dynamic fee from server (which has daemon connection)
-      const response = await fetch('/vault/api/wallet-rpc/get_fee_estimate');
+      const response = await fetch('/api/wallet-rpc/get_fee_estimate');
 
       if (response.ok) {
         const result = await response.json();
@@ -1012,11 +1060,23 @@ export class WalletService {
       const pending = JSON.parse(data);
       if (pending.status !== 'failed') return false;
 
-      const response = await fetch('/vault/api/wallet/sendrawtransaction', {
+      // Ensure CSRF token is available
+      await ensureCsrfToken();
+
+      const response = await fetch('/api/wallet/sendrawtransaction', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getCsrfHeaders(),
+        },
         body: JSON.stringify({ tx_as_hex: pending.txBlob })
       });
+
+      // Refresh CSRF token on 403
+      if (response.status === 403) {
+        invalidateCsrfToken();
+        return false;
+      }
 
       const result = await response.json();
       if (result.status === 'OK') {
@@ -1038,6 +1098,11 @@ export class WalletService {
     amount: number,
     priority: number
   ): Promise<string> {
+    // Clear WASM HTTP cache to ensure fresh output distribution
+    if (this.wasmModule?.clear_http_cache) {
+      this.wasmModule.clear_http_cache();
+    }
+
     const amountAtomic = Math.floor(amount * ATOMIC_UNITS).toString();
     const MIXIN = 15; // Ring size 16 - 1
     const INPUTS_ESTIMATE = 60; // Estimate max inputs to ensure enough decoys
@@ -1047,7 +1112,7 @@ export class WalletService {
       await this.injectJsonRpcResponses();
 
       // Step 1: Pre-fetch and inject forced decoys (Server-side selection)
-      const response = await fetch('/vault/api/wallet/get_random_outs', {
+      const response = await fetch('/api/wallet/get_random_outs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1164,14 +1229,26 @@ export class WalletService {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
 
-          const broadcastResponse = await fetch('/vault/api/wallet/sendrawtransaction', {
+          // Ensure CSRF token is available before transaction broadcast
+          await ensureCsrfToken();
+
+          const broadcastResponse = await fetch('/api/wallet/sendrawtransaction', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...getCsrfHeaders(),
+            },
             body: JSON.stringify({ tx_as_hex: txBlob }),
             signal: controller.signal
           });
 
           clearTimeout(timeoutId);
+
+          // Handle CSRF token rejection
+          if (broadcastResponse.status === 403) {
+            invalidateCsrfToken();
+            throw new Error('CSRF token expired - please retry the transaction');
+          }
 
           if (!broadcastResponse.ok) {
             throw new Error(`Broadcast failed: HTTP ${broadcastResponse.status}`);
@@ -1198,7 +1275,7 @@ export class WalletService {
 
           // Temporary failure - retry if attempts remaining
           if (attempt < MAX_BROADCAST_RETRIES) {
-            console.warn(`[WalletService] Broadcast attempt ${attempt} failed (${reason}), retrying...`);
+            void DEBUG && console.warn(`[WalletService] Broadcast attempt ${attempt} failed (${reason}), retrying...`);
             await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
             continue;
           }
@@ -1281,6 +1358,11 @@ export class WalletService {
     amount: number,
     priority: number = 1
   ): Promise<string> {
+    // Clear WASM HTTP cache to ensure fresh output distribution
+    if (this.wasmModule?.clear_http_cache) {
+      this.wasmModule.clear_http_cache();
+    }
+
     const amountAtomic = Math.floor(amount * ATOMIC_UNITS).toString();
     const MIXIN = 15; // Ring size 16 - 1
     const INPUTS_ESTIMATE = 60; // Estimate max inputs to ensure enough decoys
@@ -1290,7 +1372,7 @@ export class WalletService {
       await this.injectJsonRpcResponses();
 
       // Step 1: Pre-fetch and inject forced decoys (Server-side selection)
-      const response = await fetch('/vault/api/wallet/get_random_outs', {
+      const response = await fetch('/api/wallet/get_random_outs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1398,24 +1480,84 @@ export class WalletService {
       const txHash = result.transactions[0].tx_hash;
       const stakeAmount = result.transactions[0].stake_amount;
 
-      // Step 3: Broadcast the stake transaction
-      const broadcastResponse = await fetch('/vault/api/wallet/sendrawtransaction', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tx_as_hex: txBlob })
-      });
+      // Step 3: Broadcast the stake transaction with retry mechanism
+      const MAX_BROADCAST_RETRIES = 3;
+      const BROADCAST_RETRY_DELAY = 2000; // 2 seconds
 
-      if (!broadcastResponse.ok) {
-        throw new Error(`Stake broadcast failed: HTTP ${broadcastResponse.status}`);
+      for (let attempt = 1; attempt <= MAX_BROADCAST_RETRIES; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+
+          // Ensure CSRF token is available before transaction broadcast
+          await ensureCsrfToken();
+
+          const broadcastResponse = await fetch('/api/wallet/sendrawtransaction', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...getCsrfHeaders(),
+            },
+            body: JSON.stringify({ tx_as_hex: txBlob }),
+            signal: controller.signal
+          });
+
+          clearTimeout(timeoutId);
+
+          // Handle CSRF token rejection
+          if (broadcastResponse.status === 403) {
+            invalidateCsrfToken();
+            throw new Error('CSRF token expired - please retry the transaction');
+          }
+
+          if (!broadcastResponse.ok) {
+            throw new Error(`Stake broadcast failed: HTTP ${broadcastResponse.status}`);
+          }
+
+          const broadcastResult = await broadcastResponse.json();
+
+          if (broadcastResult.status === 'OK') {
+            // Success - store pending transaction for recovery
+            this.storePendingTransaction(txHash, txBlob, 'broadcast');
+            return txHash;
+          }
+
+          // Check if rejection is permanent (invalid tx) vs temporary (network)
+          const reason = broadcastResult.reason || broadcastResult.error || '';
+          const isPermanentRejection = reason.includes('double spend') ||
+            reason.includes('invalid') ||
+            reason.includes('already in') ||
+            reason.includes('too big');
+
+          if (isPermanentRejection) {
+            throw new Error(`Stake transaction rejected: ${reason}`);
+          }
+
+          // Temporary failure - retry if attempts remaining
+          if (attempt < MAX_BROADCAST_RETRIES) {
+            void DEBUG && console.warn(`[WalletService] Stake broadcast attempt ${attempt} failed (${reason}), retrying...`);
+            await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
+            continue;
+          }
+
+          throw new Error(reason || 'Stake broadcast rejected by network');
+        } catch (broadcastError: any) {
+          if (broadcastError.name === 'AbortError') {
+            throw new Error('Stake transaction broadcast timed out');
+          }
+
+          // Store failed transaction for potential recovery
+          if (attempt === MAX_BROADCAST_RETRIES) {
+            this.storePendingTransaction(txHash, txBlob, 'failed');
+            throw broadcastError;
+          }
+
+          // Wait before retry
+          await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
+        }
       }
 
-      const broadcastResult = await broadcastResponse.json();
-
-      if (broadcastResult.status !== 'OK') {
-        throw new Error(broadcastResult.reason || broadcastResult.error || 'Stake broadcast rejected by network');
-      }
-
-      return txHash;
+      throw new Error('Stake transaction broadcast failed after all retries');
 
     } catch (e) {
       throw e;
@@ -1437,6 +1579,11 @@ export class WalletService {
       throw new Error('Wallet not initialized');
     }
 
+    // Clear WASM HTTP cache to ensure fresh output distribution
+    if (this.wasmModule?.clear_http_cache) {
+      this.wasmModule.clear_http_cache();
+    }
+
     const MIXIN = 15; // Ring size 16 - 1
     const INPUTS_ESTIMATE = 100; // Sweep may use many inputs
 
@@ -1450,7 +1597,7 @@ export class WalletService {
       await this.injectJsonRpcResponses();
 
       // Step 1: Pre-fetch and inject forced decoys (Server-side selection)
-      const response = await fetch('/vault/api/wallet/get_random_outs', {
+      const response = await fetch('/api/wallet/get_random_outs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1553,29 +1700,88 @@ export class WalletService {
         throw new Error(lastError || 'Sweep_all failed after max retries');
       }
 
-      // Step 3: Broadcast all transactions
+      // Step 3: Broadcast all transactions with retry mechanism
+      const MAX_BROADCAST_RETRIES = 3;
+      const BROADCAST_RETRY_DELAY = 2000; // 2 seconds
       const txHashes: string[] = [];
+
       for (const tx of result.transactions) {
         const txBlob = tx.tx_blob;
         const txHash = tx.tx_hash;
 
-        const broadcastResponse = await fetch('/vault/api/wallet/sendrawtransaction', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tx_as_hex: txBlob })
-        });
+        for (let attempt = 1; attempt <= MAX_BROADCAST_RETRIES; attempt++) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
 
-        if (!broadcastResponse.ok) {
-          throw new Error(`Sweep broadcast failed: HTTP ${broadcastResponse.status}`);
+            // Ensure CSRF token is available before transaction broadcast
+            await ensureCsrfToken();
+
+            const broadcastResponse = await fetch('/api/wallet/sendrawtransaction', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...getCsrfHeaders(),
+              },
+              body: JSON.stringify({ tx_as_hex: txBlob }),
+              signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+
+            // Handle CSRF token rejection
+            if (broadcastResponse.status === 403) {
+              invalidateCsrfToken();
+              throw new Error('CSRF token expired - please retry the transaction');
+            }
+
+            if (!broadcastResponse.ok) {
+              throw new Error(`Sweep broadcast failed: HTTP ${broadcastResponse.status}`);
+            }
+
+            const broadcastResult = await broadcastResponse.json();
+
+            if (broadcastResult.status === 'OK') {
+              // Success - store pending transaction for recovery
+              this.storePendingTransaction(txHash, txBlob, 'broadcast');
+              txHashes.push(txHash);
+              break; // Move to next transaction
+            }
+
+            // Check if rejection is permanent (invalid tx) vs temporary (network)
+            const reason = broadcastResult.reason || broadcastResult.error || '';
+            const isPermanentRejection = reason.includes('double spend') ||
+              reason.includes('invalid') ||
+              reason.includes('already in') ||
+              reason.includes('too big');
+
+            if (isPermanentRejection) {
+              throw new Error(`Sweep transaction rejected: ${reason}`);
+            }
+
+            // Temporary failure - retry if attempts remaining
+            if (attempt < MAX_BROADCAST_RETRIES) {
+              void DEBUG && console.warn(`[WalletService] Sweep broadcast attempt ${attempt} failed (${reason}), retrying...`);
+              await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
+              continue;
+            }
+
+            throw new Error(reason || 'Sweep broadcast rejected by network');
+          } catch (broadcastError: any) {
+            if (broadcastError.name === 'AbortError') {
+              throw new Error('Sweep transaction broadcast timed out');
+            }
+
+            // Store failed transaction for potential recovery
+            if (attempt === MAX_BROADCAST_RETRIES) {
+              this.storePendingTransaction(txHash, txBlob, 'failed');
+              throw broadcastError;
+            }
+
+            // Wait before retry
+            await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
+          }
         }
-
-        const broadcastResult = await broadcastResponse.json();
-
-        if (broadcastResult.status !== 'OK') {
-          throw new Error(broadcastResult.reason || broadcastResult.error || 'Sweep broadcast rejected by network');
-        }
-
-        txHashes.push(txHash);
       }
 
       return txHashes;
@@ -1596,6 +1802,11 @@ export class WalletService {
       throw new Error('Wallet not initialized');
     }
 
+    // Clear WASM HTTP cache to ensure fresh output distribution
+    if (this.wasmModule?.clear_http_cache) {
+      this.wasmModule.clear_http_cache();
+    }
+
     const MIXIN = 15; // Ring size 16 - 1
     const INPUTS_ESTIMATE = 60; // Estimate max inputs to ensure enough decoys
 
@@ -1609,7 +1820,7 @@ export class WalletService {
       await this.injectJsonRpcResponses();
 
       // Step 1: Pre-fetch and inject forced decoys (Server-side selection)
-      const response = await fetch('/vault/api/wallet/get_random_outs', {
+      const response = await fetch('/api/wallet/get_random_outs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1697,24 +1908,84 @@ export class WalletService {
       const txBlob = result.transactions[0].tx_blob;
       const returnTxHash = result.transactions[0].tx_hash;
 
-      // Step 3: Broadcast the return transaction
-      const broadcastResponse = await fetch('/vault/api/wallet/sendrawtransaction', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tx_as_hex: txBlob })
-      });
+      // Step 3: Broadcast the return transaction with retry mechanism
+      const MAX_BROADCAST_RETRIES = 3;
+      const BROADCAST_RETRY_DELAY = 2000; // 2 seconds
 
-      if (!broadcastResponse.ok) {
-        throw new Error(`Broadcast failed: HTTP ${broadcastResponse.status}`);
+      for (let attempt = 1; attempt <= MAX_BROADCAST_RETRIES; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+
+          // Ensure CSRF token is available before transaction broadcast
+          await ensureCsrfToken();
+
+          const broadcastResponse = await fetch('/api/wallet/sendrawtransaction', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...getCsrfHeaders(),
+            },
+            body: JSON.stringify({ tx_as_hex: txBlob }),
+            signal: controller.signal
+          });
+
+          clearTimeout(timeoutId);
+
+          // Handle CSRF token rejection
+          if (broadcastResponse.status === 403) {
+            invalidateCsrfToken();
+            throw new Error('CSRF token expired - please retry the transaction');
+          }
+
+          if (!broadcastResponse.ok) {
+            throw new Error(`Return broadcast failed: HTTP ${broadcastResponse.status}`);
+          }
+
+          const broadcastResult = await broadcastResponse.json();
+
+          if (broadcastResult.status === 'OK') {
+            // Success - store pending transaction for recovery
+            this.storePendingTransaction(returnTxHash, txBlob, 'broadcast');
+            return returnTxHash;
+          }
+
+          // Check if rejection is permanent (invalid tx) vs temporary (network)
+          const reason = broadcastResult.reason || broadcastResult.error || '';
+          const isPermanentRejection = reason.includes('double spend') ||
+            reason.includes('invalid') ||
+            reason.includes('already in') ||
+            reason.includes('too big');
+
+          if (isPermanentRejection) {
+            throw new Error(`Return transaction rejected: ${reason}`);
+          }
+
+          // Temporary failure - retry if attempts remaining
+          if (attempt < MAX_BROADCAST_RETRIES) {
+            void DEBUG && console.warn(`[WalletService] Return broadcast attempt ${attempt} failed (${reason}), retrying...`);
+            await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
+            continue;
+          }
+
+          throw new Error(reason || 'Return broadcast rejected by network');
+        } catch (broadcastError: any) {
+          if (broadcastError.name === 'AbortError') {
+            throw new Error('Return transaction broadcast timed out');
+          }
+
+          // Store failed transaction for potential recovery
+          if (attempt === MAX_BROADCAST_RETRIES) {
+            this.storePendingTransaction(returnTxHash, txBlob, 'failed');
+            throw broadcastError;
+          }
+
+          // Wait before retry
+          await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
+        }
       }
 
-      const broadcastResult = await broadcastResponse.json();
-
-      if (broadcastResult.status !== 'OK') {
-        throw new Error(broadcastResult.reason || broadcastResult.error || 'Return broadcast rejected by network');
-      }
-
-      return returnTxHash;
+      throw new Error('Return transaction broadcast failed after all retries');
 
     } catch (e) {
       throw e;
@@ -1744,7 +2015,7 @@ export class WalletService {
 
     let response: Response;
     try {
-      response = await fetch('/vault/api/wallet/get_outs.bin', {
+      response = await fetch('/api/wallet/get_outs.bin', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/octet-stream'
@@ -1879,7 +2150,7 @@ export class WalletService {
 
     // Fetch outputs from server - use the new endpoint that accepts JSON and returns binary
     // Use JSON endpoint and let WASM construct the binary (bypasses daemon binary format issues)
-    const response = await fetch('/vault/api/wallet/get_outs', {
+    const response = await fetch('/api/wallet/get_outs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1936,7 +2207,7 @@ export class WalletService {
   // Helper to fetch real RPC data
   private async fetchRpc(method: string, params: any = {}): Promise<any> {
     try {
-      const response = await fetch('/vault/api/wallet-rpc/json_rpc', {
+      const response = await fetch('/api/wallet-rpc/json_rpc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2061,7 +2332,7 @@ export class WalletService {
     try {
 
       // Use the existing JSON endpoint - it returns unwrapped result
-      const response = await fetch('/vault/api/wallet/get_output_distribution', {
+      const response = await fetch('/api/wallet/get_output_distribution', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2111,7 +2382,7 @@ export class WalletService {
    */
   private async getDaemonHeight(): Promise<number> {
     try {
-      const response = await fetch('/vault/api/wallet-rpc/get_info');
+      const response = await fetch('/api/wallet-rpc/get_info');
       if (response.ok) {
         const info = await response.json();
         // Handle both direct JSON and RPC result format
@@ -2510,7 +2781,7 @@ export class WalletService {
       const BATCH_SIZE = 50000;
 
       while (true) {
-        const response = await fetch('/vault/api/wallet/get-spent-index', {
+        const response = await fetch('/api/wallet/get-spent-index', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ start_height: startHeight, max_items: BATCH_SIZE })
@@ -2559,7 +2830,7 @@ export class WalletService {
     return new Promise(async (resolve) => {
       // Check if worker file is accessible first
       try {
-        const response = await fetch('/vault/wallet/seed-validator.worker.js', { method: 'HEAD' });
+        const response = await fetch('/wallet/seed-validator.worker.js', { method: 'HEAD' });
         if (!response.ok) {
           resolve({ valid: false, error: `Worker file not found (Status ${response.status})` });
           return;
@@ -2568,7 +2839,7 @@ export class WalletService {
         // Ignore fetch error, let Worker try
       }
 
-      const worker = new Worker('/vault/wallet/seed-validator.worker.js');
+      const worker = new Worker('/wallet/seed-validator.worker.js');
 
       // Timeout after 30 seconds to prevent infinite hang
       const timeout = setTimeout(() => {
@@ -2605,7 +2876,7 @@ export class WalletService {
         type: 'VALIDATE',
         payload: {
           mnemonic,
-          wasmPath: '/vault/wallet' // Base path for WASM files
+          wasmPath: '/wallet' // Base path for WASM files
         },
         id: Date.now()
       });
@@ -2847,7 +3118,7 @@ export class WalletService {
   private connectBlockStream(): void {
     if (this.blockStreamConnection) return;
 
-    const url = '/vault/api/wallet/block-stream';
+    const url = '/api/wallet/block-stream';
     const wasReconnecting = this.sseDisconnectTime > 0;
     const disconnectDuration = wasReconnecting ? Date.now() - this.sseDisconnectTime : 0;
 
@@ -2960,7 +3231,7 @@ export class WalletService {
    */
   private async fetchCurrentHeightForGapDetection(): Promise<number> {
     try {
-      const response = await fetchWithTimeout('/vault/api/daemon/info', {}, 10000);
+      const response = await fetchWithTimeout('/api/daemon/info', {}, 10000);
       if (response.ok) {
         const data = await response.json();
         return data.height || 0;
@@ -3034,7 +3305,7 @@ export class WalletService {
     if (this.mempoolStreamConnection || this.mempoolReconnecting) return;
 
     this.mempoolReconnecting = true;
-    const url = '/vault/api/mempool-stream';
+    const url = '/api/mempool-stream';
 
     try {
       this.mempoolStreamConnection = new EventSource(url);
@@ -3268,7 +3539,7 @@ export class WalletService {
 
     // 5. Test backend APIs
     try {
-      const response = await fetch('/vault/api/debug/tx_troubleshoot', {
+      const response = await fetch('/api/debug/tx_troubleshoot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ test: 'all' })

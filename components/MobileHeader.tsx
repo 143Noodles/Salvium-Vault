@@ -38,7 +38,7 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
                 {/* Left: Logo & Title */}
                 <div className="flex items-center gap-2.5">
                     <img
-                        src="/vault/assets/img/salvium.png"
+                        src="/assets/img/salvium.png"
                         alt="Salvium"
                         className="w-7 h-7"
                     />

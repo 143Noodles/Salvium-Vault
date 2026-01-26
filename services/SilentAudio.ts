@@ -11,6 +11,9 @@
  * - Mobile: Only during scans (avoids battery drain & audio conflicts)
  */
 
+// PRODUCTION: Set to false to suppress verbose debug logs
+const DEBUG = false;
+
 let audioContext: AudioContext | null = null;
 let oscillator: OscillatorNode | null = null;
 let gainNode: GainNode | null = null;
@@ -35,7 +38,7 @@ function initAudioContext(): AudioContext | null {
     // Create audio context (with webkit prefix for older Safari)
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) {
-      console.warn('[SilentAudio] Web Audio API not supported');
+      void DEBUG && console.warn('[SilentAudio] Web Audio API not supported');
       return null;
     }
 
@@ -57,7 +60,7 @@ function initAudioContext(): AudioContext | null {
 
     return audioContext;
   } catch (err) {
-    console.warn('[SilentAudio] Failed to create AudioContext:', err);
+    void DEBUG && console.warn('[SilentAudio] Failed to create AudioContext:', err);
     return null;
   }
 }
@@ -87,7 +90,7 @@ export async function startSilentAudio(): Promise<boolean> {
     isPlaying = true;
     return true;
   } catch (err: any) {
-    console.warn('[SilentAudio] Could not start:', err?.message || err);
+    void DEBUG && console.warn('[SilentAudio] Could not start:', err?.message || err);
     return false;
   }
 }

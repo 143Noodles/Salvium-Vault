@@ -11,6 +11,9 @@
  * v5.50.0: Added ScanJournal for reliable scan state persistence
  */
 
+// PRODUCTION: Set to false to suppress verbose debug logs
+const DEBUG = false;
+
 // Note: walletService is imported lazily inside methods to avoid circular dependency
 // at module initialization time
 
@@ -124,7 +127,7 @@ async function acquireWakeLock(): Promise<void> {
       });
     } catch (err: any) {
       // Wake lock request failed (low battery, not visible, etc.)
-      console.warn('[CSPScanService] Wake lock unavailable:', err?.message || err);
+      void DEBUG && console.warn('[CSPScanService] Wake lock unavailable:', err?.message || err);
     }
   }
 }
@@ -399,8 +402,8 @@ class CSPScanService {
       // Step 1: Check for interruption with in-progress chunks
       const interruptCheck = await wasInterrupted(walletAddress);
       if (interruptCheck.interrupted && interruptCheck.inProgressChunks.length > 0) {
-        console.error(`[CSPScanService] CRITICAL: Found ${interruptCheck.inProgressChunks.length} chunks in-progress at interruption`);
-        console.error('[CSPScanService] These chunks may have partial/corrupted data - forcing full rescan');
+        void DEBUG && console.error(`[CSPScanService] CRITICAL: Found ${interruptCheck.inProgressChunks.length} chunks in-progress at interruption`);
+        void DEBUG && console.error('[CSPScanService] These chunks may have partial/corrupted data - forcing full rescan');
 
         // Clear all state and force fresh start
         await forceCleanSlate(walletAddress);
@@ -438,12 +441,12 @@ class CSPScanService {
       if (this.scanner) {
         const workersHealthy = await this.scanner.verifyWorkerHealth();
         if (!workersHealthy) {
-          console.warn('[CSPScanService] Workers unhealthy - attempting reinit');
+          void DEBUG && console.warn('[CSPScanService] Workers unhealthy - attempting reinit');
           await this.scanner.reinitializeWorkers();
 
           const recheckHealthy = await this.scanner.verifyWorkerHealth();
           if (!recheckHealthy) {
-            console.error('[CSPScanService] Workers still unhealthy after reinit - forcing full rescan');
+            void DEBUG && console.error('[CSPScanService] Workers still unhealthy after reinit - forcing full rescan');
             await forceCleanSlate(walletAddress);
 
             return {
@@ -467,7 +470,7 @@ class CSPScanService {
         if (wallet) {
           const addr = wallet.get_address();
           if (typeof addr !== 'string' || addr.length === 0) {
-            console.error('[CSPScanService] WASM wallet state invalid - forcing full rescan');
+            void DEBUG && console.error('[CSPScanService] WASM wallet state invalid - forcing full rescan');
             await forceCleanSlate(walletAddress);
 
             return {
@@ -482,7 +485,7 @@ class CSPScanService {
           }
         }
       } catch (e) {
-        console.error('[CSPScanService] Failed to validate WASM wallet - forcing full rescan');
+        void DEBUG && console.error('[CSPScanService] Failed to validate WASM wallet - forcing full rescan');
         await forceCleanSlate(walletAddress);
 
         return {
@@ -523,7 +526,7 @@ class CSPScanService {
 
     } catch (error) {
       // ANY error during validation = force full rescan
-      console.error('[CSPScanService] Error during resume validation - forcing full rescan:', error);
+      void DEBUG && console.error('[CSPScanService] Error during resume validation - forcing full rescan:', error);
       try {
         await forceCleanSlate(walletAddress);
       } catch {
@@ -573,7 +576,7 @@ class CSPScanService {
 
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = '/vault/wallet/CSPScanner.js?v=5.49.1';
+      script.src = '/wallet/CSPScanner.js?v=5.49.1';
       script.async = true;
 
       script.onload = () => {
@@ -594,7 +597,7 @@ class CSPScanService {
    */
   async getNetworkHeight(): Promise<number> {
     try {
-      const response = await fetchWithTimeout('/vault/api/daemon/info', {}, 15000);
+      const response = await fetchWithTimeout('/api/daemon/info', {}, 15000);
       if (response.ok) {
         const data = await response.json();
         return data.height || 0;
@@ -627,7 +630,7 @@ class CSPScanService {
    */
   private async fetchStakeReturnHeights(minHeight: number, maxHeight: number): Promise<number[]> {
     try {
-      const response = await fetchWithTimeout(`/vault/api/wallet/stake-return-heights?min=${minHeight}&max=${maxHeight}`, {}, 30000);
+      const response = await fetchWithTimeout(`/api/wallet/stake-return-heights?min=${minHeight}&max=${maxHeight}`, {}, 30000);
       if (!response.ok) {
         throw new Error(`Failed to fetch stake return heights: ${response.status}`);
       }
@@ -706,7 +709,7 @@ class CSPScanService {
         cleanupOldJournals(walletAddressForJournal, 7).catch(() => {});
       }
     } catch (e) {
-      console.warn('[CSPScanService] Failed to start scan journal:', e);
+      void DEBUG && console.warn('[CSPScanService] Failed to start scan journal:', e);
       // Continue without journal - not critical
     }
 
@@ -912,7 +915,7 @@ class CSPScanService {
       subaddressMapCsv,
       returnAddressesCsv,
       stakeReturnHeights,
-      apiBaseUrl: '/vault',
+      apiBaseUrl: '',
       // Auto-tuning: start small, ramp up to max as device allows
       autoTune: true,
       maxWorkerCount,
@@ -985,7 +988,7 @@ class CSPScanService {
         // Flush immediately after phase 1 completes
         await flushPendingUpdates();
       } catch (e) {
-        console.warn('[CSPScanService] Failed to record scanned chunks:', e);
+        void DEBUG && console.warn('[CSPScanService] Failed to record scanned chunks:', e);
       }
     }
 
@@ -1101,7 +1104,7 @@ class CSPScanService {
 
               let response: Response;
               try {
-                response = await fetchWithTimeout('/vault/api/wallet/get-spent-index', {
+                response = await fetchWithTimeout('/api/wallet/get-spent-index', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ start_height: currentHeight, max_items: BATCH_SIZE })
@@ -1288,7 +1291,7 @@ class CSPScanService {
       try {
         await completeScanJournal(this.currentScanId, endHeight);
       } catch (e) {
-        console.warn('[CSPScanService] Failed to complete scan journal:', e);
+        void DEBUG && console.warn('[CSPScanService] Failed to complete scan journal:', e);
       }
     }
 
@@ -1603,7 +1606,7 @@ class CSPScanService {
 
             if (reqChunks.length === 0) continue;
 
-            const p = fetch('/vault/api/wallet/batch-sparse-txs', {
+            const p = fetch('/api/wallet/batch-sparse-txs', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ chunks: reqChunks })
@@ -1915,7 +1918,7 @@ class CSPScanService {
 
     // Phase 3a: Register stake return info (ALWAYS run - catches new stakes)
     try {
-      const stakeResponse = await fetchWithTimeout('/vault/api/wallet/stake-cache?v=5.1.6', {}, 30000);
+      const stakeResponse = await fetchWithTimeout('/api/wallet/stake-cache?v=5.1.6', {}, 30000);
       if (stakeResponse.ok) {
         const stakeData = await stakeResponse.json();
         if (stakeData.success && stakeData.stakes && Array.isArray(stakeData.stakes)) {
@@ -2148,7 +2151,7 @@ class CSPScanService {
 
         let response: Response;
         try {
-          response = await fetchWithTimeout('/vault/api/wallet/sparse-by-heights', {
+          response = await fetchWithTimeout('/api/wallet/sparse-by-heights', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ heights: batchHeights })
@@ -2295,7 +2298,7 @@ class CSPScanService {
 
         let response: Response;
         try {
-          response = await fetchWithTimeout('/vault/api/wallet/sparse-by-heights', {
+          response = await fetchWithTimeout('/api/wallet/sparse-by-heights', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ heights: batchHeights })

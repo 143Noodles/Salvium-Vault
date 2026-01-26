@@ -5,8 +5,8 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig(() => {
   return {
-    // Base path - served under /vault/ path
-    base: '/vault/',
+    // Base path - root since vault is on its own subdomain
+    base: '/',
     server: {
       port: 3000,
       host: '0.0.0.0',
@@ -16,7 +16,7 @@ export default defineConfig(() => {
       {
         name: 'serve-wallet-files',
         configureServer(server) {
-          server.middlewares.use('/vault/wallet', (req, res, next) => {
+          server.middlewares.use('/wallet', (req, res, next) => {
             const url = req.url.split('?')[0];
             const filePath = path.join(__dirname, 'wallet', url);
 

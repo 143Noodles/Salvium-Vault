@@ -34,7 +34,7 @@ const swStatus: ServiceWorkerStatus = {
 // Register service worker for offline support
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/vault/sw.js')
+    navigator.serviceWorker.register('/sw.js')
       .then((registration) => {
         void 0 && console.log('[SW] Service worker registered:', registration.scope);
         swStatus.registered = true;

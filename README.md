@@ -6,7 +6,7 @@ A secure, non-custodial web wallet for the [Salvium](https://salvium.io) cryptoc
 
 Salvium Vault is a fully client-side wallet that lets you create, manage, and transact with SAL without trusting a third party with your keys. All cryptographic operations happen locally in your browser using WebAssembly compiled from Salvium's C++ codebase.
 
-**Live Site:** [https://salvium.tools/vault](https://salvium.tools/vault)
+**Live Site:** [https://vault.salvium.tools](https://vault.salvium.tools)
 
 ## Features
 
@@ -142,7 +142,7 @@ cd wasm-build
 
 ### Security Considerations
 
-- Always verify you're on the official site (https://salvium.tools/vault)
+- Always verify you're on the official site (https://vault.salvium.tools)
 - Never share your seed phrase with anyone
 - Use biometric unlock only on trusted devices
 - Keep your browser and OS up to date
@@ -155,7 +155,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - [Salvium Website](https://salvium.io)
 - [Salvium GitHub](https://github.com/salvium)
-- [Live Wallet](https://salvium.tools/vault)
+- [Live Wallet](https://vault.salvium.tools)
 
 ---
 

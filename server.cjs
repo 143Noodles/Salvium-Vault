@@ -63,7 +63,7 @@ const corsOptions = {
 const rateLimitStore = new Map();
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute window
 const RATE_LIMIT_MAX_REQUESTS = 300; // 300 requests per minute for general endpoints
-const RATE_LIMIT_TX_MAX = 10; // 10 transaction broadcasts per minute
+const RATE_LIMIT_TX_MAX = 500; // 500 transaction broadcasts per minute
 const RATE_LIMIT_CLEANUP_INTERVAL = 300000; // Clean up every 5 minutes
 
 // Clean up old rate limit entries periodically
@@ -155,7 +155,11 @@ function validateCsrfToken(token, sessionId) {
         csrfTokens.delete(token);
         return false;
     }
-    // Token is valid
+    // SECURITY: Verify token is bound to the correct session
+    if (data.sessionId !== sessionId) {
+        return false;
+    }
+    // Token is valid and session-bound
     return true;
 }
 
@@ -4036,6 +4040,303 @@ app.get(['/api/daemon/info', '/vault/api/daemon/info'], async (req, res) => {
     } catch (err) {
         console.error('[daemon/info] Error:', err.message);
         res.status(500).json({ error: err.message, height: 0 });
+    }
+});
+
+// ============================================================================
+// Price Proxy - Fetches SAL price from explorer.salvium.tools (which caches MEXC data)
+// CRITICAL: This endpoint must NEVER block wallet loading. Always returns quickly
+// with cached/fallback price if live APIs are unavailable.
+// PRIMARY: explorer.salvium.tools/api/price (fast, already cached)
+// FALLBACK: MEXC direct, then CoinGecko
+// ============================================================================
+let cachedPrice = { price: 0.15, timestamp: 0, source: 'fallback' }; // Fallback price
+
+app.get(['/api/price', '/vault/api/price'], async (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Cache-Control', 'public, max-age=60'); // Cache for 60 seconds
+
+    // Helper to return cached price with staleness indicator
+    const returnCachedPrice = (reason) => {
+        const ageMs = Date.now() - cachedPrice.timestamp;
+        const isStale = ageMs > 5 * 60 * 1000; // Stale if > 5 minutes old
+        return res.json({
+            success: true,
+            price: cachedPrice.price,
+            source: cachedPrice.source + (isStale ? '-stale' : '-cached'),
+            symbol: 'SALUSDT',
+            timestamp: cachedPrice.timestamp || Date.now(),
+            cached: true,
+            stale: isStale,
+            reason: reason
+        });
+    };
+
+    // PRIMARY: Try explorer.salvium.tools first (fast, already caches MEXC data)
+    try {
+        const explorerResponse = await axiosInstance.get('https://explorer.salvium.tools/api/price', {
+            timeout: 3000  // 3 second timeout - explorer is usually very fast
+        });
+
+        if (explorerResponse.data && explorerResponse.data.price) {
+            const price = parseFloat(explorerResponse.data.price);
+            if (!isNaN(price) && price > 0) {
+                // Update cache
+                cachedPrice = { price, timestamp: Date.now(), source: 'explorer' };
+                return res.json({
+                    success: true,
+                    price: price,
+                    source: 'explorer',
+                    symbol: 'SALUSDT',
+                    timestamp: Date.now()
+                });
+            }
+        }
+    } catch (explorerErr) {
+        console.error('[price] Explorer failed:', explorerErr.message);
+    }
+
+    // FALLBACK 1: Try MEXC direct with short timeout (2 seconds)
+    try {
+        const mexcResponse = await axiosInstance.get('https://api.mexc.com/api/v3/ticker/price?symbol=SALUSDT', {
+            timeout: 2000
+        });
+
+        if (mexcResponse.data && mexcResponse.data.price) {
+            const price = parseFloat(mexcResponse.data.price);
+            // Update cache
+            cachedPrice = { price, timestamp: Date.now(), source: 'mexc' };
+            return res.json({
+                success: true,
+                price: price,
+                source: 'mexc',
+                symbol: 'SALUSDT',
+                timestamp: Date.now()
+            });
+        }
+    } catch (mexcErr) {
+        console.error('[price] MEXC failed:', mexcErr.message);
+    }
+
+    // FALLBACK 2: Try CoinGecko with short timeout (2 seconds)
+    try {
+        const cgResponse = await axiosInstance.get('https://api.coingecko.com/api/v3/simple/price?ids=salvium&vs_currencies=usd', {
+            timeout: 2000
+        });
+
+        if (cgResponse.data && cgResponse.data.salvium && cgResponse.data.salvium.usd) {
+            const price = cgResponse.data.salvium.usd;
+            // Update cache
+            cachedPrice = { price, timestamp: Date.now(), source: 'coingecko' };
+            return res.json({
+                success: true,
+                price: price,
+                source: 'coingecko',
+                symbol: 'SAL/USD',
+                timestamp: Date.now()
+            });
+        }
+    } catch (cgErr) {
+        console.error('[price] CoinGecko failed:', cgErr.message);
+    }
+
+    // CRITICAL: Never fail - always return cached/fallback price
+    // This prevents wallet from getting stuck on "Initializing wallet..."
+    return returnCachedPrice('all_apis_failed');
+});
+
+// ============================================================================
+// Price History - Persistent Caching with MEXC Data Accumulation
+// ============================================================================
+
+// Helper: Fetch MEXC klines with pagination for historical data
+async function fetchMEXCKlines(symbol, interval, startTime, endTime) {
+    const allKlines = [];
+    const maxCandlesPerRequest = 1000;
+    const intervalMs = interval === '60m' || interval === '1h' ? 60 * 60 * 1000 :
+        interval === '1d' ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
+    let currentStartTime = startTime;
+    const totalHours = Math.ceil((endTime - startTime) / (60 * 60 * 1000));
+    let requestCount = 0;
+
+    console.log(`[MEXC] Starting fetch: ${totalHours} hours total, will need ~${Math.ceil(totalHours / maxCandlesPerRequest)} requests`);
+
+    while (currentStartTime < endTime) {
+        const currentEndTime = Math.min(currentStartTime + (maxCandlesPerRequest * intervalMs), endTime);
+        requestCount++;
+
+        try {
+            const response = await axiosInstance.get('https://api.mexc.com/api/v3/klines', {
+                params: {
+                    symbol: symbol,
+                    interval: interval,
+                    startTime: currentStartTime,
+                    endTime: currentEndTime,
+                    limit: maxCandlesPerRequest
+                },
+                timeout: 30000
+            });
+
+            if (response.data && Array.isArray(response.data) && response.data.length > 0) {
+                allKlines.push(...response.data);
+                const progress = Math.min(100, Math.round((allKlines.length / totalHours) * 100));
+                console.log(`[MEXC] Request ${requestCount}: Fetched ${response.data.length} candles, total: ${allKlines.length}/${totalHours} (${progress}%)`);
+
+                const lastCandleCloseTime = response.data[response.data.length - 1][6];
+                currentStartTime = lastCandleCloseTime + intervalMs;
+
+                await new Promise(resolve => setTimeout(resolve, 100));
+            } else {
+                console.log(`[MEXC] No more data available after ${allKlines.length} candles`);
+                break;
+            }
+        } catch (error) {
+            console.error(`[MEXC] Error fetching klines (request ${requestCount}):`, error.message);
+            if (error.response) {
+                const errorData = error.response.data;
+                if (errorData && (errorData.code === -1121 ||
+                    errorData.msg?.includes('Invalid symbol') ||
+                    errorData.msg?.includes('Invalid interval'))) {
+                    console.error(`[MEXC] Invalid parameter error - stopping fetch.`);
+                    break;
+                }
+            }
+            currentStartTime = currentEndTime;
+        }
+    }
+
+    console.log(`[MEXC] Fetch complete: ${allKlines.length} total candles from ${requestCount} requests`);
+    return allKlines;
+}
+
+// Helper: Get full price history from MEXC with persistent caching
+// Fetches all data from listing date and appends new data over time
+async function getFullPriceHistory() {
+    try {
+        const symbol = 'SALUSDT';
+        const interval = '60m';
+        const LISTING_DATE_TIMESTAMP = new Date('2025-04-20T00:00:00Z').getTime();
+
+        let fullHistory = [];
+        let cachedFullHistory = await getCached('price-history-full');
+        let needsFullRebuild = true;
+
+        if (cachedFullHistory && Array.isArray(cachedFullHistory) && cachedFullHistory.length > 0) {
+            const firstPointTime = cachedFullHistory[0][0];
+            if (firstPointTime < new Date('2025-01-01').getTime()) {
+                console.log(`[Price History] Cached data contains pre-2025 data. Discarding.`);
+                needsFullRebuild = true;
+            } else {
+                fullHistory = cachedFullHistory;
+                needsFullRebuild = false;
+                console.log(`[Price History] Using cached MEXC history: ${fullHistory.length} points`);
+            }
+        }
+
+        let startTime = LISTING_DATE_TIMESTAMP;
+
+        if (!needsFullRebuild && fullHistory.length > 0) {
+            const lastPoint = fullHistory[fullHistory.length - 1];
+            startTime = lastPoint[0] + (60 * 60 * 1000);
+        } else {
+            console.log(`[Price History] Starting fresh fetch from MEXC (from April 2025)...`);
+            fullHistory = [];
+            startTime = LISTING_DATE_TIMESTAMP;
+        }
+
+        const endTime = Date.now();
+        const hoursGap = (endTime - startTime) / (60 * 60 * 1000);
+
+        if (hoursGap > 2) {
+            console.log(`[Price History] Fetching gap from ${new Date(startTime).toISOString()} to ${new Date(endTime).toISOString()} (${hoursGap.toFixed(1)} hours)`);
+
+            const newKlines = await fetchMEXCKlines(symbol, interval, startTime, endTime);
+
+            if (newKlines && newKlines.length > 0) {
+                const newData = newKlines.map(kline => [kline[0], parseFloat(kline[4])]);
+
+                const dataMap = new Map();
+                fullHistory.forEach(item => dataMap.set(item[0], item[1]));
+                newData.forEach(item => dataMap.set(item[0], item[1]));
+
+                fullHistory = Array.from(dataMap.entries())
+                    .map(([ts, price]) => [ts, price])
+                    .sort((a, b) => a[0] - b[0]);
+
+                console.log(`[Price History] Updated cache: ${newData.length} new points merged. Total: ${fullHistory.length}`);
+
+                await setCached('price-history-full', fullHistory, 0);
+            } else {
+                console.log(`[Price History] No new data from MEXC.`);
+            }
+        } else {
+            console.log(`[Price History] Data is up to date.`);
+        }
+
+        return fullHistory;
+    } catch (error) {
+        console.error('Error fetching full price history from MEXC:', error.message);
+        return await getCached('price-history-full') || [];
+    }
+}
+
+// ============================================================================
+// Price History Endpoint - Returns full persistent cache
+// ============================================================================
+app.get(['/api/price-history', '/vault/api/price-history'], async (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Cache-Control', 'public, max-age=300');
+
+    // PRIMARY: Try explorer.salvium.tools first (fast, already caches MEXC data)
+    try {
+        const explorerResponse = await axiosInstance.get('https://explorer.salvium.tools/api/price-history', {
+            timeout: 10000  // 10 second timeout for history data
+        });
+
+        if (explorerResponse.data && explorerResponse.data.data && explorerResponse.data.data.length > 0) {
+            const historyData = explorerResponse.data.data;
+            return res.json({
+                success: true,
+                data: historyData,
+                source: 'explorer',
+                symbol: 'SALUSDT',
+                interval: '60m',
+                count: historyData.length,
+                firstTimestamp: historyData[0][0],
+                lastTimestamp: historyData[historyData.length - 1][0],
+                timestamp: Date.now()
+            });
+        }
+    } catch (explorerErr) {
+        console.error('[price-history] Explorer failed:', explorerErr.message);
+    }
+
+    // FALLBACK: Try MEXC cached data
+    try {
+        const fullHistory = await getFullPriceHistory();
+
+        if (fullHistory && fullHistory.length > 0) {
+            return res.json({
+                success: true,
+                data: fullHistory,
+                source: 'mexc-cached',
+                symbol: 'SALUSDT',
+                interval: '60m',
+                count: fullHistory.length,
+                firstTimestamp: fullHistory[0][0],
+                lastTimestamp: fullHistory[fullHistory.length - 1][0],
+                timestamp: Date.now()
+            });
+        }
+
+        throw new Error('No price history available');
+    } catch (err) {
+        console.error('[price-history] Failed:', err.message);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to fetch price history',
+            message: err.message 
+        });
     }
 });
 
@@ -8123,6 +8424,46 @@ if (true) {
                 startBlockCacheSync();
 
                 console.log('\n✅ [Vault] Startup complete - wallet-only mode (no Explorer features)');
+
+                // ============================================================================
+                // Price History - Hourly background updates
+                // ============================================================================
+                console.log('[Price History] Setting up hourly background updates...');
+                
+                // Initial fetch on startup
+                (async () => {
+                    try {
+                        console.log('[Price History] Initial fetch on startup...');
+                        await getFullPriceHistory();
+                    } catch (err) {
+                        console.error('[Price History] Error during initial fetch:', err.message);
+                    }
+                })();
+
+                // Hourly updates
+                setInterval(async () => {
+                    try {
+                        const cachedPriceHistory = await getCached('price-history-full');
+                        if (cachedPriceHistory && Array.isArray(cachedPriceHistory) && cachedPriceHistory.length > 0) {
+                            const lastDataTimestamp = cachedPriceHistory[cachedPriceHistory.length - 1][0];
+                            const lastDataDate = new Date(lastDataTimestamp);
+                            const now = new Date();
+                            const hoursSinceLastData = (now - lastDataDate) / (60 * 60 * 1000);
+
+                            if (hoursSinceLastData >= 1) {
+                                console.log(`[Price History] Hourly update: last data is ${hoursSinceLastData.toFixed(1)}h old, fetching new candles...`);
+                                await getFullPriceHistory();
+                            } else {
+                                console.log(`[Price History] Hourly update: data is current (${hoursSinceLastData.toFixed(1)}h old), skipping`);
+                            }
+                        } else {
+                            console.log('[Price History] Hourly update: no cache found, fetching...');
+                            await getFullPriceHistory();
+                        }
+                    } catch (err) {
+                        console.error('[Price History] Error during hourly update:', err.message);
+                    }
+                }, 60 * 60 * 1000); // Run every hour
 
             } catch (err) {
                 console.error('Error during cache pre-load:', err.message);

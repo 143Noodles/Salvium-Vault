@@ -75,7 +75,7 @@ export const Card: React.FC<{ children: React.ReactNode; className?: string }> =
 export const Logo: React.FC<{ size?: 'sm' | 'lg' }> = ({ size = 'lg' }) => (
   <div className={`flex items-center gap-3 ${size === 'lg' ? 'mb-8' : ''}`}>
     <img 
-      src="/vault/assets/img/salvium.png" 
+      src="/assets/img/salvium.png" 
       alt="Salvium" 
       className={`${size === 'lg' ? 'w-10 h-10' : 'w-8 h-8'}`}
     />
