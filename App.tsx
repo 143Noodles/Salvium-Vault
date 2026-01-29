@@ -494,37 +494,11 @@ const AppContent: React.FC = () => {
   }
 
   if (!appState || appState === 'initializing') {
-    const initialScanComplete = localStorage.getItem('salvium_initial_scan_complete');
     return (
-      <div className="min-h-screen bg-bg-primary text-text-primary p-8">
-        <div className="max-w-2xl mx-auto">
-          <h1 className="text-2xl font-bold mb-4">🐛 Debug: App State</h1>
-          <div className="bg-bg-secondary p-4 rounded-lg space-y-2 font-mono text-sm">
-            <div>appState: <span className="text-accent-primary">{appState || 'null'}</span></div>
-            <div>isInitialized: <span className="text-accent-primary">{String(wallet.isInitialized)}</span></div>
-            <div>isLocked: <span className="text-accent-primary">{String(wallet.isLocked)}</span></div>
-            <div>isWalletReady: <span className="text-accent-primary">{String(wallet.isWalletReady)}</span></div>
-            <div>needsRecovery: <span className="text-accent-primary">{String(wallet.needsRecovery)}</span></div>
-            <div>hasWallet (localStorage): <span className="text-accent-primary">{String(!!localStorage.getItem('salvium_wallet_created'))}</span></div>
-            <div>initialScanComplete: <span className="text-accent-primary">{initialScanComplete || 'null'}</span></div>
-          </div>
-          <div className="mt-4 bg-bg-secondary p-4 rounded-lg">
-            <h2 className="font-bold mb-2">Init Log:</h2>
-            <div className="space-y-1 font-mono text-xs">
-              {wallet.initLog?.map((log, i) => (
-                <div key={i}>{log}</div>
-              )) || <div>No logs</div>}
-            </div>
-          </div>
-          <button
-            onClick={() => {
-              sessionStorage.clear();
-              window.location.reload();
-            }}
-            className="mt-4 px-4 py-2 bg-accent-primary text-white rounded-lg"
-          >
-            Clear Session & Reload
-          </button>
+      <div className="fixed inset-0 z-50 bg-bg-primary flex items-center justify-center h-[100dvh]">
+        <div className="flex flex-col items-center gap-4 p-6 max-w-sm text-center">
+          <div className="w-12 h-12 border-4 border-accent-primary border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-text-muted text-sm">Initializing wallet...</p>
         </div>
       </div>
     );

@@ -149,37 +149,28 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [promptTimedOut, setPromptTimedOut] = useState(false);
 
     useEffect(() => {
-        // Check if we already have a global prompt captured before mount
         if (globalDeferredPrompt && !deferredPromptRef.current) {
             deferredPromptRef.current = globalDeferredPrompt;
             setHasPrompt(true);
-            console.log('[PWA] Found existing global prompt on mount');
         }
 
-        // Handler for when the global listener captures the prompt
-        // This handles the race condition where the event fires before this useEffect runs
         const handleGlobalCapture = (e: any) => {
             deferredPromptRef.current = e;
             setHasPrompt(true);
-            console.log('[PWA] Notified of global prompt capture');
         };
         promptCallbacks.add(handleGlobalCapture);
 
-        // Also listen directly for future events
         const handleBeforeInstallPrompt = (e: any) => {
             e.preventDefault();
             globalDeferredPrompt = e;
             deferredPromptRef.current = e;
             setHasPrompt(true);
-            console.log('[PWA] beforeinstallprompt captured directly');
         };
 
         window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
-        // Set a timeout - if we don't get the prompt in 5 seconds, something's wrong
         const timeoutId = setTimeout(() => {
             if (!deferredPromptRef.current && !globalDeferredPrompt) {
-                console.warn('[PWA] Install prompt did not arrive within 5 seconds');
                 setPromptTimedOut(true);
             }
         }, 5000);
@@ -192,40 +183,22 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     }, []);
 
     const handleInstallClick = useCallback(async () => {
-        // Try ref first, fall back to global (handles any sync issues)
         const prompt = deferredPromptRef.current || globalDeferredPrompt;
-        console.log('[PWA] Install clicked, prompt available:', !!prompt, 'ref:', !!deferredPromptRef.current, 'global:', !!globalDeferredPrompt);
-        
+
         if (!prompt) {
-            console.warn('[PWA] No install prompt available. User may need to reload the page.');
-            // Try to alert the user
             alert('Installation prompt not available. Please reload the page and try again.');
             return;
         }
 
         try {
-            // Show the install prompt
-            console.log('[PWA] Calling prompt()...');
             await prompt.prompt();
-            
-            // Wait for the user's response
-            console.log('[PWA] Waiting for user choice...');
+
             const { outcome } = await prompt.userChoice;
-            console.log('[PWA] User choice:', outcome);
-            
-            // Clear the prompt - it can only be used once
+
             deferredPromptRef.current = null;
             globalDeferredPrompt = null;
             setHasPrompt(false);
-            
-            if (outcome === 'accepted') {
-                console.log('[PWA] User accepted installation');
-            } else {
-                console.log('[PWA] User dismissed installation');
-            }
         } catch (error) {
-            console.error('[PWA] Install prompt error:', error);
-            // Clear on error too - prompt is likely consumed
             deferredPromptRef.current = null;
             globalDeferredPrompt = null;
             setHasPrompt(false);

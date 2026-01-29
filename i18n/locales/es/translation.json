@@ -234,6 +234,19 @@
       "title": "Reiniciar Billetera",
       "description": "Eliminar datos de billetera y comenzar de nuevo. Asegúrate de tener tu frase semilla guardada.",
       "button": "Reiniciar"
+    },
+    "seedPhrase": {
+      "title": "Mostrar Frase Semilla",
+      "description": "Ver tu frase de recuperación de 25 palabras. Necesaria para restaurar tu billetera.",
+      "reveal": "Revelar",
+      "modalTitle": "Revelar Frase Semilla",
+      "modalDescription": "Ingresa tu contraseña de billetera para revelar tu frase de recuperación.",
+      "enterPassword": "Por favor ingresa tu contraseña",
+      "incorrectPassword": "Contraseña incorrecta. Por favor intenta de nuevo.",
+      "securityWarning": "Tu frase semilla es la llave maestra de tu billetera. Cualquier persona con acceso a ella puede robar tus fondos. Solo revélala en un entorno seguro y privado.",
+      "revealButton": "Revelar Frase Semilla",
+      "copySeed": "Copiar Frase Semilla",
+      "neverShare": "Nunca compartas tu frase semilla con nadie. El soporte de Salvium nunca la pedirá. Guárdala de forma segura sin conexión."
     }
   },
   "onboarding": {

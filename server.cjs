@@ -1,15 +1,9 @@
 /**
- * Salvium Vault Backend Server v5.22.2
- * 
- * v5.22.2 CRITICAL FIX: Asset-type-specific decoy selection
- * - get_random_outs now passes rct_asset_type to get_output_distribution
- * - get_random_outs now passes asset_type to /get_outs
- * - This fixes "Invalid input" transaction rejection for SAL1 transfers
- * - Root cause: Daemon validates rings using asset_type_output_index, not global indices
- * 
+ * Salvium Vault Backend Server
+ *
  * This server provides API endpoints for the Salvium web wallet.
  * Includes block caching, CSP generation, TXI indexing, and daemon RPC proxy.
- * 
+ *
  * Required Environment Variables:
  * - SALVIUM_RPC_URL: Salvium daemon RPC endpoint (default: http://seed01.salvium.io:19081)
  * - PORT: Server port (default: 3000)
@@ -28,7 +22,7 @@ const crypto = require('crypto');
 const isRender = process.env.RENDER === 'true';
 
 // ============================================================================
-// SECURITY: Secure random ID generation (replaces Math.random)
+// SECURITY: Secure random ID generation
 // ============================================================================
 function generateSecureId(length = 16) {
     return crypto.randomBytes(length).toString('hex');
@@ -43,18 +37,15 @@ const ALLOWED_ORIGINS = process.env.CORS_ORIGINS
 
 const corsOptions = {
     origin: function (origin, callback) {
-        // Allow requests with no origin (same-origin, mobile apps, curl)
         if (!origin) {
             return callback(null, true);
         }
-        // If whitelist is configured, check against it
         if (ALLOWED_ORIGINS) {
             if (ALLOWED_ORIGINS.includes(origin) || ALLOWED_ORIGINS.includes('*')) {
                 return callback(null, true);
             }
             return callback(new Error('CORS not allowed'), false);
         }
-        // Default: allow same-origin only (origin header won't be set for same-origin)
         return callback(null, true);
     },
     credentials: true,
@@ -72,7 +63,6 @@ const RATE_LIMIT_MAX_REQUESTS = 300; // 300 requests per minute for general endp
 const RATE_LIMIT_TX_MAX = 500; // 500 transaction broadcasts per minute
 const RATE_LIMIT_CLEANUP_INTERVAL = 300000; // Clean up every 5 minutes
 
-// Clean up old rate limit entries periodically
 setInterval(() => {
     const now = Date.now();
     for (const [key, data] of rateLimitStore.entries()) {
@@ -83,7 +73,6 @@ setInterval(() => {
 }, RATE_LIMIT_CLEANUP_INTERVAL);
 
 function getRateLimitKey(req) {
-    // Use X-Forwarded-For for proxied requests, fallback to IP
     const forwarded = req.headers['x-forwarded-for'];
     const ip = forwarded ? forwarded.split(',')[0].trim() : req.ip || req.connection.remoteAddress;
     return ip;
@@ -108,7 +97,6 @@ function checkRateLimit(req, maxRequests = RATE_LIMIT_MAX_REQUESTS) {
     return { limited: false, remaining: maxRequests - data.count, resetIn: RATE_LIMIT_WINDOW_MS - (now - data.windowStart) };
 }
 
-// Rate limiting middleware
 function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS) {
     return (req, res, next) => {
         const result = checkRateLimit(req, maxRequests);
@@ -128,7 +116,6 @@ function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS) {
     };
 }
 
-// Stricter rate limit for transaction endpoints
 const txRateLimit = rateLimitMiddleware(RATE_LIMIT_TX_MAX);
 const generalRateLimit = rateLimitMiddleware(RATE_LIMIT_MAX_REQUESTS);
 
@@ -138,7 +125,6 @@ const generalRateLimit = rateLimitMiddleware(RATE_LIMIT_MAX_REQUESTS);
 const csrfTokens = new Map();
 const CSRF_TOKEN_TTL = 3600000; // 1 hour
 
-// Clean up expired CSRF tokens
 setInterval(() => {
     const now = Date.now();
     for (const [token, data] of csrfTokens.entries()) {
@@ -161,26 +147,20 @@ function validateCsrfToken(token, sessionId) {
         csrfTokens.delete(token);
         return false;
     }
-    // SECURITY: Verify token is bound to the correct session
     if (data.sessionId !== sessionId) {
         return false;
     }
-    // Token is valid and session-bound
     return true;
 }
 
-// CSRF validation middleware for state-changing operations
 function csrfProtection(req, res, next) {
-    // Skip CSRF for GET, HEAD, OPTIONS
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
         return next();
     }
 
-    // Check for CSRF token in header
     const token = req.headers['x-csrf-token'];
     const sessionId = req.headers['x-session-id'] || 'anonymous';
 
-    // For transaction endpoints, require valid CSRF token
     if (req.path.includes('sendrawtransaction') || req.path.includes('submit_transfer')) {
         if (!token || !validateCsrfToken(token, sessionId)) {
             return res.status(403).json({ error: 'Invalid or missing CSRF token' });
@@ -190,12 +170,9 @@ function csrfProtection(req, res, next) {
     next();
 }
 
-// Dynamic agent pool sizing based on available CPU cores
 const os = require('os');
 const cpuCount = os.cpus().length;
-// Scale sockets: 8 per core for high concurrency, capped at 128
 const maxSocketsCalc = Math.min(Math.max(cpuCount * 8, 16), 128);
-// Free sockets: 25% of max, minimum 4
 const maxFreeSocketsCalc = Math.max(Math.floor(maxSocketsCalc * 0.25), 4);
 
 const httpAgent = new http.Agent({
@@ -617,9 +594,6 @@ async function initWasmModule() {
 
         console.log('🔧 [WASM] Loading server-side WASM module...');
 
-        // ============================================================================
-        // Node.js Worker Polyfill for Emscripten pthreads
-        // ============================================================================
         if (typeof Worker === 'undefined') {
             try {
                 const { Worker } = require('worker_threads');
@@ -1162,8 +1136,6 @@ async function checkAndInvalidateStaleCspChunks() {
     console.log('🔍 [CSP-Stale-Check] Scanning for incomplete/stale CSP chunks...');
 
     try {
-        // Get chain height dynamically - no hardcoded fallback
-        // If we can't get the height, skip the stale check rather than use outdated value
         const DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19081';
         let chainHeight = 0;
 
@@ -1365,21 +1337,17 @@ async function checkAndFillMissingCspChunks() {
     }
 }
 
-// CSP fill with proper async locking to prevent race conditions
 let cspFillInProgress = false;
 let cspFillQueue = [];
 let cspFillLock = null;
 
 async function fillMissingCspChunks(missingChunks, chainHeight = null) {
-    // Proper async lock pattern - wait for previous fill to complete
     if (cspFillLock) {
         console.log('🔄 [CSP-Fill] Queuing request - another fill in progress');
-        // Queue this request instead of dropping it
         cspFillQueue.push({ chunks: missingChunks, chainHeight });
         return;
     }
 
-    // Acquire lock
     let releaseLock;
     cspFillLock = new Promise(resolve => releaseLock = resolve);
 
@@ -1493,14 +1461,11 @@ async function fillMissingCspChunks(missingChunks, chainHeight = null) {
         console.log(`ℹ️ [CSP-Fill] ${skipped} chunks skipped - chain hasn't reached their block range yet (will retry on next run)`);
     }
 
-    // Release lock
     releaseLock();
     cspFillLock = null;
 
-    // Process any queued requests
     if (cspFillQueue.length > 0) {
         const nextRequest = cspFillQueue.shift();
-        // Merge all queued chunks to avoid redundant processing
         const allQueuedChunks = new Set(nextRequest.chunks);
         while (cspFillQueue.length > 0) {
             const req = cspFillQueue.shift();
@@ -3253,11 +3218,9 @@ async function tryRpcNodes(makeRequest, operationName = 'RPC request') {
         } catch (error) {
             console.warn(`⚠️ [${operationName}] Failed on ${nodeUrl}: ${error.message}`);
             lastError = error;
-            // Continue to next node
         }
     }
-    
-    // All nodes failed
+
     console.error(`❌ [${operationName}] All ${nodesToTry.length} nodes failed`);
     throw lastError || new Error(`All RPC nodes failed for ${operationName}`);
 }
@@ -3524,9 +3487,6 @@ const noCacheHeaders = (req, res, next) => {
     next();
 };
 
-// ============================================================================
-// DEBUG: Test FULL worker-style ingest (init with CSV + ingest sparse TXs)
-// ============================================================================
 async function extractAllSparseTxsFromChunk(chunkStart) {
     try {
         if (!wasmModuleReady || !wasmModule || typeof wasmModule.extract_all_sparse_txs !== 'function') {
@@ -3756,9 +3716,6 @@ app.get(['/api/wasm-info', '/vault/api/wasm-info'], (req, res) => {
     }
 });
 
-// ============================================================================
-// DEBUG: Find STAKE transactions in a block range
-// ============================================================================
 function extractTxPubKeyFromExtra(extraBytes) {
     if (!extraBytes || extraBytes.length < 33) return null;
 
@@ -3847,9 +3804,6 @@ app.post(['/api/block-timestamps', '/vault/api/block-timestamps'], noCacheHeader
     }
 });
 
-// ============================================================================
-// DEBUG: Test ingest_sparse_transactions with a single TX (simulates worker)
-// ============================================================================
 app.use((req, res, next) => {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
@@ -3949,7 +3903,6 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
         return res.status(400).json({ error: 'Failed to parse output indices from request' });
     }
 
-    // Try each node until one succeeds
     const nodesToTry = [...RPC_NODES];
     let lastError = null;
 
@@ -3958,7 +3911,6 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
         console.log(`[Wallet API] Calling ${targetUrl} with ${outputs.length} outputs, asset_type='${assetType}'`);
 
         try {
-            // 5 minute timeout for large wallets (4k+ transactions)
             const jsonResponse = await axiosInstance.post(targetUrl, {
                 outputs: outputs,
                 get_txid: false,
@@ -3990,7 +3942,6 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
         }
     }
 
-    // All nodes failed
     console.error(`[Wallet API] /get_outs.bin failed on all nodes:`, lastError?.message);
     res.status(500).json({ error: lastError?.message || 'All nodes failed' });
 });
@@ -4088,19 +4039,14 @@ app.get(['/api/daemon/info', '/vault/api/daemon/info'], async (req, res) => {
 });
 
 // ============================================================================
-// Price Proxy - Fetches SAL price from explorer.salvium.tools (which caches MEXC data)
-// CRITICAL: This endpoint must NEVER block wallet loading. Always returns quickly
-// with cached/fallback price if live APIs are unavailable.
-// PRIMARY: explorer.salvium.tools/api/price (fast, already cached)
-// FALLBACK: MEXC direct, then CoinGecko
+// PRICE PROXY
 // ============================================================================
-let cachedPrice = { price: 0.15, timestamp: 0, source: 'fallback' }; // Fallback price
+let cachedPrice = { price: 0.15, timestamp: 0, source: 'fallback' };
 
 app.get(['/api/price', '/vault/api/price'], async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Cache-Control', 'public, max-age=60'); // Cache for 60 seconds
+    res.header('Cache-Control', 'public, max-age=60');
 
-    // Helper to return cached price with staleness indicator
     const returnCachedPrice = (reason) => {
         const ageMs = Date.now() - cachedPrice.timestamp;
         const isStale = ageMs > 5 * 60 * 1000; // Stale if > 5 minutes old
@@ -4116,16 +4062,14 @@ app.get(['/api/price', '/vault/api/price'], async (req, res) => {
         });
     };
 
-    // PRIMARY: Try explorer.salvium.tools first (fast, already caches MEXC data)
     try {
         const explorerResponse = await axiosInstance.get('https://explorer.salvium.tools/api/price', {
-            timeout: 3000  // 3 second timeout - explorer is usually very fast
+            timeout: 3000
         });
 
         if (explorerResponse.data && explorerResponse.data.price) {
             const price = parseFloat(explorerResponse.data.price);
             if (!isNaN(price) && price > 0) {
-                // Update cache
                 cachedPrice = { price, timestamp: Date.now(), source: 'explorer' };
                 return res.json({
                     success: true,
@@ -4140,7 +4084,6 @@ app.get(['/api/price', '/vault/api/price'], async (req, res) => {
         console.error('[price] Explorer failed:', explorerErr.message);
     }
 
-    // FALLBACK 1: Try MEXC direct with short timeout (2 seconds)
     try {
         const mexcResponse = await axiosInstance.get('https://api.mexc.com/api/v3/ticker/price?symbol=SALUSDT', {
             timeout: 2000
@@ -4148,7 +4091,6 @@ app.get(['/api/price', '/vault/api/price'], async (req, res) => {
 
         if (mexcResponse.data && mexcResponse.data.price) {
             const price = parseFloat(mexcResponse.data.price);
-            // Update cache
             cachedPrice = { price, timestamp: Date.now(), source: 'mexc' };
             return res.json({
                 success: true,
@@ -4162,7 +4104,6 @@ app.get(['/api/price', '/vault/api/price'], async (req, res) => {
         console.error('[price] MEXC failed:', mexcErr.message);
     }
 
-    // FALLBACK 2: Try CoinGecko with short timeout (2 seconds)
     try {
         const cgResponse = await axiosInstance.get('https://api.coingecko.com/api/v3/simple/price?ids=salvium&vs_currencies=usd', {
             timeout: 2000
@@ -4170,7 +4111,6 @@ app.get(['/api/price', '/vault/api/price'], async (req, res) => {
 
         if (cgResponse.data && cgResponse.data.salvium && cgResponse.data.salvium.usd) {
             const price = cgResponse.data.salvium.usd;
-            // Update cache
             cachedPrice = { price, timestamp: Date.now(), source: 'coingecko' };
             return res.json({
                 success: true,
@@ -4184,16 +4124,13 @@ app.get(['/api/price', '/vault/api/price'], async (req, res) => {
         console.error('[price] CoinGecko failed:', cgErr.message);
     }
 
-    // CRITICAL: Never fail - always return cached/fallback price
-    // This prevents wallet from getting stuck on "Initializing wallet..."
     return returnCachedPrice('all_apis_failed');
 });
 
 // ============================================================================
-// Price History - Persistent Caching with MEXC Data Accumulation
+// PRICE HISTORY
 // ============================================================================
 
-// Helper: Fetch MEXC klines with pagination for historical data
 async function fetchMEXCKlines(symbol, interval, startTime, endTime) {
     const allKlines = [];
     const maxCandlesPerRequest = 1000;
@@ -4253,8 +4190,6 @@ async function fetchMEXCKlines(symbol, interval, startTime, endTime) {
     return allKlines;
 }
 
-// Helper: Get full price history from MEXC with persistent caching
-// Fetches all data from listing date and appends new data over time
 async function getFullPriceHistory() {
     try {
         const symbol = 'SALUSDT';
@@ -4324,17 +4259,13 @@ async function getFullPriceHistory() {
     }
 }
 
-// ============================================================================
-// Price History Endpoint - Returns full persistent cache
-// ============================================================================
 app.get(['/api/price-history', '/vault/api/price-history'], async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Cache-Control', 'public, max-age=300');
 
-    // PRIMARY: Try explorer.salvium.tools first (fast, already caches MEXC data)
     try {
         const explorerResponse = await axiosInstance.get('https://explorer.salvium.tools/api/price-history', {
-            timeout: 10000  // 10 second timeout for history data
+            timeout: 10000
         });
 
         if (explorerResponse.data && explorerResponse.data.data && explorerResponse.data.data.length > 0) {
@@ -4355,7 +4286,6 @@ app.get(['/api/price-history', '/vault/api/price-history'], async (req, res) => 
         console.error('[price-history] Explorer failed:', explorerErr.message);
     }
 
-    // FALLBACK: Try MEXC cached data
     try {
         const fullHistory = await getFullPriceHistory();
 
@@ -5303,9 +5233,6 @@ app.get(['/api/csp', '/vault/api/csp'], async (req, res) => {
     }
 });
 
-// ============================================================================
-// DEBUG: Batch regenerate ALL v3 CSP files to v4 in background
-// ============================================================================
 let cspUpgradeInProgress = false;
 let cspUpgradeStats = { started: null, completed: 0, failed: 0, remaining: 0, errors: [] };
 
@@ -6595,7 +6522,6 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
             // Step 1: Get output distribution
             // CRITICAL FIX (v5.22.2): Must pass rct_asset_type to get asset-type-specific distribution
             // The daemon's ring validation uses asset_type_output_index, not global_output_index
-            // Without this, decoy indices are from global distribution but validated as asset indices
             const effectiveAssetType = asset_type || 'SAL1';
             let distResponse;
             try {
@@ -6608,13 +6534,13 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
                         cumulative: false, binary: false, 
                         from_height: 0, 
                         to_height: 0,
-                        rct_asset_type: effectiveAssetType  // Asset-type-specific distribution
+                        rct_asset_type: effectiveAssetType
                     }
                 }, { timeout: 90000 });
             } catch (distError) {
                 console.error(`[Wallet API] get_output_distribution failed on ${DAEMON_URL}:`, distError.message);
                 lastError = distError;
-                continue; // Try next node
+                continue;
             }
 
             let totalOutputs = 2000000;
@@ -6629,7 +6555,6 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
             const randomIndices = [];
             const uniqueIndices = new Set();
             while (uniqueIndices.size < count + 50) {
-                // SECURITY: Use crypto.randomBytes for decoy selection
                 const randomBytes = crypto.randomBytes(4);
                 const randomValue = randomBytes.readUInt32BE(0) / 0xFFFFFFFF;
                 const gamma = -Math.log(randomValue) * 1296;
@@ -6641,21 +6566,17 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
                 }
             }
 
-            // Step 2: Get the actual outputs
-            // CRITICAL FIX (v5.22.2): Must pass asset_type so daemon interprets indices correctly
-            // Indices we picked are asset-type-specific (from the asset-type distribution above)
-            // The daemon uses get_output_id_from_asset_type_output_index() to convert to global IDs
             let outsResponse;
             try {
                 outsResponse = await axiosInstance.post(DAEMON_URL.replace(/\/$/, '') + '/get_outs', {
                     outputs: randomIndices.slice(0, count + 50),
                     get_txid: false,
-                    asset_type: effectiveAssetType  // Indices are asset-type-specific
-                }, { timeout: 300000 }); // 5 minute timeout
+                    asset_type: effectiveAssetType
+                }, { timeout: 300000 });
             } catch (outsError) {
                 console.error(`[Wallet API] get_outs failed on ${DAEMON_URL}:`, outsError.message, outsError.response?.status);
                 lastError = outsError;
-                continue; // Try next node
+                continue;
             }
 
             const validOuts = (outsResponse.data?.outs || []).filter(out => out && out.key);
@@ -6666,11 +6587,10 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
         } catch (error) {
             console.error(`[Wallet API] get_random_outs failed on ${DAEMON_URL}:`, error.message);
             lastError = error;
-            continue; // Try next node
+            continue;
         }
     }
 
-    // All nodes failed
     console.error('[Wallet API] get_random_outs failed on all nodes:', lastError?.message);
     console.error('[Wallet API] get_random_outs error details:', lastError?.response?.data || lastError?.stack);
     res.status(lastError?.response?.status || 500).json({ error: lastError?.message || 'All nodes failed' });
@@ -6709,7 +6629,6 @@ app.post(['/api/wallet/get_output_distribution', '/vault/api/wallet/get_output_d
                 timeout: 120000
             });
             
-            // Validate response has actual data (not just empty/partial)
             if (resp.data.error) {
                 throw new Error(resp.data.error.message || 'RPC error');
             }
@@ -6727,7 +6646,6 @@ app.post(['/api/wallet/get_output_distribution', '/vault/api/wallet/get_output_d
 });
 
 app.post(['/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransaction'], txRateLimit, async (req, res) => {
-    // CORS headers handled by middleware now
     const requestId = generateSecureId(16);
 
     try {
@@ -6756,23 +6674,17 @@ app.post(['/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransactio
         } else {
             console.warn(`⚠️ [Wallet API] Transaction broadcast REJECTED:`, JSON.stringify(response.data, null, 2));
             console.warn(`⚠️ [Wallet API] Rejection reason: ${response.data.reason || response.data.error || 'unknown'}`);
-            // Log tx blob prefix for debugging (first 200 chars)
-            const txBlob = req.body?.tx_as_hex || '';
-            console.warn(`⚠️ [Wallet API] TX blob prefix: ${txBlob.substring(0, 200)}...`);
-            console.warn(`⚠️ [Wallet API] TX blob total length: ${txBlob.length}`);
         }
 
         res.json(response.data);
     } catch (error) {
         console.error(`❌ [Wallet API] /sendrawtransaction failed:`, error.message);
-        
-        // IMPROVED: Capture full error details from daemon response
+
         const errorResponse = {
             status: 'Failed',
             error: error.message || 'Failed to broadcast transaction'
         };
-        
-        // If axios got a response from daemon, include those details
+
         if (error.response?.data) {
             const daemonData = error.response.data;
             errorResponse.reason = daemonData.reason || daemonData.error || null;
@@ -6784,13 +6696,12 @@ app.post(['/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransactio
             errorResponse.overspend = daemonData.overspend || false;
             errorResponse.fee_too_low = daemonData.fee_too_low || false;
             errorResponse.sanity_check_failed = daemonData.sanity_check_failed || false;
-            // Include raw daemon status if available
             if (daemonData.status && daemonData.status !== 'OK') {
                 errorResponse.daemon_status = daemonData.status;
             }
             console.error(`❌ [Wallet API] Daemon error details:`, JSON.stringify(daemonData, null, 2));
         }
-        
+
         res.status(error.response?.status || 500).json(errorResponse);
     }
 });
@@ -7057,9 +6968,6 @@ app.post(['/api/wallet/sparse-txs', '/vault/api/wallet/sparse-txs'], express.jso
 
         console.log(`🎯 [Sparse] Request for chunk ${chunkStart}: ${indices.length} transaction indices`);
 
-        // ===============================================================
-        // TXI v2 FAST PATH - Uses pre-indexed transaction blobs with output indices
-        // ===============================================================
         const fastResult = await extractSparseTxsFast(chunkStart, chunkEnd, indices);
 
         if (fastResult && fastResult.success) {
@@ -7085,9 +6993,6 @@ app.post(['/api/wallet/sparse-txs', '/vault/api/wallet/sparse-txs'], express.jso
             return res.send(fastResult.buffer);
         }
 
-        // ===============================================================
-        // SLOW PATH: Fall back to WASM parsing (no index file)
-        // ===============================================================
         console.log(`🎯 [Sparse] No index for chunk ${chunkStart}, falling back to WASM parsing`);
 
         if (!wasmModuleReady || !wasmModule || typeof wasmModule.extract_sparse_txs !== 'function') {
@@ -7171,14 +7076,6 @@ app.post(['/api/wallet/batch-sparse-txs', '/vault/api/wallet/batch-sparse-txs'],
         }
 
         console.log(`⚡ [Batch Sparse] Processing ${chunks.length} chunks...`);
-
-        for (const chunk of chunks) {
-            if (chunk.startHeight === 22000) {
-                console.log(`🔬 [Batch Sparse DEBUG] Chunk 22000 requested with ${chunk.indices.length} indices`);
-                console.log(`🔬   Has 2621: ${chunk.indices.includes(2621)}, Has 3131: ${chunk.indices.includes(3131)}`);
-                console.log(`🔬   All indices: [${chunk.indices.sort((a, b) => a - b).join(',')}]`);
-            }
-        }
 
         const CONCURRENCY = 4;
         const results = [];
@@ -7409,11 +7306,6 @@ app.post(['/api/wallet/sparse-by-heights', '/vault/api/wallet/sparse-by-heights'
                 }
 
                 if (txIndicesAtHeights.length === 0) {
-                    // Debug: show what heights exist in TXI near our requested height
-                    const uniqueHeights = [...new Set(txi.entries.map(e => e.blockHeight))].sort((a, b) => a - b);
-                    const nearbyHeights = uniqueHeights.filter(h => Math.abs(h - requestedHeights[0]) < 100);
-                    console.log(`⚡ [Sparse By Heights v2] TXI for chunk ${chunkStart} has ${txi.entries.length} entries covering ${uniqueHeights.length} heights`);
-                    console.log(`⚡ [Sparse By Heights v2] Requested heights: ${requestedHeights.join(',')}, nearby TXI heights: ${nearbyHeights.slice(0, 10).join(',')}`);
                     return { chunkStart, data: Buffer.alloc(0), txCount: 0 };
                 }
 
@@ -7466,9 +7358,6 @@ app.post(['/api/wallet/sparse-by-heights', '/vault/api/wallet/sparse-by-heights'
     }
 });
 
-// ============================================================
-// API: Fetch transactions by hash (fallback for when TXI cache is missing)
-// ============================================================
 app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transactions-by-hash'], express.json({ limit: '1mb' }), async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
 
@@ -7485,12 +7374,10 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
 
         console.log(`⚡ [Sparse By Hash] Fetching ${hashes.length} transactions from daemon...`);
 
-        // Get transaction data including output indices from daemon
         const indicesByHash = await fetchTxOutputAndAssetIndices(hashes);
 
         if (indicesByHash.size === 0) {
             console.warn(`⚡ [Sparse By Hash] No transactions found for hashes`);
-            // Return empty sparse format
             const emptyOutput = Buffer.alloc(8);
             emptyOutput.write('SPR5', 0, 4, 'ascii');
             emptyOutput.writeUInt32LE(0, 4);
@@ -7503,7 +7390,6 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
             return res.send(emptyOutput);
         }
 
-        // Get block heights from the fetched data to get timestamps
         const heightsNeeded = new Set();
         for (const [hash, info] of indicesByHash) {
             if (info.block_height) {
@@ -7513,7 +7399,6 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
 
         const timestamps = await fetchBlockTimestamps([...heightsNeeded]);
 
-        // Build sparse format records
         const txBuffers = [];
         let foundCount = 0;
         let txIdx = 0;
@@ -8091,9 +7976,6 @@ app.get(['/api/wallet/key-image-cache-status', '/vault/api/wallet/key-image-cach
     res.header('Access-Control-Allow-Origin', '*');
 
     try {
-        // Calculate the last complete 1000-block chunk
-        // If lastScannedHeight is 409999, that means chunks 0-409999 are complete
-        // If current height is 410583, outputs from 410000-410583 need realtime checking
         const lastCompleteChunk = keyImageCache.lastScannedHeight;
         const lastCompleteChunkStart = Math.floor(lastCompleteChunk / 1000) * 1000;
 
@@ -8101,7 +7983,6 @@ app.get(['/api/wallet/key-image-cache-status', '/vault/api/wallet/key-image-cach
             status: 'OK',
             lastScannedHeight: keyImageCache.lastScannedHeight,
             lastCompleteChunkEnd: lastCompleteChunk,
-            // Outputs received AFTER this height need realtime spent checking
             realtimeCheckThreshold: lastCompleteChunk + 1,
             chainHeight: lastKnownHeight,
             cacheSize: keyImageCache.spends.size
@@ -8112,10 +7993,6 @@ app.get(['/api/wallet/key-image-cache-status', '/vault/api/wallet/key-image-cach
     }
 });
 
-// ----------------------------------------------------------------
-// API: Check Key Images Spent Status (Realtime via Daemon RPC)
-// For outputs received after the last cached chunk, query the daemon directly
-// ----------------------------------------------------------------
 app.post(['/api/wallet/is-key-image-spent', '/vault/api/wallet/is-key-image-spent'], express.json(), async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
 
@@ -8126,12 +8003,10 @@ app.post(['/api/wallet/is-key-image-spent', '/vault/api/wallet/is-key-image-spen
             return res.status(400).json({ error: 'Invalid request: need key_images array' });
         }
 
-        // Limit to prevent abuse
         if (key_images.length > 100) {
             return res.status(400).json({ error: 'Too many key images (max 100)' });
         }
 
-        // Validate key images are valid hex strings
         for (const ki of key_images) {
             if (typeof ki !== 'string' || ki.length !== 64 || !/^[0-9a-fA-F]+$/.test(ki)) {
                 return res.status(400).json({ error: `Invalid key image format: ${ki}` });
@@ -8140,7 +8015,6 @@ app.post(['/api/wallet/is-key-image-spent', '/vault/api/wallet/is-key-image-spen
 
         console.log(`🔑 [Realtime Spent Check] Checking ${key_images.length} key images via daemon RPC`);
 
-        // Query daemon's is_key_image_spent RPC
         const DAEMON_URL = process.env.SALVIUM_RPC_URL || RPC_NODES[0] || 'http://salvium:19081';
         const targetUrl = DAEMON_URL.replace(/\/$/, '') + '/is_key_image_spent';
 
@@ -8166,10 +8040,8 @@ app.post(['/api/wallet/is-key-image-spent', '/vault/api/wallet/is-key-image-spen
             });
         }
 
-        // Response format: spent_status is array of 0 (unspent), 1 (spent in blockchain), 2 (spent in pool)
         const spentStatus = response.data.spent_status || [];
 
-        // Build result mapping key_image -> spent status
         const result = {
             status: 'OK',
             spent: {}
@@ -8178,7 +8050,6 @@ app.post(['/api/wallet/is-key-image-spent', '/vault/api/wallet/is-key-image-spen
         let spentCount = 0;
         for (let i = 0; i < key_images.length; i++) {
             const status = spentStatus[i] || 0;
-            // 0 = unspent, 1 = spent in blockchain, 2 = spent in mempool
             if (status > 0) {
                 result.spent[key_images[i]] = status;
                 spentCount++;
@@ -8368,9 +8239,6 @@ app.get('/vault/api/wallet/block-stream', (req, res) => {
     });
 });
 
-// ============================================================================
-// DEBUG OUTPUT QUERY - Direct daemon query for specific output index
-// ============================================================================
 app.get(['/api/debug-output', '/vault/api/debug-output'], async (req, res) => {
     try {
         const outputIndex = parseInt(req.query.index || '1105498', 10);
@@ -8598,16 +8466,8 @@ if (true) {
         console.log(`  POST /api/wallet/sendrawtransaction - Submit transaction`);
         console.log(`\nFrontend: https://salvium.tools/vault`);
 
-        // ============================================================================
-        // WALLET-ONLY STARTUP - No Explorer features
-        // ============================================================================
-
         (async () => {
             try {
-                // ============================================================================
-                // EXPLORER FEATURES DISABLED - Not needed for Vault (wallet-only app)
-                // ============================================================================
-
                 await initBlockCache();
 
                 await initWasmModule();
@@ -8624,14 +8484,10 @@ if (true) {
 
                 startBlockCacheSync();
 
-                console.log('\n✅ [Vault] Startup complete - wallet-only mode (no Explorer features)');
+                console.log('\n✅ [Vault] Startup complete');
 
-                // ============================================================================
-                // Price History - Hourly background updates
-                // ============================================================================
                 console.log('[Price History] Setting up hourly background updates...');
-                
-                // Initial fetch on startup
+
                 (async () => {
                     try {
                         console.log('[Price History] Initial fetch on startup...');
@@ -8641,7 +8497,6 @@ if (true) {
                     }
                 })();
 
-                // Hourly updates
                 setInterval(async () => {
                     try {
                         const cachedPriceHistory = await getCached('price-history-full');
@@ -8664,7 +8519,7 @@ if (true) {
                     } catch (err) {
                         console.error('[Price History] Error during hourly update:', err.message);
                     }
-                }, 60 * 60 * 1000); // Run every hour
+                }, 60 * 60 * 1000);
 
             } catch (err) {
                 console.error('Error during cache pre-load:', err.message);

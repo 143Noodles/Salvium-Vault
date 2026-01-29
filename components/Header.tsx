@@ -145,8 +145,6 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
             </nav>
           )}
 
-          {/* Mobile Menu Toggle - REMOVED for strict device detection */}
-
         </div>
 
         {/* Mobile Navigation */}

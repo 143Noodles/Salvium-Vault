@@ -15,7 +15,6 @@ interface MobileHeaderProps {
 }
 
 export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigate, onLock }) => {
-    // Show on mobile and tablet, hide only on desktop
     if (isDesktopOnly) return null;
 
     const { t } = useTranslation();

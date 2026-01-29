@@ -578,7 +578,6 @@ async function handleScanCspBatch(msg) {
 
     const CSP_FORMAT_VERSION = '3.0.4';
 
-    // DEBUG: Log batch fetch start
     if (DEBUG) void 0 && console.log(`[CSP Worker ${workerId}] 🔄 Starting batch ${startHeight} (${chunkCount} chunks)`);
 
     try {
@@ -608,7 +607,6 @@ async function handleScanCspBatch(msg) {
             clearTimeout(timeoutId);
         }
 
-        // DEBUG: Log fetch response (using tempMs to avoid shadowing)
         const tempFetchMs = performance.now() - fetchStart;
         if (DEBUG) void 0 && console.log(`[CSP Worker ${workerId}] 📥 Batch ${startHeight}: HTTP ${response.status} in ${tempFetchMs.toFixed(0)}ms`);
 

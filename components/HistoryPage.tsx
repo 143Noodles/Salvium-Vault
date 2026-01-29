@@ -19,7 +19,6 @@ const HistoryPage: React.FC = () => {
    const [searchQuery, setSearchQuery] = useState(''); // Debounced search state
    const [selectedTxId, setSelectedTxId] = useState<string | null>(null);
 
-   // Debounce search input to prevent re-filtering on every keystroke
    useEffect(() => {
       const timer = setTimeout(() => {
          setSearchQuery(searchInput);
@@ -70,7 +69,6 @@ const HistoryPage: React.FC = () => {
    const [filterTypes, setFilterTypes] = useState<Set<string>>(new Set());
    const [isFilterOpen, setIsFilterOpen] = useState(false);
 
-   // Toggle a filter type
    const toggleFilter = (type: string) => {
       const newFilters = new Set(filterTypes);
       if (newFilters.has(type)) {
@@ -81,10 +79,8 @@ const HistoryPage: React.FC = () => {
       setFilterTypes(newFilters);
    };
 
-   // Check if a filter is active
    const isFilterActive = (type: string) => filterTypes.has(type);
 
-   // Available filters - matches tx_type_label values from TransactionList
    const filterOptions = [
       { id: 'transfer_in', label: t('transactions.types.transferIn'), color: 'text-accent-success' },
       { id: 'transfer_out', label: t('transactions.types.transferOut'), color: 'text-red-500' },
@@ -94,11 +90,9 @@ const HistoryPage: React.FC = () => {
       { id: 'audit', label: t('transactions.types.audit'), color: 'text-purple-400' },
    ];
 
-   // Derived filtered transactions
    const filteredTransactions = useMemo(() => {
       let txs = wallet.transactions;
 
-      // 1. Search Filter
       if (searchQuery.trim()) {
          const query = searchQuery.toLowerCase();
          txs = txs.filter(tx =>
@@ -107,16 +101,12 @@ const HistoryPage: React.FC = () => {
          );
       }
 
-      // 2. Type Filter - matches on tx_type_label and direction
       if (filterTypes.size > 0) {
          txs = txs.filter(tx => {
             const label = (tx.tx_type_label || 'transfer').toLowerCase();
 
-            // Transfer In: incoming transfers (not mining/yield/stake which have their own labels)
             if (filterTypes.has('transfer_in') && tx.type === 'in' && label === 'transfer') return true;
-            // Transfer Out: outgoing transfers (not stake/audit which have their own labels)
             if (filterTypes.has('transfer_out') && tx.type === 'out' && label === 'transfer') return true;
-            // Specific type labels
             if (filterTypes.has('mining') && label === 'mining') return true;
             if (filterTypes.has('yield') && label === 'yield') return true;
             if (filterTypes.has('stake') && label === 'stake') return true;

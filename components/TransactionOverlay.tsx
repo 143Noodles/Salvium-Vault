@@ -99,7 +99,6 @@ const TransactionOverlay: React.FC<TransactionOverlayProps> = ({ isOpen, onClose
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch {
-            // Clipboard write failed - silently handled
         }
     };
 

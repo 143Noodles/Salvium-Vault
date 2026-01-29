@@ -234,6 +234,19 @@
       "title": "重置钱包",
       "description": "删除钱包数据并重新开始。请确保您已保存助记词。",
       "button": "重置"
+    },
+    "seedPhrase": {
+      "title": "显示助记词",
+      "description": "查看您的25词恢复短语。恢复钱包时需要。",
+      "reveal": "显示",
+      "modalTitle": "显示助记词",
+      "modalDescription": "输入您的钱包密码以显示恢复短语。",
+      "enterPassword": "请输入您的密码",
+      "incorrectPassword": "密码错误。请重试。",
+      "securityWarning": "您的助记词是钱包的主密钥。任何获得它的人都可以窃取您的资金。只在安全、私密的环境中显示它。",
+      "revealButton": "显示助记词",
+      "copySeed": "复制助记词",
+      "neverShare": "永远不要与任何人分享您的助记词。Salvium支持人员永远不会要求它。请安全地离线存储。"
     }
   },
   "onboarding": {

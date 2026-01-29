@@ -5,12 +5,13 @@ import { isMobile, isTablet, isIPad13 } from 'react-device-detect';
 const isTabletDevice = isTablet || isIPad13;
 const isMobileOrTablet = isMobile || isTabletDevice; // Tablets use mobile layouts
 import { Card, Button, Input, Badge } from './UIComponents';
-import { Settings, Lock, Shield, Monitor, Bell, Network, Database, RefreshCw, Loader2, Download, Eye, EyeOff, X, ScanFace, Heart, ExternalLink, CheckCircle2, Globe, Key, Trash2, AlertTriangle } from './Icons';
+import { Settings, Lock, Shield, Monitor, Bell, Network, Database, RefreshCw, Loader2, Download, Eye, EyeOff, X, ScanFace, Heart, ExternalLink, CheckCircle2, Globe, Key, Trash2, AlertTriangle, FileText, Copy, Check } from './Icons';
 import LanguageSelector from './LanguageSelector';
 import { useTranslation } from 'react-i18next';
 import { useWallet } from '../services/WalletContext';
 import { downloadBackup } from '../services/BackupService';
 import { BiometricService } from '../services/BiometricService';
+import { decrypt } from '../services/CryptoService';
 
 interface SettingsPageProps {
    autoLockEnabled: boolean;
@@ -70,6 +71,15 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
    const [showResetModal, setShowResetModal] = useState(false);
    const [resetConfirmed, setResetConfirmed] = useState(false);
 
+   // Show Seed Phrase State
+   const [showSeedModal, setShowSeedModal] = useState(false);
+   const [seedPassword, setSeedPassword] = useState('');
+   const [showSeedPassword, setShowSeedPassword] = useState(false);
+   const [seedError, setSeedError] = useState('');
+   const [isVerifyingSeed, setIsVerifyingSeed] = useState(false);
+   const [revealedSeed, setRevealedSeed] = useState('');
+   const [seedCopied, setSeedCopied] = useState(false);
+
    // Check availability
    React.useEffect(() => {
       BiometricService.isAvailable().then(setIsBioAvailable);
@@ -78,11 +88,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
    const handleToggleBio = () => {
       if (isBioEnabled) {
-         // Disable
          BiometricService.disable();
          setIsBioEnabled(false);
       } else {
-         // Enable - Show Modal
          setShowBioModal(true);
          setBioError('');
          setBioPassword('');
@@ -221,6 +229,66 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
       if (onReset && resetConfirmed) {
          onReset();
          closeResetModal();
+      }
+   };
+
+   // Seed Phrase Modal Handlers
+   const closeSeedModal = () => {
+      setShowSeedModal(false);
+      setSeedPassword('');
+      setSeedError('');
+      setRevealedSeed('');
+      setSeedCopied(false);
+   };
+
+   const handleRevealSeed = async () => {
+      if (!seedPassword) {
+         setSeedError(t('settings.seedPhrase.enterPassword'));
+         return;
+      }
+
+      setIsVerifyingSeed(true);
+      setSeedError('');
+
+      try {
+         // Get the encrypted wallet from localStorage
+         const walletJson = localStorage.getItem('salvium_wallet');
+         if (!walletJson) {
+            throw new Error('No wallet found');
+         }
+
+         const encryptedWallet = JSON.parse(walletJson);
+
+         // Decrypt the seed using the password
+         const mnemonic = await decrypt(
+            encryptedWallet.encryptedSeed,
+            encryptedWallet.iv,
+            encryptedWallet.salt,
+            seedPassword
+         );
+
+         if (!mnemonic) {
+            throw new Error('Failed to decrypt seed');
+         }
+
+         setRevealedSeed(mnemonic);
+      } catch (err: any) {
+         void 0 && console.error('Failed to reveal seed:', err);
+         setSeedError(t('settings.seedPhrase.incorrectPassword'));
+      } finally {
+         setIsVerifyingSeed(false);
+      }
+   };
+
+   const handleCopySeed = async () => {
+      if (!revealedSeed) return;
+
+      try {
+         await navigator.clipboard.writeText(revealedSeed);
+         setSeedCopied(true);
+         setTimeout(() => setSeedCopied(false), 2000);
+      } catch (err) {
+         void 0 && console.error('Failed to copy seed:', err);
       }
    };
 
@@ -408,6 +476,25 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                      <Button variant="secondary" onClick={() => setShowBackupModal(true)} className="px-4 py-2 md:px-6 md:py-2.5">
                         <Download size={16} className="mr-2" />
                         {t('settings.backup.export')}
+                     </Button>
+                  </div>
+
+                  <div className="h-[1px] bg-white/5 w-full"></div>
+
+                  {/* Show Seed Phrase */}
+                  <div className="flex items-center justify-between">
+                     <div className="flex gap-4">
+                        <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
+                           <FileText size={20} />
+                        </div>
+                        <div>
+                           <h4 className="text-white font-medium mb-1">{t('settings.seedPhrase.title')}</h4>
+                           <p className="text-sm text-text-muted max-w-sm">{t('settings.seedPhrase.description')}</p>
+                        </div>
+                     </div>
+                     <Button variant="secondary" onClick={() => setShowSeedModal(true)} className="px-4 py-2 md:px-6 md:py-2.5">
+                        <Eye size={16} className="mr-2" />
+                        {t('settings.seedPhrase.reveal')}
                      </Button>
                   </div>
 
@@ -812,6 +899,125 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                            {t('lockScreen.resetConfirmButton')}
                         </Button>
                      </div>
+                  </Card>
+               </div>
+            )
+         }
+
+         {/* Show Seed Phrase Modal */}
+         {
+            showSeedModal && (
+               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in">
+                  <Card className="max-w-md w-full space-y-6 relative animate-scale-up">
+                     <button
+                        onClick={closeSeedModal}
+                        className="absolute top-4 right-4 text-text-muted hover:text-white transition-colors"
+                     >
+                        <X size={20} />
+                     </button>
+
+                     <div className="text-center">
+                        <div className="w-12 h-12 rounded-full bg-accent-warning/10 flex items-center justify-center text-accent-warning mx-auto mb-4">
+                           <FileText size={24} />
+                        </div>
+                        <h3 className="text-xl font-bold text-white mb-2">{t('settings.seedPhrase.modalTitle')}</h3>
+                        <p className="text-text-muted text-sm">{t('settings.seedPhrase.modalDescription')}</p>
+                     </div>
+
+                     {!revealedSeed ? (
+                        // Password Entry View
+                        <div className="space-y-4">
+                           <div className="space-y-2">
+                              <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('settings.backup.walletPassword')}</label>
+                              <div className="relative">
+                                 <Input
+                                    type={isMobile ? 'text' : (showSeedPassword ? 'text' : 'password')}
+                                    placeholder={t('settings.backup.enterPassword')}
+                                    value={seedPassword}
+                                    onChange={(e) => setSeedPassword(e.target.value)}
+                                    disabled={isVerifyingSeed}
+                                    style={isMobile ? { WebkitTextSecurity: showSeedPassword ? 'none' : 'disc' } : {}}
+                                    autoCorrect="off"
+                                    autoCapitalize="none"
+                                    spellCheck="false"
+                                    onKeyDown={(e) => e.key === 'Enter' && handleRevealSeed()}
+                                 />
+                                 <button
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-white"
+                                    onClick={() => setShowSeedPassword(!showSeedPassword)}
+                                 >
+                                    {showSeedPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                                 </button>
+                              </div>
+                           </div>
+
+                           {seedError && <p className="text-red-400 text-xs animate-shake">{seedError}</p>}
+
+                           <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3">
+                              <p className="text-xs text-red-400 leading-relaxed">
+                                 {t('settings.seedPhrase.securityWarning')}
+                              </p>
+                           </div>
+
+                           <div className="flex gap-3">
+                              <Button variant="ghost" onClick={closeSeedModal} className="flex-1" disabled={isVerifyingSeed}>
+                                 {t('common.cancel')}
+                              </Button>
+                              <Button className="flex-[2]" onClick={handleRevealSeed} disabled={isVerifyingSeed}>
+                                 {isVerifyingSeed ? (
+                                    <>
+                                       <Loader2 size={16} className="mr-2 animate-spin" />
+                                       {t('settings.biometrics.verifying')}
+                                    </>
+                                 ) : (
+                                    <>
+                                       <Eye size={16} className="mr-2" />
+                                       {t('settings.seedPhrase.revealButton')}
+                                    </>
+                                 )}
+                              </Button>
+                           </div>
+                        </div>
+                     ) : (
+                        // Seed Display View
+                        <div className="space-y-4">
+                           <div className="bg-bg-primary border border-white/10 rounded-xl p-4">
+                              <div className="grid grid-cols-3 gap-2">
+                                 {revealedSeed.split(' ').map((word, index) => (
+                                    <div key={index} className="flex items-center gap-1.5 text-sm">
+                                       <span className="text-text-muted w-5 text-right">{index + 1}.</span>
+                                       <span className="text-white font-mono">{word}</span>
+                                    </div>
+                                 ))}
+                              </div>
+                           </div>
+
+                           <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3">
+                              <p className="text-xs text-red-400 leading-relaxed font-medium">
+                                 {t('settings.seedPhrase.neverShare')}
+                              </p>
+                           </div>
+
+                           <div className="flex gap-3">
+                              <Button variant="ghost" onClick={closeSeedModal} className="flex-1">
+                                 {t('common.close')}
+                              </Button>
+                              <Button className="flex-[2]" onClick={handleCopySeed}>
+                                 {seedCopied ? (
+                                    <>
+                                       <Check size={16} className="mr-2 text-accent-success" />
+                                       {t('common.copied')}
+                                    </>
+                                 ) : (
+                                    <>
+                                       <Copy size={16} className="mr-2" />
+                                       {t('settings.seedPhrase.copySeed')}
+                                    </>
+                                 )}
+                              </Button>
+                           </div>
+                        </div>
+                     )}
                   </Card>
                </div>
             )

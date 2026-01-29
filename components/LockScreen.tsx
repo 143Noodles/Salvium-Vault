@@ -34,8 +34,6 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
   }, []);
 
   const handleBiometricUnlock = async () => {
-    // Don't set global loading since user might want to type password while prompt is up (if non-modal)
-    // But usually prompt is modal.
     try {
       const bioPassword = await BiometricService.authenticate();
       if (bioPassword) {
@@ -48,7 +46,6 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
         }
       }
     } catch {
-      // Biometric auth cancelled or failed - silently handled
     } finally {
       setIsLoading(false);
     }
@@ -77,7 +74,6 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
     }
   };
 
-  // Scroll to input on resize (keyboard open)
   React.useEffect(() => {
     const handleResize = () => {
       if (document.activeElement?.tagName === 'INPUT') {

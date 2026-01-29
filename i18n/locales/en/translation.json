@@ -246,6 +246,19 @@
       "title": "Reset Wallet",
       "description": "Delete wallet data and start fresh. Make sure you have your seed phrase saved.",
       "button": "Reset"
+    },
+    "seedPhrase": {
+      "title": "Show Seed Phrase",
+      "description": "View your 25-word recovery phrase. Required to restore your wallet.",
+      "reveal": "Reveal",
+      "modalTitle": "Reveal Seed Phrase",
+      "modalDescription": "Enter your wallet password to reveal your recovery phrase.",
+      "enterPassword": "Please enter your password",
+      "incorrectPassword": "Incorrect password. Please try again.",
+      "securityWarning": "Your seed phrase is the master key to your wallet. Anyone with access to it can steal your funds. Only reveal it in a secure, private environment.",
+      "revealButton": "Reveal Seed Phrase",
+      "copySeed": "Copy Seed Phrase",
+      "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
     }
   },
   "onboarding": {

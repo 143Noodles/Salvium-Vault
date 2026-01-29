@@ -115,8 +115,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
          ? 'flex flex-col h-full'
          : 'overflow-hidden grid grid-cols-12 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] h-[calc(100vh-7rem)] p-0'
          }`}>
-         {/* Force layout update v3 */}
-         {/* Force layout update */}
          {/* 1. HERO SECTION (Total Balance + Address) - 8 Cols */}
          <div className={`flex flex-col min-h-0 ${isMobileOrTablet
             ? 'col-span-1 flex-shrink-0'

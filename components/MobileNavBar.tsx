@@ -14,7 +14,6 @@ interface MobileNavBarProps {
 
 export const MobileNavBar: React.FC<MobileNavBarProps> = ({ activeTab, onNavigate }) => {
     const { t } = useTranslation();
-    // Show on mobile and tablet, hide only on desktop
     if (isDesktopOnly) return null;
     const NavItem = ({ tab, icon: Icon, label }: { tab: TabView; icon: any; label: string }) => {
         const isActive = activeTab === tab;

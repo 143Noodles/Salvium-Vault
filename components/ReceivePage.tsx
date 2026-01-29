@@ -7,7 +7,6 @@ import { QRCodeSVG as QRCodeDirect } from 'qrcode.react';
 const isTabletDevice = isTablet || isIPad13;
 const isMobileOrTablet = isMobile || isTabletDevice; // Tablets use mobile layouts
 
-// On mobile: use direct import (more reliable), on desktop: lazy load
 const QRCodeLazy = lazy(() => import('qrcode.react').then(mod => ({ default: mod.QRCodeSVG })));
 
 // Error boundary to catch QR code loading failures on mobile
@@ -53,10 +52,8 @@ const ReceivePage: React.FC = () => {
    const [isSubaddressOpen, setIsSubaddressOpen] = useState(false); // Mobile Overlay State
    const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
 
-   // Get primary address from wallet
    const primaryAddress = wallet.address || 'Loading...';
 
-   // Get subaddresses from wallet context
    const subaddresses = wallet.subaddresses.length > 0
       ? wallet.subaddresses
       : [{ index: 0, label: 'Primary Account', address: primaryAddress, balance: wallet.balance.balanceSAL }];
@@ -81,7 +78,6 @@ const ReceivePage: React.FC = () => {
       }
    };
 
-   // Modal State
    const [isAddSubaddressModalOpen, setIsAddSubaddressModalOpen] = useState(false);
 
    const openAddModal = () => {
@@ -89,7 +85,6 @@ const ReceivePage: React.FC = () => {
       setIsAddSubaddressModalOpen(true);
    };
 
-   // Search State
    const [searchTerm, setSearchTerm] = useState('');
 
    const filteredSubaddresses = subaddresses.filter((sub: any) =>

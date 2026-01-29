@@ -234,6 +234,19 @@
       "title": "Réinitialiser le Portefeuille",
       "description": "Supprimer les données du portefeuille et recommencer. Assurez-vous d'avoir sauvegardé votre phrase seed.",
       "button": "Réinitialiser"
+    },
+    "seedPhrase": {
+      "title": "Afficher la Phrase Seed",
+      "description": "Affichez votre phrase de récupération de 25 mots. Nécessaire pour restaurer votre portefeuille.",
+      "reveal": "Révéler",
+      "modalTitle": "Révéler la Phrase Seed",
+      "modalDescription": "Entrez le mot de passe de votre portefeuille pour révéler votre phrase de récupération.",
+      "enterPassword": "Veuillez entrer votre mot de passe",
+      "incorrectPassword": "Mot de passe incorrect. Veuillez réessayer.",
+      "securityWarning": "Votre phrase seed est la clé maîtresse de votre portefeuille. Toute personne y ayant accès peut voler vos fonds. Ne la révélez que dans un environnement sécurisé et privé.",
+      "revealButton": "Révéler la Phrase Seed",
+      "copySeed": "Copier la Phrase Seed",
+      "neverShare": "Ne partagez jamais votre phrase seed avec personne. Le support Salvium ne la demandera jamais. Conservez-la en lieu sûr hors ligne."
     }
   },
   "onboarding": {

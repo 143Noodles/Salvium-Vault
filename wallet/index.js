@@ -1657,11 +1657,7 @@ const salvium_core_js =
     // Parameters: view_key = standard s_view, view_balance_key = s_view_balance (for Carrot)
     // The C++ expects: user_view_key_priv (s_view), user_view_balance_key_priv (s_view_balance)
     scan_block_for_wallet_outputs: async function (block_blob, address, view_key, view_balance_key, block_height = 0, tx_blobs = [], spend_public_key = null) {
-        // Debug: Log at function entry
-
         return salvium_utils_promise.then(async (coreBridge) => {
-            // Debug: Log inside callback
-
             // Validate inputs before calling WASM
             if (!block_blob || typeof block_blob !== 'string') {
                 throw new Error('block_blob must be a non-empty hex string');
@@ -1886,34 +1882,6 @@ const salvium_core_js =
                 } catch (decodeError) {
                 }
             }
-
-            // OLD SCANNER DISABLED - Only using new scanner for now
-            // Fallback to old scanner if new scanner not available or no tx blobs
-            // const txBlobsJson = JSON.stringify(txBlobsArray);
-            // 
-            // // Call WASM function with JSON string (C++ will parse it using rapidjson)
-            // const result = coreBridge.scan_block_for_wallet_outputs(block_blob, address, normalizedViewKey, block_height, txBlobsJson);
-            // 
-            // // WASM returns JSON string, parse it
-            // let parsedResult = result;
-            // if (typeof result === 'string') {
-            //     try {
-            //         parsedResult = JSON.parse(result);
-            //     } catch (parseError) {
-            //         console.error('Failed to parse scan_block_for_wallet_outputs JSON result:', parseError);
-            //         throw parseError;
-            //     }
-            // }
-            // 
-            // // Check for WASM errors
-            // if (parsedResult && parsedResult.error) {
-            //     // WASM returned an error (e.g., RCT parsing failed)
-            //     // Return empty outputs instead of throwing - allows scanning to continue
-            //     console.warn(`⚠️ [WASM] scan_block_for_wallet_outputs error: ${parsedResult.error}`);
-            //     return { outputs: [], error: parsedResult.error };
-            // }
-            // 
-            // return parsedResult;
 
             // Return empty results if new scanner not available
             return { outputs: [] };
@@ -3169,10 +3137,8 @@ const salvium_core_js =
     },
 
 
-    // Test daemon connectivity (bypasses CORS for testing)
     test_daemon_connectivity: async function () {
         try {
-            // Test get_info (should work without CORS issues in some cases)
             const info = await this.get_info();
             return { success: true, info: info };
         } catch (error) {

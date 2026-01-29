@@ -207,14 +207,6 @@ async function handleInit(msg) {
             }
         }
 
-        // DEBUG: Get wallet diagnostic to verify initialization
-        let diagnostic = null;
-        if (typeof wallet.get_wallet_diagnostic === 'function') {
-            try {
-                diagnostic = JSON.parse(wallet.get_wallet_diagnostic());
-            } catch (e) { }
-        }
-
         void 0 && console.log(`[Phase2 Worker ${workerId}] Init complete`);
 
         isReady = true;

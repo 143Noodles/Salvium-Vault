@@ -234,6 +234,19 @@
       "title": "Wallet Zurücksetzen",
       "description": "Wallet-Daten löschen und neu beginnen. Stellen Sie sicher, dass Sie Ihre Seed-Phrase gespeichert haben.",
       "button": "Zurücksetzen"
+    },
+    "seedPhrase": {
+      "title": "Seed-Phrase Anzeigen",
+      "description": "Zeigen Sie Ihre 25-Wort-Wiederherstellungsphrase an. Erforderlich zur Wiederherstellung Ihrer Wallet.",
+      "reveal": "Anzeigen",
+      "modalTitle": "Seed-Phrase Anzeigen",
+      "modalDescription": "Geben Sie Ihr Wallet-Passwort ein, um Ihre Wiederherstellungsphrase anzuzeigen.",
+      "enterPassword": "Bitte geben Sie Ihr Passwort ein",
+      "incorrectPassword": "Falsches Passwort. Bitte erneut versuchen.",
+      "securityWarning": "Ihre Seed-Phrase ist der Hauptschlüssel zu Ihrer Wallet. Jeder mit Zugriff darauf kann Ihre Mittel stehlen. Zeigen Sie sie nur in einer sicheren, privaten Umgebung an.",
+      "revealButton": "Seed-Phrase Anzeigen",
+      "copySeed": "Seed-Phrase Kopieren",
+      "neverShare": "Teilen Sie Ihre Seed-Phrase niemals mit jemandem. Der Salvium-Support wird niemals danach fragen. Bewahren Sie sie sicher offline auf."
     }
   },
   "onboarding": {

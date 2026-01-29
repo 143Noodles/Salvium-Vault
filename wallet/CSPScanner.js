@@ -66,7 +66,6 @@ class CSPScanner {
         this._uiLagTimer = null;
         this._rampInProgress = false;
 
-        // Debug mode
         this.DEBUG = options.debug || false;
 
         // Callbacks

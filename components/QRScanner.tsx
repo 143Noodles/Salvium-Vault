@@ -31,14 +31,10 @@ const QRScanner: React.FC<QRScannerProps> = ({ onScan, onClose }) => {
                     { facingMode: "environment" },
                     config,
                     (decodedText) => {
-                        // Success
                         onScan(decodedText);
                         stopAndClose();
                     },
-                    (errorMessage) => {
-                        // Scan error (usually just "no QR code found in frame")
-                        // We ignore these to keep the console clean
-                    }
+                    () => {}
                 );
                 setIsInitializing(false);
             } catch (err: any) {
@@ -60,7 +56,6 @@ const QRScanner: React.FC<QRScannerProps> = ({ onScan, onClose }) => {
                 await scannerRef.current.stop();
                 scannerRef.current.clear();
             } catch {
-                // Scanner stop failed - may already be stopped
             }
         }
     };

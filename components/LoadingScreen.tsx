@@ -120,7 +120,6 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
     : (progress?.statusMessage ?? 'Syncing wallet...');
   const transactionsFound = progress?.transactionsFound ?? 0;
 
-  // DEBUG: Show wallet state
   const wasmStatus = wallet.getWasmStatus();
   const walletState = `Ready:${wallet.isWalletReady}, Locked:${wallet.isLocked}, Init:${wallet.isInitialized}`;
   const wasmState = `WASM.isReady:${wasmStatus.isReady}, WASM.hasWallet:${wasmStatus.hasWallet}`;

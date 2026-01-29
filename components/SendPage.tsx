@@ -37,30 +37,24 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
   const [validationState, setValidationState] = useState<{ type: 'error' | 'warning' | null, message: string } | null>(null);
   const [actualSendAmount, setActualSendAmount] = useState<number | null>(null);
 
-  // QR Scanner State
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [scannerTarget, setScannerTarget] = useState<'send' | 'contact'>('send');
 
-  // Address input focus state
   const [isAddressFocused, setIsAddressFocused] = useState(false);
   const addressInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Contact State
   const [isAddContactModalOpen, setIsAddContactModalOpen] = useState(false);
-  const [isAddressBookOpen, setIsAddressBookOpen] = useState(false); // Mobile Overlay
+  const [isAddressBookOpen, setIsAddressBookOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<any | null>(null);
   const [contactName, setContactName] = useState('');
   const [contactAddress, setContactAddress] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Send Confirmation State
   const [showSendConfirm, setShowSendConfirm] = useState(false);
 
-  // Transaction Overlay State (for viewing tx details after send)
   const [showTxOverlay, setShowTxOverlay] = useState(false);
   const [txHashCopied, setTxHashCopied] = useState(false);
 
-  // Sweep All State
   const [showSweepModal, setShowSweepModal] = useState(false);
   const [sweepAddress, setSweepAddress] = useState('');
   const [isSweepAddressFocused, setIsSweepAddressFocused] = useState(false);
@@ -73,7 +67,6 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
   const [sweepConfirmed, setSweepConfirmed] = useState(false);
   const [isAddressValid, setIsAddressValid] = useState(false);
 
-  // Validate amount: must be a positive number with max 8 decimal places (SAL precision)
   const isValidAmount = (value: string): boolean => {
     if (!value || value.trim() === '') return false;
     // Reject scientific notation and negative signs
@@ -87,7 +80,6 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
     return !isNaN(num) && num > 0;
   };
 
-  // Validate address using wallet's validation function
   useEffect(() => {
     const checkAddress = async () => {
       if (!address || address.trim() === '') {
@@ -101,7 +93,6 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
     return () => clearTimeout(timer);
   }, [address, wallet]);
 
-  // Handle Initial Params (e.g. from Donate button)
   useEffect(() => {
     if (initialParams) {
       if (initialParams.address) setAddress(initialParams.address);
@@ -110,7 +101,6 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
     }
   }, [initialParams]);
 
-  // Real-time Amount Validation
   useEffect(() => {
     const validate = async () => {
       const val = parseFloat(amount);
@@ -228,7 +218,6 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
     setError(null);
   };
 
-  // Sweep All
   const closeSweepModal = () => {
     setShowSweepModal(false);
     setSweepAddress('');
@@ -274,7 +263,6 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
     }
   };
 
-  // Contact Management
   const selectContact = (addr: string) => {
     setAddress(addr);
     setIsAddressBookOpen(false); // Close overlay on mobile
@@ -314,7 +302,6 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
     c.address.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  // Address Book Component (Reusable for Overlay and Desktop Sidebar)
   const AddressBookList = ({ hideAddButton = false, isOverlay = false }: { hideAddButton?: boolean; isOverlay?: boolean }) => (
     <div className={`flex flex-col ${isOverlay ? '' : 'h-full'}`}>
       <div className="relative mb-4 flex-shrink-0">

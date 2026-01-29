@@ -79,8 +79,6 @@ if ('serviceWorker' in navigator) {
     // Listen for controller change (new SW activated)
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       void 0 && console.log('[SW] New service worker activated');
-      // Optionally reload to use new SW
-      // window.location.reload();
     });
   });
 } else {
