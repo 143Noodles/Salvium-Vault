@@ -8,7 +8,7 @@
  * - Static: Cache first with network update
  */
 
-const CACHE_VERSION = 'salvium-vault-v1';
+const CACHE_VERSION = 'salvium-vault-v2';
 const WASM_CACHE = 'salvium-wasm-v1';
 const STATIC_CACHE = 'salvium-static-v1';
 const API_CACHE = 'salvium-api-v1';
@@ -59,6 +59,12 @@ self.addEventListener('fetch', (event) => {
 
   // Skip non-GET requests
   if (event.request.method !== 'GET') {
+    return;
+  }
+
+  // Skip cross-origin requests (Google Fonts, CDNs, etc.)
+  // Let them go directly to the network without service worker interception
+  if (url.origin !== self.location.origin) {
     return;
   }
 

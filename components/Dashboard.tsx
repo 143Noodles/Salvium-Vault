@@ -128,7 +128,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
 
 
                {/* Enhanced Atmospheric Background */}
-               <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-10 mix-blend-overlay pointer-events-none"></div>
+               <div className="absolute inset-0 bg-[url('/noise.svg')] opacity-10 mix-blend-overlay pointer-events-none"></div>
                {/* Removed top-right glow as requested */}
                <div className="absolute bottom-0 left-0 w-full h-1/2 bg-gradient-to-t from-accent-primary/5 to-transparent pointer-events-none"></div>
 

@@ -781,6 +781,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     // Subaddresses
     const [subaddresses, setSubaddresses] = useState<SubAddress[]>([]);
+    const subaddressesRef = React.useRef<SubAddress[]>([]);
 
     // Contacts (from localStorage)
     const [contacts, setContacts] = useState<Contact[]>([]);
@@ -1474,7 +1475,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
             // CRITICAL FIX: Merge with existing subaddresses to preserve labels
             // WASM wallet might forget labels on reload, so we must prioritize our cached state labels
+            // Also check subaddressesRef.current because React state updates may be batched,
+            // and the ref is updated synchronously when cached subaddresses are loaded.
             setSubaddresses(prev => {
+                // Use ref as fallback if prev is empty (handles race condition during restore)
+                const labelsSource = prev.length > 0 ? prev : subaddressesRef.current;
+
                 return subs.map((sub, idx) => {
                     const index = sub.index?.minor ?? idx;
                     const wasmLabel = sub.label;
@@ -1482,8 +1488,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     // Check if WASM returned a default/empty label
                     const isDefaultWasmLabel = !wasmLabel || wasmLabel === `Subaddress ${index}` || wasmLabel === 'Primary Account';
 
-                    // Find existing label in state
-                    const existing = prev.find(p => p.index === index);
+                    // Find existing label in state or ref
+                    const existing = labelsSource.find(p => p.index === index);
 
                     // Use existing label if WASM has default/empty label and we have a custom one
                     // Also use existing label if wasmLabel is empty string
@@ -1815,6 +1821,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
         if (wallet.cachedSubaddresses && wallet.cachedSubaddresses.length > 0) {
             setSubaddresses(wallet.cachedSubaddresses);
+            // CRITICAL FIX: Update ref immediately so refreshData() can see the labels
+            // React state updates are async, but refreshData() uses subaddressesRef.current
+            // for label preservation. Without this, the ref might be stale when refreshData runs.
+            subaddressesRef.current = wallet.cachedSubaddresses;
         }
         // Set walletHeight from cached height immediately (shows in sidebar)
         if (wallet.height && wallet.height > 0) {
@@ -2084,6 +2094,13 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 ...prev,
                 walletHeight: wallet.height || 0
             }));
+        }
+        // CRITICAL FIX: Restore cached subaddresses with labels from backup
+        // This was missing, causing labels to be lost on vault backup restore
+        if (wallet.cachedSubaddresses && wallet.cachedSubaddresses.length > 0) {
+            setSubaddresses(wallet.cachedSubaddresses);
+            // Also update the ref immediately so refreshData() can see the labels
+            subaddressesRef.current = wallet.cachedSubaddresses;
         }
 
         // Clear pending refs
@@ -2603,6 +2620,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     const hasNewTxs = newlyFoundTxs.length > 0;
                     const duplicatesFiltered = newTxs.length - newlyFoundTxs.length;
 
+                    // Track whether finalBalance comes from WASM (needs mempool subtraction) or cache (does not)
+                    let balanceFromWasm = true;
+
                     // Detect WASM state divergence (tab suspension recovery)
                     // Only applies to non-incremental scans - incremental scans use cached balance + delta
                     const scanFoundOutputsButFilterEmpty = (result.outputsFound || 0) > 0 && !hasNewTxs;
@@ -2681,6 +2701,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                                 balanceSAL: newBalance / ATOMIC_UNITS,
                                 unlockedBalanceSAL: newUnlocked / ATOMIC_UNITS
                             };
+                            balanceFromWasm = false; // Cache-based balance, no mempool subtraction needed
 
                         } else {
                             // No new transactions found (already in cache or mempool)
@@ -2698,6 +2719,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                                 balanceSAL: newBalance / ATOMIC_UNITS,
                                 unlockedBalanceSAL: newUnlocked / ATOMIC_UNITS
                             };
+                            balanceFromWasm = false; // Cache-based balance, no mempool subtraction needed
                         }
                     } else if (isIncrementalScan && cachedTxs.length > 0 && !cachedBalance) {
                         // INCREMENTAL SCAN but CACHE COMPLETELY MISSING (not just zero balance)
@@ -2734,17 +2756,29 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     // When scan_tx is called for mempool transactions, WASM adds those outputs to its state.
                     // But those same outputs are also scanned from the blockchain, causing double-counting.
                     // Solution: subtract mempool amounts from balance (they'll be added back when confirmed).
-                    const mempoolIncomingTxs = mempoolTransactionsRef.current.filter(tx => tx.type === 'in' && tx.amount > 0);
-                    if (mempoolIncomingTxs.length > 0) {
-                        const mempoolIncomingTotal = mempoolIncomingTxs.reduce((sum, tx) => sum + tx.amount, 0);
-                        const mempoolIncomingAtomic = Math.round(mempoolIncomingTotal * 1e8);
 
-                        // Only subtract if these txs are still unconfirmed (not in mergedTxs with height > 0)
-                        const confirmedTxids = new Set(mergedTxs.filter(tx => tx.height > 0).map(tx => tx.txid));
-                        const stillUnconfirmedMempool = mempoolIncomingTxs.filter(tx => !confirmedTxids.has(tx.txid));
+                    // RACE CONDITION FIX: Clean up mempoolTransactionsRef IMMEDIATELY when we detect
+                    // confirmed TXs, before using it for balance calculation. The useEffect cleanup
+                    // runs too late (after this callback completes), causing stale mempool TXs to be
+                    // incorrectly subtracted even after they've confirmed.
+                    const confirmedTxids = new Set(mergedTxs.filter(tx => tx.height > 0).map(tx => tx.txid));
+                    const currentMempoolTxs = mempoolTransactionsRef.current;
+                    const cleanedMempoolTxs = currentMempoolTxs.filter(tx => !confirmedTxids.has(tx.txid));
 
-                        if (stillUnconfirmedMempool.length > 0) {
-                            const unconfirmedTotal = stillUnconfirmedMempool.reduce((sum, tx) => sum + tx.amount, 0);
+                    // Update ref immediately so subsequent code uses clean data
+                    if (cleanedMempoolTxs.length < currentMempoolTxs.length) {
+                        mempoolTransactionsRef.current = cleanedMempoolTxs;
+                        // Also update React state to keep them in sync
+                        setMempoolTransactions(cleanedMempoolTxs);
+                    }
+
+                    // Now filter for incoming mempool TXs that are truly unconfirmed
+                    // ONLY subtract mempool amounts when balance came from WASM (which includes mempool-scanned outputs)
+                    // Cache-based balance only includes confirmed TXs, so mempool amounts are NOT in it
+                    if (balanceFromWasm) {
+                        const mempoolIncomingTxs = cleanedMempoolTxs.filter(tx => tx.type === 'in' && tx.amount > 0);
+                        if (mempoolIncomingTxs.length > 0) {
+                            const unconfirmedTotal = mempoolIncomingTxs.reduce((sum, tx) => sum + tx.amount, 0);
                             const unconfirmedAtomic = Math.round(unconfirmedTotal * 1e8);
 
                             finalBalance = {
@@ -2881,7 +2915,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     const currentSubs = walletService.getSubaddresses();
 
                     // CRITICAL FIX: Merge with existing cached labels before saving to localStorage
-                    // EncryptedWallet already contains the OLD cached subaddresses (with correct labels)
+                    // Check BOTH localStorage cache AND current React state for labels
+                    // React state has the most recent labels (e.g., from newly created subaddresses)
                     const oldCachedSubs = encryptedWallet.cachedSubaddresses || [];
 
                     encryptedWallet.cachedSubaddresses = currentSubs.map((sub, idx) => {
@@ -2889,12 +2924,20 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         const wasmLabel = sub.label;
                         const isDefaultWasmLabel = !wasmLabel || wasmLabel === `Subaddress ${index}` || wasmLabel === 'Primary Account';
 
-                        // Find label in the cache we just loaded
-                        const existing = oldCachedSubs.find(s => s.index === index);
+                        // Check React state first (most recent, includes newly created subaddresses)
+                        // Use ref to avoid stale closure issues in async callbacks
+                        const fromState = subaddressesRef.current.find(s => s.index === index);
+                        // Then check localStorage cache
+                        const fromCache = oldCachedSubs.find(s => s.index === index);
 
                         let finalLabel = wasmLabel;
-                        if (isDefaultWasmLabel && existing && existing.label) {
-                            finalLabel = existing.label;
+                        if (isDefaultWasmLabel) {
+                            // Prefer React state label, then localStorage cache label
+                            if (fromState?.label && fromState.label !== `Subaddress ${index}`) {
+                                finalLabel = fromState.label;
+                            } else if (fromCache?.label) {
+                                finalLabel = fromCache.label;
+                            }
                         }
 
                         if (!finalLabel) {
@@ -3466,7 +3509,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             setBalance(cachedBalance);
                         }
                     }
-                    if (cachedSubaddrsData.length > 0) setSubaddresses(cachedSubaddrsData);
+                    if (cachedSubaddrsData.length > 0) {
+                        setSubaddresses(cachedSubaddrsData);
+                        // CRITICAL FIX: Update ref immediately so refreshData() can see the labels
+                        subaddressesRef.current = cachedSubaddrsData;
+                    }
                     if (cachedHistoryData.length > 0) {
                         hydratedWalletHistoryFromCacheRef.current = true;
                         setWalletHistory(cachedHistoryData);
@@ -3673,6 +3720,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     // Keep refs in sync for event handlers
     useEffect(() => { pendingTransactionsRef.current = pendingTransactions; }, [pendingTransactions]);
     useEffect(() => { mempoolTransactionsRef.current = mempoolTransactions; }, [mempoolTransactions]);
+    useEffect(() => { subaddressesRef.current = subaddresses; }, [subaddresses]);
 
     // Real-time mempool stream subscription (SSE)
     // Detects incoming transactions instantly for instant UI updates

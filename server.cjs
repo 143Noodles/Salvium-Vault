@@ -3443,6 +3443,7 @@ app.use(cors(corsOptions));
 
 // Security Headers Middleware
 app.use((req, res, next) => {
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -6706,23 +6707,13 @@ app.post(['/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransactio
     }
 });
 
-app.options(['/api/wallet/get_outs', '/api/wallet/get_outs.bin', '/api/wallet/get_output_distribution.bin', '/api/wallet/sendrawtransaction'], (req, res) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-    res.sendStatus(200);
-});
+app.options(['/api/wallet/get_outs', '/api/wallet/get_outs.bin', '/api/wallet/get_output_distribution.bin', '/api/wallet/sendrawtransaction'], cors(corsOptions));
 
 // =============================================================================
 // END WASM WALLET API ENDPOINTS
 // =============================================================================
 
-app.options(['/api/wallet-rpc', '/api/wallet-rpc/json_rpc', '/api/wallet-rpc/getblocks.bin', '/api/wallet-rpc/gethashes.bin'], (req, res) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-    res.sendStatus(200);
-});
+app.options(['/api/wallet-rpc', '/api/wallet-rpc/json_rpc', '/api/wallet-rpc/getblocks.bin', '/api/wallet-rpc/gethashes.bin'], cors(corsOptions));
 
 
 app.get('/api/wallet-rpc-test', (req, res) => {

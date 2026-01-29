@@ -238,7 +238,7 @@
       "select": "언어 선택"
     },
     "donate": {
-      "title": "Salvium.Tools에 기부",
+      "title": "Salvium Tools에 기부",
       "description": "Salvium Vault 운영을 도와주세요. 모든 기부는 서버와 개발을 지원합니다.",
       "button": "지금 기부"
     },

@@ -349,7 +349,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 </p>
               </div>
 
-              {isGenerating ? (
+              {isGenerating || (!generatedSeed && !error) ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 size={32} className="animate-spin text-accent-primary" />
                   <span className="ml-3 text-text-muted">{t('onboarding.recoveryPhrase.generating')}</span>
