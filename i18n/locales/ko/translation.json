@@ -82,7 +82,13 @@
       "exceedsBalance": "금액이 사용 가능한 잔액을 초과합니다",
       "insufficientFees": "트랜잭션 수수료를 충당할 잔액이 부족합니다",
       "adjustedForFee": "트랜잭션 수수료를 충당하기 위해 금액이 조정됩니다"
-    }
+    },
+    "confirmSend": "Confirm Transaction",
+    "reviewTransaction": "Review your transaction details",
+    "amountToSend": "Amount to Send",
+    "recipient": "Recipient",
+    "sendWarning": "Please verify the recipient address carefully. Transactions cannot be reversed once confirmed.",
+    "confirmSendButton": "Confirm & Send"
   },
   "receive": {
     "title": "자산 받기",
@@ -136,7 +142,13 @@
     "errors": {
       "validAmount": "유효한 양수 금액을 입력하세요",
       "exceedsBalance": "금액이 사용 가능한 잔액을 초과합니다"
-    }
+    },
+    "confirmStake": "Confirm Stake",
+    "reviewDetails": "Review your stake details",
+    "amountToStake": "Amount to Stake",
+    "importantNote": "Important",
+    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "confirmStakeButton": "Confirm Stake"
   },
   "history": {
     "title": "트랜잭션 내역",
@@ -234,6 +246,19 @@
       "title": "지갑 초기화",
       "description": "지갑 데이터를 삭제하고 새로 시작합니다. 시드 문구를 저장했는지 확인하세요.",
       "button": "초기화"
+    },
+    "seedPhrase": {
+      "title": "Show Seed Phrase",
+      "description": "View your 25-word recovery phrase. Required to restore your wallet.",
+      "reveal": "Reveal",
+      "modalTitle": "Reveal Seed Phrase",
+      "modalDescription": "Enter your wallet password to reveal your recovery phrase.",
+      "enterPassword": "Please enter your password",
+      "incorrectPassword": "Incorrect password. Please try again.",
+      "securityWarning": "Your seed phrase is the master key to your wallet. Anyone with access to it can steal your funds. Only reveal it in a secure, private environment.",
+      "revealButton": "Reveal Seed Phrase",
+      "copySeed": "Copy Seed Phrase",
+      "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
     }
   },
   "onboarding": {
@@ -398,7 +423,10 @@
     "fee": "수수료",
     "returnTransaction": "트랜잭션 반환",
     "confirmReturn": "반환 확인",
-    "confirmReturnDescription": "이 트랜잭션을 반환하시겠습니까? 자금이 원래 발신자에게 다시 전송됩니다."
+    "confirmReturnDescription": "이 트랜잭션을 반환하시겠습니까? 자금이 원래 발신자에게 다시 전송됩니다.",
+    "unlocked": "Unlocked",
+    "locked": "Locked",
+    "blocksToUnlock": "blocks to unlock"
   },
   "errors": {
     "failedToInitialize": "초기화 실패",

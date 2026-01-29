@@ -82,7 +82,13 @@
       "exceedsBalance": "La cantidad excede el saldo disponible",
       "insufficientFees": "Fondos insuficientes para cubrir la comisión",
       "adjustedForFee": "La cantidad se ajustará para cubrir la comisión"
-    }
+    },
+    "confirmSend": "Confirm Transaction",
+    "reviewTransaction": "Review your transaction details",
+    "amountToSend": "Amount to Send",
+    "recipient": "Recipient",
+    "sendWarning": "Please verify the recipient address carefully. Transactions cannot be reversed once confirmed.",
+    "confirmSendButton": "Confirm & Send"
   },
   "receive": {
     "title": "Recibir Activos",
@@ -136,7 +142,13 @@
     "errors": {
       "validAmount": "Por favor ingresa una cantidad positiva válida",
       "exceedsBalance": "La cantidad excede el saldo disponible"
-    }
+    },
+    "confirmStake": "Confirm Stake",
+    "reviewDetails": "Review your stake details",
+    "amountToStake": "Amount to Stake",
+    "importantNote": "Important",
+    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "confirmStakeButton": "Confirm Stake"
   },
   "history": {
     "title": "Historial de Transacciones",
@@ -411,7 +423,10 @@
     "fee": "Comisión",
     "returnTransaction": "Devolver Transacción",
     "confirmReturn": "Confirmar Devolución",
-    "confirmReturnDescription": "¿Estás seguro de que deseas devolver esta transacción? Esto enviará los fondos de vuelta al remitente original."
+    "confirmReturnDescription": "¿Estás seguro de que deseas devolver esta transacción? Esto enviará los fondos de vuelta al remitente original.",
+    "unlocked": "Unlocked",
+    "locked": "Locked",
+    "blocksToUnlock": "blocks to unlock"
   },
   "errors": {
     "failedToInitialize": "Error al Inicializar",

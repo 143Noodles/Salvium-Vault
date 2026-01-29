@@ -983,7 +983,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                         <div className="space-y-4">
                            <div className="bg-bg-primary border border-white/10 rounded-xl p-4">
                               <div className="grid grid-cols-3 gap-2">
-                                 {revealedSeed.split(' ').map((word, index) => (
+                                 {revealedSeed.split(/\s+/).filter(word => word.length > 0).map((word, index) => (
                                     <div key={index} className="flex items-center gap-1.5 text-sm">
                                        <span className="text-text-muted w-5 text-right">{index + 1}.</span>
                                        <span className="text-white font-mono">{word}</span>

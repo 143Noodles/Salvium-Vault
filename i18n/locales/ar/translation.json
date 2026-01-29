@@ -82,7 +82,13 @@
       "exceedsBalance": "المبلغ يتجاوز الرصيد المتاح",
       "insufficientFees": "رصيد غير كافٍ لتغطية رسوم المعاملة",
       "adjustedForFee": "سيتم تعديل المبلغ لتغطية رسوم المعاملة"
-    }
+    },
+    "confirmSend": "Confirm Transaction",
+    "reviewTransaction": "Review your transaction details",
+    "amountToSend": "Amount to Send",
+    "recipient": "Recipient",
+    "sendWarning": "Please verify the recipient address carefully. Transactions cannot be reversed once confirmed.",
+    "confirmSendButton": "Confirm & Send"
   },
   "receive": {
     "title": "استلام الأصول",
@@ -136,7 +142,13 @@
     "errors": {
       "validAmount": "يرجى إدخال مبلغ صحيح وإيجابي",
       "exceedsBalance": "المبلغ يتجاوز الرصيد المتاح"
-    }
+    },
+    "confirmStake": "Confirm Stake",
+    "reviewDetails": "Review your stake details",
+    "amountToStake": "Amount to Stake",
+    "importantNote": "Important",
+    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "confirmStakeButton": "Confirm Stake"
   },
   "history": {
     "title": "سجل المعاملات",
@@ -234,6 +246,19 @@
       "title": "إعادة تعيين المحفظة",
       "description": "حذف بيانات المحفظة والبدء من جديد. تأكد من حفظ عبارة الاسترداد الخاصة بك.",
       "button": "إعادة تعيين"
+    },
+    "seedPhrase": {
+      "title": "Show Seed Phrase",
+      "description": "View your 25-word recovery phrase. Required to restore your wallet.",
+      "reveal": "Reveal",
+      "modalTitle": "Reveal Seed Phrase",
+      "modalDescription": "Enter your wallet password to reveal your recovery phrase.",
+      "enterPassword": "Please enter your password",
+      "incorrectPassword": "Incorrect password. Please try again.",
+      "securityWarning": "Your seed phrase is the master key to your wallet. Anyone with access to it can steal your funds. Only reveal it in a secure, private environment.",
+      "revealButton": "Reveal Seed Phrase",
+      "copySeed": "Copy Seed Phrase",
+      "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
     }
   },
   "onboarding": {
@@ -398,7 +423,10 @@
     "fee": "الرسوم",
     "returnTransaction": "إرجاع المعاملة",
     "confirmReturn": "تأكيد الإرجاع",
-    "confirmReturnDescription": "هل أنت متأكد أنك تريد إرجاع هذه المعاملة؟ سيتم إرسال الأموال إلى المرسل الأصلي."
+    "confirmReturnDescription": "هل أنت متأكد أنك تريد إرجاع هذه المعاملة؟ سيتم إرسال الأموال إلى المرسل الأصلي.",
+    "unlocked": "Unlocked",
+    "locked": "Locked",
+    "blocksToUnlock": "blocks to unlock"
   },
   "errors": {
     "failedToInitialize": "فشل التهيئة",

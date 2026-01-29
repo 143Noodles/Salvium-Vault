@@ -82,7 +82,13 @@
       "exceedsBalance": "Betrag übersteigt verfügbares Guthaben",
       "insufficientFees": "Unzureichende Mittel für Transaktionsgebühr",
       "adjustedForFee": "Betrag wird für Transaktionsgebühr angepasst"
-    }
+    },
+    "confirmSend": "Confirm Transaction",
+    "reviewTransaction": "Review your transaction details",
+    "amountToSend": "Amount to Send",
+    "recipient": "Recipient",
+    "sendWarning": "Please verify the recipient address carefully. Transactions cannot be reversed once confirmed.",
+    "confirmSendButton": "Confirm & Send"
   },
   "receive": {
     "title": "Assets Empfangen",
@@ -136,7 +142,13 @@
     "errors": {
       "validAmount": "Bitte geben Sie einen gültigen positiven Betrag ein",
       "exceedsBalance": "Betrag übersteigt verfügbares Guthaben"
-    }
+    },
+    "confirmStake": "Confirm Stake",
+    "reviewDetails": "Review your stake details",
+    "amountToStake": "Amount to Stake",
+    "importantNote": "Important",
+    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "confirmStakeButton": "Confirm Stake"
   },
   "history": {
     "title": "Transaktionsverlauf",
@@ -411,7 +423,10 @@
     "fee": "Gebühr",
     "returnTransaction": "Transaktion zurücksenden",
     "confirmReturn": "Rücksendung bestätigen",
-    "confirmReturnDescription": "Sind Sie sicher, dass Sie diese Transaktion zurücksenden möchten? Dies sendet die Mittel an den ursprünglichen Absender zurück."
+    "confirmReturnDescription": "Sind Sie sicher, dass Sie diese Transaktion zurücksenden möchten? Dies sendet die Mittel an den ursprünglichen Absender zurück.",
+    "unlocked": "Unlocked",
+    "locked": "Locked",
+    "blocksToUnlock": "blocks to unlock"
   },
   "errors": {
     "failedToInitialize": "Initialisierung Fehlgeschlagen",

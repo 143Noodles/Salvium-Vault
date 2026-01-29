@@ -82,7 +82,13 @@
       "exceedsBalance": "Bedrag overschrijdt beschikbaar saldo",
       "insufficientFees": "Onvoldoende saldo voor transactiekosten",
       "adjustedForFee": "Bedrag wordt aangepast voor transactiekosten"
-    }
+    },
+    "confirmSend": "Confirm Transaction",
+    "reviewTransaction": "Review your transaction details",
+    "amountToSend": "Amount to Send",
+    "recipient": "Recipient",
+    "sendWarning": "Please verify the recipient address carefully. Transactions cannot be reversed once confirmed.",
+    "confirmSendButton": "Confirm & Send"
   },
   "receive": {
     "title": "Assets Ontvangen",
@@ -136,7 +142,13 @@
     "errors": {
       "validAmount": "Voer een geldig positief bedrag in",
       "exceedsBalance": "Bedrag overschrijdt beschikbaar saldo"
-    }
+    },
+    "confirmStake": "Confirm Stake",
+    "reviewDetails": "Review your stake details",
+    "amountToStake": "Amount to Stake",
+    "importantNote": "Important",
+    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "confirmStakeButton": "Confirm Stake"
   },
   "history": {
     "title": "Transactie Geschiedenis",
@@ -234,6 +246,19 @@
       "title": "Wallet Resetten",
       "description": "Verwijder wallet gegevens en begin opnieuw. Zorg dat je je seed phrase hebt opgeslagen.",
       "button": "Resetten"
+    },
+    "seedPhrase": {
+      "title": "Show Seed Phrase",
+      "description": "View your 25-word recovery phrase. Required to restore your wallet.",
+      "reveal": "Reveal",
+      "modalTitle": "Reveal Seed Phrase",
+      "modalDescription": "Enter your wallet password to reveal your recovery phrase.",
+      "enterPassword": "Please enter your password",
+      "incorrectPassword": "Incorrect password. Please try again.",
+      "securityWarning": "Your seed phrase is the master key to your wallet. Anyone with access to it can steal your funds. Only reveal it in a secure, private environment.",
+      "revealButton": "Reveal Seed Phrase",
+      "copySeed": "Copy Seed Phrase",
+      "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
     }
   },
   "onboarding": {
@@ -398,7 +423,10 @@
     "fee": "Kosten",
     "returnTransaction": "Transactie terugsturen",
     "confirmReturn": "Bevestig terugsturen",
-    "confirmReturnDescription": "Weet u zeker dat u deze transactie wilt terugsturen? Dit stuurt de fondsen terug naar de oorspronkelijke afzender."
+    "confirmReturnDescription": "Weet u zeker dat u deze transactie wilt terugsturen? Dit stuurt de fondsen terug naar de oorspronkelijke afzender.",
+    "unlocked": "Unlocked",
+    "locked": "Locked",
+    "blocksToUnlock": "blocks to unlock"
   },
   "errors": {
     "failedToInitialize": "Initialisatie Mislukt",
