@@ -116,7 +116,7 @@ The wallet's cryptographic core is compiled to WebAssembly from the Salvium C++ 
 
 The WASM build requires Docker. Full build instructions and source code are available in the dedicated repository:
 
-**WASM Build Repository:** [https://github.com/salvium/salvium-wasm-build](https://github.com/salvium/salvium-wasm-build)
+**WASM Build Repository:** [https://github.com/143Noodles/Salvium-WASM](https://github.com/143Noodles/Salvium-WASM)
 
 To build locally:
 
