@@ -1,5 +1,11 @@
 /**
- * Salvium Vault Backend Server v5.22.1
+ * Salvium Vault Backend Server v5.22.2
+ * 
+ * v5.22.2 CRITICAL FIX: Asset-type-specific decoy selection
+ * - get_random_outs now passes rct_asset_type to get_output_distribution
+ * - get_random_outs now passes asset_type to /get_outs
+ * - This fixes "Invalid input" transaction rejection for SAL1 transfers
+ * - Root cause: Daemon validates rings using asset_type_output_index, not global indices
  * 
  * This server provides API endpoints for the Salvium web wallet.
  * Includes block caching, CSP generation, TXI indexing, and daemon RPC proxy.
@@ -998,7 +1004,7 @@ async function checkForNewBlocks() {
 
 async function validateCspChunkBlockHash(startHeight, endHeight) {
     try {
-        const response = await axios.post(SALVIUM_RPC_URL + '/json_rpc', {
+        const response = await axios.post(GLOBAL_DAEMON_URL + '/json_rpc', {
             jsonrpc: '2.0',
             id: '0',
             method: 'get_block_header_by_height',
@@ -3227,6 +3233,35 @@ const CIRCUIT_BREAKER_THRESHOLD = 3;
 const CIRCUIT_BREAKER_RESET_TIME = 60000;
 const CIRCUIT_BREAKER_RESET_COOLDOWN = 30000;
 
+/**
+ * Try RPC request across all configured nodes with automatic fallback.
+ * Tries RPC_NODES[0] (local daemon) first, then falls back to seed nodes.
+ * @param {Function} makeRequest - async (nodeUrl) => response
+ * @param {string} operationName - Name for logging
+ * @returns {Promise<{response: any, nodeUrl: string}>}
+ */
+async function tryRpcNodes(makeRequest, operationName = 'RPC request') {
+    const nodesToTry = [...RPC_NODES];
+    let lastError = null;
+    
+    for (const nodeUrl of nodesToTry) {
+        try {
+            console.log(`🔗 [${operationName}] Trying node: ${nodeUrl}`);
+            const response = await makeRequest(nodeUrl);
+            console.log(`✅ [${operationName}] Success on node: ${nodeUrl}`);
+            return { response, nodeUrl };
+        } catch (error) {
+            console.warn(`⚠️ [${operationName}] Failed on ${nodeUrl}: ${error.message}`);
+            lastError = error;
+            // Continue to next node
+        }
+    }
+    
+    // All nodes failed
+    console.error(`❌ [${operationName}] All ${nodesToTry.length} nodes failed`);
+    throw lastError || new Error(`All RPC nodes failed for ${operationName}`);
+}
+
 async function checkDaemonConnectivity() {
     console.log('\n🔍 Checking daemon connectivity...');
 
@@ -3442,6 +3477,15 @@ async function setCached(key, data, expirationSeconds = null) {
 
 // Apply CORS with configured options (same-origin by default)
 app.use(cors(corsOptions));
+
+// Security Headers Middleware
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://*.salvium.io https://*.salvium.io:19081 https://*.salvium.tools wss://*; img-src 'self' data: blob:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self';");
+  next();
+});
 
 // Apply general rate limiting to all requests
 app.use(generalRateLimit);
@@ -4005,22 +4049,22 @@ app.options(['/api/wallet-rpc/json_rpc', '/json_rpc'], (req, res) => {
 });
 
 // ============================================================================
-// DAEMON INFO ENDPOINT - Get current blockchain height
+// DAEMON INFO ENDPOINT - Get current blockchain height (with RPC fallback)
 // ============================================================================
 app.get(['/api/daemon/info', '/vault/api/daemon/info'], async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
 
     try {
-        const DAEMON_URL = process.env.SALVIUM_RPC_URL || RPC_NODES[0] || 'http://seed01.salvium.io:19081';
-
-        const response = await axiosInstance.post(`${DAEMON_URL}/json_rpc`, {
-            jsonrpc: '2.0',
-            id: '0',
-            method: 'get_info'
-        }, {
-            headers: { 'Content-Type': 'application/json' },
-            timeout: 10000
-        });
+        const { response, nodeUrl } = await tryRpcNodes(async (nodeUrl) => {
+            return await axiosInstance.post(`${nodeUrl.replace(/\/$/, '')}/json_rpc`, {
+                jsonrpc: '2.0',
+                id: '0',
+                method: 'get_info'
+            }, {
+                headers: { 'Content-Type': 'application/json' },
+                timeout: 10000
+            });
+        }, 'daemon/info');
 
         if (response.data && response.data.result) {
             const info = response.data.result;
@@ -4031,7 +4075,7 @@ app.get(['/api/daemon/info', '/vault/api/daemon/info'], async (req, res) => {
                 tx_count: info.tx_count || 0,
                 tx_pool_size: info.tx_pool_size || 0,
                 status: info.status || 'OK',
-                daemon_url: DAEMON_URL,
+                daemon_url: nodeUrl,
                 timestamp: new Date().toISOString()
             });
         } else {
@@ -6549,13 +6593,23 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
             console.log(`[Wallet API] get_random_outs: Trying node ${DAEMON_URL}`);
 
             // Step 1: Get output distribution
+            // CRITICAL FIX (v5.22.2): Must pass rct_asset_type to get asset-type-specific distribution
+            // The daemon's ring validation uses asset_type_output_index, not global_output_index
+            // Without this, decoy indices are from global distribution but validated as asset indices
+            const effectiveAssetType = asset_type || 'SAL1';
             let distResponse;
             try {
                 distResponse = await axiosInstance.post(DAEMON_URL.replace(/\/$/, '') + '/json_rpc', {
                     jsonrpc: '2.0',
                     id: '0',
                     method: 'get_output_distribution',
-                    params: { amounts: [amount], cumulative: false, from_height: 0, to_height: 0 }
+                    params: { 
+                        amounts: [amount], 
+                        cumulative: false, binary: false, 
+                        from_height: 0, 
+                        to_height: 0,
+                        rct_asset_type: effectiveAssetType  // Asset-type-specific distribution
+                    }
                 }, { timeout: 90000 });
             } catch (distError) {
                 console.error(`[Wallet API] get_output_distribution failed on ${DAEMON_URL}:`, distError.message);
@@ -6570,7 +6624,7 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
                     totalOutputs = dist.distribution.reduce((a, b) => a + b, 0);
                 }
             }
-            console.log(`[Wallet API] get_random_outs: totalOutputs=${totalOutputs}`);
+            console.log(`[Wallet API] get_random_outs: totalOutputs=${totalOutputs} for asset_type=${effectiveAssetType}`);
 
             const randomIndices = [];
             const uniqueIndices = new Set();
@@ -6588,11 +6642,15 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
             }
 
             // Step 2: Get the actual outputs
+            // CRITICAL FIX (v5.22.2): Must pass asset_type so daemon interprets indices correctly
+            // Indices we picked are asset-type-specific (from the asset-type distribution above)
+            // The daemon uses get_output_id_from_asset_type_output_index() to convert to global IDs
             let outsResponse;
             try {
                 outsResponse = await axiosInstance.post(DAEMON_URL.replace(/\/$/, '') + '/get_outs', {
                     outputs: randomIndices.slice(0, count + 50),
-                    get_txid: false
+                    get_txid: false,
+                    asset_type: effectiveAssetType  // Indices are asset-type-specific
                 }, { timeout: 300000 }); // 5 minute timeout
             } catch (outsError) {
                 console.error(`[Wallet API] get_outs failed on ${DAEMON_URL}:`, outsError.message, outsError.response?.status);
@@ -6625,9 +6683,6 @@ app.post(['/api/wallet/get_output_distribution', '/vault/api/wallet/get_output_d
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
 
     try {
-        const DAEMON_URL = process.env.SALVIUM_RPC_URL || RPC_NODES[0] || 'http://salvium:19081';
-        const targetUrl = DAEMON_URL.replace(/\/$/, '') + '/json_rpc';
-
         const rpcRequest = {
             jsonrpc: '2.0',
             id: '0',
@@ -6645,18 +6700,23 @@ app.post(['/api/wallet/get_output_distribution', '/vault/api/wallet/get_output_d
 
         console.log(`🔗 [Wallet API] Fetching output distribution via JSON-RPC (binary=false, asset_type=${req.body.asset_type || 'default'})`);
 
-        const response = await axiosInstance({
-            method: 'POST',
-            url: targetUrl,
-            data: rpcRequest,
-            timeout: 120000
-        });
+        const { response, nodeUrl } = await tryRpcNodes(async (nodeUrl) => {
+            const targetUrl = nodeUrl.replace(/\/$/, '') + '/json_rpc';
+            const resp = await axiosInstance({
+                method: 'POST',
+                url: targetUrl,
+                data: rpcRequest,
+                timeout: 120000
+            });
+            
+            // Validate response has actual data (not just empty/partial)
+            if (resp.data.error) {
+                throw new Error(resp.data.error.message || 'RPC error');
+            }
+            return resp;
+        }, 'get_output_distribution');
 
-        if (response.data.error) {
-            throw new Error(response.data.error.message || 'RPC error');
-        }
-
-        console.log(`✅ [Wallet API] get_output_distribution succeeded`);
+        console.log(`✅ [Wallet API] get_output_distribution succeeded from ${nodeUrl}`);
         res.json(response.data.result || response.data);
     } catch (error) {
         console.error(`❌ [Wallet API] get_output_distribution failed:`, error.message);
@@ -6696,15 +6756,42 @@ app.post(['/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransactio
         } else {
             console.warn(`⚠️ [Wallet API] Transaction broadcast REJECTED:`, JSON.stringify(response.data, null, 2));
             console.warn(`⚠️ [Wallet API] Rejection reason: ${response.data.reason || response.data.error || 'unknown'}`);
+            // Log tx blob prefix for debugging (first 200 chars)
+            const txBlob = req.body?.tx_as_hex || '';
+            console.warn(`⚠️ [Wallet API] TX blob prefix: ${txBlob.substring(0, 200)}...`);
+            console.warn(`⚠️ [Wallet API] TX blob total length: ${txBlob.length}`);
         }
 
         res.json(response.data);
     } catch (error) {
         console.error(`❌ [Wallet API] /sendrawtransaction failed:`, error.message);
-        res.status(error.response?.status || 500).json({
-            error: error.message || 'Failed to broadcast transaction',
-            status: 'Failed'
-        });
+        
+        // IMPROVED: Capture full error details from daemon response
+        const errorResponse = {
+            status: 'Failed',
+            error: error.message || 'Failed to broadcast transaction'
+        };
+        
+        // If axios got a response from daemon, include those details
+        if (error.response?.data) {
+            const daemonData = error.response.data;
+            errorResponse.reason = daemonData.reason || daemonData.error || null;
+            errorResponse.double_spend = daemonData.double_spend || false;
+            errorResponse.invalid_input = daemonData.invalid_input || false;
+            errorResponse.invalid_output = daemonData.invalid_output || false;
+            errorResponse.low_mixin = daemonData.low_mixin || false;
+            errorResponse.not_rct = daemonData.not_rct || false;
+            errorResponse.overspend = daemonData.overspend || false;
+            errorResponse.fee_too_low = daemonData.fee_too_low || false;
+            errorResponse.sanity_check_failed = daemonData.sanity_check_failed || false;
+            // Include raw daemon status if available
+            if (daemonData.status && daemonData.status !== 'OK') {
+                errorResponse.daemon_status = daemonData.status;
+            }
+            console.error(`❌ [Wallet API] Daemon error details:`, JSON.stringify(daemonData, null, 2));
+        }
+        
+        res.status(error.response?.status || 500).json(errorResponse);
     }
 });
 
@@ -7993,6 +8080,120 @@ app.post(['/api/wallet/get-spent-index', '/vault/api/wallet/get-spent-index'], e
     } catch (e) {
         console.error('API Error /get-spent-index:', e);
         res.status(500).json({ error: e.message });
+    }
+});
+
+// ----------------------------------------------------------------
+// API: Get Key Image Cache Status (for realtime spent checking)
+// Returns the lastScannedHeight so client knows which outputs need realtime checks
+// ----------------------------------------------------------------
+app.get(['/api/wallet/key-image-cache-status', '/vault/api/wallet/key-image-cache-status'], (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+
+    try {
+        // Calculate the last complete 1000-block chunk
+        // If lastScannedHeight is 409999, that means chunks 0-409999 are complete
+        // If current height is 410583, outputs from 410000-410583 need realtime checking
+        const lastCompleteChunk = keyImageCache.lastScannedHeight;
+        const lastCompleteChunkStart = Math.floor(lastCompleteChunk / 1000) * 1000;
+
+        res.json({
+            status: 'OK',
+            lastScannedHeight: keyImageCache.lastScannedHeight,
+            lastCompleteChunkEnd: lastCompleteChunk,
+            // Outputs received AFTER this height need realtime spent checking
+            realtimeCheckThreshold: lastCompleteChunk + 1,
+            chainHeight: lastKnownHeight,
+            cacheSize: keyImageCache.spends.size
+        });
+    } catch (e) {
+        console.error('API Error /key-image-cache-status:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ----------------------------------------------------------------
+// API: Check Key Images Spent Status (Realtime via Daemon RPC)
+// For outputs received after the last cached chunk, query the daemon directly
+// ----------------------------------------------------------------
+app.post(['/api/wallet/is-key-image-spent', '/vault/api/wallet/is-key-image-spent'], express.json(), async (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+
+    try {
+        const { key_images } = req.body;
+
+        if (!Array.isArray(key_images) || key_images.length === 0) {
+            return res.status(400).json({ error: 'Invalid request: need key_images array' });
+        }
+
+        // Limit to prevent abuse
+        if (key_images.length > 100) {
+            return res.status(400).json({ error: 'Too many key images (max 100)' });
+        }
+
+        // Validate key images are valid hex strings
+        for (const ki of key_images) {
+            if (typeof ki !== 'string' || ki.length !== 64 || !/^[0-9a-fA-F]+$/.test(ki)) {
+                return res.status(400).json({ error: `Invalid key image format: ${ki}` });
+            }
+        }
+
+        console.log(`🔑 [Realtime Spent Check] Checking ${key_images.length} key images via daemon RPC`);
+
+        // Query daemon's is_key_image_spent RPC
+        const DAEMON_URL = process.env.SALVIUM_RPC_URL || RPC_NODES[0] || 'http://salvium:19081';
+        const targetUrl = DAEMON_URL.replace(/\/$/, '') + '/is_key_image_spent';
+
+        const config = {
+            method: 'POST',
+            url: targetUrl,
+            headers: { 'Content-Type': 'application/json' },
+            data: { key_images },
+            timeout: 30000
+        };
+
+        if (SALVIUM_RPC_USER && SALVIUM_RPC_PASS) {
+            config.auth = { username: SALVIUM_RPC_USER, password: SALVIUM_RPC_PASS };
+        }
+
+        const response = await axiosInstance(config);
+
+        if (response.data.status !== 'OK') {
+            console.error(`🔑 [Realtime Spent Check] Daemon error:`, response.data);
+            return res.status(500).json({
+                error: 'Daemon RPC error',
+                details: response.data
+            });
+        }
+
+        // Response format: spent_status is array of 0 (unspent), 1 (spent in blockchain), 2 (spent in pool)
+        const spentStatus = response.data.spent_status || [];
+
+        // Build result mapping key_image -> spent status
+        const result = {
+            status: 'OK',
+            spent: {}
+        };
+
+        let spentCount = 0;
+        for (let i = 0; i < key_images.length; i++) {
+            const status = spentStatus[i] || 0;
+            // 0 = unspent, 1 = spent in blockchain, 2 = spent in mempool
+            if (status > 0) {
+                result.spent[key_images[i]] = status;
+                spentCount++;
+            }
+        }
+
+        console.log(`🔑 [Realtime Spent Check] ${spentCount}/${key_images.length} key images are spent`);
+
+        res.json(result);
+
+    } catch (error) {
+        console.error(`🔑 [Realtime Spent Check] Error:`, error.message);
+        res.status(error.response?.status || 500).json({
+            error: error.message || 'Failed to check key image spent status'
+        });
     }
 });
 

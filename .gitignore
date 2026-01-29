@@ -1,0 +1,75 @@
+# Dependencies
+node_modules/
+
+# Build output (rebuilt for deployment)
+dist/
+
+# WASM build directory (source files, not compiled output)
+wasm-build/
+
+# Environment files (keep .env.example if it exists)
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+
+# IDE and editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Test coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.temp
+temp_*.cpp
+temp_*.js
+temp_*.ts
+*.bak
+*.orig
+
+# Debug files
+*.stackdump
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Vite cache
+.vite/
+
+# Optional: WASM binaries (large files - uncomment if you want to exclude)
+# Note: wallet/*.wasm files are needed for the app to work
+# If you want to track them in git (recommended), leave this commented
+# wallet/*.wasm
+
+# ESLint cache
+.eslintcache
+
+# Stylelint cache
+.stylelintcache
