@@ -531,10 +531,10 @@ const AppContent: React.FC = () => {
       {isMobileOrTablet && (
         <MobileNavBar activeTab={activeTab} onNavigate={handleNavigate} />
       )}
-      <div className="bg-bg-primary text-text-primary flex relative overflow-hidden h-full">
+      <div className="bg-bg-primary text-text-primary flex relative overflow-hidden h-full pt-[56px]">
 
         {isDesktopOnly && (
-          <aside className="flex flex-col w-72 fixed h-full z-20 border-r border-border-color bg-[#0f0f1a]">
+          <aside className="flex flex-col w-72 fixed top-[56px] h-[calc(100vh-56px)] z-20 border-r border-border-color bg-[#0f0f1a]">
 
             <nav className="py-4 flex flex-col justify-start pt-8 space-y-1">
               <NavItem tab={TabView.DASHBOARD} icon={LayoutDashboard} label={t('navigation.dashboard')} />
@@ -545,7 +545,7 @@ const AppContent: React.FC = () => {
               <NavItem tab={TabView.SETTINGS} icon={Settings} label={t('navigation.settings')} />
             </nav>
 
-            <div className="mt-auto p-6 pb-20 space-y-4">
+            <div className="mt-auto p-6 pb-6 space-y-4">
               <button
                 onClick={lockWallet}
                 className="flex items-center justify-center gap-2 text-sm font-medium text-text-muted hover:text-white transition-colors w-full px-2"

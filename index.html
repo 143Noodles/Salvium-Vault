@@ -86,54 +86,20 @@
   <!-- Site Header - Hidden on Mobile via JS -->
   <header class="header" id="staticHeader">
     <div class="header-content">
-      <a href="/" class="logo">
+      <a href="https://salvium.tools" class="logo">
         <img src="/assets/img/salvium.png" alt="Salvium Logo" />
         <span class="logo-text">SALVIUM VAULT</span>
       </a>
-      <!-- Mobile menu toggle removed here, handled by React app on mobile -->
-      <nav>
-        <ul class="nav" id="navMenu">
-          <li class="nav-dropdown">
-            <a href="/">
-              Explorer
-              <svg class="dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </a>
-            <div class="dropdown-menu">
-              <ul>
-                <li><a href="https://explorer.salvium.tools/">Home</a></li>
-                <li><a href="https://explorer.salvium.tools/blocks">Blocks</a></li>
-                <li><a href="https://explorer.salvium.tools/transactions">Transactions</a></li>
-                <li><a href="https://explorer.salvium.tools/staking">Staking</a></li>
-              </ul>
-            </div>
-          </li>
-          <li class="nav-dropdown vault-dropdown">
-            <a href="/" class="active">
-              Vault
-              <svg class="dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </a>
-            <div class="dropdown-menu">
-              <ul>
-                <li><a href="#dashboard">Dashboard</a></li>
-                <li><a href="#send">Send</a></li>
-                <li><a href="#receive">Receive</a></li>
-                <li><a href="#staking">Staking</a></li>
-                <li><a href="#history">History</a></li>
-              </ul>
-            </div>
-          </li>
-          <li><a href="https://pool.salvium.tools" target="_blank">Pools</a></li>
-          <li>
-            <a href="https://www.coingecko.com/en/coins/salvium" target="_blank">
-              <span id="priceData" class="price-badge">Loading...</span>
-            </a>
-          </li>
-        </ul>
-      </nav>
+      <ul class="top-nav">
+        <li><a href="https://explorer.salvium.tools">Explorer</a></li>
+        <li><a href="https://vault.salvium.tools">Vault</a></li>
+        <li><a href="#" class="disabled">Pools</a></li>
+        <li>
+          <a href="https://www.coingecko.com/en/coins/salvium" target="_blank">
+            <span id="priceData" class="price-badge">Loading...</span>
+          </a>
+        </li>
+      </ul>
     </div>
   </header>
 

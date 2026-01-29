@@ -97,7 +97,7 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] bg-bg-primary overflow-y-auto custom-scrollbar">
+    <div className="fixed inset-0 top-[56px] z-[100] bg-bg-primary overflow-y-auto custom-scrollbar">
       <div className="min-h-full flex items-center justify-center p-4">
         {/* Background decoration */}
         <div className="absolute inset-0 bg-hero-glow opacity-50"></div>

@@ -1,0 +1,26 @@
+services:
+  vault:
+    image: salvium-vault:latest
+    container_name: salvium-vault
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - vault-cache:/var/data
+    networks:
+      - coolify
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/daemon/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  vault-cache:
+    name: zc8ssksc8k4s0so0cw48ggw8-VaultCache
+    external: true
+
+networks:
+  coolify:
+    external: true
