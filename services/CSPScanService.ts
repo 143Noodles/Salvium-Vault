@@ -104,6 +104,19 @@ async function loadReturnAddresses(walletAddress: string): Promise<string | null
 }
 
 /**
+ * Clear ALL return addresses from IndexedDB (used during wallet reset)
+ * Deletes the entire database to ensure a clean slate for new wallet restores.
+ */
+export async function clearReturnAddressCache(): Promise<void> {
+  return new Promise((resolve) => {
+    const request = indexedDB.deleteDatabase(RETURN_ADDR_DB_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = () => resolve(); // Resolve anyway - best effort
+    request.onblocked = () => resolve(); // Resolve if blocked
+  });
+}
+
+/**
  * Web Lock to prevent browser from throttling background tabs during scan.
  * Uses the Web Locks API to signal the browser that important work is in progress.
  */
@@ -1287,7 +1300,9 @@ class CSPScanService {
     stopMobileScanAudio();
 
     // Complete the scan journal
-    if (this.currentScanId) {
+    // Only complete here if Phase 2b didn't run - when Phase 2b runs, it completes the journal in its finally block
+    const phase2bRan = needsPhase2b && runPhase2b;
+    if (!phase2bRan && this.currentScanId) {
       try {
         await completeScanJournal(this.currentScanId, endHeight);
       } catch (e) {
@@ -1441,7 +1456,15 @@ class CSPScanService {
       // Report 100% complete
       reportPhase2bProgress(1.0, 'Scan complete');
 
-      // Notify caller if callback provided
+      // Complete scan journal after Phase 2b
+      if (this.currentScanId) {
+        try {
+          await completeScanJournal(this.currentScanId, endHeight);
+        } catch (e) {
+          void DEBUG && console.warn('[CSPScanService] Failed to complete scan journal after Phase 2b:', e);
+        }
+      }
+
       if (onComplete) {
         // needsRescan: true when potential matches were found but WASM skipped them
         // This happens when Phase 2 processed the tx (caching tx_hash) but return addresses
@@ -1714,20 +1737,21 @@ class CSPScanService {
                 const sparseData = task.data.subarray(offset, offset + dataSize);
 
                 const ptr = Module.allocate_binary_buffer(sparseData.length);
-                if (ptr) {
-                  Module.HEAPU8.set(sparseData, ptr);
-                  const resJson = wallet.ingest_sparse_transactions(ptr, sparseData.length, chunkStartHeight, true);
-                  Module.free_binary_buffer(ptr);
+                if (!ptr) {
+                  throw new Error(`WASM allocation failed: could not allocate ${sparseData.length} bytes for chunk ${chunkStartHeight}`);
+                }
+                Module.HEAPU8.set(sparseData, ptr);
+                const resJson = wallet.ingest_sparse_transactions(ptr, sparseData.length, chunkStartHeight, true);
+                Module.free_binary_buffer(ptr);
 
-                  const res = JSON.parse(resJson);
-                  if (res.success) {
-                    totalOutputsFound += res.txs_matched || 0;
-                    if (res.stake_heights) allStakeHeights.push(...res.stake_heights);
-                    if (res.audit_heights) allAuditHeights.push(...res.audit_heights);
-                    // Mark this chunk as successfully processed
-                    successfullyIngestedChunks.add(chunkStartHeight);
-                    if (chunkStartHeight > 0 && chunkStartHeight < minConfirmedHeight) minConfirmedHeight = chunkStartHeight;
-                  }
+                const res = JSON.parse(resJson);
+                if (res.success) {
+                  totalOutputsFound += res.txs_matched || 0;
+                  if (res.stake_heights) allStakeHeights.push(...res.stake_heights);
+                  if (res.audit_heights) allAuditHeights.push(...res.audit_heights);
+                  // Mark this chunk as successfully processed
+                  successfullyIngestedChunks.add(chunkStartHeight);
+                  if (chunkStartHeight > 0 && chunkStartHeight < minConfirmedHeight) minConfirmedHeight = chunkStartHeight;
                 }
                 offset += dataSize;
                 await yieldIfNeeded();
@@ -1805,22 +1829,23 @@ class CSPScanService {
               }
 
               const ptr = Module.allocate_binary_buffer(mergedBuffer.length);
-              if (ptr) {
-                Module.HEAPU8.set(mergedBuffer, ptr);
-                const resJson = wallet.ingest_sparse_transactions(ptr, mergedBuffer.length, firstHeightV2 || 0, true);
-                Module.free_binary_buffer(ptr);
+              if (!ptr) {
+                throw new Error(`WASM allocation failed: could not allocate ${mergedBuffer.length} bytes for V2 batch starting at chunk ${firstHeightV2}`);
+              }
+              Module.HEAPU8.set(mergedBuffer, ptr);
+              const resJson = wallet.ingest_sparse_transactions(ptr, mergedBuffer.length, firstHeightV2 || 0, true);
+              Module.free_binary_buffer(ptr);
 
-                const res = JSON.parse(resJson);
-                if (res.success) {
-                  totalOutputsFound += res.txs_matched || 0;
-                  if (res.stake_heights) allStakeHeights.push(...res.stake_heights);
-                  if (res.audit_heights) allAuditHeights.push(...res.audit_heights);
-                  // Mark all chunks in this batch as successfully processed
-                  for (const chunkHeight of chunksInV2Batch) {
-                    successfullyIngestedChunks.add(chunkHeight);
-                  }
-                  if (firstHeightV2 > 0 && firstHeightV2 < minConfirmedHeight) minConfirmedHeight = firstHeightV2;
+              const res = JSON.parse(resJson);
+              if (res.success) {
+                totalOutputsFound += res.txs_matched || 0;
+                if (res.stake_heights) allStakeHeights.push(...res.stake_heights);
+                if (res.audit_heights) allAuditHeights.push(...res.audit_heights);
+                // Mark all chunks in this batch as successfully processed
+                for (const chunkHeight of chunksInV2Batch) {
+                  successfullyIngestedChunks.add(chunkHeight);
                 }
+                if (firstHeightV2 > 0 && firstHeightV2 < minConfirmedHeight) minConfirmedHeight = firstHeightV2;
               }
             }
 
@@ -1841,27 +1866,32 @@ class CSPScanService {
               }
 
               const ptr = Module.allocate_binary_buffer(mergedBuffer.length);
-              if (ptr) {
-                Module.HEAPU8.set(mergedBuffer, ptr);
-                const resJson = wallet.ingest_sparse_transactions(ptr, mergedBuffer.length, firstHeightSPR || 0, true);
-                Module.free_binary_buffer(ptr);
+              if (!ptr) {
+                throw new Error(`WASM allocation failed: could not allocate ${mergedBuffer.length} bytes for SPR batch starting at chunk ${firstHeightSPR}`);
+              }
+              Module.HEAPU8.set(mergedBuffer, ptr);
+              const resJson = wallet.ingest_sparse_transactions(ptr, mergedBuffer.length, firstHeightSPR || 0, true);
+              Module.free_binary_buffer(ptr);
 
-                const res = JSON.parse(resJson);
-                if (res.success) {
-                  totalOutputsFound += res.txs_matched || 0;
-                  if (res.stake_heights) allStakeHeights.push(...res.stake_heights);
-                  if (res.audit_heights) allAuditHeights.push(...res.audit_heights);
-                  // Mark all chunks in this batch as successfully processed
-                  for (const chunkHeight of chunksInSPRBatch) {
-                    successfullyIngestedChunks.add(chunkHeight);
-                  }
-                  if (firstHeightSPR > 0 && firstHeightSPR < minConfirmedHeight) minConfirmedHeight = firstHeightSPR;
+              const res = JSON.parse(resJson);
+              if (res.success) {
+                totalOutputsFound += res.txs_matched || 0;
+                if (res.stake_heights) allStakeHeights.push(...res.stake_heights);
+                if (res.audit_heights) allAuditHeights.push(...res.audit_heights);
+                // Mark all chunks in this batch as successfully processed
+                for (const chunkHeight of chunksInSPRBatch) {
+                  successfullyIngestedChunks.add(chunkHeight);
                 }
+                if (firstHeightSPR > 0 && firstHeightSPR < minConfirmedHeight) minConfirmedHeight = firstHeightSPR;
               }
             }
           }
-        } catch {
-          // Ingest error
+        } catch (e) {
+          // Re-throw WASM allocation errors to trigger scan retry
+          if (e instanceof Error && e.message.includes('WASM allocation failed')) {
+            throw e;
+          }
+          // Other ingest errors can be swallowed
         }
       }
       processedChunks += BATCH_SIZE;
@@ -1893,6 +1923,27 @@ class CSPScanService {
 
       if (!isIncremental && processedChunks % 5 === 0) {
         await yieldToUI();
+      }
+
+      // Periodic balance checkpoint for corruption detection
+      if (this.currentScanId && processedChunks > 0 && processedChunks % 50 === 0) {
+        try {
+          let currentBalance = 0;
+          let currentHeight = 0;
+          try {
+            if (typeof wallet.get_carrot_s_view_balance === 'function') {
+              currentBalance = wallet.get_carrot_s_view_balance();
+            }
+            if (typeof wallet.get_wallet_height === 'function') {
+              currentHeight = wallet.get_wallet_height();
+            }
+          } catch {
+            // Ignore errors getting balance/height - checkpoint is best-effort
+          }
+          await saveBalanceCheckpoint(this.currentScanId, currentBalance, currentHeight);
+        } catch {
+          // Don't let checkpoint failures break the scan flow
+        }
       }
     }
 
@@ -2037,16 +2088,17 @@ class CSPScanService {
       }
 
       const ptr = Module.allocate_binary_buffer(mergedBuffer.length);
-      if (ptr) {
-        Module.HEAPU8.set(mergedBuffer, ptr);
-        const result = JSON.parse(wallet.ingest_sparse_transactions(ptr, mergedBuffer.length, 0, true));
-        Module.free_binary_buffer(ptr);
+      if (!ptr) {
+        throw new Error(`WASM allocation failed: could not allocate ${mergedBuffer.length} bytes for batch ingestion`);
+      }
+      Module.HEAPU8.set(mergedBuffer, ptr);
+      const result = JSON.parse(wallet.ingest_sparse_transactions(ptr, mergedBuffer.length, 0, true));
+      Module.free_binary_buffer(ptr);
 
-        if (result.success) {
-          totalOutputsFound += result.txs_matched || 0;
-          if (result.stake_heights?.length) allStakeHeights.push(...result.stake_heights);
-          if (result.audit_heights?.length) allAuditHeights.push(...result.audit_heights);
-        }
+      if (result.success) {
+        totalOutputsFound += result.txs_matched || 0;
+        if (result.stake_heights?.length) allStakeHeights.push(...result.stake_heights);
+        if (result.audit_heights?.length) allAuditHeights.push(...result.audit_heights);
       }
 
       completed++;
@@ -2205,23 +2257,26 @@ class CSPScanService {
 
             try {
               const ptr = Module.allocate_binary_buffer(sparseData.length);
-              if (ptr) {
-                Module.HEAPU8.set(sparseData, ptr);
-                const resultJson = wallet.ingest_sparse_transactions(ptr, sparseData.length, chunkStartHeight, true);
-                Module.free_binary_buffer(ptr);
+              if (!ptr) {
+                throw new Error(`WASM allocation failed: could not allocate ${sparseData.length} bytes for stake return chunk ${chunkStartHeight}`);
+              }
+              Module.HEAPU8.set(sparseData, ptr);
+              const resultJson = wallet.ingest_sparse_transactions(ptr, sparseData.length, chunkStartHeight, true);
+              Module.free_binary_buffer(ptr);
 
-                const result = JSON.parse(resultJson);
-                if (result.success) {
-                  txsMatched += result.txs_matched || 0;
-                  txsProcessedTotal += result.txs_processed || 0;
-                  consecutiveFailures = 0;
-                } else {
-                  consecutiveFailures++;
-                }
+              const result = JSON.parse(resultJson);
+              if (result.success) {
+                txsMatched += result.txs_matched || 0;
+                txsProcessedTotal += result.txs_processed || 0;
+                consecutiveFailures = 0;
               } else {
                 consecutiveFailures++;
               }
-            } catch {
+            } catch (e) {
+              // Re-throw WASM allocation errors to trigger scan retry
+              if (e instanceof Error && e.message.includes('WASM allocation failed')) {
+                throw e;
+              }
               consecutiveFailures++;
 
               if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -2237,7 +2292,11 @@ class CSPScanService {
 
       return { txsMatched, failedHeights };
 
-    } catch {
+    } catch (e) {
+      // Re-throw WASM allocation errors to trigger scan retry
+      if (e instanceof Error && e.message.includes('WASM allocation failed')) {
+        throw e;
+      }
       // All heights failed
       return { txsMatched: 0, failedHeights: returnHeights };
     }
@@ -2352,23 +2411,26 @@ class CSPScanService {
 
             try {
               const ptr = Module.allocate_binary_buffer(sparseData.length);
-              if (ptr) {
-                Module.HEAPU8.set(sparseData, ptr);
-                const resultJson = wallet.ingest_sparse_transactions(ptr, sparseData.length, chunkStartHeight, true);
-                Module.free_binary_buffer(ptr);
+              if (!ptr) {
+                throw new Error(`WASM allocation failed: could not allocate ${sparseData.length} bytes for audit return chunk ${chunkStartHeight}`);
+              }
+              Module.HEAPU8.set(sparseData, ptr);
+              const resultJson = wallet.ingest_sparse_transactions(ptr, sparseData.length, chunkStartHeight, true);
+              Module.free_binary_buffer(ptr);
 
-                const result = JSON.parse(resultJson);
-                if (result.success) {
-                  txsMatched += result.txs_matched || 0;
-                  txsProcessedTotal += result.txs_processed || 0;
-                  consecutiveFailures = 0;
-                } else {
-                  consecutiveFailures++;
-                }
+              const result = JSON.parse(resultJson);
+              if (result.success) {
+                txsMatched += result.txs_matched || 0;
+                txsProcessedTotal += result.txs_processed || 0;
+                consecutiveFailures = 0;
               } else {
                 consecutiveFailures++;
               }
-            } catch {
+            } catch (e) {
+              // Re-throw WASM allocation errors to trigger scan retry
+              if (e instanceof Error && e.message.includes('WASM allocation failed')) {
+                throw e;
+              }
               consecutiveFailures++;
 
               if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -2384,7 +2446,11 @@ class CSPScanService {
 
       return { txsMatched, failedHeights };
 
-    } catch {
+    } catch (e) {
+      // Re-throw WASM allocation errors to trigger scan retry
+      if (e instanceof Error && e.message.includes('WASM allocation failed')) {
+        throw e;
+      }
       // All heights failed
       return { txsMatched: 0, failedHeights: returnHeights };
     }

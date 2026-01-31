@@ -29,7 +29,8 @@ export interface ScanJournalEntry {
   walletAddress: string;
   startHeight: number;
   targetEndHeight: number;
-  scannedChunks: number[];  // All successfully scanned chunk start heights
+  scannedChunks: number[];  // All successfully scanned chunk start heights (Phase 1 complete)
+  ingestedChunks: number[];  // Chunks with transactions ingested by WASM (Phase 2 complete)
   inProgressChunks: number[];  // Chunks currently being processed (MUST be rescanned on recovery)
   matchedChunks: number[];  // Chunks with matches (subset of scannedChunks)
   lastUpdateTimestamp: number;
@@ -112,6 +113,7 @@ export async function startScanJournal(
     startHeight,
     targetEndHeight,
     scannedChunks: [],
+    ingestedChunks: [],
     inProgressChunks: [],
     matchedChunks: [],
     lastUpdateTimestamp: Date.now(),
@@ -176,6 +178,51 @@ export async function recordScannedChunks(
 }
 
 /**
+ * Record successfully ingested chunks (coalesced)
+ * Tracks Phase 2 completion - chunks whose transactions have been ingested by WASM.
+ * This is separate from scannedChunks (Phase 1) to allow recovery from Phase 2 failures.
+ */
+export async function recordIngestedChunks(
+  scanId: string,
+  chunkStartHeights: number[]
+): Promise<void> {
+  // Get or create pending update
+  let pending = pendingJournalUpdates.get(scanId);
+  if (!pending) {
+    pending = {
+      scannedChunks: [],
+      ingestedChunks: [],
+      matchedChunks: [],
+      transactionsFound: 0,
+    };
+    pendingJournalUpdates.set(scanId, pending);
+  }
+
+  // Initialize ingestedChunks array if not present
+  if (!pending.ingestedChunks) {
+    pending.ingestedChunks = [];
+  }
+
+  // Add chunks to pending update
+  for (const height of chunkStartHeights) {
+    if (!pending.ingestedChunks.includes(height)) {
+      pending.ingestedChunks.push(height);
+      newChunksSinceLastFlush++;
+    }
+  }
+
+  // Schedule flush if not already scheduled
+  if (!checkpointFlushTimer) {
+    checkpointFlushTimer = setTimeout(() => flushPendingUpdates(), CHECKPOINT_INTERVAL_MS);
+  }
+
+  // Force flush if we've accumulated enough chunks
+  if (newChunksSinceLastFlush >= CHECKPOINT_CHUNK_THRESHOLD) {
+    await flushPendingUpdates();
+  }
+}
+
+/**
  * Flush all pending journal updates to IndexedDB
  */
 export async function flushPendingUpdates(): Promise<void> {
@@ -196,11 +243,7 @@ export async function flushPendingUpdates(): Promise<void> {
     updates.push({ scanId, update });
   });
 
-  // Clear pending updates immediately to prevent re-processing
-  pendingJournalUpdates.clear();
-  newChunksSinceLastFlush = 0;
-
-  // Atomic transaction for all updates
+  // Atomic transaction - only clear pending updates after tx.oncomplete confirms
   return new Promise((resolve, reject) => {
     const tx = db.transaction(JOURNAL_STORE, 'readwrite');
     const store = tx.objectStore(JOURNAL_STORE);
@@ -215,9 +258,6 @@ export async function flushPendingUpdates(): Promise<void> {
         const existing = getRequest.result as ScanJournalEntry | undefined;
         if (!existing) {
           completedCount++;
-          if (completedCount === totalCount) {
-            resolve();
-          }
           return;
         }
 
@@ -225,6 +265,10 @@ export async function flushPendingUpdates(): Promise<void> {
         const mergedScannedChunks = new Set([
           ...existing.scannedChunks,
           ...(update.scannedChunks || [])
+        ]);
+        const mergedIngestedChunks = new Set([
+          ...(existing.ingestedChunks || []),
+          ...(update.ingestedChunks || [])
         ]);
         const mergedMatchedChunks = new Set([
           ...existing.matchedChunks,
@@ -234,6 +278,7 @@ export async function flushPendingUpdates(): Promise<void> {
         const updatedEntry: ScanJournalEntry = {
           ...existing,
           scannedChunks: Array.from(mergedScannedChunks),
+          ingestedChunks: Array.from(mergedIngestedChunks),
           matchedChunks: Array.from(mergedMatchedChunks),
           transactionsFound: existing.transactionsFound + (update.transactionsFound || 0),
           lastUpdateTimestamp: Date.now(),
@@ -241,21 +286,22 @@ export async function flushPendingUpdates(): Promise<void> {
 
         store.put(updatedEntry);
         completedCount++;
-
-        if (completedCount === totalCount) {
-          resolve();
-        }
       };
 
       getRequest.onerror = () => {
         completedCount++;
-        if (completedCount === totalCount) {
-          resolve();
-        }
       };
     }
 
+    tx.oncomplete = () => {
+      // Only clear pending updates AFTER IndexedDB confirms the write
+      pendingJournalUpdates.clear();
+      newChunksSinceLastFlush = 0;
+      resolve();
+    };
+
     tx.onerror = () => {
+      // On error, do NOT clear - the updates will be retried on next flush
       void DEBUG && console.error('[ScanJournal] Failed to flush pending updates:', tx.error);
       reject(tx.error);
     };

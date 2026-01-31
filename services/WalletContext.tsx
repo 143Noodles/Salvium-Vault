@@ -8,9 +8,10 @@ import { flushSync } from 'react-dom';
 
 // Import existing services
 import { walletService, WalletKeys, WalletTransaction, BalanceInfo, SyncStatus } from './WalletService';
-import { cspScanService, ScanProgress, ScanResult } from './CSPScanService';
+import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache } from './CSPScanService';
 import { encrypt, decrypt } from './CryptoService';
 import { initDesktopSilentAudio } from './SilentAudio';
+import { getCheckpoint } from './ScanJournal';
 
 // ============================================================================
 // UI Performance: Non-blocking throttle helper for progress updates
@@ -518,6 +519,53 @@ function clearCompletedChunks(): void {
     } catch { }
 }
 
+/**
+ * Reconcile localStorage height with ScanJournal checkpoint on startup.
+ * Detects when app was killed mid-scan and corrects localStorage height.
+ */
+async function reconcileOnStartup(walletAddress: string): Promise<number | null> {
+    try {
+        const walletJson = localStorage.getItem('salvium_wallet');
+        if (!walletJson) return null;
+
+        const wallet = JSON.parse(walletJson);
+        const localStorageHeight = wallet.height || 0;
+
+        // No height stored, nothing to reconcile
+        if (localStorageHeight === 0) return null;
+
+        // Get checkpoint from ScanJournal (IndexedDB)
+        const checkpoint = await getCheckpoint(walletAddress);
+
+        // No checkpoint exists - first scan, nothing to reconcile
+        if (!checkpoint) return null;
+
+        const checkpointHeight = checkpoint.lastCompletedHeight || 0;
+
+        // localStorage ahead of checkpoint indicates interrupted scan
+        if (localStorageHeight > checkpointHeight + CHUNK_SIZE) {
+            console.warn(
+                `[reconcileOnStartup] localStorage height (${localStorageHeight}) is ahead of ` +
+                `ScanJournal checkpoint (${checkpointHeight}) by ${localStorageHeight - checkpointHeight} blocks. ` +
+                `Correcting localStorage to match checkpoint. Gap detection will rescan missing blocks.`
+            );
+
+            // Correct localStorage height to match checkpoint
+            wallet.height = checkpointHeight;
+            localStorage.setItem('salvium_wallet', JSON.stringify(wallet));
+
+            return checkpointHeight;
+        }
+
+        // Heights are in sync (or close enough), no correction needed
+        return null;
+    } catch (e) {
+        // IndexedDB errors should not block wallet unlock
+        console.error('[reconcileOnStartup] Error during reconciliation:', e);
+        return null;
+    }
+}
+
 // Types for context
 export interface Stake {
     id: string;
@@ -996,6 +1044,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     needsGapCheckRef.current = true;
                 }
 
+                // iOS FIX: Check for stuck scanInProgressRef before guard check
+                if (scanInProgressRef.current) {
+                    const scanAge = Date.now() - lastScanTimeRef.current;
+                    if (scanAge > 30000) {
+                        scanInProgressRef.current = false;
+                        setIsScanning(false);
+                    }
+                }
+
                 if ((hiddenDuration > SUSPENSION_THRESHOLD_MS || wasmStateLost) &&
                     isWalletReady && !scanInProgressRef.current && startScanRef.current) {
                     setTimeout(() => {
@@ -1027,6 +1084,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 // Page restored from bfcache - WASM memory is likely corrupted
                 // Force full wallet rehydration from cache
                 await forceWalletRehydration();
+
+                // iOS FIX: Check for stuck scanInProgressRef before guard check
+                if (scanInProgressRef.current) {
+                    const scanAge = Date.now() - lastScanTimeRef.current;
+                    if (scanAge > 30000) {
+                        scanInProgressRef.current = false;
+                        setIsScanning(false);
+                    }
+                }
 
                 // Trigger rescan if wallet is ready
                 if (isWalletReady && !scanInProgressRef.current && startScanRef.current) {
@@ -2002,6 +2068,18 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 isSyncing: true,
                 progress: finalRestoreHeight > 0 ? Math.min(100, (finalRestoreHeight / actualNetworkHeight) * 100) : 0
             }));
+        }
+
+        // Reconcile localStorage height with ScanJournal checkpoint
+        if (wallet.address) {
+            const correctedHeight = await reconcileOnStartup(wallet.address);
+            if (correctedHeight !== null) {
+                // Update sync status to reflect corrected height
+                setSyncStatus(prev => ({
+                    ...prev,
+                    walletHeight: correctedHeight
+                }));
+            }
         }
 
         if (finalRestoreHeight === 0 && hadData) {
@@ -3325,6 +3403,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             });
         } catch (e) { /* ignore */ }
 
+        // Also clear the return address cache (separate IndexedDB)
+        // This ensures Phase 2b (return TX scan) runs on fresh restores
+        try {
+            await clearReturnAddressCache();
+        } catch (e) { /* ignore */ }
+
         walletService.clearWallet();
         await walletService.deleteWalletFile();
 
@@ -3839,6 +3923,16 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     const networkHeight = await cspScanService.getNetworkHeight();
                     const syncStatus = walletService.getSyncStatus();
                     const walletHeight = syncStatus.walletHeight || 0;
+
+                    // iOS FIX: Check for stuck scanInProgressRef before guard check
+                    // If marked as scanning but no progress for 30+ seconds, reset it
+                    if (scanInProgressRef.current) {
+                        const scanAge = Date.now() - lastScanTimeRef.current;
+                        if (scanAge > 30000) {
+                            scanInProgressRef.current = false;
+                            setIsScanning(false);
+                        }
+                    }
 
                     // If we're behind, trigger a scan
                     if (networkHeight > walletHeight && !scanInProgressRef.current) {
