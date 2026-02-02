@@ -12,6 +12,14 @@ import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache } fro
 import { encrypt, decrypt } from './CryptoService';
 import { initDesktopSilentAudio } from './SilentAudio';
 import { getCheckpoint } from './ScanJournal';
+import {
+    walletStateService,
+    WalletStateHealth,
+    SubaddressMapEntry
+} from './WalletStateService';
+
+// Re-export WalletStateHealth for components to use
+export type { WalletStateHealth } from './WalletStateService';
 
 // ============================================================================
 // UI Performance: Non-blocking throttle helper for progress updates
@@ -706,6 +714,9 @@ interface WalletContextType {
     handleBackupRestored: () => Promise<void>;  // Backup file was restored, continue unlock
     // Debug helper
     getWasmStatus: () => { isReady: boolean; hasWallet: boolean };
+    // Wallet state persistence (fixes "Failed to generate key image helper" error)
+    refreshWalletState: () => Promise<{ success: boolean; error?: string }>;  // Manual refresh for stale state
+    getWalletStateHealth: () => Promise<WalletStateHealth>;  // Check if state needs refreshing
 }
 
 const WalletContext = createContext<WalletContextType | null>(null);
@@ -1840,6 +1851,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             scanInProgressRef.current = false;
             setIsScanning(false);
             setScanProgress(null);
+            setSyncStatus(prev => ({ ...prev, isSyncing: false })); // Reset UI sync indicator
 
             sessionSeedRef.current = mnemonic;
             setIsLocked(false);
@@ -1949,6 +1961,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         scanInProgressRef.current = false;
         setIsScanning(false);
         setScanProgress(null);
+        setSyncStatus(prev => ({ ...prev, isSyncing: false })); // Reset UI sync indicator
 
         await cspScanService.cancelScanAndWait(3000);
 
@@ -2020,6 +2033,18 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         setIsLocked(false);
         setNeedsRecovery(false);  // Clear recovery state
 
+        // Load persisted wallet state from WalletStateService (IndexedDB)
+        // This restores subaddress map data that helps prevent "Failed to generate key image" errors
+        let persistedSubaddressCount = 0;
+        try {
+            const persistedState = await walletStateService.load(wallet.address);
+            if (persistedState.subaddresses && persistedState.subaddresses.length > 0) {
+                persistedSubaddressCount = persistedState.subaddresses.length;
+            }
+        } catch {
+            // Failed to load persisted state - continue with cached data only
+        }
+
         // Import FULL wallet cache (enables sending without full rescan after page refresh)
         if (cachedOutputsHex && cachedOutputsHex.length > 0) {
             // Try new full cache import first, fall back to old outputs import
@@ -2044,6 +2069,19 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         }
                     }
                 }
+            }
+
+            // CRITICAL: Precompute subaddresses to populate subaddress map
+            // This fixes "Failed to generate key image helper" error after wallet restore
+            // The imported cache may not fully rebuild the m_subaddresses map
+            // Use the max of cached, persisted, and minimum (100) subaddress counts
+            if (importSuccess) {
+                const numSubaddresses = Math.max(
+                    (wallet.cachedSubaddresses?.length || 0) + 50,
+                    persistedSubaddressCount + 50,
+                    100
+                );
+                walletService.precomputeSubaddresses(numSubaddresses);
             }
         }
 
@@ -2212,7 +2250,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         cspScanService.resetCancellation();
 
         // Prevent multiple concurrent scans - use atomic check-and-set pattern
-        if (scanInProgressRef.current || isScanning || !isWalletReady || !walletService.hasWallet()) {
+        // NOTE: Only check scanInProgressRef (sync), NOT isScanning (async React state)
+        // React state updates are async, causing race conditions where isScanning is stale
+        if (scanInProgressRef.current || !isWalletReady || !walletService.hasWallet()) {
             // Check if stuck (scan marked in progress but no updates for 60s)
             const now = Date.now();
             if (scanInProgressRef.current && (now - lastScanTimeRef.current > 60000)) {
@@ -2267,6 +2307,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             if (!networkHeight || networkHeight < 1) {
                 scanInProgressRef.current = false;
                 setIsScanning(false);
+                setSyncStatus(prev => ({ ...prev, isSyncing: false })); // Defensive reset
                 // Do NOT return immediately if we have a wallet - we should simpler try again later via poll?
                 // But for now, just let it show Error so user knows to check connection
                 return;
@@ -3139,6 +3180,30 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
                         // Execute all saves in parallel (iOS Safari timeout fix)
                         await Promise.all(savePromises);
+
+                        // Save to WalletStateService (fixes "Failed to generate key image" error)
+                        // This ensures subaddress map and output data are persisted for long sessions
+                        if (walletCacheHex) {
+                            try {
+                                const wasmSubaddresses = walletService.getSubaddresses();
+                                const subaddressMap: SubaddressMapEntry[] = wasmSubaddresses.map((sub, idx) => ({
+                                    index: sub.index?.minor ?? idx,
+                                    label: sub.label || '',
+                                    address: sub.address,
+                                }));
+
+                                await walletStateService.save(
+                                    address,
+                                    walletCacheHex,
+                                    subaddressMap,
+                                    networkHeight,
+                                    walletService.getOutputCount(),
+                                    walletService.getWasmVersion()
+                                );
+                            } catch (e) {
+                                // Non-fatal - original IndexedDB save already succeeded
+                            }
+                        }
                     }
                 }
             } catch (e) {
@@ -3371,6 +3436,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const resetWallet = async () => {
         isResettingRef.current = true;
 
+        // Stop wallet state persistence service
+        walletStateService.stop();
+
         // Cancel scan first to prevent "deleted object" errors
         await cspScanService.cancelScanAndWait(5000);
         cspScanService.resetIncrementalState();
@@ -3386,6 +3454,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         const currentAddress = address || walletService.getAddress();
         if (currentAddress) {
             await deleteFromIndexedDB(`wallet_cache_${currentAddress}`);
+            // Also clear wallet state persistence data
+            await walletStateService.clear(currentAddress);
         }
 
         setIsInitialized(false);
@@ -4046,6 +4116,136 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     }, [transactions, mempoolTransactions]);
 
+    // ============================================================================
+    // WALLET STATE PERSISTENCE - Fixes "Failed to generate key image helper" error
+    // ============================================================================
+
+    /**
+     * Refresh wallet state (manual recovery for stale WASM state)
+     * Call this when "Failed to generate key image" errors occur
+     * This rebuilds the subaddress map and re-exports wallet state
+     */
+    const refreshWalletState = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+        if (!walletService.hasWallet() || !address) {
+            return { success: false, error: 'Wallet not initialized' };
+        }
+
+        try {
+            // Step 1: Precompute/rebuild subaddress map (fixes ownership verification)
+            const numSubaddresses = Math.max(subaddresses.length + 50, 100);
+            walletService.precomputeSubaddresses(numSubaddresses);
+
+            // Step 2: Rebuild subaddress map if available
+            walletService.rebuildSubaddressMap(numSubaddresses);
+
+            // Step 3: Validate outputs
+            const validation = walletService.validateOutputsForSend();
+            if (!validation.valid && validation.error) {
+                console.warn('[WalletContext] Output validation failed:', validation.error);
+            }
+
+            // Step 4: Export and save fresh state to IndexedDB
+            const cacheExport = walletService.exportWalletCache();
+            if (!cacheExport || !cacheExport.cache_hex) {
+                return { success: false, error: 'Failed to export wallet cache' };
+            }
+
+            // Get subaddress data for persistence
+            const wasmSubaddresses = walletService.getSubaddresses();
+            const subaddressMap: SubaddressMapEntry[] = wasmSubaddresses.map((sub, idx) => ({
+                index: sub.index?.minor ?? idx,
+                label: sub.label || '',
+                address: sub.address,
+            }));
+
+            // Save to IndexedDB
+            const result = await walletStateService.save(
+                address,
+                cacheExport.cache_hex,
+                subaddressMap,
+                syncStatus.walletHeight,
+                walletService.getOutputCount(),
+                walletService.getWasmVersion()
+            );
+
+            if (result.success) {
+                await walletStateService.updateHealth(address, 'healthy');
+            } else {
+                await walletStateService.updateHealth(address, 'warning', result.error);
+            }
+
+            return result;
+        } catch (e) {
+            const error = e instanceof Error ? e.message : 'Unknown error';
+            console.error('[WalletContext] refreshWalletState failed:', error);
+            await walletStateService.updateHealth(address, 'critical', error);
+            return { success: false, error };
+        }
+    }, [address, subaddresses.length, syncStatus.walletHeight]);
+
+    /**
+     * Get wallet state health information
+     * Returns recommendations if state needs refreshing
+     */
+    const getWalletStateHealth = useCallback(async (): Promise<WalletStateHealth> => {
+        if (!address) {
+            return {
+                isHealthy: false,
+                needsRefresh: true,
+                staleness: Infinity,
+                outputCount: 0,
+                subaddressCount: 0,
+                recommendations: ['No wallet address available'],
+            };
+        }
+        return walletStateService.checkHealth(address);
+    }, [address]);
+
+    // Handle periodic state sync requests from WalletStateService
+    useEffect(() => {
+        const handleSyncRequest = async (event: Event) => {
+            const customEvent = event as CustomEvent<{ walletAddress: string; immediate?: boolean }>;
+            const { walletAddress, immediate } = customEvent.detail;
+
+            // Only sync if this is our wallet and we're not in a critical operation
+            if (walletAddress !== address || scanInProgressRef.current || isResettingRef.current) {
+                return;
+            }
+
+            // Perform the state save
+            await refreshWalletState();
+        };
+
+        const handleHealthWarning = (event: Event) => {
+            const customEvent = event as CustomEvent<{ walletAddress: string; health: WalletStateHealth }>;
+            const { walletAddress, health } = customEvent.detail;
+
+            if (walletAddress !== address) return;
+
+            // Log health warning (UI can listen for this too via a state update if needed)
+            if (!health.isHealthy) {
+                console.warn('[WalletContext] Wallet state health warning:', health.recommendations);
+            }
+        };
+
+        window.addEventListener('walletStateSyncRequest', handleSyncRequest);
+        window.addEventListener('walletStateHealthWarning', handleHealthWarning);
+
+        return () => {
+            window.removeEventListener('walletStateSyncRequest', handleSyncRequest);
+            window.removeEventListener('walletStateHealthWarning', handleHealthWarning);
+        };
+    }, [address, refreshWalletState]);
+
+    // Initialize wallet state service when wallet is unlocked
+    useEffect(() => {
+        if (isWalletReady && address && !isLocked) {
+            walletStateService.initialize(address);
+        } else if (isLocked || !isWalletReady) {
+            walletStateService.stop();
+        }
+    }, [isWalletReady, address, isLocked]);
+
     const value: WalletContextType = {
         isInitialized,
         initError,
@@ -4092,6 +4292,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             isReady: walletService.isReady(),
             hasWallet: walletService.hasWallet()
         }),
+        // Wallet state persistence (fixes "Failed to generate key image helper" error)
+        refreshWalletState,
+        getWalletStateHealth,
         // Multisig functions for bounty escrow
         prepareMultisig: () => walletService.prepareMultisig(),
         getMultisigStatus: () => walletService.getMultisigStatus(),

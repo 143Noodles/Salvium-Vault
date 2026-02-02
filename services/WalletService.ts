@@ -279,6 +279,27 @@ interface WasmWalletInstance {
   test_wasm(): string;
   debug_scan_transaction(tx_hash: string): string;
   precompute_subaddresses(account: number, num: number): void;
+
+  // v5.60: Output validation for key image generation (stale state detection)
+  validate_outputs_for_send?(): string;  // Returns JSON with validation results
+  rebuild_subaddress_map?(account: number, num: number): string;  // Force rebuild subaddress map
+
+  // Multisig wallet setup (v5.54+)
+  prepare_multisig?(): string;
+  make_multisig?(password: string, threshold: number, multisig_infos_json: string): string;
+  exchange_multisig_keys?(password: string, multisig_infos_json: string): string;
+  get_multisig_status?(): string;
+  export_multisig_info?(): string;
+  import_multisig_info?(infos_json: string): string;
+  enable_multisig_experimental?(): boolean;
+  is_multisig_enabled?(): boolean;
+
+  // Multisig transaction functions (v5.55+)
+  create_multisig_tx_hex?(dest_address: string, amount_str: string, mixin: number, priority: number): string;
+  sign_multisig_tx_hex?(tx_data_hex: string): string;
+  describe_multisig_tx_hex?(tx_data_hex: string): string;
+  submit_multisig_tx_hex?(tx_data_hex: string): string;
+  create_multisig_return_tx_hex?(txid: string): string;
 }
 
 // WASM Module interface
@@ -396,6 +417,21 @@ export class WalletService {
 
     this.initPromise = this.loadWasm();
     return this.initPromise;
+  }
+
+  /**
+   * Get the WASM module for external use (e.g., EscrowService)
+   * Returns null if not yet initialized
+   */
+  getWasmModule(): WasmModule | null {
+    return this.wasmModule;
+  }
+
+  /**
+   * Get the network type (mainnet/testnet)
+   */
+  getNetwork(): string {
+    return 'mainnet';
   }
 
   private async loadWasm(): Promise<void> {
@@ -2437,6 +2473,126 @@ export class WalletService {
     }
   }
 
+  /**
+   * Get the WASM module version string
+   */
+  getWasmVersion(): string {
+    if (!this.wasmModule?.get_version) {
+      return 'unknown';
+    }
+    try {
+      return this.wasmModule.get_version() || 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  /**
+   * Get the number of outputs in the wallet
+   * Used for state persistence health tracking
+   */
+  getOutputCount(): number {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return 0;
+    }
+    try {
+      // Try to get from export - most accurate
+      const exportResult = this.exportOutputs();
+      if (exportResult) {
+        return exportResult.count;
+      }
+      return 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Get subaddress spend keys for state persistence
+   * Returns CSV format: "index,spend_pub_key" per line
+   */
+  getSubaddressSpendKeys(): string {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return '';
+    }
+    try {
+      if (typeof this.walletInstance.get_subaddress_spend_keys_csv === 'function') {
+        return this.walletInstance.get_subaddress_spend_keys_csv();
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Precompute subaddresses to expand the subaddress lookahead
+   * This helps prevent "Failed to generate key image" errors by ensuring
+   * all used subaddresses are in the internal map
+   */
+  precomputeSubaddresses(count: number = 100): void {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return;
+    }
+    try {
+      if (typeof this.walletInstance.precompute_subaddresses === 'function') {
+        this.walletInstance.precompute_subaddresses(0, count);
+        void DEBUG && console.log(`[WalletService] Precomputed ${count} subaddresses`);
+      }
+    } catch (e) {
+      logError('precomputeSubaddresses', e);
+    }
+  }
+
+  /**
+   * Rebuild the subaddress map (for recovery from stale state)
+   * This regenerates all subaddress derivations to fix ownership verification failures
+   */
+  rebuildSubaddressMap(count: number = 100): boolean {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return false;
+    }
+    try {
+      if (typeof this.walletInstance.rebuild_subaddress_map === 'function') {
+        const resultJson = this.walletInstance.rebuild_subaddress_map(0, count);
+        const result = JSON.parse(resultJson);
+        return result.status === 'success';
+      }
+      // Fallback: use precompute if rebuild not available
+      this.precomputeSubaddresses(count);
+      return true;
+    } catch (e) {
+      logError('rebuildSubaddressMap', e);
+      return false;
+    }
+  }
+
+  /**
+   * Validate outputs for sending (check for stale state)
+   * Returns validation results indicating if refresh is needed
+   */
+  validateOutputsForSend(): { valid: boolean; needsRefresh: boolean; error?: string } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { valid: false, needsRefresh: true, error: 'Wallet not initialized' };
+    }
+    try {
+      if (typeof this.walletInstance.validate_outputs_for_send === 'function') {
+        const resultJson = this.walletInstance.validate_outputs_for_send();
+        const result = JSON.parse(resultJson);
+        return {
+          valid: result.valid !== false,
+          needsRefresh: result.needs_refresh === true,
+          error: result.error
+        };
+      }
+      // If function not available, assume valid (older WASM)
+      return { valid: true, needsRefresh: false };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : 'Unknown error';
+      return { valid: false, needsRefresh: true, error };
+    }
+  }
+
   // ============================================================================
   // OUTPUT EXPORT/IMPORT - For persisting wallet state across page refresh
   // ============================================================================
@@ -2570,6 +2726,344 @@ export class WalletService {
       }
     } catch {
       return false;
+    }
+  }
+
+  // ============================================================================
+  // MULTISIG FUNCTIONS - For 2-of-3 escrow bounty system
+  // ============================================================================
+
+  /**
+   * Get the initial multisig key exchange message.
+   * This is the first step in creating a multisig wallet.
+   * @returns {multisig_info: string, success: true} or {success: false, error: string}
+   */
+  prepareMultisig(): { multisig_info?: string; success: boolean; error?: string } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.prepare_multisig !== 'function') {
+        return { success: false, error: 'Multisig not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.prepare_multisig();
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'prepareMultisig');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Create a multisig wallet from key exchange messages.
+   * @param password Wallet password
+   * @param threshold M value (minimum signers required)
+   * @param multisigInfos Array of multisig info strings from other participants
+   * @returns Result with address and next round info if needed
+   */
+  makeMultisig(
+    password: string,
+    threshold: number,
+    multisigInfos: string[]
+  ): { address?: string; multisig_info?: string; kex_complete?: boolean; threshold?: number; total?: number; success: boolean; error?: string } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.make_multisig !== 'function') {
+        return { success: false, error: 'Multisig not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.make_multisig(password, threshold, JSON.stringify(multisigInfos));
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'makeMultisig');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Continue multisig key exchange (for rounds after make_multisig).
+   * @param password Wallet password
+   * @param multisigInfos Array of multisig info strings from current round
+   * @returns Result with address and ready status
+   */
+  exchangeMultisigKeys(
+    password: string,
+    multisigInfos: string[]
+  ): { address?: string; multisig_info?: string; is_ready?: boolean; success: boolean; error?: string } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.exchange_multisig_keys !== 'function') {
+        return { success: false, error: 'Multisig not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.exchange_multisig_keys(password, JSON.stringify(multisigInfos));
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'exchangeMultisigKeys');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Get current multisig wallet status.
+   * @returns Multisig status info
+   */
+  getMultisigStatus(): { multisig_is_active: boolean; kex_is_done: boolean; is_ready: boolean; threshold: number; total: number; success: boolean; error?: string } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { multisig_is_active: false, kex_is_done: false, is_ready: false, threshold: 0, total: 0, success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.get_multisig_status !== 'function') {
+        return { multisig_is_active: false, kex_is_done: false, is_ready: false, threshold: 0, total: 0, success: false, error: 'Multisig not supported' };
+      }
+
+      const resultJson = this.walletInstance.get_multisig_status();
+      return safeJsonParse(resultJson, { multisig_is_active: false, kex_is_done: false, is_ready: false, threshold: 0, total: 0, success: false }, 'getMultisigStatus');
+    } catch (e: unknown) {
+      return { multisig_is_active: false, kex_is_done: false, is_ready: false, threshold: 0, total: 0, success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Enable multisig experimental mode.
+   * Required before multisig operations can be performed.
+   * @returns true if enabled successfully
+   */
+  enableMultisigExperimental(): boolean {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return false;
+    }
+
+    try {
+      if (typeof this.walletInstance.enable_multisig_experimental !== 'function') {
+        return false;
+      }
+
+      return this.walletInstance.enable_multisig_experimental();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Check if multisig experimental mode is enabled.
+   * @returns true if enabled
+   */
+  isMultisigEnabled(): boolean {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return false;
+    }
+
+    try {
+      if (typeof this.walletInstance.is_multisig_enabled !== 'function') {
+        return false;
+      }
+
+      return this.walletInstance.is_multisig_enabled();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Export multisig info for transaction signing.
+   * Call this before signing a multisig transaction.
+   * @returns Base64 encoded multisig info
+   */
+  exportMultisigInfo(): { info?: string; success: boolean; error?: string } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.export_multisig_info !== 'function') {
+        return { success: false, error: 'Multisig not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.export_multisig_info();
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'exportMultisigInfo');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Import multisig info from other signers.
+   * Call this with info from other participants before signing.
+   * @param infos Array of base64 encoded multisig info strings
+   * @returns Number of infos imported
+   */
+  importMultisigInfo(infos: string[]): { num_imported?: number; success: boolean; error?: string } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.import_multisig_info !== 'function') {
+        return { success: false, error: 'Multisig not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.import_multisig_info(JSON.stringify(infos));
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'importMultisigInfo');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  // ============================================================================
+  // MULTISIG TRANSACTION FUNCTIONS (v5.55+)
+  // ============================================================================
+
+  /**
+   * Create a multisig transaction and return it as hex for sharing with other signers.
+   * @param destAddress Destination address
+   * @param amountAtomic Amount in atomic units as string
+   * @param mixin Ring size - 1 (default 15)
+   * @param priority Transaction priority (0-3)
+   * @returns tx_data_hex for sharing with other signers
+   */
+  createMultisigTxHex(
+    destAddress: string,
+    amountAtomic: string,
+    mixin: number = 15,
+    priority: number = 0
+  ): { tx_data_hex?: string; num_txs?: number; success: boolean; error?: string } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.create_multisig_tx_hex !== 'function') {
+        return { success: false, error: 'Multisig transaction functions not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.create_multisig_tx_hex(destAddress, amountAtomic, mixin, priority);
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'createMultisigTxHex');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Sign a multisig transaction received from another signer.
+   * @param txDataHex The multisig tx data as hex string
+   * @returns Signed tx_data_hex and info about signers
+   */
+  signMultisigTxHex(txDataHex: string): {
+    tx_data_hex?: string;
+    tx_hash_list?: string[];
+    signers?: number;
+    threshold?: number;
+    ready?: boolean;
+    success: boolean;
+    error?: string;
+  } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.sign_multisig_tx_hex !== 'function') {
+        return { success: false, error: 'Multisig transaction functions not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.sign_multisig_tx_hex(txDataHex);
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'signMultisigTxHex');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Describe a multisig transaction (get info without signing).
+   * @param txDataHex The multisig tx data as hex string
+   * @returns Transaction details including fee, amount, signers
+   */
+  describeMultisigTxHex(txDataHex: string): {
+    num_txs?: number;
+    signers?: number;
+    threshold?: number;
+    ready?: boolean;
+    transactions?: Array<{ fee: number; amount: number; num_inputs: number; num_outputs: number }>;
+    success: boolean;
+    error?: string;
+  } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.describe_multisig_tx_hex !== 'function') {
+        return { success: false, error: 'Multisig transaction functions not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.describe_multisig_tx_hex(txDataHex);
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'describeMultisigTxHex');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Get the tx blobs from a fully-signed multisig transaction for submission.
+   * @param txDataHex The fully-signed multisig tx data as hex string
+   * @returns tx_hash_list and tx_blob_list for submission via RPC
+   */
+  submitMultisigTxHex(txDataHex: string): {
+    tx_hash_list?: string[];
+    tx_blob_list?: string[];
+    num_txs?: number;
+    success: boolean;
+    error?: string;
+  } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.submit_multisig_tx_hex !== 'function') {
+        return { success: false, error: 'Multisig transaction functions not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.submit_multisig_tx_hex(txDataHex);
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'submitMultisigTxHex');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Create a RETURN transaction on a multisig wallet (for refunds).
+   * Uses Salvium's return transaction feature to send funds back to original sender.
+   * @param txid The original incoming transaction ID to return
+   * @returns tx_data_hex for sharing with other signers
+   */
+  createMultisigReturnTxHex(txid: string): {
+    tx_data_hex?: string;
+    num_txs?: number;
+    original_txid?: string;
+    success: boolean;
+    error?: string;
+  } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return { success: false, error: 'Wallet not initialized' };
+    }
+
+    try {
+      if (typeof this.walletInstance.create_multisig_return_tx_hex !== 'function') {
+        return { success: false, error: 'Multisig return transaction not supported in this WASM version' };
+      }
+
+      const resultJson = this.walletInstance.create_multisig_return_tx_hex(txid);
+      return safeJsonParse(resultJson, { success: false, error: 'Failed to parse result' }, 'createMultisigReturnTxHex');
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
     }
   }
 
@@ -2781,11 +3275,23 @@ export class WalletService {
       const BATCH_SIZE = 50000;
 
       while (true) {
-        const response = await fetch('/api/wallet/get-spent-index', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ start_height: startHeight, max_items: BATCH_SIZE })
-        });
+        // Add timeout to prevent hanging on mobile
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+        let response: Response;
+        try {
+          response = await fetch('/api/wallet/get-spent-index', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start_height: startHeight, max_items: BATCH_SIZE }),
+            signal: controller.signal
+          });
+        } catch (e) {
+          clearTimeout(timeoutId);
+          break; // Network error or timeout - exit loop
+        }
+        clearTimeout(timeoutId);
 
         if (!response.ok) break;
 
