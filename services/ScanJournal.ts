@@ -843,16 +843,10 @@ export async function isRecoverySafe(
     }
 
     // Check 2: Is the journal too old?
-    if (journal && journal.lastUpdateTimestamp) {
-      const ageHours = (Date.now() - journal.lastUpdateTimestamp) / (1000 * 60 * 60);
-      if (ageHours > 24) {
-        return {
-          safe: false,
-          reason: `Journal is ${Math.round(ageHours)} hours old - too stale to trust`,
-          action: 'full_rescan'
-        };
-      }
-    }
+    // NOTE: Removed aggressive 24-hour staleness check. Journal age alone doesn't indicate
+    // corruption - blocks scanned yesterday are still valid today. Only check for actual
+    // data integrity issues (errors, gaps) rather than arbitrary time limits.
+    // This was causing unnecessary full rescans on mobile when users didn't open the app daily.
 
     // Check 3: Too many errors?
     if (journal && journal.errorCount > 3) {

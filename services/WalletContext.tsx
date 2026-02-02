@@ -2413,10 +2413,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 progress: 0 // Reset progress at scan start
             }));
 
-            // Skip scan if we're already at the network height
-            if (scanStartHeight > networkHeight) {
+            // Skip scan if we're already at or past the network height
+            if (scanStartHeight >= networkHeight) {
                 scanInProgressRef.current = false;
                 setIsScanning(false);
+                setSyncStatus(prev => ({ ...prev, isSyncing: false, progress: 100 }));
                 return;
             }
 
@@ -2476,8 +2477,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 setSyncStatus(prev => ({
                     ...prev,
                     // For incremental scans, don't show height going backwards during chunk-aligned rescans
-                    // For full rescans (fromHeight === 0), show actual progress from the beginning
-                    walletHeight: isIncremental ? Math.max(prev.walletHeight, currentScannedHeight) : currentScannedHeight,
+                    // For full rescans (actualStartHeight === 0), show actual progress from the beginning
+                    walletHeight: actualStartHeight > 0 ? Math.max(prev.walletHeight, currentScannedHeight) : currentScannedHeight,
                     progress: calculatedPercentage
                 }));
             }, 150); // Update UI at most every 150ms
@@ -2519,6 +2520,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 actualStartHeight = fromHeight;
             }
 
+            // FIX: Recalculate isIncremental based on actual start height after recovery check.
+            // If recovery forced actualStartHeight=0, we're doing a full rescan and should use
+            // full-scan settings (more workers, larger batches, no UI yields). Without this fix,
+            // a forced full rescan would run with incremental settings and take 5-10x longer.
+            const effectiveIsIncremental = isIncremental && actualStartHeight > 0;
+
             const result = await cspScanService.startScan(
                 actualStartHeight,
                 networkHeight,
@@ -2554,7 +2561,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 },
                 undefined,
                 cachedKeyImagesCsv,
-                isIncremental,
+                effectiveIsIncremental,
                 // Background Phase 2b completion callback - refresh balance if RETURN txs found
                 (phase2bResult) => {
                     if (phase2bResult.outputsFound > 0) {
@@ -3169,8 +3176,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 }
             }
 
-        } catch {
-            // Scan failed
+        } catch (e) {
+            // Scan failed - reset syncing state
+            setSyncStatus(prev => ({ ...prev, isSyncing: false }));
+            void 0 && console.error('[WalletContext] Scan failed:', e);
         } finally {
             // RACE CONDITION FIX: Only update state if this is still the current scan
             // This prevents stale scan completions from corrupting state
@@ -3178,6 +3187,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 scanInProgressRef.current = false;
                 setIsScanning(false);
                 setScanProgress(null);
+                // Ensure isSyncing is always reset in finally block
+                setSyncStatus(prev => ({ ...prev, isSyncing: false }));
 
                 // MOBILE FIX: Restore touch gestures after scan completes
                 try {
@@ -3512,6 +3523,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         const init = async () => {
             try {
                 await walletService.init();
+
                 setIsInitialized(true);
                 setInitError(null);
 
@@ -4079,7 +4091,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         getWasmStatus: () => ({
             isReady: walletService.isReady(),
             hasWallet: walletService.hasWallet()
-        })
+        }),
+        // Multisig functions for bounty escrow
+        prepareMultisig: () => walletService.prepareMultisig(),
+        getMultisigStatus: () => walletService.getMultisigStatus(),
+        enableMultisigExperimental: () => walletService.enableMultisigExperimental(),
+        isMultisigEnabled: () => walletService.isMultisigEnabled()
     };
 
     return (
