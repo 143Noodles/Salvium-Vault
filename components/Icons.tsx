@@ -59,7 +59,11 @@ import {
   Zap,
   Heart,
   Globe,
-  BrushCleaning
+  BrushCleaning,
+  Gift,
+  Target,
+  Calendar,
+  DollarSign
 } from 'lucide-react';
 
 export {
@@ -122,5 +126,9 @@ export {
   Zap,
   Heart,
   Globe,
-  BrushCleaning
+  BrushCleaning,
+  Gift,
+  Target,
+  Calendar,
+  DollarSign
 };

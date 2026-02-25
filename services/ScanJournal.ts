@@ -53,6 +53,12 @@ export interface ScanCheckpoint {
   totalTransactionsFound: number;
 }
 
+export interface ScanCompletionProof {
+  scanSucceeded: boolean;
+  matchedChunks?: number[];
+  processedChunks?: number[];
+}
+
 let journalDB: IDBDatabase | null = null;
 let pendingJournalUpdates: Map<string, Partial<ScanJournalEntry>> = new Map();
 let checkpointFlushTimer: NodeJS.Timeout | null = null;
@@ -140,7 +146,7 @@ export async function startScanJournal(
 export async function recordScannedChunks(
   scanId: string,
   chunkStartHeights: number[],
-  hasMatches: boolean = false,
+  matchedChunksOrHasMatches: number[] | boolean = false,
   transactionsFound: number = 0
 ): Promise<void> {
   // Get or create pending update
@@ -154,13 +160,20 @@ export async function recordScannedChunks(
     pendingJournalUpdates.set(scanId, pending);
   }
 
+  const matchedChunkHeights = Array.isArray(matchedChunksOrHasMatches)
+    ? matchedChunksOrHasMatches
+    : (matchedChunksOrHasMatches ? chunkStartHeights : []);
+
   // Add chunks to pending update
   for (const height of chunkStartHeights) {
     if (!pending.scannedChunks!.includes(height)) {
       pending.scannedChunks!.push(height);
       newChunksSinceLastFlush++;
     }
-    if (hasMatches && !pending.matchedChunks!.includes(height)) {
+  }
+
+  for (const height of matchedChunkHeights) {
+    if (!pending.matchedChunks!.includes(height)) {
       pending.matchedChunks!.push(height);
     }
   }
@@ -313,7 +326,8 @@ export async function flushPendingUpdates(): Promise<void> {
  */
 export async function completeScanJournal(
   scanId: string,
-  finalHeight: number
+  finalHeight: number,
+  proof?: ScanCompletionProof
 ): Promise<void> {
   // Flush any pending updates first
   await flushPendingUpdates();
@@ -331,6 +345,28 @@ export async function completeScanJournal(
       const journal = getJournalRequest.result as ScanJournalEntry | undefined;
       if (!journal) {
         resolve();
+        return;
+      }
+
+      if (proof && !proof.scanSucceeded) {
+        tx.abort();
+        return;
+      }
+
+      if ((journal.inProgressChunks || []).length > 0) {
+        tx.abort();
+        return;
+      }
+
+      const requiredMatchedChunks = proof?.matchedChunks || [];
+      const processedChunkSet = new Set<number>([
+        ...(proof?.processedChunks || []),
+        ...(journal.ingestedChunks || []),
+      ]);
+
+      const missingMatchedChunks = requiredMatchedChunks.filter((chunk) => !processedChunkSet.has(chunk));
+      if (missingMatchedChunks.length > 0) {
+        tx.abort();
         return;
       }
 
@@ -367,6 +403,9 @@ export async function completeScanJournal(
     tx.onerror = () => {
       void DEBUG && console.error('[ScanJournal] Failed to complete scan journal:', tx.error);
       reject(tx.error);
+    };
+    tx.onabort = () => {
+      reject(tx.error || new Error('Scan completion proof failed'));
     };
   });
 }

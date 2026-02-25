@@ -12,18 +12,20 @@ interface CardProps {
   noPadding?: boolean;
   glow?: boolean;
   style?: React.CSSProperties;
+  onClick?: () => void;
 }
 
-export const Card: React.FC<CardProps> = ({ children, className = '', noPadding = false, glow = false, style }) => {
+export const Card: React.FC<CardProps> = ({ children, className = '', noPadding = false, glow = false, style, onClick }) => {
   return (
     <div
       className={`
       glass-panel rounded-2xl relative overflow-hidden transition-all duration-300
       ${glow ? 'shadow-lg shadow-black/40' : 'hover:border-white/10'}
-      ${noPadding ? '' : 'p-6'} 
+      ${noPadding ? '' : 'p-6'}
       ${className}
     `}
       style={style}
+      onClick={onClick}
     >
       {children}
     </div>
@@ -114,15 +116,24 @@ interface ModalProps {
   onClose: () => void;
   title: string;
   children: React.ReactNode;
+  size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
 }
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }) => {
+export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, size = 'md' }) => {
   if (!isOpen) return null;
+
+  const sizeClasses = {
+    sm: 'max-w-sm',
+    md: 'max-w-md',
+    lg: 'max-w-2xl',
+    xl: 'max-w-4xl',
+    full: 'max-w-[95vw]'
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose}></div>
-      <div className="bg-[#131320] border border-white/10 rounded-2xl w-full max-w-md shadow-xl relative z-10 animate-fade-in overflow-hidden">
+      <div className={`bg-[#131320] border border-white/10 rounded-2xl w-full ${sizeClasses[size]} shadow-xl relative z-10 animate-fade-in overflow-hidden`}>
         <div className="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
           <h3 className="font-bold text-lg text-white">{title}</h3>
           <button onClick={onClose} className="text-text-muted hover:text-white transition-colors">

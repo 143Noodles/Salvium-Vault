@@ -626,7 +626,7 @@ const AppContent: React.FC = () => {
               max-w-[1600px] mx-auto
               overflow-y-auto custom-scrollbar
               ${isMobileOrTablet
-                ? 'pt-[calc(88px+env(safe-area-inset-top))] pb-[calc(76px+env(safe-area-inset-bottom))] h-full'
+                ? 'pt-[calc(env(safe-area-inset-top)+16px)] pb-[calc(76px+env(safe-area-inset-bottom))] h-full'
                 : 'pt-6 pb-6 flex-1'
               }
             `}

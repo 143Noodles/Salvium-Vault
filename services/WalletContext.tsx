@@ -381,6 +381,10 @@ function safeReadWallet(): any | null {
 // Chunk Completion Tracking (Gap Detection)
 const CHUNK_SIZE = 1000;
 const MAX_TRACKED_CHUNKS = 500;
+const INCREMENTAL_OVERLAP_CHUNKS = 6; // Always rescan last 6 chunks (6,000 blocks)
+const DEEP_OVERLAP_BLOCKS = 50000; // Periodic deep reconciliation window
+const DEEP_OVERLAP_INTERVAL_MS = 6 * 60 * 60 * 1000; // Every 6 hours
+const DEEP_OVERLAP_LAST_RUN_KEY = 'salvium_deep_overlap_last_run';
 
 function getChunkStart(height: number): number {
     return Math.floor(height / CHUNK_SIZE) * CHUNK_SIZE;
@@ -672,6 +676,7 @@ interface WalletContextType {
     syncStatus: SyncStatus;
     isScanning: boolean;
     scanProgress: ScanProgress | null;
+    lastSuccessfulScanAt: number;
 
     // Transactions
     transactions: WalletTransaction[];
@@ -779,6 +784,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     });
     const [isScanning, setIsScanning] = useState(false);
     const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
+    const [lastSuccessfulScanAt, setLastSuccessfulScanAt] = useState(0);
     const [initLog, setInitLog] = useState<string[]>([]);
 
     // Ref to track if wallet is currently resetting (blocks async saves)
@@ -2439,11 +2445,32 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             // Incremental scans use smaller batches and yields to keep UI smooth.
             const isIncremental = fromHeight === undefined && walletHeight > 0;
 
-            // Align incremental scans to chunk boundary (CSPScanner fetches 1000-block chunks)
-            // Note: CHUNK_SIZE is defined at module level for gap detection
-            const scanStartHeight = isIncremental
-                ? Math.floor(walletHeight / CHUNK_SIZE) * CHUNK_SIZE
-                : walletHeight;
+            // Align incremental scans to chunk boundary and intentionally overlap history.
+            // This catches occasional missed incoming tx detection from prior incremental runs.
+            let scanStartHeight = walletHeight;
+            if (isIncremental) {
+                const chunkAlignedHeight = Math.floor(walletHeight / CHUNK_SIZE) * CHUNK_SIZE;
+
+                let deepOverlapDue = false;
+                try {
+                    const lastDeepRunRaw = localStorage.getItem(DEEP_OVERLAP_LAST_RUN_KEY);
+                    const lastDeepRun = lastDeepRunRaw ? Number(lastDeepRunRaw) : 0;
+                    deepOverlapDue = !Number.isFinite(lastDeepRun) || lastDeepRun <= 0 || (Date.now() - lastDeepRun) >= DEEP_OVERLAP_INTERVAL_MS;
+                } catch {
+                    deepOverlapDue = false;
+                }
+
+                if (deepOverlapDue) {
+                    scanStartHeight = Math.max(0, chunkAlignedHeight - DEEP_OVERLAP_BLOCKS);
+                    try {
+                        localStorage.setItem(DEEP_OVERLAP_LAST_RUN_KEY, String(Date.now()));
+                    } catch {
+                        // best effort
+                    }
+                } else {
+                    scanStartHeight = Math.max(0, chunkAlignedHeight - (INCREMENTAL_OVERLAP_CHUNKS * CHUNK_SIZE));
+                }
+            }
 
             // Set scanStartHeight for smooth progress calculation in LoadingScreen
             setSyncStatus(prev => ({
@@ -2453,14 +2480,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 scanStartHeight: scanStartHeight,
                 progress: 0 // Reset progress at scan start
             }));
-
-            // Skip scan if we're already at or past the network height
-            if (scanStartHeight >= networkHeight) {
-                scanInProgressRef.current = false;
-                setIsScanning(false);
-                setSyncStatus(prev => ({ ...prev, isSyncing: false, progress: 100 }));
-                return;
-            }
 
             // ================================================================
             // GAP DETECTION: Check for missing chunks after browser suspension
@@ -2561,6 +2580,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 actualStartHeight = fromHeight;
             }
 
+            // Skip scan only after recovery/gap adjustments have finalized the true start height.
+            if (actualStartHeight >= networkHeight) {
+                scanInProgressRef.current = false;
+                setIsScanning(false);
+                setSyncStatus(prev => ({ ...prev, isSyncing: false, progress: 100 }));
+                setLastSuccessfulScanAt(Date.now());
+                return;
+            }
+
             // FIX: Recalculate isIncremental based on actual start height after recovery check.
             // If recovery forced actualStartHeight=0, we're doing a full rescan and should use
             // full-scan settings (more workers, larger batches, no UI yields). Without this fix,
@@ -2631,6 +2659,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     }
                 }
             );
+
+            if (!result.success) {
+                throw new Error(result.error || 'CSP scan did not complete successfully');
+            }
+
+            setLastSuccessfulScanAt(Date.now());
 
             // Update wallet height to final scanned height
             walletService.setWalletHeight(networkHeight);
@@ -2728,9 +2762,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     // 4. Handle "Ghost Transactions" - transactions that disappear during reorgs
 
                     // Determine if this was an incremental scan (not a full rescan from block 0)
-                    // CRITICAL: Use finalScanStartHeight (where we actually started), NOT walletHeight
-                    // walletHeight changes during the scan and would misclassify fresh restores as incremental
-                    const isIncrementalScan = finalScanStartHeight > 1000;
+                    // CRITICAL: Use actualStartHeight after recovery adjustments.
+                    // finalScanStartHeight can be stale when recovery forces a full rescan.
+                    const isIncrementalScan = actualStartHeight > 0;
 
                     // CRITICAL: After vault restore, WASM has the full cache imported so its balance is authoritative.
                     // Don't use cached balance + delta which may perpetuate errors from the vault file.
@@ -4261,6 +4295,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         syncStatus,
         isScanning,
         scanProgress,
+        lastSuccessfulScanAt,
         transactions: allTransactions,
         stakes,
         subaddresses,
@@ -4294,12 +4329,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }),
         // Wallet state persistence (fixes "Failed to generate key image helper" error)
         refreshWalletState,
-        getWalletStateHealth,
-        // Multisig functions for bounty escrow
-        prepareMultisig: () => walletService.prepareMultisig(),
-        getMultisigStatus: () => walletService.getMultisigStatus(),
-        enableMultisigExperimental: () => walletService.enableMultisigExperimental(),
-        isMultisigEnabled: () => walletService.isMultisigEnabled()
+        getWalletStateHealth
     };
 
     return (

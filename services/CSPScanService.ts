@@ -40,6 +40,7 @@ import {
   stopMobileScanAudio,
 } from './SilentAudio';
 
+
 /**
  * IndexedDB helpers for return address persistence
  * Persisting return addresses allows Phase 1 to detect RETURN transactions
@@ -726,6 +727,11 @@ class CSPScanService {
       // Continue without journal - not critical
     }
 
+    let phase2bRan = false;
+    let scanSucceeded = false;
+    let matchedChunksForProof: number[] = [];
+    let processedChunksForProof: number[] = [];
+
     // Acquire Web Lock to prevent browser throttling in background tabs
     acquireScanLock();
 
@@ -735,8 +741,9 @@ class CSPScanService {
     // Start silent audio on mobile to prevent iOS/Android suspension during scan
     await startMobileScanAudio();
 
-    // Load script if needed
-    await this.loadScript();
+    try {
+      // Load script if needed
+      await this.loadScript();
 
     if (!window.CSPScanner) {
       return { success: false, matches: [], matchCount: 0, blocksScanned: 0, blocksPerSecond: 0, error: 'CSPScanner not available', keyImagesCsv: '' };
@@ -995,7 +1002,7 @@ class CSPScanService {
         await recordScannedChunks(
           this.currentScanId,
           result.scannedChunks,
-          hasMatches,
+          hasMatches ? (result.matchedChunks || []) : [],
           result.matchCount || 0
         );
         // Flush immediately after phase 1 completes
@@ -1022,6 +1029,7 @@ class CSPScanService {
     }
 
     const matchedChunks: number[] = result.matchedChunks || [];
+    matchedChunksForProof = [...matchedChunks];
     const allMatches: any[] = result.matches || [];
 
     let outputsFound = 0;
@@ -1034,6 +1042,7 @@ class CSPScanService {
       const rescanResult = await this.targetedRescan(wallet, matchedChunks, allMatches, reportProgress, startHeight, endHeight, isIncremental);
       outputsFound = rescanResult.outputsFound;
       allProcessedChunks.push(...rescanResult.successfullyProcessedChunks);
+      processedChunksForProof = [...allProcessedChunks];
     }
 
     // Check if Phase 2b will be needed (before Phase 3)
@@ -1256,71 +1265,98 @@ class CSPScanService {
       // Failed to save return addresses to IndexedDB
     }
 
-    // Phase 2b: RETURN Transaction Discovery
-    // Only runs if user indicated they have returned transfers during restore (synchronous)
-    // Return addresses are still cached from Phase 2 for future incremental scans
-    const runPhase2b = localStorage.getItem('salvium_scan_returned_transfers') === 'true';
+      // Phase 2b: RETURN Transaction Discovery
+      // Only runs if user indicated they have returned transfers during restore (synchronous)
+      // Return addresses are still cached from Phase 2 for future incremental scans
+      const runPhase2b = localStorage.getItem('salvium_scan_returned_transfers') === 'true';
+      phase2bRan = needsPhase2b && runPhase2b;
 
-    if (needsPhase2b && runPhase2b && this.scanner) {
-      const scannerRef = this.scanner;
-      const walletRef = wallet;
-      const processedChunksRef = [...allProcessedChunks];
+      if (phase2bRan && this.scanner) {
+        const scannerRef = this.scanner;
+        const walletRef = wallet;
+        const processedChunksRef = [...allProcessedChunks];
 
-      this.isPhase2bRunning = true;
-      try {
-        await this.runBackgroundPhase2b(
-          scannerRef,
-          walletRef,
-          walletAddress,
-          newReturnAddressesCsv,
-          processedChunksRef,
-          startHeight,
-          endHeight,
-          onBackgroundComplete,
-          onProgress
-        );
-      } catch {
-        // Synchronous Phase 2b failed
-      } finally {
-        this.isPhase2bRunning = false;
-        localStorage.removeItem('salvium_scan_returned_transfers');
+        this.isPhase2bRunning = true;
+        try {
+          const phase2bSucceeded = await this.runBackgroundPhase2b(
+            scannerRef,
+            walletRef,
+            walletAddress,
+            newReturnAddressesCsv,
+            processedChunksRef,
+            startHeight,
+            endHeight,
+            onBackgroundComplete,
+            onProgress,
+            matchedChunksForProof,
+            processedChunksForProof
+          );
+          if (!phase2bSucceeded) {
+            throw new Error('Phase 2b failed to complete safely');
+          }
+        } catch {
+          // Synchronous Phase 2b failed
+          throw new Error('Synchronous Phase 2b failed');
+        } finally {
+          this.isPhase2bRunning = false;
+          localStorage.removeItem('salvium_scan_returned_transfers');
+        }
+        this.scanner = null;
+      } else {
+        if (this.scanner) {
+          this.scanner.destroy();
+          this.scanner = null;
+        }
       }
-      this.scanner = null;
-    } else {
-      if (this.scanner) {
-        this.scanner.destroy();
+
+      scanSucceeded = true;
+      return {
+        success: true,
+        matches: result.matches || [],
+        matchCount: result.matchCount || 0,
+        blocksScanned: result.blocksScanned || 0,
+        blocksPerSecond: result.blocksPerSecond || 0,
+        matchedChunks,
+        processedChunks: allProcessedChunks,
+        outputsFound,
+        keyImagesCsv: finalKeyImagesCsv
+      };
+    } catch (error) {
+      if (this.currentScanId) {
+        recordScanError(this.currentScanId, (error as Error)?.message || String(error)).catch(() => {});
+      }
+      throw error;
+    } finally {
+      // Always release scan resources, including early returns and thrown errors.
+      this.isScanning = false;
+      releaseScanLock();
+      releaseWakeLock();
+      stopMobileScanAudio();
+
+      // Safety cleanup: ensure scanner instance does not leak after failures.
+      if (this.scanner && !this.isPhase2bRunning) {
+        try {
+          this.scanner.destroy();
+        } catch {
+          // Ignore cleanup errors
+        }
         this.scanner = null;
       }
-    }
 
-    // Mark main scan as complete
-    this.isScanning = false;
-    releaseScanLock();
-    releaseWakeLock();
-    stopMobileScanAudio();
-
-    // Complete the scan journal
-    // Only complete here if Phase 2b didn't run - when Phase 2b runs, it completes the journal in its finally block
-    const phase2bRan = needsPhase2b && runPhase2b;
-    if (!phase2bRan && this.currentScanId) {
-      try {
-        await completeScanJournal(this.currentScanId, endHeight);
-      } catch (e) {
-        void DEBUG && console.warn('[CSPScanService] Failed to complete scan journal:', e);
+      // Complete the scan journal only when Phase 2b did not run.
+      // When Phase 2b runs, that flow completes the journal in its own finally block.
+      if (!phase2bRan && this.currentScanId) {
+        try {
+          await completeScanJournal(this.currentScanId, endHeight, {
+            scanSucceeded,
+            matchedChunks: matchedChunksForProof,
+            processedChunks: processedChunksForProof,
+          });
+        } catch (e) {
+          void DEBUG && console.warn('[CSPScanService] Failed to complete scan journal:', e);
+        }
       }
     }
-
-    return {
-      success: true,
-      matches: result.matches || [],
-      matchCount: result.matchCount || 0,
-      blocksScanned: result.blocksScanned || 0,
-      blocksPerSecond: result.blocksPerSecond || 0,
-      matchedChunks,
-      processedChunks: allProcessedChunks,
-      outputsFound,
-      keyImagesCsv: finalKeyImagesCsv
-    };
   }
 
   /**
@@ -1337,10 +1373,13 @@ class CSPScanService {
     startHeight: number,
     endHeight: number,
     onComplete?: (result: { outputsFound: number; message: string; needsRescan: boolean }) => void,
-    onProgress?: (progress: ScanProgress) => void
-  ): Promise<void> {
+    onProgress?: (progress: ScanProgress) => void,
+    matchedChunksForProof: number[] = [],
+    processedChunksForProof: number[] = []
+  ): Promise<boolean> {
     let outputsFound = 0;
     let potentialMatches = 0;
+    let phase2bSucceeded = false;
 
     // Helper to report Phase 2b progress (scaled 56-100%)
     const reportPhase2bProgress = (phase2bProgress: number, message: string) => {
@@ -1441,8 +1480,11 @@ class CSPScanService {
         reportPhase2bProgress(0.9, 'No returned transfers found');
       }
 
+      phase2bSucceeded = true;
+
     } catch (e) {
       // Phase 2b error - non-critical
+      phase2bSucceeded = false;
     } finally {
       // Cleanup scanner
       if (scanner) {
@@ -1454,12 +1496,16 @@ class CSPScanService {
       }
 
       // Report 100% complete
-      reportPhase2bProgress(1.0, 'Scan complete');
+      reportPhase2bProgress(phase2bSucceeded ? 1.0 : 0.95, phase2bSucceeded ? 'Scan complete' : 'Pass 2 failed');
 
       // Complete scan journal after Phase 2b
       if (this.currentScanId) {
         try {
-          await completeScanJournal(this.currentScanId, endHeight);
+          await completeScanJournal(this.currentScanId, endHeight, {
+            scanSucceeded: phase2bSucceeded,
+            matchedChunks: matchedChunksForProof,
+            processedChunks: processedChunksForProof,
+          });
         } catch (e) {
           void DEBUG && console.warn('[CSPScanService] Failed to complete scan journal after Phase 2b:', e);
         }
@@ -1481,6 +1527,8 @@ class CSPScanService {
           needsRescan
         });
       }
+
+      return phase2bSucceeded;
     }
   }
 
@@ -1591,6 +1639,16 @@ class CSPScanService {
       if (!indices.includes(txIndex)) indices.push(txIndex);
     }
     const sortedChunks = [...matchedChunks].sort((a, b) => a - b);
+
+    // Mark all candidate chunks as in-progress before ingestion starts.
+    // If scan is interrupted, resume logic will conservatively recover these ranges.
+    if (this.currentScanId && sortedChunks.length > 0) {
+      try {
+        await markChunksInProgress(this.currentScanId, sortedChunks);
+      } catch {
+        // Journal updates are best-effort
+      }
+    }
 
     const allStakeHeights: number[] = [];
     const allAuditHeights: number[] = [];
@@ -2035,6 +2093,15 @@ class CSPScanService {
         if (auditResult.txsMatched > 0) totalOutputsFound += auditResult.txsMatched;
       } catch {
         // Phase 3c failed
+      }
+    }
+
+    // Mark successfully ingested chunks as completed in journal.
+    if (this.currentScanId && successfullyIngestedChunks.size > 0) {
+      try {
+        await markChunksCompleted(this.currentScanId, [...successfullyIngestedChunks], true);
+      } catch {
+        // Journal updates are best-effort
       }
     }
 

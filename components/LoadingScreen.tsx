@@ -42,6 +42,7 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
   // Track if we've actually requested a start to the scan
   // This prevents the screen from dismissing immediately if the restored wallet state says 100%
   const [scanInitiated, setScanInitiated] = useState(false);
+  const scanStartRequestedAtRef = useRef(0);
 
   // Track the maximum progress seen to prevent jumping backward
   const [maxProgress, setMaxProgress] = useState(0);
@@ -109,13 +110,22 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
     prevRawPercentageRef.current = rawPercentage;
   }, [rawPercentage, isScanning]);
 
-  // When scan completes, keep showing 100% (or last known progress)
+  // Keep progress monotonic, but don't infer completion from a percentage threshold.
   const percentage = scanInitiated
-    ? (!isScanning && maxProgress >= 90 ? 100 : Math.max(maxProgress, rawPercentage))
+    ? Math.max(maxProgress, rawPercentage)
     : 0;
 
+  const hasVerifiedCompletion =
+    scanInitiated &&
+    !isScanning &&
+    wallet.lastSuccessfulScanAt > 0 &&
+    scanStartRequestedAtRef.current > 0 &&
+    wallet.lastSuccessfulScanAt >= scanStartRequestedAtRef.current &&
+    wallet.syncStatus.daemonHeight > 0 &&
+    wallet.syncStatus.walletHeight >= wallet.syncStatus.daemonHeight;
+
   // Show "Scan complete" when finished, otherwise show progress message
-  const statusMessage = (!isScanning && maxProgress >= 90)
+  const statusMessage = hasVerifiedCompletion
     ? 'Scan complete'
     : (progress?.statusMessage ?? 'Syncing wallet...');
   const transactionsFound = progress?.transactionsFound ?? 0;
@@ -143,6 +153,9 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
       }
 
       if (wallet.isWalletReady) {
+        if (scanStartRequestedAtRef.current === 0) {
+          scanStartRequestedAtRef.current = Date.now();
+        }
         wallet.startScan();
         setScanInitiated(true);
       }
@@ -167,13 +180,13 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
   useEffect(() => {
     // CRITICAL FIX: Only consider complete if we have actually initiated a scan
     // This handles the "Zombie Restore" case where we start with 100% progress but need to rescan
-    const isComplete = scanInitiated && !isScanning && percentage >= 99.9;
+    const isComplete = hasVerifiedCompletion;
 
     if (!hasTriggeredComplete && isComplete && wallet.isWalletReady) {
       setHasTriggeredComplete(true);
       setTimeout(onComplete, 800);
     }
-  }, [isScanning, percentage, hasTriggeredComplete, onComplete, wallet.isWalletReady, scanInitiated]);
+  }, [hasVerifiedCompletion, hasTriggeredComplete, onComplete, wallet.isWalletReady]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f0f1a] font-sans animate-fade-in" style={{}}>

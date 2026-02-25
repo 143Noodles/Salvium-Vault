@@ -420,8 +420,8 @@ export class WalletService {
   }
 
   /**
-   * Get the WASM module for external use (e.g., EscrowService)
-   * Returns null if not yet initialized
+   * Get the WASM module for external use.
+   * Returns null if not yet initialized.
    */
   getWasmModule(): WasmModule | null {
     return this.wasmModule;
@@ -2730,7 +2730,7 @@ export class WalletService {
   }
 
   // ============================================================================
-  // MULTISIG FUNCTIONS - For 2-of-3 escrow bounty system
+  // MULTISIG FUNCTIONS
   // ============================================================================
 
   /**

@@ -74,3 +74,15 @@ temp_*.ts
 # Stylelint cache
 .stylelintcache
 public/wallet/
+LOCAL_NOTES.md
+
+# Local backups and artifacts
+App.tsx.backup
+public/salvium-vault.apk
+
+# Local WASM/public staging copies
+public/SalviumWallet.js
+public/SalviumWallet.wasm
+
+# Android app links file (local-only)
+public/.well-known/
