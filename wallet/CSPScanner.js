@@ -266,7 +266,7 @@ class CSPScanner {
      * Fetch and cache the WASM binary
      * Cache-busting version - increment when deploying new WASM
      */
-    static WASM_VERSION = '5.41.0';
+    static WASM_VERSION = '5.53.6-testnet-fix1';
 
 
 

@@ -11,6 +11,7 @@ import ReceivePage from './components/ReceivePage';
 import StakingPage from './components/StakingPage';
 import HistoryPage from './components/HistoryPage';
 import SettingsPage from './components/SettingsPage';
+import AssetsPage from './components/AssetsPage';
 import {
   LayoutDashboard,
   TrendingUp,
@@ -38,6 +39,7 @@ export enum TabView {
   RECEIVE = 'RECEIVE',
   HISTORY = 'HISTORY',
   STAKING = 'STAKING',
+  ASSETS = 'ASSETS',
   SETTINGS = 'SETTINGS'
 }
 
@@ -50,6 +52,7 @@ const AppContent: React.FC = () => {
 
   const [appState, setAppState] = useState<AppState>('initializing');
   const [activeTab, setActiveTab] = useState<TabView>(TabView.DASHBOARD);
+  const [isTestnet, setIsTestnet] = useState(false);
   const previousTabRef = useRef<TabView>(TabView.DASHBOARD);
   const [dashboardResetKey, setDashboardResetKey] = useState(0);
 
@@ -61,6 +64,7 @@ const AppContent: React.FC = () => {
     '#send': TabView.SEND,
     '#receive': TabView.RECEIVE,
     '#staking': TabView.STAKING,
+    '#assets': TabView.ASSETS,
     '#history': TabView.HISTORY,
     '#settings': TabView.SETTINGS,
   };
@@ -70,15 +74,32 @@ const AppContent: React.FC = () => {
     [TabView.SEND]: '#send',
     [TabView.RECEIVE]: '#receive',
     [TabView.STAKING]: '#staking',
+    [TabView.ASSETS]: '#assets',
     [TabView.HISTORY]: '#history',
     [TabView.SETTINGS]: '#settings',
   };
 
   // Handle hash changes from URL
   useEffect(() => {
+    const loadNetwork = async () => {
+      try {
+        const response = await fetch('/api/network');
+        if (!response.ok) return;
+        const data = await response.json();
+        setIsTestnet(String(data?.network || '').toLowerCase() === 'testnet');
+      } catch {
+        setIsTestnet(false);
+      }
+    };
+
+    void loadNetwork();
+  }, []);
+
+  useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.toLowerCase();
       if (hash && hashToTab[hash] && appState === 'dashboard') {
+        if (hashToTab[hash] === TabView.ASSETS && !isTestnet) return;
         setActiveTab(hashToTab[hash]);
       }
     };
@@ -88,17 +109,22 @@ const AppContent: React.FC = () => {
 
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [appState]);
+  }, [appState, isTestnet]);
 
   // Update URL hash when tab changes (only when logged in)
   useEffect(() => {
+    if (!isTestnet && activeTab === TabView.ASSETS) {
+      setActiveTab(TabView.DASHBOARD);
+      return;
+    }
+
     if (appState === 'dashboard' && tabToHash[activeTab]) {
       const newHash = tabToHash[activeTab];
       if (window.location.hash !== newHash) {
         window.history.replaceState(null, '', newHash);
       }
     }
-  }, [activeTab, appState]);
+  }, [activeTab, appState, isTestnet]);
 
   // Update body class for header visibility
   useEffect(() => {
@@ -529,7 +555,7 @@ const AppContent: React.FC = () => {
         <MobileHeader activeTab={activeTab} onNavigate={handleNavigate} onLock={lockWallet} />
       )}
       {isMobileOrTablet && (
-        <MobileNavBar activeTab={activeTab} onNavigate={handleNavigate} />
+        <MobileNavBar activeTab={activeTab} onNavigate={handleNavigate} showAssetsTab={isTestnet} />
       )}
       <div className="bg-bg-primary text-text-primary flex relative overflow-hidden h-full pt-[56px]">
 
@@ -541,6 +567,9 @@ const AppContent: React.FC = () => {
               <NavItem tab={TabView.SEND} icon={Send} label={t('navigation.send')} />
               <NavItem tab={TabView.RECEIVE} icon={Download} label={t('navigation.receive')} />
               <NavItem tab={TabView.STAKING} icon={TrendingUp} label={t('navigation.staking')} />
+              {isTestnet && (
+                <NavItem tab={TabView.ASSETS} icon={Database} label={t('navigation.assets', { defaultValue: 'Assets' })} />
+              )}
               <NavItem tab={TabView.HISTORY} icon={History} label={t('navigation.history')} />
               <NavItem tab={TabView.SETTINGS} icon={Settings} label={t('navigation.settings')} />
             </nav>
@@ -638,7 +667,7 @@ const AppContent: React.FC = () => {
             )}
 
             {activeTab === TabView.SEND && (
-              <SendPage initialParams={navParams} />
+              <SendPage initialParams={navParams} enableAssetSend={isTestnet} />
             )}
 
             {activeTab === TabView.RECEIVE && (
@@ -651,6 +680,10 @@ const AppContent: React.FC = () => {
 
             {activeTab === TabView.STAKING && (
               <StakingPage />
+            )}
+
+            {activeTab === TabView.ASSETS && (
+              <AssetsPage />
             )}
 
             {activeTab === TabView.SETTINGS && (

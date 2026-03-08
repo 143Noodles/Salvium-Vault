@@ -8,6 +8,7 @@ const isMobileOrTablet = isMobile || isTabletDevice; // Tablets use mobile layou
 import { Card, Button, Input, Overlay, Badge, TruncatedAddress } from './UIComponents';
 import { Send, User, Clock, Wallet, AlertCircle, CheckCircle2, Check, UserPlus, Search, X, Edit2, Trash2, BookOpen, Camera, BrushCleaning, Loader2, AlertTriangle, ChevronDown, Copy } from './Icons';
 import { useWallet } from '../services/WalletContext';
+import { walletService } from '../services/WalletService';
 import { formatSAL } from '../utils/format';
 import TransactionOverlay from './TransactionOverlay';
 
@@ -20,9 +21,10 @@ interface SendPageProps {
     amount?: string;
     paymentId?: string;
   };
+  enableAssetSend?: boolean;
 }
 
-const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
+const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = false }) => {
   const { t } = useTranslation();
   const wallet = useWallet();
   const [address, setAddress] = useState('');
@@ -33,6 +35,8 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
   const [error, setError] = useState<string | null>(null);
   const [sentSuccess, setSentSuccess] = useState(false);
   const [txHash, setTxHash] = useState('');
+  const [selectedAssetType, setSelectedAssetType] = useState('SAL1');
+  const [assetOptions, setAssetOptions] = useState<string[]>(['SAL1']);
 
   const [validationState, setValidationState] = useState<{ type: 'error' | 'warning' | null, message: string } | null>(null);
   const [actualSendAmount, setActualSendAmount] = useState<number | null>(null);
@@ -102,6 +106,41 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
   }, [initialParams]);
 
   useEffect(() => {
+    if (!enableAssetSend) {
+      setSelectedAssetType('SAL1');
+      setAssetOptions(['SAL1']);
+      return;
+    }
+
+    let cancelled = false;
+    const loadAssets = async () => {
+      try {
+        const tokens = await walletService.getTokens('');
+        if (cancelled) return;
+        const normalizedTokens = tokens
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0 && t.toUpperCase() !== 'SAL' && t.toUpperCase() !== 'SAL1' && t.toUpperCase() !== 'BURN');
+        setAssetOptions(['SAL1', ...normalizedTokens]);
+      } catch {
+        if (!cancelled) {
+          setAssetOptions(['SAL1']);
+        }
+      }
+    };
+    void loadAssets();
+    return () => {
+      cancelled = true;
+    };
+  }, [enableAssetSend]);
+
+  const baseUnlockedBalance = wallet.balance.unlockedBalanceSAL || wallet.balance.unlockedBalance / 1e8;
+  const selectedAssetBalance = enableAssetSend ? walletService.getAssetBalance(selectedAssetType) : null;
+  const availableUnlocked = enableAssetSend && selectedAssetType !== 'SAL1' && selectedAssetType !== 'SAL'
+    ? (selectedAssetBalance?.unlockedBalanceSAL || 0)
+    : baseUnlockedBalance;
+  const displayAssetLabel = enableAssetSend ? selectedAssetType : t('common.sal');
+
+  useEffect(() => {
     const validate = async () => {
       const val = parseFloat(amount);
       if (!amount || isNaN(val) || val <= 0) {
@@ -119,7 +158,7 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
         // Keep default fallback
       }
 
-      const available = wallet.balance.unlockedBalanceSAL || 0;
+      const available = availableUnlocked || 0;
       const totalNeeded = val + fee;
 
       if (val > available) {
@@ -152,7 +191,7 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
 
     const timer = setTimeout(validate, 500); // 500ms debounce
     return () => clearTimeout(timer);
-  }, [amount, address, wallet.balance.unlockedBalanceSAL]);
+  }, [amount, address, availableUnlocked]);
 
   const handleScan = (data: string) => {
     // Basic validation or cleanup can happen here if needed
@@ -193,7 +232,13 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
 
       // When sending close to max (warning state), enable sweepAll to auto-retry with fee adjustments
       const sweepAll = validationState?.type === 'warning';
-      const hash = await wallet.sendTransaction(address, amountToSend, paymentId, sweepAll);
+      const hash = await wallet.sendTransaction(
+        address,
+        amountToSend,
+        paymentId,
+        sweepAll,
+        enableAssetSend ? selectedAssetType : undefined
+      );
       setTxHash(hash);
       setSentSuccess(true);
       // Update contact usage if applicable (method may not exist)
@@ -453,12 +498,32 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
                 </div>
               </div>
 
+              {enableAssetSend && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-text-secondary">{t('assets.assetType', 'Asset Type')}</label>
+                  <div className="relative">
+                    <select
+                      value={selectedAssetType}
+                      onChange={(e) => setSelectedAssetType(e.target.value)}
+                      className="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-accent-primary/50 transition-colors appearance-none"
+                    >
+                      {assetOptions.map((asset) => (
+                        <option key={asset} value={asset}>
+                          {asset}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted w-4 h-4 pointer-events-none" />
+                  </div>
+                </div>
+              )}
+
               {/* Amount Input */}
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-text-secondary font-medium">{t('send.amount')}</span>
                   <span className="text-text-muted">
-                    {t('send.available')}: <span className="text-white font-mono">{formatSAL(wallet.balance.unlockedBalanceSAL || wallet.balance.unlockedBalance / 1e8)} SAL</span>
+                    {t('send.available')}: <span className="text-white font-mono">{formatSAL(availableUnlocked)} {displayAssetLabel}</span>
                   </span>
                 </div>
                 <div className="relative">
@@ -474,12 +539,12 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams }) => {
                   <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setAmount(((wallet.balance.unlockedBalance || 0) / 100000000).toString())}
+                      onClick={() => setAmount(availableUnlocked.toString())}
                       className="text-xs text-accent-primary hover:text-white font-semibold transition-colors uppercase"
                     >
                       {t('common.max')}
                     </button>
-                    <span className="text-text-muted font-bold text-sm pl-2 border-l border-white/10">{t('common.sal')}</span>
+                    <span className="text-text-muted font-bold text-sm pl-2 border-l border-white/10">{displayAssetLabel}</span>
                   </div>
                 </div>
                 {/* Validation Message */}

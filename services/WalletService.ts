@@ -123,7 +123,7 @@ export interface WalletKeys {
 export interface WalletTransaction {
   txid: string;
   type: 'in' | 'out' | 'pending';
-  tx_type?: number;         // Protocol tx type: 0=UNSET, 1=MINER, 2=PROTOCOL, 3=TRANSFER, 4=CONVERT, 5=BURN, 6=STAKE, 7=RETURN, 8=AUDIT
+  tx_type?: number;         // Protocol tx type: 0=UNSET, 1=MINER, 2=PROTOCOL, 3=TRANSFER, 4=CONVERT, 5=BURN, 6=STAKE, 7=RETURN, 8=AUDIT, 9=CREATE_TOKEN, 10=ROLLUP
   tx_type_label?: string;   // Human readable label: "Transfer", "Mining", "Stake", "Stake Return", etc.
   amount: number;
   fee?: number;
@@ -133,7 +133,7 @@ export interface WalletTransaction {
   address?: string;
   payment_id?: string;
   unlock_time?: number;
-  asset_type?: string;      // SAL or SAL1
+  asset_type?: string;      // SAL, SAL1, or token asset (e.g. salABCD)
   pending?: boolean;        // True for locally-created TXs not yet confirmed on-chain
   failed?: boolean;         // True if transaction failed
 }
@@ -246,12 +246,18 @@ interface WasmWalletInstance {
   get_transfers_as_json(min_height: number, max_height: number, include_in: boolean, include_out: boolean, include_pending: boolean): string;
   // WASM signature: create_transaction_json(address, amount_str, mixin, priority)
   create_transaction_json(address: string, amount_str: string, mixin: number, priority: number): string;
+  // WASM signature: create_transaction_with_asset_json(address, amount_str, asset_type, mixin, priority)
+  create_transaction_with_asset_json?(address: string, amount_str: string, asset_type: string, mixin: number, priority: number): string;
   // WASM signature: create_stake_transaction_json(amount_str, mixin, priority)
   create_stake_transaction_json(amount_str: string, mixin: number, priority: number): string;
   // WASM signature: create_return_transaction_json(txid)
   create_return_transaction_json(txid: string): string;
   // WASM signature: estimate_fee_json(amount_str, mixin, priority)
   estimate_fee_json(amount_str: string, mixin: number, priority: number): string;
+  // Token support (Salvium 1.1+)
+  create_create_token_transaction_json?(asset_type: string, supply_str: string, decimals: number, metadata: string): string;
+  get_tokens_json?(filter: string): string;
+  get_token_info_json?(asset_type: string): string;
   // Split transaction architecture
   prepare_transaction_json(address: string, amount_str: string, mixin: number, priority: number): string;
   complete_transaction_json(uuid: string): string;
@@ -279,6 +285,9 @@ interface WasmWalletInstance {
   test_wasm(): string;
   debug_scan_transaction(tx_hash: string): string;
   precompute_subaddresses(account: number, num: number): void;
+  // Per-asset balances (tokens + base assets)
+  get_balance_for_asset?(asset_type: string): string;
+  get_unlocked_balance_for_asset?(asset_type: string): string;
 
   // v5.60: Output validation for key image generation (stale state detection)
   validate_outputs_for_send?(): string;  // Returns JSON with validation results
@@ -354,7 +363,7 @@ declare global {
 }
 
 // Constants
-const WASM_VERSION = '5.49.0-nochange-stake-fix';
+const WASM_VERSION = '5.53.6-testnet-fix1';
 const ATOMIC_UNITS = 100000000; // 1e8 - SAL has 8 decimal places
 const DEFAULT_DAEMON = 'seed01.salvium.io:19081';
 
@@ -378,6 +387,7 @@ export class WalletService {
   private walletInstance: WasmWalletInstance | null = null;
   private initPromise: Promise<void> | null = null;
   private daemonAddress: string = DEFAULT_DAEMON;
+  private network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet';
 
   // SSE connection for real-time block notifications
   private blockStreamConnection: EventSource | null = null;
@@ -415,7 +425,10 @@ export class WalletService {
     if (this.wasmModule) return;
     if (this.initPromise) return this.initPromise;
 
-    this.initPromise = this.loadWasm();
+    this.initPromise = (async () => {
+      await this.loadNetworkConfig();
+      await this.loadWasm();
+    })();
     return this.initPromise;
   }
 
@@ -431,7 +444,25 @@ export class WalletService {
    * Get the network type (mainnet/testnet)
    */
   getNetwork(): string {
-    return 'mainnet';
+    return this.network;
+  }
+
+  private isTokenFeaturesEnabled(): boolean {
+    return this.network === 'testnet';
+  }
+
+  private async loadNetworkConfig(): Promise<void> {
+    try {
+      const resp = await fetch('/api/network', { method: 'GET' });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const net = String(data?.network || '').toLowerCase();
+      if (net === 'mainnet' || net === 'testnet' || net === 'stagenet') {
+        this.network = net;
+      }
+    } catch {
+      // Keep default mainnet if config endpoint is unavailable
+    }
   }
 
   private async loadWasm(): Promise<void> {
@@ -749,6 +780,74 @@ export class WalletService {
   }
 
   /**
+   * Get balance for a specific asset type (SAL/SAL1/token).
+   */
+  getAssetBalance(assetType: string): BalanceInfo {
+    if (!this.walletInstance || !this.walletInstance.is_initialized() || !assetType) {
+      return { balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 };
+    }
+
+    try {
+      const balanceStr = this.walletInstance.get_balance_for_asset
+        ? this.walletInstance.get_balance_for_asset(assetType)
+        : '0';
+      const unlockedStr = this.walletInstance.get_unlocked_balance_for_asset
+        ? this.walletInstance.get_unlocked_balance_for_asset(assetType)
+        : '0';
+
+      const balanceBigInt = BigInt(balanceStr || '0');
+      const unlockedBigInt = BigInt(unlockedStr || '0');
+
+      const balance = Number(balanceBigInt);
+      const unlockedBalance = Number(unlockedBigInt);
+      const balanceSAL = Number(balanceBigInt / BigInt(ATOMIC_UNITS)) +
+                         Number(balanceBigInt % BigInt(ATOMIC_UNITS)) / ATOMIC_UNITS;
+      const unlockedBalanceSAL = Number(unlockedBigInt / BigInt(ATOMIC_UNITS)) +
+                                 Number(unlockedBigInt % BigInt(ATOMIC_UNITS)) / ATOMIC_UNITS;
+
+      return {
+        balance,
+        unlockedBalance,
+        balanceSAL,
+        unlockedBalanceSAL,
+      };
+    } catch {
+      return { balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 };
+    }
+  }
+
+  /**
+   * Get raw atomic balances for a specific asset type.
+   * Returns strings to avoid precision loss.
+   */
+  getAssetBalanceAtomic(assetType: string): { balanceAtomic: string; unlockedBalanceAtomic: string } {
+    if (!this.walletInstance || !this.walletInstance.is_initialized() || !assetType) {
+      return { balanceAtomic: '0', unlockedBalanceAtomic: '0' };
+    }
+
+    try {
+      const balanceStr = this.walletInstance.get_balance_for_asset
+        ? this.walletInstance.get_balance_for_asset(assetType)
+        : '0';
+      const unlockedStr = this.walletInstance.get_unlocked_balance_for_asset
+        ? this.walletInstance.get_unlocked_balance_for_asset(assetType)
+        : '0';
+
+      const sanitizeAtomic = (value: string | number | undefined | null): string => {
+        const str = String(value ?? '0').trim();
+        return /^\d+$/.test(str) ? str : '0';
+      };
+
+      return {
+        balanceAtomic: sanitizeAtomic(balanceStr),
+        unlockedBalanceAtomic: sanitizeAtomic(unlockedStr),
+      };
+    } catch {
+      return { balanceAtomic: '0', unlockedBalanceAtomic: '0' };
+    }
+  }
+
+  /**
    * Get sync status
    */
   getSyncStatus(): SyncStatus {
@@ -838,7 +937,7 @@ export class WalletService {
 
   /**
    * Convert protocol tx_type number to human-readable label
-   * 0=UNSET, 1=MINER, 2=PROTOCOL, 3=TRANSFER, 4=CONVERT, 5=BURN, 6=STAKE, 7=RETURN, 8=AUDIT
+   * 0=UNSET, 1=MINER, 2=PROTOCOL, 3=TRANSFER, 4=CONVERT, 5=BURN, 6=STAKE, 7=RETURN, 8=AUDIT, 9=CREATE_TOKEN, 10=ROLLUP
    */
   private getTxTypeLabel(txType: number | undefined, direction: 'in' | 'out' | 'pending', coinbase?: boolean): string {
     // Coinbase (mining rewards) override
@@ -854,8 +953,230 @@ export class WalletService {
       case 6: return 'Stake';           // STAKE
       case 7: return 'Return';          // RETURN
       case 8: return 'Audit';           // AUDIT
+      case 9: return 'Create Token';    // CREATE_TOKEN
+      case 10: return 'Rollup';         // ROLLUP
       default: return direction === 'in' ? 'Received' : 'Sent';
     }
+  }
+
+  /**
+   * Get known token asset types from daemon.
+   */
+  async getTokens(filter: string = ''): Promise<string[]> {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      throw new Error('Wallet not initialized');
+    }
+    if (!this.isTokenFeaturesEnabled()) {
+      return [];
+    }
+    if (this.walletInstance.get_tokens_json) {
+      const raw = this.walletInstance.get_tokens_json(filter);
+      const parsed = safeJsonParse<{ status?: string; error?: string; tokens?: string[] }>(
+        raw,
+        {},
+        'get_tokens_json'
+      );
+
+      if (parsed.status === 'success') {
+        return Array.isArray(parsed.tokens) ? parsed.tokens : [];
+      }
+    }
+
+    const rpcResult = await this.fetchRpc('get_tokens', { filter });
+    if (!rpcResult) {
+      throw new Error('Failed to fetch token list');
+    }
+    return Array.isArray(rpcResult.tokens) ? rpcResult.tokens : [];
+  }
+
+  /**
+   * Get token metadata by asset type from daemon.
+   */
+  async getTokenInfo(assetType: string): Promise<Record<string, unknown>> {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      throw new Error('Wallet not initialized');
+    }
+    if (!this.isTokenFeaturesEnabled()) {
+      throw new Error('Token features are disabled on mainnet');
+    }
+    if (!assetType) {
+      throw new Error('Asset type is required');
+    }
+    const candidates = this.buildTokenInfoCandidates(assetType);
+    let bestResult: Record<string, unknown> | null = null;
+    let bestScore = -1;
+
+    for (const candidate of candidates) {
+      if (this.walletInstance.get_token_info_json) {
+        const raw = this.walletInstance.get_token_info_json(candidate);
+        const parsed = safeJsonParse<Record<string, unknown> & { status?: string; error?: string }>(
+          raw,
+          {},
+          'get_token_info_json'
+        );
+        const normalized = this.normalizeTokenInfoResponse(parsed, candidate);
+        const score = this.scoreTokenInfo(normalized);
+        if (score > bestScore) {
+          bestScore = score;
+          bestResult = normalized;
+        }
+        if (score >= 5) {
+          return normalized;
+        }
+      }
+
+      const rpcResult = await this.fetchRpc('get_token_info', { asset_type: candidate });
+      if (rpcResult) {
+        const normalized = this.normalizeTokenInfoResponse(rpcResult as Record<string, unknown>, candidate);
+        const score = this.scoreTokenInfo(normalized);
+        if (score > bestScore) {
+          bestScore = score;
+          bestResult = normalized;
+        }
+        if (score >= 5) {
+          return normalized;
+        }
+      }
+    }
+
+    if (bestResult) {
+      if (this.shouldTryInferredTokenInfo(bestResult)) {
+        const inferred = await this.fetchInferredTokenInfo(((bestResult as any)?.asset_type as string) || assetType);
+        if (inferred) {
+          const merged = this.mergeInferredTokenInfo(bestResult, inferred);
+          if (this.scoreTokenInfo(merged) >= this.scoreTokenInfo(bestResult)) {
+            return merged;
+          }
+        }
+      }
+      return bestResult;
+    }
+    throw new Error('Failed to fetch token info');
+  }
+
+  private buildTokenInfoCandidates(assetType: string): string[] {
+    const raw = assetType.trim();
+    const upper = raw.toUpperCase();
+    const lower = raw.toLowerCase();
+    const set = new Set<string>();
+    if (raw) set.add(raw);
+    if (upper) set.add(upper);
+    if (lower) set.add(lower);
+
+    // Salvium daemon paths may use either ticker (BOOB) or asset id (salBOOB).
+    if (/^[A-Z0-9]{4}$/.test(upper)) {
+      set.add(`sal${upper}`);
+      set.add(`sal${lower}`);
+    }
+    if (lower.startsWith('sal') && lower.length >= 7) {
+      const suffix = lower.slice(3);
+      if (suffix) {
+        set.add(suffix.toUpperCase());
+        set.add(suffix);
+      }
+    }
+    return Array.from(set);
+  }
+
+  private normalizeTokenInfoResponse(rawInfo: Record<string, unknown>, requestedAsset: string): Record<string, unknown> {
+    const status = String(rawInfo?.status || rawInfo?.['result.status'] || '');
+    const tokenAssetType = String(
+      rawInfo?.['token.asset_type'] ||
+      (rawInfo as any)?.token?.asset_type ||
+      rawInfo?.asset_type ||
+      requestedAsset
+    );
+    const tokenVersion = Number(
+      rawInfo?.['token.version'] ||
+      (rawInfo as any)?.token?.version ||
+      rawInfo?.version ||
+      0
+    );
+
+    const tokenData = (rawInfo as any)?.sal_token || (rawInfo as any)?.token || rawInfo;
+    const supply = tokenData?.supply ?? rawInfo?.supply ?? 0;
+    const decimals = tokenData?.decimals ?? rawInfo?.decimals ?? 0;
+    const metadata = tokenData?.metadata ?? rawInfo?.metadata ?? '';
+    const url = tokenData?.url ?? rawInfo?.url ?? '';
+
+    return {
+      status,
+      asset_type: tokenAssetType,
+      version: tokenVersion,
+      token: {
+        supply,
+        decimals,
+        metadata,
+        url
+      },
+      raw: rawInfo
+    };
+  }
+
+  private scoreTokenInfo(info: Record<string, unknown>): number {
+    let score = 0;
+    const status = String((info as any)?.status || '').toUpperCase();
+    if (status === 'OK' || status === 'SUCCESS') score += 2;
+
+    const token = (info as any)?.token || {};
+    const supply = token?.supply;
+    const decimals = token?.decimals;
+    const metadata = token?.metadata;
+    const url = token?.url;
+
+    if (supply !== undefined && supply !== null && String(supply) !== '0') score += 2;
+    if (decimals !== undefined && decimals !== null) score += 1;
+    if (typeof metadata === 'string' && metadata.length > 0) score += 1;
+    if (typeof url === 'string' && url.length > 0) score += 1;
+    return score;
+  }
+
+  private shouldTryInferredTokenInfo(info: Record<string, unknown>): boolean {
+    const status = String((info as any)?.status || '').toUpperCase();
+    if (status !== 'OK' && status !== 'SUCCESS') return false;
+    const token = (info as any)?.token || {};
+    const supply = Number(token?.supply ?? 0);
+    const metadata = String(token?.metadata ?? '');
+    const url = String(token?.url ?? '');
+    return supply === 0 && metadata.length === 0 && url.length === 0;
+  }
+
+  private async fetchInferredTokenInfo(assetType: string): Promise<Record<string, unknown> | null> {
+    try {
+      const response = await fetch(`/api/token-info/${encodeURIComponent(assetType)}`);
+      if (!response.ok) return null;
+      const data = await response.json();
+      if (String(data?.status || '').toLowerCase() !== 'ok') return null;
+      if (!data?.inferred) return null;
+      return data.inferred as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  private mergeInferredTokenInfo(
+    baseInfo: Record<string, unknown>,
+    inferred: Record<string, unknown>
+  ): Record<string, unknown> {
+    const token = (baseInfo as any)?.token || {};
+    const inferredSupply = inferred?.inferred_supply;
+    const inferredSupplyAtomic = inferred?.inferred_supply_atomic;
+    const firstSeenHeight = inferred?.first_seen_height;
+    const firstSeenTxHash = inferred?.first_seen_tx_hash;
+
+    return {
+      ...baseInfo,
+      token: {
+        ...token,
+        supply: token?.supply && String(token.supply) !== '0' ? token.supply : inferredSupply ?? token?.supply,
+      },
+      inferred: {
+        ...inferred,
+        inferred_supply_atomic: inferredSupplyAtomic,
+        first_seen_height: firstSeenHeight,
+        first_seen_tx_hash: firstSeenTxHash,
+      },
+    };
   }
 
   /**
@@ -994,7 +1315,8 @@ export class WalletService {
     amount: number,
     priority: number = 1,
     paymentId?: string,
-    sweepAll: boolean = false
+    sweepAll: boolean = false,
+    assetType?: string
   ): Promise<string> {
     if (!this.walletInstance || !this.walletInstance.is_initialized()) {
       throw new Error('Wallet not initialized');
@@ -1006,7 +1328,7 @@ export class WalletService {
 
     while (true) {
       try {
-        return await this._createAndBroadcastTransaction(address, currentAmount, priority);
+        return await this._createAndBroadcastTransaction(address, currentAmount, priority, assetType);
       } catch (e: any) {
         const errorMsg = e?.message || String(e);
 
@@ -1030,6 +1352,18 @@ export class WalletService {
         throw e;
       }
     }
+  }
+
+  /**
+   * Send a transfer from a specific asset type (token or base asset).
+   */
+  async sendAssetTransaction(
+    address: string,
+    amount: number,
+    assetType: string,
+    priority: number = 1
+  ): Promise<string> {
+    return this.sendTransaction(address, amount, priority, undefined, false, assetType);
   }
 
   /**
@@ -1132,7 +1466,8 @@ export class WalletService {
   private async _createAndBroadcastTransaction(
     address: string,
     amount: number,
-    priority: number
+    priority: number,
+    assetType?: string
   ): Promise<string> {
     // Clear WASM HTTP cache to ensure fresh output distribution
     if (this.wasmModule?.clear_http_cache) {
@@ -1144,6 +1479,12 @@ export class WalletService {
     const INPUTS_ESTIMATE = 60; // Estimate max inputs to ensure enough decoys
 
     try {
+      const requestedAssetType = (assetType || '').trim();
+      const decoyAssetType = requestedAssetType || 'SAL1';
+      if (requestedAssetType && !this.walletInstance.create_transaction_with_asset_json) {
+        throw new Error('WASM create_transaction_with_asset_json not available - please update WASM');
+      }
+
       // Step 0: Inject RPC data (fee estimate, output distribution, etc.)
       await this.injectJsonRpcResponses();
 
@@ -1153,7 +1494,8 @@ export class WalletService {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           count: MIXIN,
-          amounts: Array(INPUTS_ESTIMATE).fill(0) // Request decoys for up to 60 inputs
+          amounts: Array(INPUTS_ESTIMATE).fill(0), // Request decoys for up to 60 inputs
+          asset_type: decoyAssetType
         })
       });
 
@@ -1168,7 +1510,7 @@ export class WalletService {
 
       if (this.wasmModule?.inject_decoy_outputs_from_json) {
         // CRITICAL: Add asset_type so WASM cache keys correctly distinguish SAL vs SAL1
-        outsData.asset_type = 'SAL1';
+        outsData.asset_type = decoyAssetType;
         this.wasmModule.inject_decoy_outputs_from_json(JSON.stringify(outsData));
       }
 
@@ -1195,12 +1537,20 @@ export class WalletService {
         }
 
         try {
-          const resultJson = this.walletInstance.create_transaction_json(
-            address,
-            amountAtomic,
-            MIXIN,
-            priority
-          );
+          const resultJson = requestedAssetType && this.walletInstance.create_transaction_with_asset_json
+            ? this.walletInstance.create_transaction_with_asset_json(
+                address,
+                amountAtomic,
+                requestedAssetType,
+                MIXIN,
+                priority
+              )
+            : this.walletInstance.create_transaction_json(
+                address,
+                amountAtomic,
+                MIXIN,
+                priority
+              );
           result = JSON.parse(resultJson);
 
           if (result.status === 'error') {
@@ -1208,9 +1558,9 @@ export class WalletService {
 
             // Check for cache miss - need to fetch real outputs
             if (this.wasmModule?.has_pending_get_outs_request?.()) {
-              const requestBase64 = this.wasmModule.get_pending_get_outs_request?.() || '';
-              if (requestBase64) {
-                await this.fetchAndInjectExactOutputs(requestBase64);
+                const requestBase64 = this.wasmModule.get_pending_get_outs_request?.() || '';
+                if (requestBase64) {
+                await this.fetchAndInjectExactOutputs(requestBase64, decoyAssetType);
                 this.wasmModule?.clear_pending_get_outs_request?.();
                 continue; // Retry immediately with fetched outputs AND restored RNG
               }
@@ -1230,7 +1580,7 @@ export class WalletService {
           if (this.wasmModule?.has_pending_get_outs_request?.()) {
             const requestBase64 = this.wasmModule.get_pending_get_outs_request?.() || '';
             if (requestBase64) {
-              await this.fetchAndInjectExactOutputs(requestBase64);
+              await this.fetchAndInjectExactOutputs(requestBase64, decoyAssetType);
               this.wasmModule?.clear_pending_get_outs_request?.();
               continue;
             }
@@ -2029,13 +2379,211 @@ export class WalletService {
   }
 
   /**
+   * Create and broadcast a CREATE_TOKEN transaction.
+   */
+  async createTokenTransaction(
+    assetType: string,
+    supply: string,
+    decimals: number,
+    metadata: string = ''
+  ): Promise<string[]> {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      throw new Error('Wallet not initialized');
+    }
+    if (!this.isTokenFeaturesEnabled()) {
+      throw new Error('Token features are disabled on mainnet');
+    }
+    if (!assetType) {
+      throw new Error('Asset type is required');
+    }
+    if (!this.walletInstance.create_create_token_transaction_json) {
+      throw new Error('WASM create_create_token_transaction_json not available - please update WASM');
+    }
+
+    if (this.wasmModule?.clear_http_cache) {
+      this.wasmModule.clear_http_cache();
+    }
+
+    const MIXIN = 15;
+    const INPUTS_ESTIMATE = 60;
+
+    await this.injectJsonRpcResponses();
+
+    const response = await fetch('/api/wallet/get_random_outs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        count: MIXIN,
+        amounts: Array(INPUTS_ESTIMATE).fill(0)
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch random outputs: ${response.status} ${response.statusText}`);
+    }
+
+    const outsData = await response.json();
+    if (outsData.status !== 'OK') {
+      throw new Error(`Server error fetching outputs: ${outsData.error || 'Unknown error'}`);
+    }
+
+    if (this.wasmModule?.inject_decoy_outputs_from_json) {
+      outsData.asset_type = 'SAL1';
+      this.wasmModule.inject_decoy_outputs_from_json(JSON.stringify(outsData));
+    }
+
+    const MAX_FETCH_ROUNDS = 15;
+    let result: any = null;
+    let lastError = '';
+    let fetchRound = 0;
+
+    let savedRngState: string | null = null;
+    if (this.wasmModule?.get_random_state) {
+      savedRngState = this.wasmModule.get_random_state();
+    }
+
+    while (fetchRound < MAX_FETCH_ROUNDS) {
+      fetchRound++;
+
+      if (fetchRound > 1 && savedRngState && this.wasmModule?.set_random_state) {
+        this.wasmModule.set_random_state(savedRngState);
+      }
+
+      try {
+        const resultJson = this.walletInstance.create_create_token_transaction_json(
+          assetType,
+          supply,
+          decimals,
+          metadata
+        );
+        result = safeJsonParse<any>(resultJson, {}, 'create_create_token_transaction_json');
+
+        if (result.status === 'error') {
+          lastError = result.error || 'Unknown error';
+
+          if (this.wasmModule?.has_pending_get_outs_request?.()) {
+            const requestBase64 = this.wasmModule.get_pending_get_outs_request?.() || '';
+            if (requestBase64) {
+              await this.fetchAndInjectExactOutputs(requestBase64);
+              this.wasmModule?.clear_pending_get_outs_request?.();
+              continue;
+            }
+          }
+
+          throw new Error(lastError);
+        }
+
+        break;
+      } catch (e: any) {
+        lastError = e?.message || String(e);
+
+        if (this.wasmModule?.has_pending_get_outs_request?.()) {
+          const requestBase64 = this.wasmModule.get_pending_get_outs_request?.() || '';
+          if (requestBase64) {
+            await this.fetchAndInjectExactOutputs(requestBase64);
+            this.wasmModule?.clear_pending_get_outs_request?.();
+            continue;
+          }
+        }
+
+        if (fetchRound >= MAX_FETCH_ROUNDS) {
+          throw new Error(lastError);
+        }
+      }
+    }
+
+    if (!result || result.status === 'error') {
+      throw new Error(lastError || 'Token transaction creation failed');
+    }
+    if (!Array.isArray(result.transactions) || result.transactions.length === 0) {
+      throw new Error('No token transaction created');
+    }
+
+    const txHashes: string[] = [];
+    const MAX_BROADCAST_RETRIES = 3;
+    const BROADCAST_RETRY_DELAY = 2000;
+
+    for (const tx of result.transactions) {
+      const txBlob = tx.tx_blob;
+      const txHash = tx.tx_hash;
+
+      for (let attempt = 1; attempt <= MAX_BROADCAST_RETRIES; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+          await ensureCsrfToken();
+
+          const broadcastResponse = await fetch('/api/wallet/sendrawtransaction', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...getCsrfHeaders(),
+            },
+            body: JSON.stringify({ tx_as_hex: txBlob }),
+            signal: controller.signal
+          });
+
+          clearTimeout(timeoutId);
+
+          if (broadcastResponse.status === 403) {
+            invalidateCsrfToken();
+            throw new Error('CSRF token expired - please retry the transaction');
+          }
+
+          if (!broadcastResponse.ok) {
+            throw new Error(`Token broadcast failed: HTTP ${broadcastResponse.status}`);
+          }
+
+          const broadcastResult = await broadcastResponse.json();
+          if (broadcastResult.status === 'OK') {
+            this.storePendingTransaction(txHash, txBlob, 'broadcast');
+            txHashes.push(txHash);
+            break;
+          }
+
+          const reason = broadcastResult.reason || broadcastResult.error || '';
+          const isPermanentRejection = reason.includes('double spend') ||
+            reason.includes('invalid') ||
+            reason.includes('already in') ||
+            reason.includes('too big');
+
+          if (isPermanentRejection) {
+            throw new Error(`Token transaction rejected: ${reason}`);
+          }
+
+          if (attempt < MAX_BROADCAST_RETRIES) {
+            await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
+            continue;
+          }
+
+          throw new Error(reason || 'Token broadcast rejected by network');
+        } catch (broadcastError: any) {
+          if (broadcastError.name === 'AbortError') {
+            throw new Error('Token transaction broadcast timed out');
+          }
+
+          if (attempt === MAX_BROADCAST_RETRIES) {
+            this.storePendingTransaction(txHash, txBlob, 'failed');
+            throw broadcastError;
+          }
+
+          await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
+        }
+      }
+    }
+
+    return txHashes;
+  }
+
+  /**
    * Fetch and inject the exact outputs the wallet requested
    * Uses direct binary proxy - forwards WASM's epee request to daemon
    * Falls back to JSON if daemon binary endpoint fails
    *
    * @param requestBase64 - Base64-encoded epee binary request body from wallet
    */
-  private async fetchAndInjectExactOutputs(requestBase64: string): Promise<void> {
+  private async fetchAndInjectExactOutputs(requestBase64: string, fallbackAssetType: string = 'SAL1'): Promise<void> {
     // Decode base64 to binary
     const binaryStr = atob(requestBase64);
     const bytes = new Uint8Array(binaryStr.length);
@@ -2078,7 +2626,7 @@ export class WalletService {
         // CRITICAL: Ensure asset_type is set for correct cache keying
         // The binary request contains asset_type, but server may not pass it through to JSON response
         if (!jsonData.asset_type) {
-          jsonData.asset_type = 'SAL1';  // Default for hardfork 10+ (Carrot)
+          jsonData.asset_type = fallbackAssetType;
         }
         const jsonString = JSON.stringify(jsonData);
         const success = this.wasmModule.inject_decoy_outputs_from_json(jsonString);

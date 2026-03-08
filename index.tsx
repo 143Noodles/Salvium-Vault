@@ -33,8 +33,31 @@ const swStatus: ServiceWorkerStatus = {
 
 // Register service worker for offline support
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js')
+  const host = window.location.hostname;
+  const isTestVaultHost = host === 'vault-test.salvium.tools' || host === 'test.vault.salvium.tools';
+
+  // Test vault should never use SW cache; it can serve stale CSP/API data between runs.
+  if (isTestVaultHost) {
+    window.addEventListener('load', async () => {
+      try {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((registration) => registration.unregister()));
+
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.filter((key) => key.startsWith('salvium-')).map((key) => caches.delete(key)));
+        }
+
+        swStatus.registered = false;
+        swStatus.updateAvailable = false;
+        swStatus.error = 'Service worker disabled on test vault domain';
+      } catch (error: any) {
+        swStatus.error = error?.message || 'Failed to disable service worker on test vault domain';
+      }
+    });
+  } else {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js')
       .then((registration) => {
         void 0 && console.log('[SW] Service worker registered:', registration.scope);
         swStatus.registered = true;
@@ -76,11 +99,12 @@ if ('serviceWorker' in navigator) {
         }));
       });
 
-    // Listen for controller change (new SW activated)
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      void 0 && console.log('[SW] New service worker activated');
+      // Listen for controller change (new SW activated)
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        void 0 && console.log('[SW] New service worker activated');
+      });
     });
-  });
+  }
 } else {
   // Service workers not supported - notify for user awareness
   swStatus.error = 'Service workers not supported in this browser';

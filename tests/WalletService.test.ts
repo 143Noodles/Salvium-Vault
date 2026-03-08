@@ -232,6 +232,8 @@ describe('WalletService', () => {
         case 6: return 'Stake';
         case 7: return 'Return';
         case 8: return 'Audit';
+        case 9: return 'Create Token';
+        case 10: return 'Rollup';
         default: return direction === 'in' ? 'Received' : 'Sent';
       }
     };
@@ -259,6 +261,11 @@ describe('WalletService', () => {
       expect(getTxTypeLabel(4, 'out')).toBe('Convert');
       expect(getTxTypeLabel(5, 'out')).toBe('Burn');
       expect(getTxTypeLabel(8, 'out')).toBe('Audit');
+    });
+
+    it('should label token transaction types', () => {
+      expect(getTxTypeLabel(9, 'out')).toBe('Create Token');
+      expect(getTxTypeLabel(10, 'in')).toBe('Rollup');
     });
 
     it('should fallback to direction-based labels', () => {

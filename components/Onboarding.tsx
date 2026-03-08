@@ -1,10 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
-import { Card, Button, Input, TextArea, Badge } from './UIComponents';
+import { Card, Button, Input, TextArea } from './UIComponents';
 import { Copy, ArrowUpRight, ArrowDownLeft, Shield, Key, CheckCircle2, ChevronRight, Eye, EyeOff, Plus, Download, Layers, Loader2, Upload, FileText } from './Icons';
 import { useWallet } from '../services/WalletContext';
 import { isMobile } from 'react-device-detect';
 import { parseBackup, restoreFromBackup, BackupData } from '../services/BackupService';
+import {
+  getOnboardingModeFromUrl,
+  normalizeVaultMode,
+  VaultMode,
+} from '../utils/vaultNetwork';
 
 type OnboardingMode = 'initial' | 'create' | 'restore';
 type CreateStep = 'seed' | 'verify' | 'password';
@@ -17,7 +22,11 @@ interface OnboardingProps {
 const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const { t } = useTranslation();
   const wallet = useWallet();
-  const [mode, setMode] = useState<OnboardingMode>('initial');
+  const [mode, setMode] = useState<OnboardingMode>(() => {
+    if (typeof window === 'undefined') return 'initial';
+    return getOnboardingModeFromUrl(window.location.href);
+  });
+  const [vaultMode, setVaultMode] = useState<VaultMode>('mainnet');
 
   // Create Flow State
   const [createStep, setCreateStep] = useState<CreateStep>('seed');
@@ -56,6 +65,21 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
   // Daemon Height State for Restore
   const [daemonHeight, setDaemonHeight] = useState(0);
+
+  useEffect(() => {
+    const fetchNetworkMode = async () => {
+      try {
+        const response = await fetch('/api/network');
+        if (!response.ok) return;
+        const data = await response.json();
+        setVaultMode(normalizeVaultMode(data?.network));
+      } catch {
+        // Keep mainnet default
+      }
+    };
+
+    fetchNetworkMode();
+  }, []);
 
   useEffect(() => {
     const fetchHeight = async () => {
@@ -254,6 +278,17 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     setLoadingSelection(null);
   };
 
+  const networkBadge = (
+    <div className="flex items-center justify-center">
+      <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+        <span className="text-[11px] font-medium uppercase tracking-[0.2em] text-text-muted">Network</span>
+        <span className={`text-xs font-semibold ${vaultMode === 'testnet' ? 'text-accent-primary' : 'text-white'}`}>
+          {vaultMode === 'testnet' ? 'Testnet' : 'Mainnet'}
+        </span>
+      </div>
+    </div>
+  );
+
   // 1. Initial Selection Screen
   if (mode === 'initial') {
     return (
@@ -319,6 +354,10 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 <p className="text-text-muted text-xs">{t('onboarding.restoreWallet.description')}</p>
               </div>
             </button>
+          </div>
+
+          <div className="mt-5">
+            {networkBadge}
           </div>
         </div>
 

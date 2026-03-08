@@ -590,7 +590,7 @@ class CSPScanService {
 
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = '/wallet/CSPScanner.js?v=5.49.1';
+      script.src = '/wallet/CSPScanner.js?v=5.53.6-testnet-fix1';
       script.async = true;
 
       script.onload = () => {
@@ -916,16 +916,33 @@ class CSPScanService {
       // Failed to get subaddress map
     }
 
-    // Fetch stake return heights to filter coinbase passthrough (eliminates 65% false positives)
-    let stakeReturnHeights: number[] = [];
+    // Runtime scan safety flags from backend config (env-controlled).
+    let disableStakeFilter = false;
+    let forceSingleChunkScan = false;
     try {
-      stakeReturnHeights = await this.fetchStakeReturnHeights(startHeight, endHeight);
+      const networkResp = await fetchWithTimeout('/api/network', {}, 5000);
+      if (networkResp.ok) {
+        const cfg = await networkResp.json();
+        disableStakeFilter = cfg?.disableStakeFilter === true;
+        forceSingleChunkScan = cfg?.forceSingleChunkScan === true;
+      }
     } catch {
-      // Failed to fetch stake return heights
+      // Fallback to host-based behavior if config fetch fails.
+    }
+    // Fetch stake return heights to filter coinbase passthrough (eliminates false positives).
+    let stakeReturnHeights: number[] = [];
+    if (!disableStakeFilter) {
+      try {
+        stakeReturnHeights = await this.fetchStakeReturnHeights(startHeight, endHeight);
+      } catch {
+        // Failed to fetch stake return heights
+      }
     }
 
     this.isScanning = true;
     const startTime = performance.now();
+    const forceSingleChunkOnTest = forceSingleChunkScan || disableStakeFilter;
+
     this.scanner = new window.CSPScanner({
       viewSecretKey,
       publicSpendKey,
@@ -943,6 +960,9 @@ class CSPScanService {
       workerCount: maxWorkerCount,
       // Android WebView: avoid bundle streaming (high peak memory) and use smaller batches.
       useBundleMode: !isAndroid,
+      // TESTNET SAFETY: batch mode can miss miner outputs on some test-chain combinations.
+      // Force single-chunk hybrid scan path on test vault hosts.
+      useBatchMode: !forceSingleChunkOnTest,
       batchSize: isAndroid ? 6 : 20,
       chunkSize: 1000,
       onProgress: (data: any) => {
