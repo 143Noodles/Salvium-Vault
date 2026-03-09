@@ -12,6 +12,12 @@ import { useWallet } from '../services/WalletContext';
 import { downloadBackup } from '../services/BackupService';
 import { BiometricService } from '../services/BiometricService';
 import { decrypt } from '../services/CryptoService';
+import { walletService } from '../services/WalletService';
+import {
+   getWalletStorageKey,
+   LEGACY_WALLET_STORAGE_KEY,
+   normalizeWalletStorageNetwork
+} from '../utils/walletStorage';
 
 interface SettingsPageProps {
    autoLockEnabled: boolean;
@@ -142,10 +148,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
       setIsRescanning(true);
       try {
-         // Clear cached balance/transactions first to ensure UI updates
-         await wallet.clearCache();
-         // Reset wallet height and start fresh scan
-         await wallet.startScan(0); // Start from height 0
+         await wallet.rescanWallet();
          if (onRescan) onRescan();
       } catch (err) {
          void 0 && console.error('Rescan failed:', err);
@@ -252,7 +255,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
       try {
          // Get the encrypted wallet from localStorage
-         const walletJson = localStorage.getItem('salvium_wallet');
+         const currentNetwork = normalizeWalletStorageNetwork(walletService.getNetwork());
+         const walletJson = localStorage.getItem(getWalletStorageKey(currentNetwork))
+            || (currentNetwork === 'mainnet' ? localStorage.getItem(LEGACY_WALLET_STORAGE_KEY) : null);
          if (!walletJson) {
             throw new Error('No wallet found');
          }

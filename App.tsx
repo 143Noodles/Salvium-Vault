@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { WalletProvider, useWallet } from './services/WalletContext';
+import { walletService } from './services/WalletService';
 import Dashboard from './components/Dashboard';
 import Onboarding from './components/Onboarding';
 import LoadingScreen from './components/LoadingScreen';
@@ -30,6 +31,11 @@ import { MobileHeader } from './components/MobileHeader';
 
 import { isMobileOrTablet, isDesktop } from './utils/device';
 import { useMobileScaling } from './hooks/useMobileScaling';
+import {
+  getWalletCreatedKey,
+  LEGACY_WALLET_CREATED_KEY,
+  normalizeWalletStorageNetwork
+} from './utils/walletStorage';
 
 const isDesktopOnly = isDesktop;
 
@@ -199,7 +205,9 @@ const AppContent: React.FC = () => {
 
       if (!wallet.isInitialized) return;
 
-      const hasWallet = localStorage.getItem('salvium_wallet_created');
+      const currentNetwork = normalizeWalletStorageNetwork(walletService.getNetwork());
+      const hasWallet = localStorage.getItem(getWalletCreatedKey(currentNetwork))
+        || (currentNetwork === 'mainnet' ? localStorage.getItem(LEGACY_WALLET_CREATED_KEY) : null);
       if (!hasWallet) {
         setAppState('setup');
         return;

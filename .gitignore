@@ -52,6 +52,7 @@ temp_*.cpp
 temp_*.js
 temp_*.ts
 *.bak
+*.bak-*
 *.orig
 
 # Debug files
@@ -78,7 +79,9 @@ LOCAL_NOTES.md
 
 # Local backups and artifacts
 App.tsx.backup
+server.cjs.bak-*
 public/salvium-vault.apk
+wallet/backups/
 
 # Local WASM/public staging copies
 public/SalviumWallet.js

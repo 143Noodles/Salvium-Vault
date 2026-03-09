@@ -9,7 +9,7 @@
  */
 
 const CACHE_VERSION = 'salvium-vault-v2';
-const WASM_CACHE = 'salvium-wasm-v1';
+const WASM_CACHE = 'salvium-wasm-v2';
 const STATIC_CACHE = 'salvium-static-v1';
 const API_CACHE = 'salvium-api-v1';
 

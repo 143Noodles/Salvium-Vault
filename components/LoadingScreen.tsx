@@ -148,6 +148,9 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
     const attemptScan = () => {
       attempts++;
       if (isScanning) {
+        if (scanStartRequestedAtRef.current === 0) {
+          scanStartRequestedAtRef.current = Date.now();
+        }
         if (!scanInitiated) setScanInitiated(true);
         return true; // Success, stop retrying
       }

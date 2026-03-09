@@ -6,6 +6,9 @@ import { useWallet } from '../services/WalletContext';
 import { isMobile } from 'react-device-detect';
 import { parseBackup, restoreFromBackup, BackupData } from '../services/BackupService';
 import {
+  buildOnboardingUrl,
+  buildVaultModeCookie,
+  getVaultModeFromCookie,
   getOnboardingModeFromUrl,
   normalizeVaultMode,
   VaultMode,
@@ -22,11 +25,16 @@ interface OnboardingProps {
 const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const { t } = useTranslation();
   const wallet = useWallet();
+  const networkSwitcherDisabled = true;
   const [mode, setMode] = useState<OnboardingMode>(() => {
     if (typeof window === 'undefined') return 'initial';
     return getOnboardingModeFromUrl(window.location.href);
   });
-  const [vaultMode, setVaultMode] = useState<VaultMode>('mainnet');
+  const [vaultMode, setVaultMode] = useState<VaultMode>(() => {
+    if (typeof document === 'undefined') return 'mainnet';
+    return getVaultModeFromCookie(document.cookie) ?? 'mainnet';
+  });
+  const [switchingVaultMode, setSwitchingVaultMode] = useState<VaultMode | null>(null);
 
   // Create Flow State
   const [createStep, setCreateStep] = useState<CreateStep>('seed');
@@ -80,6 +88,15 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
     fetchNetworkMode();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const nextUrl = buildOnboardingUrl(window.location.href, mode);
+    if (nextUrl !== window.location.href) {
+      window.history.replaceState(null, '', nextUrl);
+    }
+  }, [mode]);
 
   useEffect(() => {
     const fetchHeight = async () => {
@@ -278,14 +295,77 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     setLoadingSelection(null);
   };
 
-  const networkBadge = (
-    <div className="flex items-center justify-center">
-      <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
-        <span className="text-[11px] font-medium uppercase tracking-[0.2em] text-text-muted">Network</span>
-        <span className={`text-xs font-semibold ${vaultMode === 'testnet' ? 'text-accent-primary' : 'text-white'}`}>
-          {vaultMode === 'testnet' ? 'Testnet' : 'Mainnet'}
+  const handleVaultModeChange = (nextVaultMode: VaultMode) => {
+    if (nextVaultMode === vaultMode || switchingVaultMode) {
+      return;
+    }
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
+      return;
+    }
+
+    setSwitchingVaultMode(nextVaultMode);
+    document.cookie = buildVaultModeCookie(nextVaultMode);
+    const nextUrl = buildOnboardingUrl(window.location.href, mode);
+    if (nextUrl === window.location.href) {
+      window.location.reload();
+      return;
+    }
+    window.location.replace(nextUrl);
+  };
+
+  const networkSwitcher = (
+    <div className="flex flex-col items-center gap-2">
+      <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 backdrop-blur-md shadow-[0_18px_40px_-30px_rgba(0,0,0,0.9)]">
+        <span className={`h-2 w-2 rounded-full ${vaultMode === 'mainnet' ? 'bg-emerald-400' : 'bg-accent-primary'}`}></span>
+        <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-text-muted">
+          Network
         </span>
       </div>
+
+      <div
+        className={`inline-flex rounded-full border border-white/10 bg-black/20 p-1.5 shadow-[0_24px_60px_-34px_rgba(15,23,42,0.95)] ${
+          networkSwitcherDisabled ? 'opacity-60' : ''
+        }`}
+      >
+        {(['mainnet', 'testnet'] as VaultMode[]).map((candidateMode) => {
+          const isActive = vaultMode === candidateMode;
+          const isBusy = switchingVaultMode === candidateMode;
+          return (
+            <button
+              key={candidateMode}
+              type="button"
+              onClick={() => handleVaultModeChange(candidateMode)}
+              disabled={networkSwitcherDisabled || switchingVaultMode !== null}
+              className={`min-w-[92px] rounded-full px-3 py-2 text-[11px] font-semibold transition-all duration-200 ${
+                isActive
+                  ? candidateMode === 'testnet'
+                    ? 'bg-accent-primary text-white shadow-[0_12px_28px_-18px_rgba(99,102,241,0.95)]'
+                    : 'bg-white text-slate-950 shadow-[0_12px_28px_-18px_rgba(255,255,255,0.95)]'
+                  : networkSwitcherDisabled
+                    ? 'text-text-muted cursor-not-allowed'
+                    : 'text-text-muted hover:bg-white/5 hover:text-white'
+              }`}
+            >
+              <span className="inline-flex items-center justify-center gap-2">
+                {isBusy ? <Loader2 size={12} className="animate-spin" /> : null}
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    candidateMode === 'testnet'
+                      ? isActive ? 'bg-white' : 'bg-accent-primary'
+                      : isActive ? 'bg-slate-950' : 'bg-emerald-400'
+                  }`}
+                ></span>
+                {candidateMode === 'testnet' ? 'Testnet' : 'Mainnet'}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {networkSwitcherDisabled ? (
+        <p className="text-[11px] font-medium text-text-muted">
+          Mainnet only for now
+        </p>
+      ) : null}
     </div>
   );
 
@@ -356,9 +436,10 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
             </button>
           </div>
 
-          <div className="mt-5">
-            {networkBadge}
+          <div className="mt-4 flex justify-center px-4 sm:px-0">
+            {networkSwitcher}
           </div>
+
         </div>
 
         {/* Security Banner Moved Here */}
@@ -582,7 +663,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     return (
       <div className="flex items-center justify-center p-4 bg-[#0f0f1a] h-[100dvh] overflow-y-auto">
         <div className="max-w-md w-full">
-
           {/* Method Selection */}
           {restoreStep === 'method' && (
             <Card glow className="space-y-6">

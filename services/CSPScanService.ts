@@ -84,6 +84,10 @@ async function saveReturnAddresses(walletAddress: string, addressesCsv: string):
   }
 }
 
+export async function saveReturnAddressesToCache(walletAddress: string, addressesCsv: string): Promise<void> {
+  await saveReturnAddresses(walletAddress, addressesCsv);
+}
+
 /**
  * Load return addresses from IndexedDB (keyed by wallet address prefix)
  */

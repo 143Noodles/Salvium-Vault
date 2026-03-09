@@ -3,6 +3,11 @@
  * WASM wallet interface for Salvium Vault.
  */
 
+import {
+  summarizeWalletIntegrity,
+  type WalletKeyImageEntry,
+} from '../utils/walletIntegrity';
+
 // PRODUCTION: Set to false to suppress verbose debug logs
 const DEBUG = false;
 
@@ -363,7 +368,7 @@ declare global {
 }
 
 // Constants
-const WASM_VERSION = '5.53.6-testnet-fix1';
+const WASM_VERSION = '5.53.6-testnet-fix2-wasm11-returnfix';
 const ATOMIC_UNITS = 100000000; // 1e8 - SAL has 8 decimal places
 const DEFAULT_DAEMON = 'seed01.salvium.io:19081';
 
@@ -4052,6 +4057,43 @@ export class WalletService {
     try {
       const json = this.walletInstance.get_wallet_diagnostic();
       return JSON.parse(json);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Debug: summarize duplicate/stale output state behind the current balance.
+   * Call from console: walletService.debugBalanceIntegrity()
+   */
+  debugBalanceIntegrity(top: number = 10): object | null {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return null;
+    }
+
+    try {
+      const walletAny = this.walletInstance as WasmWalletInstance & {
+        get_key_images?: () => string;
+      };
+
+      if (typeof walletAny.get_key_images !== 'function') {
+        return {
+          diagnostics: this.getDiagnostics(),
+          error: 'get_key_images unavailable',
+        };
+      }
+
+      const raw = safeJsonParse<{ error?: string; key_images?: WalletKeyImageEntry[] }>(
+        walletAny.get_key_images(),
+        { key_images: [] },
+        'wallet.get_key_images'
+      );
+
+      return {
+        diagnostics: this.getDiagnostics(),
+        keyImageError: raw.error || null,
+        integrity: summarizeWalletIntegrity(raw.key_images || [], top),
+      };
     } catch {
       return null;
     }

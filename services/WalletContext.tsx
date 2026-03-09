@@ -8,23 +8,51 @@ import { flushSync } from 'react-dom';
 
 // Import existing services
 import { walletService, WalletKeys, WalletTransaction, BalanceInfo, SyncStatus } from './WalletService';
-import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache } from './CSPScanService';
+import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache, saveReturnAddressesToCache } from './CSPScanService';
 import { encrypt, decrypt } from './CryptoService';
 import { initDesktopSilentAudio } from './SilentAudio';
-import { getCheckpoint } from './ScanJournal';
+import { forceCleanSlate, getCheckpoint } from './ScanJournal';
 import {
     applyActiveStakeDisplayBalance,
     buildStakeDisplayState,
+    clampUnlockedBalance,
     getActiveStakeAmount,
+    hasBalanceInfoChanged,
+    hasLargeBalanceProjectionMismatch,
     hasActiveStakeBalanceChanged,
-    hydrateStakeStatuses
+    hydrateStakeStatuses,
+    normalizeStakeInclusiveDisplayBalance,
+    normalizeLegacyCachedBalance,
+    projectDisplayBalanceFromTransactions,
+    resolveUnlockedBalance
 } from '../utils/walletBalance';
-import { mergeTransactionsByDirection } from '../utils/transactionMerge';
+import {
+    findNewTransactionsByDirection,
+    mergeTransactionLifecycle,
+    mergeTransactionsByDirection
+} from '../utils/transactionMerge';
+import { shouldForceReturnedTransferScan } from '../utils/scanHints';
+import {
+    getWalletRescanCacheKeys,
+    prepareStoredWalletForFullRescan
+} from '../utils/walletRescan';
 import {
     walletStateService,
     WalletStateHealth,
     SubaddressMapEntry
 } from './WalletStateService';
+import {
+    getTabHeartbeatKey,
+    getTabLockKey,
+    getWalletBackupKey,
+    getWalletCreatedKey,
+    getWalletStorageKey,
+    getWalletTempKey,
+    LEGACY_WALLET_CREATED_KEY,
+    LEGACY_WALLET_STORAGE_KEY,
+    normalizeWalletStorageNetwork,
+    type WalletStorageNetwork
+} from '../utils/walletStorage';
 
 // Re-export WalletStateHealth for components to use
 export type { WalletStateHealth } from './WalletStateService';
@@ -179,9 +207,82 @@ async function deleteFromIndexedDB(key: string): Promise<void> {
         // IndexedDB delete failed
     }
 }
+function getCurrentWalletNetwork(): WalletStorageNetwork {
+    return normalizeWalletStorageNetwork(walletService.getNetwork());
+}
+
+function getCurrentWalletStorageKey(): string {
+    return getWalletStorageKey(getCurrentWalletNetwork());
+}
+
+function getCurrentWalletCreatedKey(): string {
+    return getWalletCreatedKey(getCurrentWalletNetwork());
+}
+
+function getCurrentWalletTempKey(): string {
+    return getWalletTempKey(getCurrentWalletNetwork());
+}
+
+function getCurrentWalletBackupKey(): string {
+    return getWalletBackupKey(getCurrentWalletNetwork());
+}
+
+function getCurrentTabLockKey(): string {
+    return getTabLockKey(getCurrentWalletNetwork());
+}
+
+function getCurrentTabHeartbeatKey(): string {
+    return getTabHeartbeatKey(getCurrentWalletNetwork());
+}
+
+function canUseWalletForCurrentNetwork(wallet: any, currentNetwork: WalletStorageNetwork): boolean {
+    if (!wallet?.address) return false;
+    if (wallet.network) {
+        return normalizeWalletStorageNetwork(wallet.network) === currentNetwork;
+    }
+    return currentNetwork === 'mainnet';
+}
+
+function markStoredWalletCreated(): void {
+    const currentNetwork = getCurrentWalletNetwork();
+    localStorage.setItem(getWalletCreatedKey(currentNetwork), 'true');
+
+    if (currentNetwork === 'mainnet') {
+        localStorage.setItem(LEGACY_WALLET_CREATED_KEY, 'true');
+    }
+}
+
+function clearStoredWalletCreated(): void {
+    const currentNetwork = getCurrentWalletNetwork();
+    localStorage.removeItem(getWalletCreatedKey(currentNetwork));
+
+    if (currentNetwork === 'mainnet') {
+        localStorage.removeItem(LEGACY_WALLET_CREATED_KEY);
+    }
+}
+
+function clearStoredWalletData(): void {
+    const currentNetwork = getCurrentWalletNetwork();
+
+    localStorage.removeItem(getWalletStorageKey(currentNetwork));
+    localStorage.removeItem(getWalletTempKey(currentNetwork));
+    localStorage.removeItem(getWalletBackupKey(currentNetwork));
+    clearStoredWalletCreated();
+
+    if (currentNetwork === 'mainnet') {
+        localStorage.removeItem(LEGACY_WALLET_STORAGE_KEY);
+    }
+}
+
+function hasStoredWalletForCurrentNetwork(): boolean {
+    if (safeReadWallet()) {
+        return true;
+    }
+
+    return localStorage.getItem(getCurrentWalletCreatedKey()) === 'true';
+}
+
 // Multi-Tab Locking (BroadcastChannel + localStorage fallback)
-const TAB_LOCK_KEY = 'salvium_wallet_tab_lock';
-const TAB_HEARTBEAT_KEY = 'salvium_wallet_tab_heartbeat';
 const TAB_LOCK_TIMEOUT = 10000; // 10 seconds - if no heartbeat, lock is stale
 const TAB_HEARTBEAT_INTERVAL = 3000; // 3 seconds
 
@@ -195,14 +296,16 @@ let broadcastChannel: BroadcastChannel | null = null;
 
 function isWalletLockedByAnotherTab(): boolean {
     try {
-        const lockData = localStorage.getItem(TAB_LOCK_KEY);
+        const lockKey = getCurrentTabLockKey();
+        const heartbeatKey = getCurrentTabHeartbeatKey();
+        const lockData = localStorage.getItem(lockKey);
         if (!lockData) return false;
 
         const lock = JSON.parse(lockData);
         if (lock.tabId === TAB_ID) return false; // We hold the lock
 
         // Check if lock is stale (no heartbeat)
-        const heartbeatData = localStorage.getItem(TAB_HEARTBEAT_KEY);
+        const heartbeatData = localStorage.getItem(heartbeatKey);
         if (!heartbeatData) return false;
 
         const heartbeat = JSON.parse(heartbeatData);
@@ -211,8 +314,8 @@ function isWalletLockedByAnotherTab(): boolean {
         const timeSinceHeartbeat = Date.now() - heartbeat.timestamp;
         if (timeSinceHeartbeat > TAB_LOCK_TIMEOUT) {
             // Lock is stale, clear it
-            localStorage.removeItem(TAB_LOCK_KEY);
-            localStorage.removeItem(TAB_HEARTBEAT_KEY);
+            localStorage.removeItem(lockKey);
+            localStorage.removeItem(heartbeatKey);
             return false;
         }
 
@@ -229,7 +332,7 @@ function acquireTabLock(): boolean {
         }
 
         // Acquire lock
-        localStorage.setItem(TAB_LOCK_KEY, JSON.stringify({
+        localStorage.setItem(getCurrentTabLockKey(), JSON.stringify({
             tabId: TAB_ID,
             timestamp: Date.now()
         }));
@@ -253,12 +356,14 @@ function acquireTabLock(): boolean {
 
 function releaseTabLock(): void {
     try {
-        const lockData = localStorage.getItem(TAB_LOCK_KEY);
+        const lockKey = getCurrentTabLockKey();
+        const heartbeatKey = getCurrentTabHeartbeatKey();
+        const lockData = localStorage.getItem(lockKey);
         if (lockData) {
             const lock = JSON.parse(lockData);
             if (lock.tabId === TAB_ID) {
-                localStorage.removeItem(TAB_LOCK_KEY);
-                localStorage.removeItem(TAB_HEARTBEAT_KEY);
+                localStorage.removeItem(lockKey);
+                localStorage.removeItem(heartbeatKey);
             }
         }
 
@@ -279,7 +384,7 @@ function releaseTabLock(): void {
 
 function updateTabHeartbeat(): void {
     try {
-        localStorage.setItem(TAB_HEARTBEAT_KEY, JSON.stringify({
+        localStorage.setItem(getCurrentTabHeartbeatKey(), JSON.stringify({
             tabId: TAB_ID,
             timestamp: Date.now()
         }));
@@ -308,42 +413,57 @@ function onTabLockChange(callback: (lockedByOther: boolean) => void): () => void
     }, 1000);
     return () => clearInterval(interval);
 }
-// Atomic localStorage Writes (temp -> verify -> commit)
-const WALLET_STORAGE_KEY = 'salvium_wallet';
-const WALLET_TEMP_KEY = 'salvium_wallet_temp';
-const WALLET_BACKUP_KEY = 'salvium_wallet_backup';
-
 function safeWriteWallet(wallet: any): boolean {
     try {
-        const walletJson = JSON.stringify(wallet);
+        const currentNetwork = getCurrentWalletNetwork();
+        const storageKey = getWalletStorageKey(currentNetwork);
+        const tempKey = getWalletTempKey(currentNetwork);
+        const backupKey = getWalletBackupKey(currentNetwork);
+        const walletNetwork = wallet?.network
+            ? normalizeWalletStorageNetwork(wallet.network)
+            : currentNetwork;
 
-        localStorage.setItem(WALLET_TEMP_KEY, walletJson);
-
-        const tempRead = localStorage.getItem(WALLET_TEMP_KEY);
-        if (!tempRead) return false;
-
-        const verified = JSON.parse(tempRead);
-        if (verified.address !== wallet.address) {
-            localStorage.removeItem(WALLET_TEMP_KEY);
+        if (walletNetwork !== currentNetwork) {
             return false;
         }
 
-        const currentData = localStorage.getItem(WALLET_STORAGE_KEY);
-        if (currentData) {
-            localStorage.setItem(WALLET_BACKUP_KEY, currentData);
+        const walletWithNetwork = {
+            ...wallet,
+            network: currentNetwork
+        };
+        const walletJson = JSON.stringify(walletWithNetwork);
+
+        localStorage.setItem(tempKey, walletJson);
+
+        const tempRead = localStorage.getItem(tempKey);
+        if (!tempRead) return false;
+
+        const verified = JSON.parse(tempRead);
+        if (verified.address !== walletWithNetwork.address) {
+            localStorage.removeItem(tempKey);
+            return false;
         }
 
-        localStorage.setItem(WALLET_STORAGE_KEY, walletJson);
-        localStorage.removeItem(WALLET_TEMP_KEY);
+        const currentData = localStorage.getItem(storageKey);
+        if (currentData) {
+            localStorage.setItem(backupKey, currentData);
+        }
+
+        localStorage.setItem(storageKey, walletJson);
+        localStorage.removeItem(tempKey);
+
+        if (currentNetwork === 'mainnet') {
+            localStorage.setItem(LEGACY_WALLET_STORAGE_KEY, walletJson);
+        }
 
         return true;
     } catch {
         try {
-            const backup = localStorage.getItem(WALLET_BACKUP_KEY);
+            const backup = localStorage.getItem(getCurrentWalletBackupKey());
             if (backup) {
                 const backupParsed = JSON.parse(backup);
                 if (backupParsed.address) {
-                    localStorage.setItem(WALLET_STORAGE_KEY, backup);
+                    localStorage.setItem(getCurrentWalletStorageKey(), backup);
                 }
             }
         } catch { }
@@ -352,32 +472,58 @@ function safeWriteWallet(wallet: any): boolean {
 }
 
 function safeReadWallet(): any | null {
-    try {
-        const mainData = localStorage.getItem(WALLET_STORAGE_KEY);
-        if (mainData) {
-            const parsed = JSON.parse(mainData);
-            if (parsed.address) return parsed;
-        }
-    } catch { }
+    const currentNetwork = getCurrentWalletNetwork();
+    const storageKey = getWalletStorageKey(currentNetwork);
+    const backupKey = getWalletBackupKey(currentNetwork);
+    const tempKey = getWalletTempKey(currentNetwork);
 
     try {
-        const backupData = localStorage.getItem(WALLET_BACKUP_KEY);
-        if (backupData) {
-            const parsed = JSON.parse(backupData);
-            if (parsed.address) {
-                localStorage.setItem(WALLET_STORAGE_KEY, backupData);
+        const mainData = localStorage.getItem(storageKey);
+        if (mainData) {
+            const parsed = JSON.parse(mainData);
+            if (canUseWalletForCurrentNetwork(parsed, currentNetwork)) {
+                if (!parsed.network) {
+                    parsed.network = currentNetwork;
+                    safeWriteWallet(parsed);
+                }
                 return parsed;
             }
         }
     } catch { }
 
     try {
-        const tempData = localStorage.getItem(WALLET_TEMP_KEY);
+        const backupData = localStorage.getItem(backupKey);
+        if (backupData) {
+            const parsed = JSON.parse(backupData);
+            if (canUseWalletForCurrentNetwork(parsed, currentNetwork)) {
+                localStorage.setItem(storageKey, backupData);
+                return parsed;
+            }
+        }
+    } catch { }
+
+    try {
+        const tempData = localStorage.getItem(tempKey);
         if (tempData) {
             const parsed = JSON.parse(tempData);
-            if (parsed.address) {
-                localStorage.setItem(WALLET_STORAGE_KEY, tempData);
-                localStorage.removeItem(WALLET_TEMP_KEY);
+            if (canUseWalletForCurrentNetwork(parsed, currentNetwork)) {
+                localStorage.setItem(storageKey, tempData);
+                localStorage.removeItem(tempKey);
+                return parsed;
+            }
+        }
+    } catch { }
+
+    try {
+        const legacyData = localStorage.getItem(LEGACY_WALLET_STORAGE_KEY);
+        if (legacyData) {
+            const parsed = JSON.parse(legacyData);
+            if (canUseWalletForCurrentNetwork(parsed, currentNetwork)) {
+                if (!parsed.network) {
+                    parsed.network = currentNetwork;
+                }
+                safeWriteWallet(parsed);
+                markStoredWalletCreated();
                 return parsed;
             }
         }
@@ -400,31 +546,29 @@ function getChunkStart(height: number): number {
 
 function markChunkCompleted(chunkStart: number): void {
     try {
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) return;
+        const wallet = safeReadWallet();
+        if (!wallet) return;
 
-        const wallet = JSON.parse(walletJson);
         const chunks = new Set<number>(wallet.completedChunks || []);
         chunks.add(chunkStart);
 
         wallet.completedChunks = [...chunks].sort((a, b) => b - a).slice(0, MAX_TRACKED_CHUNKS);
         wallet.lastScanTimestamp = Date.now();
-        localStorage.setItem('salvium_wallet', JSON.stringify(wallet));
+        safeWriteWallet(wallet);
     } catch { }
 }
 
 function markChunksCompleted(chunkStarts: number[]): void {
     try {
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) return;
+        const wallet = safeReadWallet();
+        if (!wallet) return;
 
-        const wallet = JSON.parse(walletJson);
         const chunks = new Set<number>(wallet.completedChunks || []);
         for (const chunkStart of chunkStarts) chunks.add(chunkStart);
 
         wallet.completedChunks = [...chunks].sort((a, b) => b - a).slice(0, MAX_TRACKED_CHUNKS);
         wallet.lastScanTimestamp = Date.now();
-        localStorage.setItem('salvium_wallet', JSON.stringify(wallet));
+        safeWriteWallet(wallet);
     } catch { }
 }
 
@@ -443,10 +587,9 @@ interface ScanRange {
  */
 function findMissingChunks(fromHeight: number, toHeight: number): number[] {
     try {
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) return [];
+        const wallet = safeReadWallet();
+        if (!wallet) return [];
 
-        const wallet = JSON.parse(walletJson);
         const completed = new Set<number>(wallet.completedChunks || []);
         const scannedRanges: ScanRange[] = wallet.scannedRanges || [];
         const missing: number[] = [];
@@ -480,10 +623,9 @@ function findMissingChunks(fromHeight: number, toHeight: number): number[] {
  */
 function markRangeScanned(start: number, end: number): void {
     try {
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) return;
+        const wallet = safeReadWallet();
+        if (!wallet) return;
 
-        const wallet = JSON.parse(walletJson);
         const ranges: ScanRange[] = wallet.scannedRanges || [];
 
         // Add new range
@@ -502,16 +644,15 @@ function markRangeScanned(start: number, end: number): void {
 
         // Keep only recent ranges (last 50) to prevent unbounded growth
         wallet.scannedRanges = merged.slice(-50);
-        localStorage.setItem('salvium_wallet', JSON.stringify(wallet));
+        safeWriteWallet(wallet);
     } catch { }
 }
 
 function checkForScanGap(): { hasGap: boolean; timeSinceLastScan: number; hasCompletedChunks: boolean } {
     try {
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) return { hasGap: false, timeSinceLastScan: 0, hasCompletedChunks: false };
+        const wallet = safeReadWallet();
+        if (!wallet) return { hasGap: false, timeSinceLastScan: 0, hasCompletedChunks: false };
 
-        const wallet = JSON.parse(walletJson);
         const lastScanTimestamp = wallet.lastScanTimestamp || 0;
         const completedChunks = wallet.completedChunks || [];
         const timeSinceLastScan = lastScanTimestamp > 0 ? Date.now() - lastScanTimestamp : 0;
@@ -529,13 +670,12 @@ function checkForScanGap(): { hasGap: boolean; timeSinceLastScan: number; hasCom
 
 function clearCompletedChunks(): void {
     try {
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) return;
+        const wallet = safeReadWallet();
+        if (!wallet) return;
 
-        const wallet = JSON.parse(walletJson);
         wallet.completedChunks = [];
         wallet.lastScanTimestamp = 0;
-        localStorage.setItem('salvium_wallet', JSON.stringify(wallet));
+        safeWriteWallet(wallet);
     } catch { }
 }
 
@@ -545,10 +685,9 @@ function clearCompletedChunks(): void {
  */
 async function reconcileOnStartup(walletAddress: string): Promise<number | null> {
     try {
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) return null;
+        const wallet = safeReadWallet();
+        if (!wallet) return null;
 
-        const wallet = JSON.parse(walletJson);
         const localStorageHeight = wallet.height || 0;
 
         // No height stored, nothing to reconcile
@@ -572,7 +711,7 @@ async function reconcileOnStartup(walletAddress: string): Promise<number | null>
 
             // Correct localStorage height to match checkpoint
             wallet.height = checkpointHeight;
-            localStorage.setItem('salvium_wallet', JSON.stringify(wallet));
+            safeWriteWallet(wallet);
 
             return checkpointHeight;
         }
@@ -638,6 +777,7 @@ interface EncryptedWallet {
     salt: string;
     pub_viewKey: string;
     pub_spendKey: string;
+    network?: WalletStorageNetwork;
     createdAt: number;
     height?: number;
     snapshotHeight?: number; // Height at which cachedOutputsHex was generated
@@ -721,6 +861,7 @@ interface WalletContextType {
     refreshData: () => void;
     resetWallet: () => Promise<void>;
     clearCache: () => Promise<void>;  // Clear cached balance/transactions without resetting wallet
+    rescanWallet: () => Promise<void>;
     changePassword: (oldPassword: string, newPassword: string) => Promise<boolean>;
     // Recovery actions
     proceedWithFullRescan: () => void;  // User chose full rescan over vault restore
@@ -783,6 +924,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             }
         }, 0);
     }, []);
+    const balanceRef = React.useRef(balance);
+    useEffect(() => {
+        balanceRef.current = balance;
+    }, [balance]);
 
     // Sync state
     const [syncStatus, setSyncStatus] = useState<SyncStatus>({
@@ -826,6 +971,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const needsGapCheckRef = React.useRef<boolean>(false);
     const lastKnownWasmHeightRef = React.useRef<number>(0);
     const scanTargetHeightRef = React.useRef<number>(0); // Track target height of current scan to prevent duplicate SSE scans
+    const testVaultBalanceProjectionRef = React.useRef(false);
+    const fullRescanNeedsReturnedTransferScanRef = React.useRef(false);
+    const preferredScanStartHeightRef = React.useRef<number | undefined>(undefined);
 
     // Multi-tab locking state
     const [isLockedByAnotherTab, setIsLockedByAnotherTab] = useState(false);
@@ -834,6 +982,70 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     // SECURITY: In-memory only seed storage (never persisted to sessionStorage/localStorage)
     // This prevents seed exposure if attacker gains access to browser storage
     const sessionSeedRef = React.useRef<string | null>(null);
+
+    const refreshVaultRuntimeConfig = useCallback(async () => {
+        try {
+            const response = await fetch('/api/network');
+            if (!response.ok) {
+                testVaultBalanceProjectionRef.current = false;
+                return null;
+            }
+
+            const data = await response.json();
+            testVaultBalanceProjectionRef.current = data?.forceSingleChunkScan === true;
+            return data;
+        } catch {
+            testVaultBalanceProjectionRef.current = false;
+            return null;
+        }
+    }, []);
+
+    const reconcileDisplayBalanceForTestVault = useCallback((
+        baseBalance: BalanceInfo,
+        transactions: WalletTransaction[],
+        stakes: Stake[],
+        currentHeight: number
+    ): { baseBalance: BalanceInfo; displayBalance: BalanceInfo; usedProjection: boolean } => {
+        const normalizedStakeDisplay = normalizeStakeInclusiveDisplayBalance(
+            baseBalance,
+            transactions,
+            stakes,
+            currentHeight
+        );
+        const candidateDisplayBalance = normalizedStakeDisplay.displayBalance;
+        const normalizedBaseBalance = normalizedStakeDisplay.baseBalance;
+
+        if (!testVaultBalanceProjectionRef.current) {
+            return {
+                baseBalance: normalizedBaseBalance,
+                displayBalance: candidateDisplayBalance,
+                usedProjection: false
+            };
+        }
+
+        const projected = projectDisplayBalanceFromTransactions(
+            transactions,
+            stakes,
+            currentHeight
+        );
+
+        if (
+            projected.confirmedTxCount === 0 ||
+            !hasLargeBalanceProjectionMismatch(candidateDisplayBalance, projected.displayBalance)
+        ) {
+            return {
+                baseBalance: normalizedBaseBalance,
+                displayBalance: candidateDisplayBalance,
+                usedProjection: false
+            };
+        }
+
+        return {
+            baseBalance: projected.baseBalance,
+            displayBalance: projected.displayBalance,
+            usedProjection: true
+        };
+    }, []);
 
     // WASM state tracking for mobile recovery
     const logInit = (msg: string) => {
@@ -857,6 +1069,22 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const applyStakes = useCallback((nextStakes: Stake[]) => {
         stakesRef.current = nextStakes;
         setStakes(nextStakes);
+    }, []);
+    const detectReturnedTransferScanNeed = useCallback((
+        candidateTransactions?: WalletTransaction[],
+        candidateStakeCount?: number
+    ): boolean => {
+        const cachedTransactions = safeReadWallet()?.cachedTransactions || [];
+        const txHistory = candidateTransactions && candidateTransactions.length > 0
+            ? candidateTransactions
+            : transactionsRef.current.length > 0
+                ? transactionsRef.current
+                : cachedTransactions;
+        const knownStakeCount = typeof candidateStakeCount === 'number'
+            ? candidateStakeCount
+            : stakesRef.current.length;
+
+        return shouldForceReturnedTransferScan(txHistory, knownStakeCount);
     }, []);
 
     // Subaddresses
@@ -1436,25 +1664,19 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             // MERGE new transactions with existing ones (don't lose cached history)
             // We need merged txs for stakes/history computation, so do merge inline
             setTransactions(prevTxs => {
-                const txMap = new Map<string, WalletTransaction>();
-                for (const tx of prevTxs) {
-                    txMap.set(tx.txid, tx);
-                }
-                const newTxids: string[] = [];
-                for (const tx of newTxs) {
-                    if (!txMap.has(tx.txid)) {
-                        newTxids.push(tx.txid.slice(0, 8));  // Track genuinely new txs
-                    }
-                    txMap.set(tx.txid, tx); // New overwrites old (updated confirmations)
-                }
-                const mergedTxs = Array.from(txMap.values()).sort((a, b) => b.timestamp - a.timestamp);
-                const stakeSourceTxs = mergeTransactionsByDirection([
+                const mergedTxs = mergeTransactionsByDirection([
                     ...prevTxs,
                     ...newTxs
                 ]);
+                const stakeSourceTxs = mergedTxs;
+                const newTxids = Array.from(new Set(
+                    findNewTransactionsByDirection(newTxs, prevTxs).map(tx => tx.txid.slice(0, 8))
+                ));
 
                 // Remove confirmed TXs from pending list
-                const confirmedTxids = new Set(newTxs.map(tx => tx.txid));
+                const confirmedTxids = new Set(newTxs
+                    .filter(tx => tx.height > 0)
+                    .map(tx => tx.txid));
                 setPendingTransactions(prevPending => {
                     const stillPending = prevPending.filter(ptx => !confirmedTxids.has(ptx.txid));
                     if (stillPending.length < prevPending.length) {
@@ -1549,6 +1771,16 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     parsedStakes,
                     currentHeight
                 );
+                const parsedReconciledBalance = reconcileDisplayBalanceForTestVault(
+                    bal,
+                    stakeSourceTxs,
+                    parsedStakeState.stakes,
+                    currentHeight
+                );
+                const parsedDisplayBalanceChanged = hasBalanceInfoChanged(
+                    balanceRef.current,
+                    parsedReconciledBalance.displayBalance
+                );
 
                 // Apply the parsed stake set immediately so the list and balance stay in sync
                 // even if yield enrichment resolves later or out of order.
@@ -1562,8 +1794,13 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     currentHeight
                 );
 
-                if (!scanInProgressRef.current && (newTxids.length > 0 || activeStakeTotalChanged)) {
-                    setBalance(parsedStakeState.displayBalance);
+                if (!scanInProgressRef.current && (
+                    newTxids.length > 0 ||
+                    activeStakeTotalChanged ||
+                    parsedReconciledBalance.usedProjection ||
+                    parsedDisplayBalanceChanged
+                )) {
+                    setBalance(parsedReconciledBalance.displayBalance);
                 }
 
                 // Fetch yield data async (can't await in setState, but this triggers another render)
@@ -1577,14 +1814,28 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         stakesWithRewards,
                         currentHeight
                     );
-                    applyStakes(enrichedStakeState.stakes);
-
-                    if (!scanInProgressRef.current && hasActiveStakeBalanceChanged(
-                        parsedStakeState.stakes,
+                    const enrichedReconciledBalance = reconcileDisplayBalanceForTestVault(
+                        bal,
+                        stakeSourceTxs,
                         enrichedStakeState.stakes,
                         currentHeight
+                    );
+                    const enrichedDisplayBalanceChanged = hasBalanceInfoChanged(
+                        balanceRef.current,
+                        enrichedReconciledBalance.displayBalance
+                    );
+                    applyStakes(enrichedStakeState.stakes);
+
+                    if (!scanInProgressRef.current && (
+                        hasActiveStakeBalanceChanged(
+                            parsedStakeState.stakes,
+                            enrichedStakeState.stakes,
+                            currentHeight
+                        ) ||
+                        enrichedReconciledBalance.usedProjection ||
+                        enrichedDisplayBalanceChanged
                     )) {
-                        setBalance(enrichedStakeState.displayBalance);
+                        setBalance(enrichedReconciledBalance.displayBalance);
                     }
                 }).catch(() => {
                     // Keep the parsed stake state that is already applied.
@@ -1813,12 +2064,13 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             salt,
             pub_viewKey: keys.pub_viewKey,
             pub_spendKey: keys.pub_spendKey,
+            network: getCurrentWalletNetwork(),
             createdAt: Date.now(),
             height: initialHeight
         };
 
-        localStorage.setItem('salvium_wallet', JSON.stringify(encryptedWallet));
-        localStorage.setItem('salvium_wallet_created', 'true');
+        safeWriteWallet(encryptedWallet);
+        markStoredWalletCreated();
 
         // Store seed in memory only (secure - not persisted to storage)
         sessionSeedRef.current = keys.mnemonic;
@@ -1847,12 +2099,13 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             salt,
             pub_viewKey: keys.pub_viewKey,
             pub_spendKey: keys.pub_spendKey,
+            network: getCurrentWalletNetwork(),
             createdAt: Date.now(),
             height: restoreHeight
         };
 
-        localStorage.setItem('salvium_wallet', JSON.stringify(encryptedWallet));
-        localStorage.setItem('salvium_wallet_created', 'true');
+        safeWriteWallet(encryptedWallet);
+        markStoredWalletCreated();
 
         // Store flag for Phase 2b behavior during initial scan
         // If true, Phase 2b will run synchronously to find returned transfers
@@ -1865,6 +2118,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         // Store seed in memory only (secure - not persisted to storage)
         sessionSeedRef.current = mnemonic;
 
+        // Ensure the post-restore loading screen starts scanning from the user-selected
+        // restore height instead of whatever height the fresh WASM instance currently reports.
+        // This is critical for true full restores from 0.
+        preferredScanStartHeightRef.current = restoreHeight;
+
         setIsWalletReady(true);
         setIsLocked(false);
         refreshData();
@@ -1874,12 +2132,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     // Unlock existing wallet with password
     const unlockWallet = async (password: string, isVaultRestore: boolean = false): Promise<boolean> => {
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) {
+        const wallet = safeReadWallet();
+        if (!wallet) {
             throw new Error('No wallet found');
         }
-
-        const wallet: EncryptedWallet = JSON.parse(walletJson);
 
         // Decrypt the seed - this verifies the password is correct
         const mnemonic = await decrypt(wallet.encryptedSeed, wallet.iv, wallet.salt, password);
@@ -1936,11 +2192,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             applyStakes(hydratedCachedStakes);
         }
         if (wallet.cachedBalance) {
-            setBalance(applyActiveStakeDisplayBalance(
+            setBalance(clampUnlockedBalance(applyActiveStakeDisplayBalance(
                 wallet.cachedBalance,
                 hydratedCachedStakes,
                 wallet.height || 0
-            ));
+            )));
         }
         if (wallet.cachedSubaddresses && wallet.cachedSubaddresses.length > 0) {
             setSubaddresses(wallet.cachedSubaddresses);
@@ -2171,9 +2427,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             refreshData();
         }
 
+        const preferredScanStartHeight = finalRestoreHeight === 0 && hadData ? 0 : undefined;
+        preferredScanStartHeightRef.current = preferredScanStartHeight;
+
         setTimeout(() => {
             if (scanInProgressRef.current) return;
-            if (finalRestoreHeight === 0 && hadData) {
+            if (preferredScanStartHeight === 0) {
                 startScan(0);
             } else {
                 startScan();
@@ -2205,12 +2464,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     // User restored from vault backup file, continue the unlock flow
     const handleBackupRestored = async () => {
         // Re-read wallet from localStorage (backup restore updates it)
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) {
+        const wallet = safeReadWallet();
+        if (!wallet) {
             return;
         }
-
-        const wallet: EncryptedWallet = JSON.parse(walletJson);
         const mnemonic = pendingMnemonicRef.current;
 
         if (!mnemonic) {
@@ -2240,11 +2497,13 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         // CRITICAL: Add active stakes back to cached balance
         // v2 cache stores balance WITHOUT stakes to prevent double-counting
         if (wallet.cachedBalance) {
-            setBalance(applyActiveStakeDisplayBalance(
+            const cachedDisplayBalance = reconcileDisplayBalanceForTestVault(
                 wallet.cachedBalance,
+                wallet.cachedTransactions || [],
                 restoredCachedStakes,
                 wallet.height || 0
-            ));
+            );
+            setBalance(cachedDisplayBalance.displayBalance);
         }
         if (wallet.height && wallet.height > 0) {
             setSyncStatus(prev => ({
@@ -2285,6 +2544,13 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     // Start blockchain scan
     const startScan = async (fromHeight?: number) => {
+        if (fromHeight === undefined && preferredScanStartHeightRef.current !== undefined) {
+            fromHeight = preferredScanStartHeightRef.current;
+        }
+        if (fromHeight !== undefined) {
+            preferredScanStartHeightRef.current = undefined;
+        }
+
         // Use ref for synchronous check to prevent race conditions
         // CRITICAL FIX: Add check for hasWallet() to prevent errors when in Locked state
         // Reset cancellation flag in case a previous scan was cancelled
@@ -2321,6 +2587,19 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         // Used to detect stale completion events from cancelled/superseded scans
         const currentScanVersion = ++scanVersionRef.current;
         setIsScanning(true);
+
+        if (fromHeight === 0) {
+            const phase2bAlreadyRequested = localStorage.getItem('salvium_scan_returned_transfers') === 'true';
+            if (!phase2bAlreadyRequested) {
+                const shouldPrimePhase2b =
+                    fullRescanNeedsReturnedTransferScanRef.current ||
+                    detectReturnedTransferScanNeed();
+                if (shouldPrimePhase2b) {
+                    localStorage.setItem('salvium_scan_returned_transfers', 'true');
+                }
+            }
+            fullRescanNeedsReturnedTransferScanRef.current = false;
+        }
 
         // MOBILE FIX: Prevent accidental swipe navigation during scans
         // Add CSS touch-action: none to body to block browser back/forward gestures
@@ -2359,9 +2638,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             // even when wallet height appears synced. This prevents "stuck at synced but
             // missing newest mining blocks" after interrupted/incomplete incremental scans.
             try {
-                const networkCfgResp = await fetch('/api/network');
-                if (networkCfgResp.ok) {
-                    const networkCfg = await networkCfgResp.json();
+                const networkCfg = await refreshVaultRuntimeConfig();
+                if (networkCfg) {
                     forceTailReconcile = networkCfg?.forceSingleChunkScan === true;
                 }
             } catch {
@@ -2383,13 +2661,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             // FIX: Check for <= 1 because WASM often reports 1 for empty/new wallets
             if (fromHeight === undefined && walletHeight <= 1) {
                 try {
-                    const walletJson = localStorage.getItem('salvium_wallet');
-                    if (walletJson) {
-                        const encryptedWallet: EncryptedWallet = JSON.parse(walletJson);
-                        if (encryptedWallet.height && encryptedWallet.height > 0) {
-                            walletHeight = encryptedWallet.height;
-                            walletService.setWalletHeight(walletHeight);
-                        }
+                    const encryptedWallet = safeReadWallet();
+                    if (encryptedWallet?.height && encryptedWallet.height > 0) {
+                        walletHeight = encryptedWallet.height;
+                        walletService.setWalletHeight(walletHeight);
                     }
                 } catch (e) { /* ignore */ }
             }
@@ -2400,9 +2675,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             let reorgDetected = false;
             let reorgHeight = 0;
             try {
-                const walletJson = localStorage.getItem('salvium_wallet');
-                if (walletJson) {
-                    const encryptedWallet: EncryptedWallet = JSON.parse(walletJson);
+                const encryptedWallet = safeReadWallet();
+                if (encryptedWallet) {
                     const lastKnownHash = encryptedWallet.lastBlockHash;
                     const lastKnownHeight = encryptedWallet.height || 0;
 
@@ -2469,14 +2743,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             // Previously, key images from a different wallet could contaminate scans
             let cachedKeyImagesCsv = '';
             try {
-                const walletJson = localStorage.getItem('salvium_wallet');
-                if (walletJson) {
-                    const encryptedWallet: EncryptedWallet = JSON.parse(walletJson);
-                    // ONLY use cached key images if they belong to the current wallet address
-                    // Skip if reorg detected - key images from orphaned blocks may be invalid
-                    if (!reorgDetected && encryptedWallet.address === address && encryptedWallet.keyImagesCsv) {
-                        cachedKeyImagesCsv = encryptedWallet.keyImagesCsv;
-                    }
+                const encryptedWallet = safeReadWallet();
+                // ONLY use cached key images if they belong to the current wallet address
+                // Skip if reorg detected - key images from orphaned blocks may be invalid
+                if (!reorgDetected && encryptedWallet?.address === address && encryptedWallet.keyImagesCsv) {
+                    cachedKeyImagesCsv = encryptedWallet.keyImagesCsv;
                 }
             } catch (e) { /* ignore */ }
 
@@ -2670,11 +2941,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         // Save height incrementally every 1000 blocks (for crash recovery)
                         if (currentScannedHeight - lastSavedHeight >= SAVE_INTERVAL_BLOCKS) {
                             try {
-                                const walletJson = localStorage.getItem('salvium_wallet');
-                                if (walletJson) {
-                                    const encryptedWallet: EncryptedWallet = JSON.parse(walletJson);
+                                const encryptedWallet = safeReadWallet();
+                                if (encryptedWallet) {
                                     encryptedWallet.height = currentScannedHeight;
-                                    localStorage.setItem('salvium_wallet', JSON.stringify(encryptedWallet));
+                                    safeWriteWallet(encryptedWallet);
                                     lastSavedHeight = currentScannedHeight;
                                 }
                             } catch (e) { /* ignore */ }
@@ -2702,11 +2972,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                                 applyStakes(nextStakes);
                                 setBalance(displayBalance);
                                 // Also update localStorage cache
-                                const walletJson = localStorage.getItem('salvium_wallet');
-                                if (walletJson) {
-                                    const encryptedWallet: EncryptedWallet = JSON.parse(walletJson);
+                                const encryptedWallet = safeReadWallet();
+                                if (encryptedWallet) {
                                     encryptedWallet.cachedBalance = updatedBalance;
-                                    localStorage.setItem('salvium_wallet', JSON.stringify(encryptedWallet));
+                                    safeWriteWallet(encryptedWallet);
                                 }
                             }
                         } catch {
@@ -2740,9 +3009,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
             // Save final state (height + key images + cached data for next session)
             try {
-                const walletJson = localStorage.getItem('salvium_wallet');
-                if (walletJson) {
-                    const encryptedWallet: EncryptedWallet = JSON.parse(walletJson);
+                const encryptedWallet = safeReadWallet();
+                if (encryptedWallet) {
                     encryptedWallet.height = networkHeight;
                     if (result.keyImagesCsv) {
                         encryptedWallet.keyImagesCsv = result.keyImagesCsv;
@@ -2766,38 +3034,16 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         }
                     }
 
-                    // Aggregate newTxs - WASM may return multiple entries per txid for multi-subaddress spends
-                    const newTxMap = new Map<string, WalletTransaction>();
-                    for (const tx of newTxs) {
-                        const existing = newTxMap.get(tx.txid);
-                        if (existing && existing.type === 'out' && tx.type === 'out') {
-                            existing.amount += tx.amount;
-                            if (tx.fee) existing.fee = (existing.fee || 0) + tx.fee;
-                        } else if (!existing) {
-                            newTxMap.set(tx.txid, { ...tx });
-                        }
-                    }
-                    const aggregatedNewTxs = Array.from(newTxMap.values());
-
-                    // Merge: combine cached + aggregated new, dedupe by txid
-                    const txMap = new Map<string, WalletTransaction>();
                     const inMemoryTxs = transactionsRef.current;
-
-                    for (const tx of cachedTxs) {
-                        txMap.set(tx.txid, tx);
-                    }
-                    for (const tx of inMemoryTxs) {
-                        txMap.set(tx.txid, tx);
-                    }
-                    for (const tx of aggregatedNewTxs) {
-                        txMap.set(tx.txid, tx); // New overwrites cached (has updated confirmations, etc.)
-                    }
-                    const mergedTxs = Array.from(txMap.values()).sort((a, b) => b.timestamp - a.timestamp);
-                    const stakeSourceTxs = mergeTransactionsByDirection([
+                    const existingTxs = mergeTransactionsByDirection([
                         ...cachedTxs,
-                        ...inMemoryTxs,
+                        ...inMemoryTxs
+                    ]);
+                    const mergedTxs = mergeTransactionsByDirection([
+                        ...existingTxs,
                         ...newTxs
                     ]);
+                    const stakeSourceTxs = mergedTxs;
 
                     // Balance handling - complex due to WASM state not persisting across page reloads
                     // CRITICAL FIX: Ensure WASM knows the network height BEFORE querying balance
@@ -2815,19 +3061,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     const cacheVersion = (encryptedWallet as any).cachedBalanceVersion || 1;
 
                     if (cacheVersion === 1 && cachedBalance) {
-                        // Old format: subtract stakes that were baked into the cached balance
-                        const cachedStakes = encryptedWallet.cachedStakes || [];
-                        const cachedActiveStakeAmount = cachedStakes
-                            .filter((s: Stake) => s.status === 'active')
-                            .reduce((sum: number, s: Stake) => sum + s.amount, 0);
-
-                        if (cachedActiveStakeAmount > 0) {
-                            cachedBalance = {
-                                ...cachedBalance,
-                                balance: cachedBalance.balance - Math.round(cachedActiveStakeAmount * 1e8),
-                                balanceSAL: cachedBalance.balanceSAL - cachedActiveStakeAmount
-                            };
-                        }
+                        cachedBalance = normalizeLegacyCachedBalance(
+                            cachedBalance,
+                            encryptedWallet.cachedStakes || [],
+                            networkHeight
+                        );
                     }
                     // v2 caches already store balance without stakes, no adjustment needed
 
@@ -2843,14 +3081,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     const wasRestoredFromVault = restoredFromVaultRef.current;
 
                     // Find genuinely new transactions (in this scan but not in cache)
-                    const newlyFoundTxs = newTxs.filter(tx => {
-                        const cachedTx = cachedTxs.find(ct => ct.txid === tx.txid);
-                        if (!cachedTx) return true;
-                        if (cachedTx.height === 0 && tx.height > 0) return true;
-                        return false;
-                    });
+                    const newlyFoundTxs = findNewTransactionsByDirection(newTxs, existingTxs);
                     const hasNewTxs = newlyFoundTxs.length > 0;
-                    const duplicatesFiltered = newTxs.length - newlyFoundTxs.length;
 
                     // Track whether finalBalance comes from WASM (needs mempool subtraction) or cache (does not)
                     let balanceFromWasm = true;
@@ -2883,7 +3115,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         // track unlock status for imported outputs. Use cached unlocked as floor
                         // since maturation doesn't go backwards, and WASM may find more unlocked.
                         const cachedUnlocked = cachedBalance?.unlockedBalance || 0;
-                        const correctedUnlocked = Math.max(currentBalance.unlockedBalance, cachedUnlocked);
+                        const correctedUnlocked = Math.min(
+                            currentBalance.balance,
+                            Math.max(currentBalance.unlockedBalance, cachedUnlocked)
+                        );
                         finalBalance = {
                             ...currentBalance,
                             unlockedBalance: correctedUnlocked,
@@ -2924,8 +3159,13 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             // DON'T use Math.max with WASM balance - it may have double-counted
                             // outputs from re-ingesting the same chunk multiple times
                             const newBalance = Math.max(0, cachedBalance.balance + balanceDelta);
-                            // Unlocked from WASM but capped at our calculated total
-                            const newUnlocked = Math.min(currentBalance.unlockedBalance, newBalance);
+                            const cachedUnlocked = cachedBalance.unlockedBalance || 0;
+                            const hasDebitTxs = newlyFoundTxs.some(tx => tx.type === 'out');
+                            const newUnlocked = resolveUnlockedBalance(
+                                newBalance,
+                                currentBalance.unlockedBalance,
+                                hasDebitTxs ? undefined : cachedUnlocked
+                            );
 
                             finalBalance = {
                                 balance: newBalance,
@@ -2939,11 +3179,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             // No new transactions found (already in cache or mempool)
                             // Trust cached balance ONLY - WASM might have double-counted outputs
                             // The balance should NEVER increase without new transactions
-                            // Unlocked can change (maturation) but must not exceed total
+                            // Unlocked can still rise as outputs mature, so preserve the cached
+                            // unlocked floor unless we see an actual debit.
                             const ATOMIC_UNITS = 1e8;
                             const newBalance = cachedBalance.balance;
-                            // Unlocked from WASM, but capped at our trusted total
-                            const newUnlocked = Math.min(currentBalance.unlockedBalance, newBalance);
+                            const newUnlocked = resolveUnlockedBalance(
+                                newBalance,
+                                currentBalance.unlockedBalance,
+                                cachedBalance.unlockedBalance || 0
+                            );
 
                             finalBalance = {
                                 balance: newBalance,
@@ -2964,11 +3208,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         //   - Cache loss (had cached txs but lost balance) = needs recovery
                         // Reset height in localStorage to force full rescan
                         try {
-                            const walletJson = localStorage.getItem('salvium_wallet');
-                            if (walletJson) {
-                                const wallet = JSON.parse(walletJson);
+                            const wallet = safeReadWallet();
+                            if (wallet) {
                                 wallet.height = 0;
-                                localStorage.setItem('salvium_wallet', JSON.stringify(wallet));
+                                safeWriteWallet(wallet);
                             }
                         } catch {
                             // Failed to reset height for recovery
@@ -3022,6 +3265,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             };
                         }
                     }
+
+                    finalBalance = clampUnlockedBalance(finalBalance);
 
                     // Compute stakes from MERGED transaction data (not just new txs)
                     // We moved this UP so we can include staked amounts in the final balance
@@ -3113,19 +3358,24 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         // Yield fetch failed, using local stakes
                     }
                     const {
-                        stakes: normalizedStakes,
-                        displayBalance
+                        stakes: normalizedStakes
                     } = buildStakeDisplayState(finalBalance, stakesWithRewards, currentHeight);
                     stakesWithRewards = normalizedStakes;
+                    const reconciledBalanceState = reconcileDisplayBalanceForTestVault(
+                        finalBalance,
+                        mergedTxs,
+                        stakesWithRewards,
+                        currentHeight
+                    );
 
                     // WASM treats staked outputs as "spent" (sent to staking contract),
                     // so get_balance() does NOT include them. We must add them manually.
                     // IMPORTANT: Cache stores balance WITHOUT stakes to avoid double-counting on reload.
                     // Save balance WITHOUT stakes to cache (this is the "base" balance)
-                    const balanceForCache = { ...finalBalance };
+                    const balanceForCache = { ...reconciledBalanceState.baseBalance };
 
                     // Add stakes to get the display balance
-                    finalBalance = displayBalance;
+                    finalBalance = reconciledBalanceState.displayBalance;
 
                     // Update React state with the calculated balance (WITH stakes for display)
                     setBalance(finalBalance);
@@ -3548,8 +3798,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         setIsScanning(false);
         setScanProgress(null);
 
-        localStorage.removeItem('salvium_wallet');
-        localStorage.removeItem('salvium_wallet_created');
+        clearStoredWalletData();
 
         sessionSeedRef.current = null; // Clear seed from memory
 
@@ -3613,6 +3862,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     // Clear cached balance/transactions without resetting the wallet (for rescan)
     const clearCache = async () => {
+        fullRescanNeedsReturnedTransferScanRef.current = detectReturnedTransferScanNeed();
+
         // Clear in-memory state
         setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
         setTransactions([]);
@@ -3622,9 +3873,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
         // Clear cached data from localStorage wallet object
         try {
-            const walletJson = localStorage.getItem('salvium_wallet');
-            if (walletJson) {
-                const wallet: EncryptedWallet = JSON.parse(walletJson);
+            const wallet = safeReadWallet();
+            if (wallet) {
                 // Clear cached data but preserve wallet credentials and key images
                 delete wallet.cachedBalance;
                 delete wallet.cachedTransactions;
@@ -3637,7 +3887,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 // Clear chunk tracking for full rescan
                 wallet.completedChunks = [];
                 wallet.lastScanTimestamp = 0;
-                localStorage.setItem('salvium_wallet', JSON.stringify(wallet));
+                safeWriteWallet(wallet);
             }
         } catch {
             // Failed to clear localStorage cache
@@ -3653,12 +3903,105 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     };
 
+    const rescanWallet = async () => {
+        const storedWallet = safeReadWallet();
+        if (!storedWallet) {
+            throw new Error('No wallet found');
+        }
+
+        const mnemonic = sessionSeedRef.current;
+        if (!mnemonic) {
+            throw new Error('Wallet must be unlocked before rescanning');
+        }
+
+        const walletAddress = storedWallet.address || address || walletService.getAddress();
+        const preservedSubaddressCount = Math.max(
+            storedWallet.cachedSubaddresses?.length || 0,
+            subaddressesRef.current.length
+        );
+        const currentWallet = walletService.getWallet();
+        const currentReturnAddressesCsv = typeof currentWallet?.get_return_addresses_csv === 'function'
+            ? (currentWallet.get_return_addresses_csv() || '')
+            : '';
+        const hasKnownReturnAddresses = currentReturnAddressesCsv.length >= 64;
+        const cleanedWallet = prepareStoredWalletForFullRescan(storedWallet);
+
+        fullRescanNeedsReturnedTransferScanRef.current =
+            hasKnownReturnAddresses ||
+            detectReturnedTransferScanNeed(
+                transactionsRef.current,
+                stakesRef.current.length
+            );
+
+        walletStateService.stop();
+
+        await cspScanService.cancelScanAndWait(5000);
+        cspScanService.resetIncrementalState();
+        scanInProgressRef.current = false;
+        setIsScanning(false);
+        setScanProgress(null);
+        setNeedsRecovery(false);
+        setLastSuccessfulScanAt(0);
+        setSyncStatus({ walletHeight: 0, daemonHeight: 0, isSyncing: false, progress: 0 });
+
+        setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
+        setTransactions([]);
+        setPendingTransactions([]);
+        setMempoolTransactions([]);
+        transactionsRef.current = [];
+        pendingTransactionsRef.current = [];
+        mempoolTransactionsRef.current = [];
+        applyStakes([]);
+        setWalletHistory([]);
+        hydratedWalletHistoryFromCacheRef.current = false;
+
+        try {
+            localStorage.removeItem('salvium_scan_returned_transfers');
+        } catch {
+            // Failed to clear returned transfer scan flag
+        }
+
+        if (walletAddress) {
+            const deletePromises = getWalletRescanCacheKeys(walletAddress)
+                .map((key) => deleteFromIndexedDB(key));
+            await Promise.allSettled([
+                ...deletePromises,
+                walletStateService.clear(walletAddress),
+                forceCleanSlate(walletAddress),
+            ]);
+
+            if (hasKnownReturnAddresses) {
+                try {
+                    await saveReturnAddressesToCache(walletAddress, currentReturnAddressesCsv);
+                } catch {
+                    // Failed to preserve return address cache for same-wallet rescan
+                }
+            }
+        }
+
+        safeWriteWallet(cleanedWallet);
+
+        if (walletService.hasWallet()) {
+            walletService.clearWallet();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+
+        await walletService.deleteWalletFile();
+        await continueUnlockFlow(cleanedWallet, mnemonic, '', true);
+
+        if (walletAddress) {
+            walletStateService.initialize(walletAddress);
+        }
+
+        if (preservedSubaddressCount > 0) {
+            walletService.precomputeSubaddresses(Math.max(preservedSubaddressCount + 50, 100));
+        }
+    };
+
     // Change Password
     const changePassword = async (oldPassword: string, newPassword: string): Promise<boolean> => {
-        const walletJson = localStorage.getItem('salvium_wallet');
-        if (!walletJson) throw new Error('No wallet found');
-
-        const wallet: EncryptedWallet = JSON.parse(walletJson);
+        const wallet = safeReadWallet();
+        if (!wallet) throw new Error('No wallet found');
 
         let mnemonic = '';
         try {
@@ -3678,7 +4021,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             salt
         };
 
-        localStorage.setItem('salvium_wallet', JSON.stringify(updatedWallet));
+        safeWriteWallet(updatedWallet);
 
         try {
             const { BiometricService } = await import('./BiometricService');
@@ -3695,6 +4038,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         const init = async () => {
             try {
                 await walletService.init();
+                await refreshVaultRuntimeConfig();
 
                 setIsInitialized(true);
                 setInitError(null);
@@ -3711,9 +4055,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     let cachedOutputsHex = '';
                     let cachedSpentKeyImages: Record<string, number> = {};
                     try {
-                        const walletJson = localStorage.getItem('salvium_wallet');
-                        if (walletJson) {
-                            const encryptedWallet: EncryptedWallet = JSON.parse(walletJson);
+                        const encryptedWallet = safeReadWallet();
+                        if (encryptedWallet) {
                             const addr = encryptedWallet.address;
 
                             // Load large data from IndexedDB
@@ -3767,11 +4110,13 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     // CRITICAL: Add active stakes back to cached balance
                     // v2 cache stores balance WITHOUT stakes to prevent double-counting
                     if (cachedBalance) {
-                        setBalance(applyActiveStakeDisplayBalance(
+                        const cachedDisplayBalance = reconcileDisplayBalanceForTestVault(
                             cachedBalance,
+                            cachedTxs,
                             restoredStakes,
                             restoreHeight || 0
-                        ));
+                        );
+                        setBalance(cachedDisplayBalance.displayBalance);
                     }
                     if (cachedSubaddrsData.length > 0) {
                         setSubaddresses(cachedSubaddrsData);
@@ -3861,15 +4206,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     setIsLocked(false);
                     refreshData();
                 } else {
-                    const hasStoredWallet = localStorage.getItem('salvium_wallet_created');
+                    const hasStoredWallet = hasStoredWalletForCurrentNetwork();
                     if (hasStoredWallet) {
                         try {
-                            const walletJson = localStorage.getItem('salvium_wallet');
-                            if (walletJson) {
-                                const encrypted = JSON.parse(walletJson);
-                                if (encrypted.address) setAddress(encrypted.address);
-                                if (encrypted.height) setSyncStatus(prev => ({ ...prev, walletHeight: encrypted.height || 0 }));
-                            }
+                            const encrypted = safeReadWallet();
+                            if (encrypted?.address) setAddress(encrypted.address);
+                            if (encrypted?.height) setSyncStatus(prev => ({ ...prev, walletHeight: encrypted.height || 0 }));
                         } catch (e) { /* ignore */ }
                         setIsWalletReady(true);
                         setIsLocked(true);
@@ -4178,29 +4520,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     // This ensures that when a transaction moves from Pending -> Mempool -> Confirmed,
     // we only show the most "mature" version of it, avoiding duplicates and stale "Broadcasting" badges.
     const allTransactions = React.useMemo(() => {
-        const txMap = new Map<string, WalletTransaction>();
-
-        // 1. Add confirmed transactions (Highest priority - source of truth)
-        transactions.forEach(tx => txMap.set(tx.txid, tx));
-
-        // 2. Add mempool transactions (Medium priority)
-        // Only if not already confirmed
-        mempoolTransactions.forEach(tx => {
-            if (!txMap.has(tx.txid)) {
-                txMap.set(tx.txid, tx);
-            }
-        });
-
-        // 3. Add pending transactions (Lowest priority - local optimistic UI)
-        // Only if not found in mempool or confirmed yet
-        pendingTransactions.forEach(tx => {
-            if (!txMap.has(tx.txid)) {
-                txMap.set(tx.txid, tx);
-            }
-        });
-
-        // Sort by timestamp descending (Newest first)
-        return Array.from(txMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+        return mergeTransactionLifecycle(
+            transactions,
+            mempoolTransactions,
+            pendingTransactions
+        );
     }, [transactions, mempoolTransactions, pendingTransactions]);
 
     // Clean up mempool transactions once they appear in confirmed transactions
@@ -4386,6 +4710,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         refreshData,
         resetWallet,
         clearCache,
+        rescanWallet,
         changePassword,
         proceedWithFullRescan,
         handleBackupRestored,

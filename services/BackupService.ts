@@ -1,5 +1,13 @@
 import { encrypt, decrypt, arrayBufferToBase64, base64ToArrayBuffer } from './CryptoService';
 import { populateCheckpointFromVaultRestore } from './ScanJournal';
+import {
+    getWalletCreatedKey,
+    getWalletStorageKey,
+    LEGACY_WALLET_CREATED_KEY,
+    LEGACY_WALLET_STORAGE_KEY,
+    normalizeWalletStorageNetwork,
+    type WalletStorageNetwork
+} from '../utils/walletStorage';
 
 // Version 2: Added m_recovered_spend_pubkey serialization to transfer_details
 // Old vault files (version 1) are incompatible and must be restored from seed
@@ -292,6 +300,44 @@ export interface BackupData {
     };
 }
 
+async function resolveCurrentVaultNetwork(): Promise<WalletStorageNetwork> {
+    try {
+        const response = await fetch('/api/network');
+        if (response.ok) {
+            const data = await response.json();
+            return normalizeWalletStorageNetwork(data?.network);
+        }
+    } catch {
+        // Keep mainnet fallback
+    }
+
+    return 'mainnet';
+}
+
+function getStoredWalletJsonForNetwork(network: WalletStorageNetwork): string | null {
+    const scoped = localStorage.getItem(getWalletStorageKey(network));
+    if (scoped) return scoped;
+    if (network === 'mainnet') {
+        return localStorage.getItem(LEGACY_WALLET_STORAGE_KEY);
+    }
+    return null;
+}
+
+function writeStoredWalletForNetwork(network: WalletStorageNetwork, wallet: any): void {
+    const walletJson = JSON.stringify({
+        ...wallet,
+        network
+    });
+
+    localStorage.setItem(getWalletStorageKey(network), walletJson);
+    localStorage.setItem(getWalletCreatedKey(network), 'true');
+
+    if (network === 'mainnet') {
+        localStorage.setItem(LEGACY_WALLET_STORAGE_KEY, walletJson);
+        localStorage.setItem(LEGACY_WALLET_CREATED_KEY, 'true');
+    }
+}
+
 async function compressString(data: string): Promise<string> {
     const stream = new Blob([data]).stream();
     const compressedStream = stream.pipeThrough(new CompressionStream('gzip'));
@@ -384,7 +430,8 @@ interface EncryptedBackup {
 }
 
 export async function generateBackup(password: string): Promise<Blob> {
-    const walletJson = localStorage.getItem('salvium_wallet');
+    const currentNetwork = await resolveCurrentVaultNetwork();
+    const walletJson = getStoredWalletJsonForNetwork(currentNetwork);
     if (!walletJson) {
         throw new Error('No wallet found to backup');
     }
@@ -549,8 +596,20 @@ export async function parseBackup(file: File, password: string): Promise<BackupD
 }
 
 export async function restoreFromBackup(backupData: BackupData): Promise<void> {
-    localStorage.setItem('salvium_wallet', JSON.stringify(backupData.wallet));
-    localStorage.setItem('salvium_wallet_created', 'true');
+    const currentNetwork = await resolveCurrentVaultNetwork();
+    const backupNetwork = backupData.wallet?.network
+        ? normalizeWalletStorageNetwork(backupData.wallet.network)
+        : currentNetwork;
+
+    if (backupData.wallet?.network && backupNetwork !== currentNetwork) {
+        throw new Error(`This vault backup belongs to ${backupNetwork}, but the current vault is ${currentNetwork}.`);
+    }
+
+    if (!backupData.wallet?.network && currentNetwork !== 'mainnet') {
+        throw new Error('This vault backup predates network tagging and must be restored on the mainnet vault.');
+    }
+
+    writeStoredWalletForNetwork(currentNetwork, backupData.wallet);
 
     let walletCacheHex: string | undefined = backupData.walletCacheHex;
 
@@ -628,4 +687,3 @@ export async function restoreFromBackup(backupData: BackupData): Promise<void> {
         }
     }
 }
-

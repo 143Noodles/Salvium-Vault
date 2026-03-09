@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
+import { buildVaultModeCookie, getVaultModeFromCookie } from './utils/vaultNetwork';
 
 // Initialize i18n before app renders
 import './i18n';
@@ -14,6 +15,10 @@ console.warn = (...args) => {
 };
 
 import PWAOnlyGate from './components/PWAOnlyGate';
+
+if (typeof document !== 'undefined' && getVaultModeFromCookie(document.cookie) === null) {
+  document.cookie = buildVaultModeCookie('mainnet');
+}
 
 // Service worker status tracking for offline support
 interface ServiceWorkerStatus {

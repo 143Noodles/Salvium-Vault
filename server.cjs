@@ -3222,9 +3222,16 @@ function parseCookieHeader(cookieHeader) {
 }
 
 function getRequestedVaultNetwork(req) {
-    // Browser-side network switching is temporarily disabled.
-    // Always serve the container's native network to keep the vault pinned.
-    return SALVIUM_NETWORK;
+    const nativeNetwork = normalizeRequestedBrowserNetwork(SALVIUM_NETWORK, DEFAULT_BROWSER_NETWORK);
+    const proxyOverride = req.headers['x-salvium-network-override'];
+
+    if (proxyOverride) {
+        const headerValue = Array.isArray(proxyOverride) ? proxyOverride[0] : proxyOverride;
+        return normalizeRequestedBrowserNetwork(headerValue, nativeNetwork);
+    }
+
+    const cookies = parseCookieHeader(req.headers.cookie);
+    return normalizeRequestedBrowserNetwork(cookies[SALVIUM_NETWORK_COOKIE], nativeNetwork);
 }
 
 function getSiblingVaultBaseUrl(network) {
