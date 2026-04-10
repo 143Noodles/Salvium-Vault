@@ -22,10 +22,12 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
     const wallet = useWallet();
 
     // Network status derived from wallet context
+    const hasDaemonHeight = wallet.syncStatus.daemonHeight > 0;
     const isSynced = !wallet.syncStatus.isSyncing &&
         wallet.syncStatus.walletHeight >= wallet.syncStatus.daemonHeight &&
-        wallet.syncStatus.daemonHeight > 0;
-    const isConnected = wallet.syncStatus.daemonHeight > 0;
+        hasDaemonHeight;
+    const isConnected = hasDaemonHeight;
+    const isConnecting = wallet.isWalletReady && !hasDaemonHeight && typeof navigator !== 'undefined' && navigator.onLine !== false;
 
     return (
         <>
@@ -53,9 +55,9 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
                         onClick={() => setShowNetworkModal(true)}
                         className="flex items-center gap-1.5 px-2 py-1 bg-white/5 rounded-full border border-white/5 mr-1 active:scale-95 transition-transform cursor-pointer"
                     >
-                        <div className={`w-1.5 h-1.5 rounded-full ${!isConnected ? 'bg-red-500' : isSynced ? 'bg-accent-success shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-accent-warning'} ${isSynced ? 'animate-pulse' : ''}`}></div>
+                        <div className={`w-1.5 h-1.5 rounded-full ${(!isConnected && !isConnecting) ? 'bg-red-500' : isSynced ? 'bg-accent-success shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-accent-warning'} ${isSynced ? 'animate-pulse' : ''}`}></div>
                         <span className="text-[10px] font-medium text-text-muted">
-                            {!isConnected ? t('network.error') : isSynced ? t('network.synced') : t('network.syncing')}
+                            {(!isConnected && !isConnecting) ? t('network.error') : isSynced ? t('network.synced') : t('network.syncing')}
                         </span>
                     </div>
 
@@ -100,8 +102,8 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
                                     <div className={`w-2 h-2 rounded-full ${isSynced ? 'bg-accent-success shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-accent-warning'}`}></div>
                                     <div className="flex flex-col">
                                         <span className="text-xs text-text-muted uppercase tracking-wider">{t('transactions.status')}</span>
-                                        <span className={`font-semibold ${isSynced ? 'text-accent-success' : 'text-accent-warning'}`}>
-                                            {isSynced ? t('network.fullySynced') : isConnected ? t('network.syncing') + '...' : t('network.disconnected')}
+                                        <span className={`font-semibold ${isSynced ? 'text-accent-success' : (isConnected || isConnecting) ? 'text-accent-warning' : 'text-red-400'}`}>
+                                            {isSynced ? t('network.fullySynced') : (isConnected || isConnecting) ? t('network.syncing') + '...' : t('network.disconnected')}
                                         </span>
                                     </div>
                                 </div>
@@ -132,7 +134,7 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
                         </div>
 
                         <div className="pt-2 text-center text-xs text-text-muted">
-                            {isConnected ? t('network.connectedTo') : t('network.attemptingConnect')}
+                            {(isConnected || isConnecting) ? t('network.connectedTo') : t('network.attemptingConnect')}
                         </div>
                     </div>
                 </div>

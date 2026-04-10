@@ -21,7 +21,7 @@ type TimeFrame = '1D' | '1W' | '1M' | '1Y' | 'ALL';
 const BalanceChart: React.FC = () => {
   const { t, i18n } = useTranslation();
   const wallet = useWallet();
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>('1M');
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>('1W');
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerReady, setContainerReady] = useState(false);
@@ -76,8 +76,7 @@ const BalanceChart: React.FC = () => {
         break;
       case 'ALL':
       default:
-        // MEXC listing date: April 1, 2025
-        cutoffTime = new Date('2025-04-01T00:00:00Z').getTime();
+        cutoffTime = 0;
         break;
     }
 
@@ -125,7 +124,7 @@ const BalanceChart: React.FC = () => {
       case '1W': return t('chart.last7Days');
       case '1M': return t('chart.last30Days');
       case '1Y': return t('chart.last12Months');
-      case 'ALL': return t('chart.sinceMexcListing');
+      case 'ALL': return 'All Time';
       default: return '';
     }
   };

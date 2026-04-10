@@ -527,6 +527,18 @@ const salvium_core_js =
         }
     },
 
+    get_decode_network: function (address) {
+        if (typeof address === 'string') {
+            if (address.startsWith('SC1T') || address.startsWith('SaLvT')) {
+                return 'testnet';
+            }
+            if (address.startsWith('SC1') || address.startsWith('SaLv')) {
+                return 'mainnet';
+            }
+        }
+        return this.current_network || 'mainnet';
+    },
+
     // Get current daemon URLs
     get_daemon_urls: function () {
         // Allow wallet.html to override via window.SALVIUM_SCAN_SETTINGS.rpcBase
@@ -1809,7 +1821,7 @@ const salvium_core_js =
 
                     if (!spendPublicKey) {
                         // Try to decode address to get spend public key (needed for new scanner)
-                        let decoded = await salvium_core_js.decode_address(address, 'mainnet');
+                        let decoded = await salvium_core_js.decode_address(address, this.get_decode_network(address));
 
                         // Handle JSON string response (WASM may return JSON string)
                         if (typeof decoded === 'string') {
@@ -1952,7 +1964,7 @@ const salvium_core_js =
                 let spendPubKey = spend_public_key;
                 if (!spendPubKey) {
                     try {
-                        let decoded = await this.decode_address(address, 'mainnet');
+                        let decoded = await this.decode_address(address, this.get_decode_network(address));
                         if (typeof decoded === 'string') decoded = JSON.parse(decoded);
                         spendPubKey = decoded?.spendPublicKey || decoded?.spend_public_key || null;
                     } catch (e) { }
@@ -2576,7 +2588,7 @@ const salvium_core_js =
 
             if (!spendPublicKey) {
                 // Try to decode address to get spend public key
-                let decoded = await this.decode_address(address, 'mainnet');
+                let decoded = await this.decode_address(address, this.get_decode_network(address));
 
                 // Handle JSON string response (WASM may return JSON string)
                 if (typeof decoded === 'string') {

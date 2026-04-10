@@ -10,6 +10,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  getBaseAssetBalanceFromSnapshot,
+  getDisplayAssetBalanceFromSnapshot,
+  WalletService,
+  type WalletStateSnapshot,
+} from '../services/WalletService';
 
 // We test utility functions and validate structures
 // Full WASM integration would require loading the actual WASM module
@@ -211,6 +217,50 @@ describe('WalletService', () => {
       const balance = createBalanceInfo(largeBalance, largeBalance);
       
       expect(balance.balanceSAL).toBe(90000000);
+    });
+  });
+
+  describe('WalletStateSnapshot helpers', () => {
+    it('keeps unlocked native but adds locked stake into display total', () => {
+      const snapshot: WalletStateSnapshot = {
+        success: true,
+        wallet_height: 100,
+        refresh_start_height: 0,
+        daemon_height: 100,
+        transfer_count: 1,
+        transfers_indices_asset_count: 1,
+        key_image_count: 1,
+        pub_key_count: 1,
+        salvium_tx_count: 1,
+        locked_coin_count: 1,
+        assets: [{
+          asset_type: 'SAL1',
+          balance: '2401913336949',
+          unlocked_balance: '2401913336949',
+          locked_stake: '60000000000000',
+          transfer_index_count: 1,
+        }],
+        totals: {
+          balance: '2401913336949',
+          unlocked_balance: '2401913336949',
+          locked_stake: '60000000000000',
+        },
+        active_locked_stakes: [],
+      };
+
+      expect(getBaseAssetBalanceFromSnapshot(snapshot)).toEqual({
+        balance: 2401913336949,
+        unlockedBalance: 2401913336949,
+        balanceSAL: 24019.13336949,
+        unlockedBalanceSAL: 24019.13336949,
+      });
+
+      expect(getDisplayAssetBalanceFromSnapshot(snapshot)).toEqual({
+        balance: 62401913336949,
+        unlockedBalance: 2401913336949,
+        balanceSAL: 624019.13336949,
+        unlockedBalanceSAL: 24019.13336949,
+      });
     });
   });
 
@@ -486,6 +536,72 @@ describe('WalletService', () => {
     it('should handle empty storage', () => {
       const pending = getPendingTransactions();
       expect(pending).toHaveLength(0);
+    });
+  });
+
+  describe('Native Diagnostics Wrappers', () => {
+    afterEach(() => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+      };
+      service.walletInstance = null;
+    });
+
+    it('should parse check_wallet_health JSON', () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+      };
+      service.walletInstance = {
+        check_wallet_health: () =>
+          JSON.stringify({ success: true, healthy: false, issue_count: 1 }),
+      };
+
+      const result = WalletService.getInstance().checkWalletHealth();
+
+      expect(result).toEqual({ success: true, healthy: false, issue_count: 1 });
+    });
+
+    it('should parse get_stake_lifecycle JSON', () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+      };
+      service.walletInstance = {
+        get_stake_lifecycle: () =>
+          JSON.stringify({
+            success: true,
+            summary: { active_count: 1, returned_count: 0, matured_pending_count: 0 },
+          }),
+      };
+
+      const result = WalletService.getInstance().getStakeLifecycle();
+
+      expect(result).toEqual({
+        success: true,
+        summary: { active_count: 1, returned_count: 0, matured_pending_count: 0 },
+      });
+    });
+
+    it('should surface native send preflight failures', () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            error: 'missing return spend metadata',
+          }),
+      };
+
+      const result = WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toEqual({
+        valid: false,
+        needsRefresh: true,
+        error: 'missing return spend metadata',
+      });
     });
   });
 });

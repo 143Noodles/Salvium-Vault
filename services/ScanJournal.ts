@@ -51,6 +51,9 @@ export interface ScanCheckpoint {
   lastCompletedTimestamp: number;
   scannedChunks: number[];  // Cumulative from all successful scans
   totalTransactionsFound: number;
+  lastProcessedStakeReturnHeight?: number;
+  lastPhase3Issue?: string;
+  lastPhase3IssueTimestamp?: number;
 }
 
 export interface ScanCompletionProof {
@@ -393,6 +396,9 @@ export async function completeScanJournal(
           lastCompletedTimestamp: Date.now(),
           scannedChunks: Array.from(mergedScannedChunks),
           totalTransactionsFound: (existing?.totalTransactionsFound || 0) + journal.transactionsFound,
+          lastProcessedStakeReturnHeight: existing?.lastProcessedStakeReturnHeight || 0,
+          lastPhase3Issue: existing?.lastPhase3Issue,
+          lastPhase3IssueTimestamp: existing?.lastPhase3IssueTimestamp,
         };
 
         checkpointStore.put(checkpoint);
@@ -995,6 +1001,43 @@ export async function saveBalanceCheckpoint(
       entry.lastUpdateTimestamp = Date.now();
 
       store.put(entry);
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function saveCheckpointMetadata(
+  walletAddress: string,
+  metadata: Partial<
+    Pick<
+      ScanCheckpoint,
+      'lastProcessedStakeReturnHeight' | 'lastPhase3Issue' | 'lastPhase3IssueTimestamp'
+    >
+  >
+): Promise<void> {
+  const db = await openJournalDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CHECKPOINT_STORE, 'readwrite');
+    const store = tx.objectStore(CHECKPOINT_STORE);
+    const getRequest = store.get(walletAddress);
+
+    getRequest.onsuccess = () => {
+      const existing = (getRequest.result as ScanCheckpoint | undefined) || {
+        walletAddress,
+        lastCompletedScanId: '',
+        lastCompletedHeight: 0,
+        lastCompletedTimestamp: 0,
+        scannedChunks: [],
+        totalTransactionsFound: 0,
+      };
+
+      store.put({
+        ...existing,
+        ...metadata,
+      } as ScanCheckpoint);
     };
 
     tx.oncomplete = () => resolve();

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, memo } from 'react';
+import React, { useState, useMemo, useCallback, memo, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWallet } from '../services/WalletContext';
 import { ArrowUpRight, ArrowDownLeft, Layers, Clock, ChevronLeft, ChevronRight, Lock } from './Icons';
@@ -67,6 +67,7 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
   const transactions = propTransactions || wallet.transactions;
   const currentHeight = wallet.syncStatus.daemonHeight || 0;
   const [currentPage, setCurrentPage] = useState(1);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   // Calculate pagination
   const ITEMS_PER_VIEW = compact ? 10 : ITEMS_PER_PAGE;
@@ -78,12 +79,39 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
     ? transactions.slice(0, currentPage * ITEMS_PER_VIEW)
     : transactions.slice(startIndex, endIndex);
 
-  // Memoize pagination callback to prevent unnecessary re-renders
-  const goToPage = useCallback((page: number) => {
-    if (page >= 1 && page <= totalPages) {
-      setCurrentPage(page);
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [compact, transactions.length]);
+
+  useEffect(() => {
+    if (!compact) return undefined;
+    if (currentPage >= totalPages) return undefined;
+
+    const sentinel = loadMoreRef.current;
+    if (!sentinel) return undefined;
+
+    let root: Element | null = sentinel.parentElement;
+    while (root && root instanceof HTMLElement && root !== document.body) {
+      const style = window.getComputedStyle(root);
+      const isScrollable = /(auto|scroll)/.test(style.overflowY) || /(auto|scroll)/.test(style.overflow);
+      if (isScrollable) break;
+      root = root.parentElement;
     }
-  }, [totalPages]);
+
+    const observer = new IntersectionObserver((entries) => {
+      const [entry] = entries;
+      if (entry?.isIntersecting) {
+        setCurrentPage((page) => (page < totalPages ? page + 1 : page));
+      }
+    }, {
+      root: root instanceof HTMLElement ? root : null,
+      rootMargin: '96px 0px',
+      threshold: 0.1
+    });
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [compact, currentPage, totalPages]);
 
   // Memoize helper functions
   const getIcon = useCallback((type: string, txTypeLabel?: string) => {
@@ -192,10 +220,9 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
           </div>
         ))}
         {currentPage < totalPages && (
-          <div className="text-center pt-2">
-            <button onClick={() => goToPage(currentPage + 1)} className="text-xs text-text-muted hover:text-white transition-colors">
-              {t('transactions.loadMore')}
-            </button>
+          <div ref={loadMoreRef} className="flex items-center justify-center py-3 text-xs text-text-muted">
+            <Clock size={12} className="mr-2 animate-pulse" />
+            Loading more
           </div>
         )}
       </div>

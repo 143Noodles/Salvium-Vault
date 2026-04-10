@@ -18,6 +18,53 @@ export function normalizeWalletStorageNetwork(
   return fallback;
 }
 
+export function inferWalletStorageNetworkFromAddress(address: unknown): WalletStorageNetwork | null {
+  const normalized = String(address || '').trim();
+  if (!normalized) return null;
+
+  if (
+    normalized.startsWith('SC1Ts') ||
+    normalized.startsWith('SC1Ti') ||
+    normalized.startsWith('SC1T')
+  ) {
+    return 'testnet';
+  }
+
+  if (
+    normalized.startsWith('SC1Ss') ||
+    normalized.startsWith('SC1Si') ||
+    normalized.startsWith('SC1S')
+  ) {
+    return 'stagenet';
+  }
+
+  if (
+    normalized.startsWith('SC1s') ||
+    normalized.startsWith('SC1i') ||
+    normalized.startsWith('SC1')
+  ) {
+    return 'mainnet';
+  }
+
+  return null;
+}
+
+export function resolveWalletStorageNetworkForRecord(
+  network: unknown,
+  address: unknown
+): WalletStorageNetwork | null {
+  const declaredNetwork = network === undefined || network === null || network === ''
+    ? null
+    : normalizeWalletStorageNetwork(network);
+  const inferredNetwork = inferWalletStorageNetworkFromAddress(address);
+
+  if (declaredNetwork && inferredNetwork && declaredNetwork !== inferredNetwork) {
+    return null;
+  }
+
+  return declaredNetwork || inferredNetwork;
+}
+
 export function getWalletStorageKey(network: WalletStorageNetwork): string {
   return `${LEGACY_WALLET_STORAGE_KEY}_${network}`;
 }

@@ -20,6 +20,7 @@ interface SendPageProps {
     address?: string;
     amount?: string;
     paymentId?: string;
+    assetType?: string;
   };
   enableAssetSend?: boolean;
 }
@@ -102,6 +103,7 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
       if (initialParams.address) setAddress(initialParams.address);
       if (initialParams.amount) setAmount(initialParams.amount);
       if (initialParams.paymentId) setPaymentId(initialParams.paymentId);
+      if (initialParams.assetType) setSelectedAssetType(initialParams.assetType);
     }
   }, [initialParams]);
 
@@ -119,8 +121,16 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
         if (cancelled) return;
         const normalizedTokens = tokens
           .map((t) => t.trim())
-          .filter((t) => t.length > 0 && t.toUpperCase() !== 'SAL' && t.toUpperCase() !== 'SAL1' && t.toUpperCase() !== 'BURN');
-        setAssetOptions(['SAL1', ...normalizedTokens]);
+          .filter((t) => t.length > 0 && t.toUpperCase() !== 'SAL' && t.toUpperCase() !== 'SAL1' && t.toUpperCase() !== 'BURN')
+          .filter((t) => {
+            const { balanceAtomic, unlockedBalanceAtomic } = walletService.getAssetBalanceAtomic(t);
+            return balanceAtomic !== '0' || unlockedBalanceAtomic !== '0';
+          });
+        const nextOptions = ['SAL1', ...normalizedTokens];
+        setAssetOptions(nextOptions);
+        if (initialParams?.assetType && nextOptions.includes(initialParams.assetType)) {
+          setSelectedAssetType(initialParams.assetType);
+        }
       } catch {
         if (!cancelled) {
           setAssetOptions(['SAL1']);
@@ -131,7 +141,7 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
     return () => {
       cancelled = true;
     };
-  }, [enableAssetSend]);
+  }, [enableAssetSend, initialParams]);
 
   const baseUnlockedBalance = wallet.balance.unlockedBalanceSAL || wallet.balance.unlockedBalance / 1e8;
   const selectedAssetBalance = enableAssetSend ? walletService.getAssetBalance(selectedAssetType) : null;
@@ -241,13 +251,7 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
       );
       setTxHash(hash);
       setSentSuccess(true);
-      // Update contact usage if applicable (method may not exist)
-      const contact = wallet.contacts?.find(c => c.address === address);
-      if (contact && typeof wallet.updateContactUsage === 'function') {
-        wallet.updateContactUsage(contact.id);
-      }
     } catch (err: any) {
-      void 0 && console.error('Variable error:', err);
       setError(err.message || 'Failed to send transaction');
     } finally {
       setIsSending(false);
@@ -301,7 +305,6 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
       closeSweepModal();
       setShowSweepSuccess(true);
     } catch (err: any) {
-      void 0 && console.error('Sweep failed:', err);
       setSweepError(err.message || 'Failed to sweep funds');
     } finally {
       setIsSweeping(false);
@@ -635,8 +638,8 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
                           await navigator.clipboard.writeText(txHash);
                           setTxHashCopied(true);
                           setTimeout(() => setTxHashCopied(false), 2000);
-                        } catch (err) {
-                          void 0 && console.error('Failed to copy:', err);
+                        } catch {
+                          // Clipboard write failed
                         }
                       }}
                       className="p-2 text-text-muted hover:text-white transition-colors rounded-lg hover:bg-white/10 flex-shrink-0"
@@ -728,7 +731,7 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
                     }}
                     className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-text-muted hover:text-accent-primary transition-colors"
                   >
-                    <Camera classname="w-4 h-4" />
+                    <Camera className="w-4 h-4" />
                   </button>
                 </div>
               </div>
@@ -738,7 +741,11 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
               <Button variant="ghost" onClick={closeModal}>{t('common.cancel')}</Button>
               <Button onClick={() => {
                 if (editingContact) {
-                  wallet.updateContact(editingContact.id, { name: contactName, address: contactAddress });
+                  wallet.updateContact({
+                    ...editingContact,
+                    name: contactName,
+                    address: contactAddress,
+                  });
                 } else {
                   wallet.addContact(contactName, contactAddress);
                 }

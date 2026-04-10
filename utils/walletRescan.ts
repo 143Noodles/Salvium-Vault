@@ -15,7 +15,6 @@ export interface StoredWalletForRescan {
   scannedRanges?: unknown;
   cachedBalance?: unknown;
   cachedTransactions?: unknown;
-  cachedStakes?: unknown;
   cachedSubaddresses?: unknown;
   cachedWalletHistory?: unknown;
   cachedOutputsHex?: string;
@@ -36,7 +35,6 @@ export function prepareStoredWalletForFullRescan<T extends StoredWalletForRescan
   delete next.scannedRanges;
   delete next.cachedBalance;
   delete next.cachedTransactions;
-  delete next.cachedStakes;
   delete next.cachedWalletHistory;
   delete next.cachedOutputsHex;
   delete next.cachedSpentKeyImages;

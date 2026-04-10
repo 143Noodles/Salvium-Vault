@@ -168,8 +168,7 @@ const StakingPage: React.FC = () => {
                monthlyRate: fallbackMonthlyRate
             });
          }
-      } catch (e) {
-         void 0 && console.warn('[StakingPage] Failed to fetch staking stats from Explorer:', e);
+      } catch {
          // Fallback to estimated APY on error
          setCurrentApy(10.5);
          setStakingStats({
@@ -322,7 +321,6 @@ const StakingPage: React.FC = () => {
          // Clear success message after 10 seconds
          setTimeout(() => setStakeSuccess(null), 10000);
       } catch (err: any) {
-         void 0 && console.error('[StakingPage] Stake failed:', err);
          setStakeError(err.message || 'Failed to create stake transaction');
       } finally {
          setIsStaking(false);

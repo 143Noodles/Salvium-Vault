@@ -32,6 +32,7 @@ import {
   isRecoverySafe,
   forceCleanSlate,
   saveBalanceCheckpoint,
+  saveCheckpointMetadata,
   type ScanCheckpoint,
 } from './ScanJournal';
 
@@ -39,6 +40,10 @@ import {
   startMobileScanAudio,
   stopMobileScanAudio,
 } from './SilentAudio';
+import {
+  shouldUseNarrowPhase3IncrementalWindow,
+  type RecoveryAction,
+} from '../utils/scanPolicy';
 
 
 /**
@@ -145,7 +150,7 @@ async function acquireWakeLock(): Promise<void> {
       });
     } catch (err: any) {
       // Wake lock request failed (low battery, not visible, etc.)
-      void DEBUG && console.warn('[CSPScanService] Wake lock unavailable:', err?.message || err);
+      if (DEBUG) console.warn('[CSPScanService] Wake lock unavailable:', err?.message || err);
     }
   }
 }
@@ -368,6 +373,8 @@ class CSPScanService {
 
   // Scan session tracking - prevents cross-contamination between interrupted/restarted scans
   private currentScanId: string | null = null;
+  private currentWalletAddress: string | null = null;
+  private currentRecoveryAction: RecoveryAction = 'continue';
 
   private constructor() { }
 
@@ -420,8 +427,8 @@ class CSPScanService {
       // Step 1: Check for interruption with in-progress chunks
       const interruptCheck = await wasInterrupted(walletAddress);
       if (interruptCheck.interrupted && interruptCheck.inProgressChunks.length > 0) {
-        void DEBUG && console.error(`[CSPScanService] CRITICAL: Found ${interruptCheck.inProgressChunks.length} chunks in-progress at interruption`);
-        void DEBUG && console.error('[CSPScanService] These chunks may have partial/corrupted data - forcing full rescan');
+        if (DEBUG) console.error(`[CSPScanService] CRITICAL: Found ${interruptCheck.inProgressChunks.length} chunks in-progress at interruption`);
+        if (DEBUG) console.error('[CSPScanService] These chunks may have partial/corrupted data - forcing full rescan');
 
         // Clear all state and force fresh start
         await forceCleanSlate(walletAddress);
@@ -459,12 +466,12 @@ class CSPScanService {
       if (this.scanner) {
         const workersHealthy = await this.scanner.verifyWorkerHealth();
         if (!workersHealthy) {
-          void DEBUG && console.warn('[CSPScanService] Workers unhealthy - attempting reinit');
+          if (DEBUG) console.warn('[CSPScanService] Workers unhealthy - attempting reinit');
           await this.scanner.reinitializeWorkers();
 
           const recheckHealthy = await this.scanner.verifyWorkerHealth();
           if (!recheckHealthy) {
-            void DEBUG && console.error('[CSPScanService] Workers still unhealthy after reinit - forcing full rescan');
+            if (DEBUG) console.error('[CSPScanService] Workers still unhealthy after reinit - forcing full rescan');
             await forceCleanSlate(walletAddress);
 
             return {
@@ -488,7 +495,7 @@ class CSPScanService {
         if (wallet) {
           const addr = wallet.get_address();
           if (typeof addr !== 'string' || addr.length === 0) {
-            void DEBUG && console.error('[CSPScanService] WASM wallet state invalid - forcing full rescan');
+            if (DEBUG) console.error('[CSPScanService] WASM wallet state invalid - forcing full rescan');
             await forceCleanSlate(walletAddress);
 
             return {
@@ -503,7 +510,7 @@ class CSPScanService {
           }
         }
       } catch (e) {
-        void DEBUG && console.error('[CSPScanService] Failed to validate WASM wallet - forcing full rescan');
+        if (DEBUG) console.error('[CSPScanService] Failed to validate WASM wallet - forcing full rescan');
         await forceCleanSlate(walletAddress);
 
         return {
@@ -544,7 +551,7 @@ class CSPScanService {
 
     } catch (error) {
       // ANY error during validation = force full rescan
-      void DEBUG && console.error('[CSPScanService] Error during resume validation - forcing full rescan:', error);
+      if (DEBUG) console.error('[CSPScanService] Error during resume validation - forcing full rescan:', error);
       try {
         await forceCleanSlate(walletAddress);
       } catch {
@@ -577,6 +584,48 @@ class CSPScanService {
     if (this.isCancelled) return false;
     if (!this.isWalletValid(wallet)) return false;
     return true;
+  }
+
+  private async hydrateIncrementalState(walletAddress: string): Promise<void> {
+    if (!walletAddress) {
+      this.lastProcessedStakeReturnHeight = 0;
+      this.currentWalletAddress = null;
+      return;
+    }
+
+    if (this.currentWalletAddress === walletAddress) {
+      return;
+    }
+
+    this.currentWalletAddress = walletAddress;
+    try {
+      const checkpoint = await getCheckpoint(walletAddress);
+      this.lastProcessedStakeReturnHeight = checkpoint?.lastProcessedStakeReturnHeight || 0;
+    } catch {
+      this.lastProcessedStakeReturnHeight = 0;
+    }
+  }
+
+  private async persistPhase3State(
+    walletAddress: string,
+    updates: {
+      lastProcessedStakeReturnHeight?: number;
+      lastPhase3Issue?: string;
+      clearPhase3Issue?: boolean;
+    }
+  ): Promise<void> {
+    if (!walletAddress) return;
+
+    await saveCheckpointMetadata(walletAddress, {
+      ...(updates.lastProcessedStakeReturnHeight !== undefined
+        ? { lastProcessedStakeReturnHeight: updates.lastProcessedStakeReturnHeight }
+        : {}),
+      ...(updates.clearPhase3Issue
+        ? { lastPhase3Issue: undefined, lastPhase3IssueTimestamp: undefined }
+        : updates.lastPhase3Issue
+          ? { lastPhase3Issue: updates.lastPhase3Issue, lastPhase3IssueTimestamp: Date.now() }
+          : {}),
+    });
   }
 
   static getInstance(): CSPScanService {
@@ -714,6 +763,7 @@ class CSPScanService {
       const wallet = walletService.getWallet();
       if (wallet) {
         walletAddressForJournal = wallet.get_address();
+        await this.hydrateIncrementalState(walletAddressForJournal);
 
         // Start journal entry
         await startScanJournal(
@@ -727,7 +777,7 @@ class CSPScanService {
         cleanupOldJournals(walletAddressForJournal, 7).catch(() => {});
       }
     } catch (e) {
-      void DEBUG && console.warn('[CSPScanService] Failed to start scan journal:', e);
+      if (DEBUG) console.warn('[CSPScanService] Failed to start scan journal:', e);
       // Continue without journal - not critical
     }
 
@@ -923,12 +973,14 @@ class CSPScanService {
     // Runtime scan safety flags from backend config (env-controlled).
     let disableStakeFilter = false;
     let forceSingleChunkScan = false;
+    let cspCacheEpoch = '';
     try {
       const networkResp = await fetchWithTimeout('/api/network', {}, 5000);
       if (networkResp.ok) {
         const cfg = await networkResp.json();
         disableStakeFilter = cfg?.disableStakeFilter === true;
         forceSingleChunkScan = cfg?.forceSingleChunkScan === true;
+        cspCacheEpoch = typeof cfg?.cspCacheEpoch === 'string' ? cfg.cspCacheEpoch : '';
       }
     } catch {
       // Fallback to host-based behavior if config fetch fails.
@@ -956,6 +1008,7 @@ class CSPScanService {
       subaddressMapCsv,
       returnAddressesCsv,
       stakeReturnHeights,
+      cspCacheEpoch,
       apiBaseUrl: '',
       // Auto-tuning: start small, ramp up to max as device allows
       autoTune: true,
@@ -1032,7 +1085,7 @@ class CSPScanService {
         // Flush immediately after phase 1 completes
         await flushPendingUpdates();
       } catch (e) {
-        void DEBUG && console.warn('[CSPScanService] Failed to record scanned chunks:', e);
+        if (DEBUG) console.warn('[CSPScanService] Failed to record scanned chunks:', e);
       }
     }
 
@@ -1063,10 +1116,34 @@ class CSPScanService {
       if (!this.shouldContinueScan(wallet)) {
         return { success: false, matches: [], matchCount: 0, blocksScanned: 0, blocksPerSecond: 0, error: 'Scan cancelled or wallet deleted', keyImagesCsv: '' };
       }
-      const rescanResult = await this.targetedRescan(wallet, matchedChunks, allMatches, reportProgress, startHeight, endHeight, isIncremental);
+      const rescanResult = await this.targetedRescan(
+        wallet,
+        matchedChunks,
+        allMatches,
+        reportProgress,
+        startHeight,
+        endHeight,
+        isIncremental,
+        this.currentRecoveryAction
+      );
       outputsFound = rescanResult.outputsFound;
       allProcessedChunks.push(...rescanResult.successfullyProcessedChunks);
       processedChunksForProof = [...allProcessedChunks];
+      if (rescanResult.phase3Degraded) {
+        const phase3Message = `Phase 3 post-processing incomplete: ${rescanResult.phase3Issues.join('; ')}`;
+        if (this.currentScanId) {
+          recordScanError(this.currentScanId, phase3Message).catch(() => {});
+        }
+        return {
+          success: false,
+          matches: [],
+          matchCount: 0,
+          blocksScanned: result.blocksScanned || 0,
+          blocksPerSecond: result.blocksPerSecond || 0,
+          error: phase3Message,
+          keyImagesCsv: ''
+        };
+      }
     }
 
     // Check if Phase 2b will be needed (before Phase 3)
@@ -1377,7 +1454,7 @@ class CSPScanService {
             processedChunks: processedChunksForProof,
           });
         } catch (e) {
-          void DEBUG && console.warn('[CSPScanService] Failed to complete scan journal:', e);
+          if (DEBUG) console.warn('[CSPScanService] Failed to complete scan journal:', e);
         }
       }
     }
@@ -1484,7 +1561,19 @@ class CSPScanService {
         // any transactions that were already processed in Phase 2.
         // Note: Phase 2 derives return addresses during processing, but due to timing within
         // the ingest call, not all return outputs may be found. Phase 2b ensures they're caught.
-        const returnRescanResult = await this.targetedRescan(wallet, returnMatchedChunks, returnMatches, phase2bRescanProgress, startHeight, endHeight, true);
+        const returnRescanResult = await this.targetedRescan(
+          wallet,
+          returnMatchedChunks,
+          returnMatches,
+          phase2bRescanProgress,
+          startHeight,
+          endHeight,
+          true,
+          this.currentRecoveryAction
+        );
+        if (returnRescanResult.phase3Degraded) {
+          throw new Error(`Phase 3 post-processing incomplete during Phase 2b: ${returnRescanResult.phase3Issues.join('; ')}`);
+        }
         outputsFound = returnRescanResult.outputsFound;
 
         reportPhase2bProgress(0.9, 'Finalizing...');
@@ -1531,7 +1620,7 @@ class CSPScanService {
             processedChunks: processedChunksForProof,
           });
         } catch (e) {
-          void DEBUG && console.warn('[CSPScanService] Failed to complete scan journal after Phase 2b:', e);
+          if (DEBUG) console.warn('[CSPScanService] Failed to complete scan journal after Phase 2b:', e);
         }
       }
 
@@ -1579,6 +1668,12 @@ class CSPScanService {
   resetIncrementalState(): void {
     this.lastProcessedStakeReturnHeight = 0;
     this.registeredStakeInfo = false;
+    this.currentWalletAddress = null;
+    this.currentRecoveryAction = 'continue';
+  }
+
+  setRecoveryAction(action: RecoveryAction): void {
+    this.currentRecoveryAction = action;
   }
 
   resetCancellation(): void {
@@ -1638,20 +1733,21 @@ class CSPScanService {
     onProgress?: (progress: ScanProgress) => void,
     scanStartHeight?: number,
     scanEndHeight?: number,
-    isIncremental: boolean = false
-  ): Promise<{ outputsFound: number; successfullyProcessedChunks: number[]; minConfirmedHeight: number }> {
+    isIncremental: boolean = false,
+    recoveryAction: RecoveryAction = 'continue'
+  ): Promise<{ outputsFound: number; successfullyProcessedChunks: number[]; minConfirmedHeight: number; phase3Degraded: boolean; phase3Issues: string[] }> {
     if (!wallet || typeof wallet.ingest_sparse_transactions !== 'function') {
-      return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0 };
+      return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0, phase3Degraded: false, phase3Issues: [] };
     }
 
     if (!this.shouldContinueScan(wallet)) {
-      return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0 };
+      return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0, phase3Degraded: false, phase3Issues: [] };
     }
 
     const { walletService } = await import('./WalletService');
     const Module = walletService.getModule();
 
-    if (!Module) return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0 };
+    if (!Module) return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0, phase3Degraded: false, phase3Issues: [] };
 
     // 1. Prepare Match Data
     const matchesByChunk = new Map<number, number[]>();
@@ -1677,6 +1773,7 @@ class CSPScanService {
     const allStakeHeights: number[] = [];
     const allAuditHeights: number[] = [];
     let totalOutputsFound = 0;
+    const phase3Issues: string[] = [];
     // Track lowest confirmed height
     let minConfirmedHeight = Number.MAX_SAFE_INTEGER;
 
@@ -2044,8 +2141,11 @@ class CSPScanService {
     const STAKE_RETURN_OFFSET = 21601;
 
     // Determine if this is an incremental scan (small range, e.g., 1-10 blocks)
-    const scanRange = (scanEndHeight || 0) - (scanStartHeight || 0);
-    const isIncrementalScan = scanRange <= 100;
+    const isIncrementalScan = shouldUseNarrowPhase3IncrementalWindow(
+      scanStartHeight || 0,
+      scanEndHeight || 0,
+      recoveryAction
+    );
 
 
 
@@ -2073,8 +2173,8 @@ class CSPScanService {
           this.registeredStakeInfo = true;
         }
       }
-    } catch {
-      // Phase 3a failed
+    } catch (error) {
+      phase3Issues.push(`Phase 3a failed: ${(error as Error)?.message || String(error)}`);
     }
 
     // Phase 3b: Fetch stake return blocks (INCREMENTAL OPTIMIZATION)
@@ -2104,8 +2204,9 @@ class CSPScanService {
 
         // Update last processed height
         this.lastProcessedStakeReturnHeight = scanEndHeight || networkHeight;
-      } catch {
-        // Phase 3b failed
+      } catch (error) {
+        this.lastProcessedStakeReturnHeight = 0;
+        phase3Issues.push(`Phase 3b failed: ${(error as Error)?.message || String(error)}`);
       }
     }
 
@@ -2115,8 +2216,26 @@ class CSPScanService {
         const networkHeight = await this.getNetworkHeight();
         const auditResult = await this.fetchAuditReturnsSparse(wallet, Module, allAuditHeights, networkHeight);
         if (auditResult.txsMatched > 0) totalOutputsFound += auditResult.txsMatched;
+      } catch (error) {
+        phase3Issues.push(`Phase 3c failed: ${(error as Error)?.message || String(error)}`);
+      }
+    }
+
+    if (this.currentWalletAddress) {
+      try {
+        if (phase3Issues.length > 0) {
+          await this.persistPhase3State(this.currentWalletAddress, {
+            lastProcessedStakeReturnHeight: 0,
+            lastPhase3Issue: phase3Issues[0],
+          });
+        } else {
+          await this.persistPhase3State(this.currentWalletAddress, {
+            lastProcessedStakeReturnHeight: this.lastProcessedStakeReturnHeight,
+            clearPhase3Issue: true,
+          });
+        }
       } catch {
-        // Phase 3c failed
+        // Best-effort checkpoint metadata update
       }
     }
 
@@ -2132,7 +2251,9 @@ class CSPScanService {
     return {
       outputsFound: totalOutputsFound,
       successfullyProcessedChunks: [...successfullyIngestedChunks],
-      minConfirmedHeight: minConfirmedHeight === Number.MAX_SAFE_INTEGER ? 0 : minConfirmedHeight
+      minConfirmedHeight: minConfirmedHeight === Number.MAX_SAFE_INTEGER ? 0 : minConfirmedHeight,
+      phase3Degraded: phase3Issues.length > 0,
+      phase3Issues
     };
   }
 

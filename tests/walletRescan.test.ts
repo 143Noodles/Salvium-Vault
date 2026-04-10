@@ -24,7 +24,6 @@ describe('walletRescan', () => {
       scannedRanges: [{ start: 440000, end: 449999 }],
       cachedBalance: { balance: 12 },
       cachedTransactions: [{ hash: 'tx1' }],
-      cachedStakes: [{ txid: 'stake1' }],
       cachedSubaddresses: [{ index: 1, label: 'Savings' }],
       cachedWalletHistory: [{ date: '2026-03-09', value: 1 }],
       cachedOutputsHex: 'deadbeef',
@@ -43,7 +42,6 @@ describe('walletRescan', () => {
     expect(wallet).not.toHaveProperty('scannedRanges');
     expect(wallet).not.toHaveProperty('cachedBalance');
     expect(wallet).not.toHaveProperty('cachedTransactions');
-    expect(wallet).not.toHaveProperty('cachedStakes');
     expect(wallet).not.toHaveProperty('cachedWalletHistory');
     expect(wallet).not.toHaveProperty('cachedOutputsHex');
     expect(wallet).not.toHaveProperty('cachedSpentKeyImages');

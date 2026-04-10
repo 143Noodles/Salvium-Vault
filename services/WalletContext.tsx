@@ -7,25 +7,28 @@ import React, { createContext, useContext, useState, useEffect, useCallback, Rea
 import { flushSync } from 'react-dom';
 
 // Import existing services
-import { walletService, WalletKeys, WalletTransaction, BalanceInfo, SyncStatus } from './WalletService';
+import {
+    walletService,
+    WalletKeys,
+    WalletStakeLifecycle,
+    WalletStakeLifecycleEntry,
+    WalletTransaction,
+    BalanceInfo,
+    SyncStatus,
+    WalletStateSnapshot,
+    getDisplayAssetBalanceFromSnapshot
+} from './WalletService';
 import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache, saveReturnAddressesToCache } from './CSPScanService';
 import { encrypt, decrypt } from './CryptoService';
 import { initDesktopSilentAudio } from './SilentAudio';
 import { forceCleanSlate, getCheckpoint } from './ScanJournal';
 import {
-    applyActiveStakeDisplayBalance,
-    buildStakeDisplayState,
     clampUnlockedBalance,
     getActiveStakeAmount,
-    hasBalanceInfoChanged,
-    hasLargeBalanceProjectionMismatch,
     hasActiveStakeBalanceChanged,
-    hydrateStakeStatuses,
-    normalizeStakeInclusiveDisplayBalance,
-    normalizeLegacyCachedBalance,
-    projectDisplayBalanceFromTransactions,
-    resolveUnlockedBalance
+    hasBalanceInfoChanged,
 } from '../utils/walletBalance';
+import { buildWalletHistory } from '../utils/chartHistory';
 import {
     findNewTransactionsByDirection,
     mergeTransactionLifecycle,
@@ -36,6 +39,7 @@ import {
     getWalletRescanCacheKeys,
     prepareStoredWalletForFullRescan
 } from '../utils/walletRescan';
+import { computeIncrementalScanStartHeight } from '../utils/scanPolicy';
 import {
     walletStateService,
     WalletStateHealth,
@@ -51,6 +55,7 @@ import {
     LEGACY_WALLET_CREATED_KEY,
     LEGACY_WALLET_STORAGE_KEY,
     normalizeWalletStorageNetwork,
+    resolveWalletStorageNetworkForRecord,
     type WalletStorageNetwork
 } from '../utils/walletStorage';
 
@@ -157,6 +162,20 @@ async function saveToIndexedDB(key: string, value: string): Promise<{ success: b
     }
 }
 
+async function saveToIndexedDBIfChanged(
+    key: string,
+    nextValue: string,
+    currentValue?: string | null
+): Promise<{ success: boolean; skipped: boolean; error?: 'quota' | 'unknown'; message?: string }> {
+    const existingValue = currentValue !== undefined ? currentValue : await loadFromIndexedDB(key);
+    if (existingValue === nextValue) {
+        return { success: true, skipped: true };
+    }
+
+    const result = await saveToIndexedDB(key, nextValue);
+    return { ...result, skipped: false };
+}
+
 /**
  * Check available storage (if Storage API is available)
  */
@@ -237,10 +256,34 @@ function getCurrentTabHeartbeatKey(): string {
 
 function canUseWalletForCurrentNetwork(wallet: any, currentNetwork: WalletStorageNetwork): boolean {
     if (!wallet?.address) return false;
-    if (wallet.network) {
-        return normalizeWalletStorageNetwork(wallet.network) === currentNetwork;
-    }
-    return currentNetwork === 'mainnet';
+    return resolveWalletStorageNetworkForRecord(wallet.network, wallet.address) === currentNetwork;
+}
+
+function canRecoverWalletFromStoredSeed(wallet: any): boolean {
+    return Boolean(wallet?.encryptedSeed && wallet?.iv && wallet?.salt);
+}
+
+function buildRecoverableWalletForCurrentNetwork(wallet: any, currentNetwork: WalletStorageNetwork): any {
+    const recoverableWallet = {
+        ...wallet,
+        network: currentNetwork,
+        address: '',
+        height: 0,
+        completedChunks: [],
+        lastScanTimestamp: 0
+    };
+
+    delete recoverableWallet.cachedBalance;
+    delete recoverableWallet.cachedTransactions;
+    delete recoverableWallet.cachedSubaddresses;
+    delete recoverableWallet.cachedWalletHistory;
+    delete recoverableWallet.cachedOutputsHex;
+    delete recoverableWallet.cachedSpentKeyImages;
+    delete recoverableWallet.lastBlockHash;
+    delete recoverableWallet.snapshotHeight;
+    delete recoverableWallet.scannedRanges;
+
+    return recoverableWallet;
 }
 
 function markStoredWalletCreated(): void {
@@ -476,69 +519,49 @@ function safeReadWallet(): any | null {
     const storageKey = getWalletStorageKey(currentNetwork);
     const backupKey = getWalletBackupKey(currentNetwork);
     const tempKey = getWalletTempKey(currentNetwork);
+    const candidateKeys = [storageKey, backupKey, tempKey, LEGACY_WALLET_STORAGE_KEY];
+    let recoverableWallet: any | null = null;
 
-    try {
-        const mainData = localStorage.getItem(storageKey);
-        if (mainData) {
-            const parsed = JSON.parse(mainData);
+    for (const candidateKey of candidateKeys) {
+        try {
+            const raw = localStorage.getItem(candidateKey);
+            if (!raw) continue;
+
+            const parsed = JSON.parse(raw);
             if (canUseWalletForCurrentNetwork(parsed, currentNetwork)) {
-                if (!parsed.network) {
-                    parsed.network = currentNetwork;
-                    safeWriteWallet(parsed);
+                const trustedWallet = {
+                    ...parsed,
+                    network: resolveWalletStorageNetworkForRecord(parsed.network, parsed.address) || currentNetwork
+                };
+
+                if (candidateKey === tempKey) {
+                    localStorage.setItem(storageKey, JSON.stringify(trustedWallet));
+                    localStorage.removeItem(tempKey);
+                } else if (candidateKey !== storageKey || parsed.network !== trustedWallet.network) {
+                    localStorage.setItem(storageKey, JSON.stringify(trustedWallet));
                 }
-                return parsed;
-            }
-        }
-    } catch { }
 
-    try {
-        const backupData = localStorage.getItem(backupKey);
-        if (backupData) {
-            const parsed = JSON.parse(backupData);
-            if (canUseWalletForCurrentNetwork(parsed, currentNetwork)) {
-                localStorage.setItem(storageKey, backupData);
-                return parsed;
-            }
-        }
-    } catch { }
-
-    try {
-        const tempData = localStorage.getItem(tempKey);
-        if (tempData) {
-            const parsed = JSON.parse(tempData);
-            if (canUseWalletForCurrentNetwork(parsed, currentNetwork)) {
-                localStorage.setItem(storageKey, tempData);
-                localStorage.removeItem(tempKey);
-                return parsed;
-            }
-        }
-    } catch { }
-
-    try {
-        const legacyData = localStorage.getItem(LEGACY_WALLET_STORAGE_KEY);
-        if (legacyData) {
-            const parsed = JSON.parse(legacyData);
-            if (canUseWalletForCurrentNetwork(parsed, currentNetwork)) {
-                if (!parsed.network) {
-                    parsed.network = currentNetwork;
+                if (trustedWallet.network === 'mainnet') {
+                    localStorage.setItem(LEGACY_WALLET_STORAGE_KEY, JSON.stringify(trustedWallet));
                 }
-                safeWriteWallet(parsed);
-                markStoredWalletCreated();
-                return parsed;
-            }
-        }
-    } catch { }
 
-    return null;
+                return trustedWallet;
+            }
+
+            if (!recoverableWallet && canRecoverWalletFromStoredSeed(parsed)) {
+                recoverableWallet = buildRecoverableWalletForCurrentNetwork(parsed, currentNetwork);
+            }
+        } catch { }
+    }
+
+    return recoverableWallet;
 }
 
 // Chunk Completion Tracking (Gap Detection)
 const CHUNK_SIZE = 1000;
 const MAX_TRACKED_CHUNKS = 500;
-const INCREMENTAL_OVERLAP_CHUNKS = 6; // Always rescan last 6 chunks (6,000 blocks)
-const DEEP_OVERLAP_BLOCKS = 50000; // Periodic deep reconciliation window
-const DEEP_OVERLAP_INTERVAL_MS = 6 * 60 * 60 * 1000; // Every 6 hours
-const DEEP_OVERLAP_LAST_RUN_KEY = 'salvium_deep_overlap_last_run';
+const INCREMENTAL_OVERLAP_CHUNKS = 2; // Routine new-block scans only need a small safety overlap now that WASM is authoritative
+const BALANCE_INTEGRITY_RECOVERY_CHUNKS = 2;
 
 function getChunkStart(height: number): number {
     return Math.floor(height / CHUNK_SIZE) * CHUNK_SIZE;
@@ -794,7 +817,6 @@ interface EncryptedWallet {
         unlockedBalanceSAL: number;
     };
     cachedTransactions?: WalletTransaction[];
-    cachedStakes?: Stake[];
     cachedSubaddresses?: SubAddress[];
     cachedWalletHistory?: ChartDataPoint[];
     // WASM wallet outputs (enables sending after page refresh)
@@ -829,7 +851,7 @@ interface WalletContextType {
     // Transactions
     transactions: WalletTransaction[];
 
-    // Stakes (parsed from transactions)
+    // Stakes (native lifecycle state)
     stakes: Stake[];
 
     // Subaddresses
@@ -849,6 +871,7 @@ interface WalletContextType {
     lockWallet: () => void;
     startScan: (fromHeight?: number) => Promise<void>;
     sendTransaction: (address: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string) => Promise<string>;
+    createTokenTransaction: (assetType: string, supply: string, size: number, metadata?: string, burnCostSal?: number) => Promise<string[]>;
     stakeTransaction: (amount: number, sweepAll?: boolean) => Promise<string>;
     returnTransaction: (txid: string) => Promise<string>;
     sweepAllTransaction: (address: string) => Promise<string[]>;
@@ -885,6 +908,36 @@ export const useWallet = () => {
 
 interface WalletProviderProps {
     children: ReactNode;
+}
+
+function atomicToAmount(value: string | undefined): number {
+    try {
+        const atomic = BigInt(value || '0');
+        return Number(atomic / 100000000n) + Number(atomic % 100000000n) / 1e8;
+    } catch {
+        return 0;
+    }
+}
+
+function isNativeAuditEnabled(): boolean {
+    if (typeof window === 'undefined') {
+        return false;
+    }
+
+    try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('nativeAudit') === '1') {
+            return true;
+        }
+    } catch {
+        // Ignore invalid URL state
+    }
+
+    try {
+        return window.localStorage.getItem('nativeAudit') === '1';
+    } catch {
+        return false;
+    }
 }
 
 export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
@@ -964,16 +1017,18 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const needsFullRescanRef = React.useRef(false);
 
     // Ref to hold latest startScan function (avoids dependency churn in useEffects)
-    const startScanRef = React.useRef<(fromHeight?: number) => Promise<void>>();
+    const startScanRef = React.useRef<((fromHeight?: number) => Promise<void>) | undefined>(undefined);
 
     // Page Visibility API tracking (for gap detection after browser tab suspension)
     const pageHiddenTimestampRef = React.useRef<number>(0);
     const needsGapCheckRef = React.useRef<boolean>(false);
     const lastKnownWasmHeightRef = React.useRef<number>(0);
     const scanTargetHeightRef = React.useRef<number>(0); // Track target height of current scan to prevent duplicate SSE scans
-    const testVaultBalanceProjectionRef = React.useRef(false);
+    const nativeAuditEnabledRef = React.useRef(isNativeAuditEnabled());
     const fullRescanNeedsReturnedTransferScanRef = React.useRef(false);
+    const fullWalletCacheImportedRef = React.useRef(false);
     const preferredScanStartHeightRef = React.useRef<number | undefined>(undefined);
+    const lastNativeSnapshotRef = React.useRef<WalletStateSnapshot | null>(null);
 
     // Multi-tab locking state
     const [isLockedByAnotherTab, setIsLockedByAnotherTab] = useState(false);
@@ -987,65 +1042,264 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         try {
             const response = await fetch('/api/network');
             if (!response.ok) {
-                testVaultBalanceProjectionRef.current = false;
+                nativeAuditEnabledRef.current = isNativeAuditEnabled();
                 return null;
             }
 
             const data = await response.json();
-            testVaultBalanceProjectionRef.current = data?.forceSingleChunkScan === true;
+            void data;
+            nativeAuditEnabledRef.current = isNativeAuditEnabled();
             return data;
         } catch {
-            testVaultBalanceProjectionRef.current = false;
+            nativeAuditEnabledRef.current = isNativeAuditEnabled();
             return null;
         }
     }, []);
 
-    const reconcileDisplayBalanceForTestVault = useCallback((
-        baseBalance: BalanceInfo,
+    const getAuthoritativeNativeBalance = useCallback((
+        fallbackBalance: BalanceInfo
+    ): { balance: BalanceInfo; snapshot: WalletStateSnapshot | null } => {
+        const snapshot = walletService.getStateSnapshot();
+        const snapshotBalance =
+            (snapshot?.success ? getDisplayAssetBalanceFromSnapshot(snapshot) : null) ||
+            (walletService.hasWallet() ? walletService.getBalance() : fallbackBalance);
+        return {
+            balance: clampUnlockedBalance(snapshotBalance),
+            snapshot: snapshot?.success ? snapshot : null
+        };
+    }, []);
+
+    const getPreferredHydratedBalance = useCallback((
+        cachedBalance: BalanceInfo | null | undefined,
         transactions: WalletTransaction[],
         stakes: Stake[],
         currentHeight: number
-    ): { baseBalance: BalanceInfo; displayBalance: BalanceInfo; usedProjection: boolean } => {
-        const normalizedStakeDisplay = normalizeStakeInclusiveDisplayBalance(
-            baseBalance,
-            transactions,
-            stakes,
-            currentHeight
+    ): BalanceInfo | null => {
+        const nativeBalanceState = getAuthoritativeNativeBalance(
+            cachedBalance || { balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 }
         );
-        const candidateDisplayBalance = normalizedStakeDisplay.displayBalance;
-        const normalizedBaseBalance = normalizedStakeDisplay.baseBalance;
 
-        if (!testVaultBalanceProjectionRef.current) {
+        if (walletService.hasWallet()) {
+            return nativeBalanceState.balance;
+        }
+
+        if (!cachedBalance) {
+            return null;
+        }
+
+        void transactions;
+        void stakes;
+        void currentHeight;
+        return clampUnlockedBalance(cachedBalance);
+    }, [getAuthoritativeNativeBalance]);
+
+    const captureNativeSnapshot = useCallback((
+        stage: string,
+        extra: Record<string, unknown> = {}
+    ): WalletStateSnapshot | null => {
+        const snapshot = walletService.getStateSnapshot();
+        if (!snapshot?.success) {
+            return null;
+        }
+
+        const payload = {
+            stage,
+            at: new Date().toISOString(),
+            totals: snapshot.totals,
+            wallet_height: snapshot.wallet_height,
+            refresh_start_height: snapshot.refresh_start_height,
+            daemon_height: snapshot.daemon_height,
+            transfer_count: snapshot.transfer_count,
+            key_image_count: snapshot.key_image_count,
+            locked_coin_count: snapshot.locked_coin_count,
+            assets: snapshot.assets,
+            extra,
+        };
+
+        lastNativeSnapshotRef.current = snapshot;
+
+        const globalWindow = window as typeof window & {
+            __walletStateSnapshots?: typeof payload[];
+        };
+        const existing = globalWindow.__walletStateSnapshots || [];
+        globalWindow.__walletStateSnapshots = [...existing.slice(-9), payload];
+
+        if (nativeAuditEnabledRef.current) {
+            console.warn('[WalletContext] Native wallet snapshot', payload);
+        }
+
+        return snapshot;
+    }, []);
+
+    const assessNativeSnapshotHealth = useCallback((
+        snapshot: WalletStateSnapshot | null,
+        balanceState: BalanceInfo
+    ): { ok: boolean; severity: 'warning' | 'critical'; issues: string[] } => {
+        if (!snapshot?.success) {
             return {
-                baseBalance: normalizedBaseBalance,
-                displayBalance: candidateDisplayBalance,
-                usedProjection: false
+                ok: false,
+                severity: 'warning',
+                issues: ['Native wallet snapshot unavailable'],
             };
         }
 
-        const projected = projectDisplayBalanceFromTransactions(
-            transactions,
-            stakes,
-            currentHeight
-        );
+        const issues: string[] = [];
+        const totalAtomic = BigInt(snapshot.totals.balance || '0');
+        const unlockedAtomic = BigInt(snapshot.totals.unlocked_balance || '0');
+        const lockedStakeAtomic = BigInt(snapshot.totals.locked_stake || '0');
 
-        if (
-            projected.confirmedTxCount === 0 ||
-            !hasLargeBalanceProjectionMismatch(candidateDisplayBalance, projected.displayBalance)
+        if (unlockedAtomic > totalAtomic) {
+            issues.push('Native snapshot reports unlocked balance greater than total balance');
+        }
+
+        const expectedLockedStake = Math.max(0, balanceState.balance - balanceState.unlockedBalance);
+        const snapshotLockedStake = Number(lockedStakeAtomic);
+        if (snapshotLockedStake > balanceState.balance) {
+            issues.push('Native snapshot locked stake exceeds native total balance');
+        } else if (
+            snapshotLockedStake > 0 &&
+            expectedLockedStake > 0 &&
+            snapshotLockedStake - expectedLockedStake > 10000000
         ) {
-            return {
-                baseBalance: normalizedBaseBalance,
-                displayBalance: candidateDisplayBalance,
-                usedProjection: false
-            };
+            // Native total balance includes unconfirmed change/self-payments, while
+            // unlocked balance does not. That can make total-minus-unlocked larger
+            // than locked stake without indicating stale locked state.
+            issues.push('Native snapshot locked stake exceeds total-minus-unlocked balance');
+        }
+
+        if (snapshot.locked_coin_count === 0 && lockedStakeAtomic > 0n) {
+            issues.push('Native snapshot reports locked stake but no locked coin entries');
+        }
+
+        if (snapshot.locked_coin_count > 0 && lockedStakeAtomic === 0n) {
+            issues.push('Native snapshot reports locked coin entries but zero locked stake');
+        }
+
+        if (snapshot.salvium_tx_count === 0 && snapshot.locked_coin_count > 0) {
+            issues.push('Native snapshot has locked stakes but no tracked Salvium origin mappings');
         }
 
         return {
-            baseBalance: projected.baseBalance,
-            displayBalance: projected.displayBalance,
-            usedProjection: true
+            ok: issues.length === 0,
+            severity: issues.some(issue => issue.includes('greater than total'))
+                ? 'critical'
+                : 'warning',
+            issues,
         };
     }, []);
+
+    const recordNativeSnapshotHealth = useCallback(async (
+        stage: string,
+        snapshot: WalletStateSnapshot | null,
+        balanceState: BalanceInfo
+    ) => {
+        if (!address) {
+            return;
+        }
+
+        const health = assessNativeSnapshotHealth(snapshot, balanceState);
+        if (health.ok) {
+            await walletStateService.updateHealth(address, 'healthy');
+            return;
+        }
+
+        const message = `${stage}: ${health.issues.join('; ')}`;
+        console.warn('[WalletContext] Native wallet state health warning', { stage, issues: health.issues });
+        await walletStateService.updateHealth(address, health.severity, message);
+    }, [address, assessNativeSnapshotHealth]);
+
+    const scheduleNativeIntegrityRecovery = useCallback((
+        stage: string,
+        snapshot: WalletStateSnapshot | null,
+        balanceState: BalanceInfo
+    ): boolean => {
+        const health = assessNativeSnapshotHealth(snapshot, balanceState);
+        if (health.ok) {
+            return false;
+        }
+
+        const snapshotHeight = snapshot?.wallet_height || walletService.getSyncStatus().walletHeight || 0;
+        const recoveryStartHeight = Math.max(
+            0,
+            getChunkStart(snapshotHeight) - (BALANCE_INTEGRITY_RECOVERY_CHUNKS * CHUNK_SIZE)
+        );
+
+        if (health.severity === 'critical') {
+            needsFullRescanRef.current = true;
+            preferredScanStartHeightRef.current = 0;
+        } else {
+            needsGapCheckRef.current = true;
+            preferredScanStartHeightRef.current = recoveryStartHeight;
+        }
+
+        console.warn('[WalletContext] Scheduling native integrity recovery', {
+            stage,
+            severity: health.severity,
+            issues: health.issues,
+            recoveryStartHeight,
+        });
+
+        if (isWalletReady && !scanInProgressRef.current && startScanRef.current) {
+            setTimeout(() => {
+                if (startScanRef.current && !scanInProgressRef.current) {
+                    if (needsFullRescanRef.current) {
+                        startScanRef.current(0);
+                    } else {
+                        startScanRef.current();
+                    }
+                }
+            }, 150);
+        }
+
+        return true;
+    }, [assessNativeSnapshotHealth, isWalletReady]);
+
+    const assertWalletReadyForSpend = useCallback(async (): Promise<void> => {
+        if (!walletService.hasWallet()) {
+            throw new Error('Wallet not initialized');
+        }
+
+        if (scanInProgressRef.current) {
+            throw new Error('Wallet is still syncing. Wait for sync to finish before sending.');
+        }
+
+        let nativeBalanceState = getAuthoritativeNativeBalance(walletService.getBalance());
+        if (!nativeBalanceState.snapshot?.success) {
+            for (let attempt = 0; attempt < 6; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, 250));
+                nativeBalanceState = getAuthoritativeNativeBalance(walletService.getBalance());
+                if (nativeBalanceState.snapshot?.success) {
+                    break;
+                }
+            }
+        }
+
+        const snapshotHealth = assessNativeSnapshotHealth(
+            nativeBalanceState.snapshot,
+            nativeBalanceState.balance
+        );
+        if (!snapshotHealth.ok) {
+            const lockedCoinsInfo = walletService.getLockedCoinsInfo();
+            const totals = nativeBalanceState.snapshot?.totals;
+            const lockedCoinsTotal = lockedCoinsInfo?.m_locked_coins_total ?? 'unknown';
+            const lockedCoinsCount = lockedCoinsInfo?.m_locked_coins_count ?? 'unknown';
+            throw new Error(
+                `Wallet state needs refresh: ${snapshotHealth.issues[0]} ` +
+                `(snapshot_balance=${totals?.balance ?? 'unknown'}, ` +
+                `snapshot_unlocked=${totals?.unlocked_balance ?? 'unknown'}, ` +
+                `snapshot_locked=${totals?.locked_stake ?? 'unknown'}, ` +
+                `display_balance=${nativeBalanceState.balance.balance}, ` +
+                `display_unlocked=${nativeBalanceState.balance.unlockedBalance}, ` +
+                `locked_coins_total=${lockedCoinsTotal}, ` +
+                `locked_coins_count=${lockedCoinsCount})`
+            );
+        }
+
+        const validation = walletService.validateOutputsForSend();
+        if (!validation.valid) {
+            throw new Error(validation.error || 'Wallet outputs need refresh before sending');
+        }
+    }, [assessNativeSnapshotHealth, getAuthoritativeNativeBalance]);
 
     // WASM state tracking for mobile recovery
     const logInit = (msg: string) => {
@@ -1064,11 +1318,66 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const [mempoolTransactions, setMempoolTransactions] = useState<WalletTransaction[]>([]);
     const mempoolTransactionsRef = React.useRef<WalletTransaction[]>([]);
 
-    // Stakes (parsed from stake-type transactions)
+    // Stakes (native lifecycle projection)
     const [stakes, setStakes] = useState<Stake[]>([]);
     const applyStakes = useCallback((nextStakes: Stake[]) => {
-        stakesRef.current = nextStakes;
-        setStakes(nextStakes);
+        const previousByTxid = new Map(stakesRef.current.map((stake) => [stake.txid, stake]));
+        const mergedStakes = nextStakes.map((stake) => {
+            const previous = previousByTxid.get(stake.txid);
+
+            // Active-stake rewards are hydrated asynchronously from yield info.
+            // Preserve the last known non-zero reward during refreshes so the UI
+            // does not flash back to zero between native-state and yield-state updates.
+            if (
+                stake.status === 'active' &&
+                stake.rewards <= 0 &&
+                previous?.status === 'active' &&
+                (previous.rewards || 0) > 0
+            ) {
+                return {
+                    ...stake,
+                    rewards: previous.rewards,
+                };
+            }
+
+            return stake;
+        });
+
+        stakesRef.current = mergedStakes;
+        setStakes(mergedStakes);
+    }, []);
+    const getNativeStakeState = useCallback((currentHeight: number): Stake[] => {
+        const lifecycle = walletService.getStakeLifecycle() as WalletStakeLifecycle | null;
+        if (!lifecycle?.success || !Array.isArray(lifecycle.stakes)) {
+            return [];
+        }
+
+        return lifecycle.stakes
+            .filter((stake: WalletStakeLifecycleEntry) => {
+                const assetType = String(stake.asset_type || '').toUpperCase();
+                return assetType === 'SAL' || assetType === 'SAL1';
+            })
+            .map((stake: WalletStakeLifecycleEntry) => {
+                const nativeActive = stake.status === 'active' && stake.still_locked;
+                const realizedReward = atomicToAmount(stake.realized_reward);
+                const derivedReward = atomicToAmount(stake.derived_reward);
+
+                return {
+                    id: `stake-${stake.stake_txid.slice(0, 8)}`,
+                    txid: stake.stake_txid,
+                    amount: atomicToAmount(stake.principal),
+                    rewards: nativeActive ? derivedReward : realizedReward,
+                    startBlock: stake.stake_height || 0,
+                    unlockBlock: stake.maturity_height || 0,
+                    currentBlock: currentHeight,
+                    status: nativeActive ? 'active' : 'unlocked',
+                    assetType: stake.asset_type || 'SAL',
+                    returnBlock: stake.payout_height,
+                    yieldTxid: stake.payout_txid,
+                    earnedReward: nativeActive ? undefined : realizedReward,
+                };
+            })
+            .sort((a, b) => b.startBlock - a.startBlock);
     }, []);
     const detectReturnedTransferScanNeed = useCallback((
         candidateTransactions?: WalletTransaction[],
@@ -1096,6 +1405,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     // Chart data
     const [walletHistory, setWalletHistory] = useState<ChartDataPoint[]>([]);
+    const lastWalletHistorySignatureRef = React.useRef<string>('');
 
     // Price state (fetched from API) - initialize from cache for instant display
     const [salPrice, setSalPrice] = useState<number>(() => {
@@ -1109,6 +1419,34 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     // Price history for chart (hourly prices from MEXC via Explorer API)
     const [priceHistory, setPriceHistory] = useState<[number, number][]>([]);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const debugWindow = window as typeof window & {
+            __vaultChartDebug?: Record<string, unknown>;
+            __walletHistoryDebug?: ChartDataPoint[];
+        };
+        if (!nativeAuditEnabledRef.current) {
+            delete debugWindow.__vaultChartDebug;
+            delete debugWindow.__walletHistoryDebug;
+            return;
+        }
+        debugWindow.__vaultChartDebug = {
+            walletHistoryCount: walletHistory.length,
+            walletHistoryFirst: walletHistory[0] || null,
+            walletHistoryLast: walletHistory[walletHistory.length - 1] || null,
+            transactionCount: transactions.length,
+            transactionFirstTimestamp: transactions.reduce((min, tx) => tx.timestamp > 0 ? Math.min(min, tx.timestamp) : min, Number.MAX_SAFE_INTEGER),
+            transactionLastTimestamp: transactions.reduce((max, tx) => Math.max(max, tx.timestamp || 0), 0),
+            stakes,
+            balance,
+            syncStatus,
+            priceHistoryCount: priceHistory.length,
+            priceHistoryFirst: priceHistory[0] || null,
+            priceHistoryLast: priceHistory[priceHistory.length - 1] || null,
+        };
+        debugWindow.__walletHistoryDebug = walletHistory;
+    }, [walletHistory, transactions, stakes, balance, syncStatus, priceHistory]);
 
     // ================================================================
     // Multi-Tab Locking
@@ -1188,22 +1526,43 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         return () => clearInterval(interval);
     }, []);
 
-    // Regenerate wallet history whenever price history updates.
-    // Guard: avoid overwriting cached history during boot/unlock (mobile especially) before txs load.
+    // Regenerate wallet history from authoritative tx/state once the wallet is ready.
+    // Never let restored chart cache remain the long-term source of truth when txs exist.
     useEffect(() => {
         if (!isWalletReady) return;
-        if (priceHistory.length === 0) return;
-
-        if (hydratedWalletHistoryFromCacheRef.current && transactions.length === 0) {
+        if (transactions.length === 0) {
             return;
         }
 
-        // Once real MEXC prices are available, allow history regeneration.
-        hydratedWalletHistoryFromCacheRef.current = false;
+        const txCount = transactions.length;
+        const oldestTimestamp = transactions.reduce((min, tx) => {
+            return tx.timestamp > 0 ? Math.min(min, tx.timestamp) : min;
+        }, Number.MAX_SAFE_INTEGER);
+        const newestTimestamp = transactions.reduce((max, tx) => Math.max(max, tx.timestamp || 0), 0);
+        const activeStakeAmount = getActiveStakeAmount(
+            stakes,
+            syncStatus.daemonHeight || syncStatus.walletHeight || 0
+        );
+        const signature = [
+            txCount,
+            oldestTimestamp === Number.MAX_SAFE_INTEGER ? 0 : oldestTimestamp,
+            newestTimestamp,
+            Math.round(balance.balanceSAL * 1e8),
+            Math.round(activeStakeAmount * 1e8),
+            stakes.length,
+            priceHistory.length > 0 ? priceHistory[0]?.[0] || 0 : 0,
+            priceHistory.length > 0 ? priceHistory[priceHistory.length - 1]?.[0] || 0 : 0,
+        ].join(':');
 
+        if (lastWalletHistorySignatureRef.current === signature) {
+            return;
+        }
+
+        hydratedWalletHistoryFromCacheRef.current = false;
+        lastWalletHistorySignatureRef.current = signature;
         const totalBalance = balance.balanceSAL; // WASM balance already includes staked amount
-        generateWalletHistory(transactions, totalBalance);
-    }, [priceHistory, transactions, balance.balanceSAL, stakes, isWalletReady]);
+        generateWalletHistory(transactions, totalBalance, stakes);
+    }, [priceHistory, transactions, balance.balanceSAL, stakes, isWalletReady, syncStatus.daemonHeight, syncStatus.walletHeight]);
 
     // Fetch historical price data via server proxy (bypasses CORS restrictions)
     // Uses AbortController for timeout to prevent hanging requests
@@ -1234,6 +1593,52 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         // Refresh price history every 10 minutes (API updates hourly)
         const interval = setInterval(fetchPriceHistory, 10 * 60 * 1000);
         return () => clearInterval(interval);
+    }, []);
+
+    const fetchYieldData = useCallback(async (nextStakes: Stake[], currentHeight: number): Promise<Stake[]> => {
+        if (nextStakes.length === 0) return nextStakes;
+
+        try {
+            const response = await fetch('/api/yield-info');
+            if (!response.ok) {
+                return nextStakes;
+            }
+
+            const data = await response.json();
+            if (!data.success || !Array.isArray(data.yieldData) || data.yieldData.length === 0) {
+                return nextStakes;
+            }
+
+            const ATOMIC_UNITS = 100000000;
+
+            return nextStakes.map((stake) => {
+                if (stake.status === 'unlocked') {
+                    return stake;
+                }
+
+                const stakeAmountAtomic = Math.round(stake.amount * ATOMIC_UNITS);
+                let accruedYieldAtomic = 0;
+
+                for (const yd of data.yieldData) {
+                    if (yd.block_height < stake.startBlock) continue;
+                    if (yd.block_height > currentHeight) continue;
+                    if (!yd.locked_coins_tally || yd.locked_coins_tally === 0) continue;
+
+                    const slippage = yd.slippage_total_this_block || 0;
+                    const yieldForBlock =
+                        (BigInt(slippage) * BigInt(stakeAmountAtomic)) /
+                        BigInt(yd.locked_coins_tally);
+                    accruedYieldAtomic += Number(yieldForBlock);
+                }
+
+                return {
+                    ...stake,
+                    rewards: Math.max(0, accruedYieldAtomic / ATOMIC_UNITS),
+                };
+            });
+        } catch {
+            return nextStakes;
+        }
     }, []);
 
     // Page Visibility API: Detect tab suspension + WASM state loss
@@ -1541,71 +1946,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     };
 
-    // Fetch yield data and calculate rewards for ACTIVE stakes only
-    // Uses exact formula from wallet2.cpp:2612-2616 for accurate per-stake yield calculation
-    // NOTE: yield_info API only returns ~21601 recent blocks (stake lock period)
-    // For unlocked stakes, earnedReward is set during initial tx parsing from yield tx
-    const fetchYieldData = async (stakes: Stake[], currentHeight: number): Promise<Stake[]> => {
-        if (stakes.length === 0) return stakes;
-
-        try {
-            const response = await fetch('/api/yield-info');
-            if (!response.ok) {
-                return stakes;
-            }
-
-            const data = await response.json();
-            if (!data.success || !data.yieldData || data.yieldData.length === 0) {
-                return stakes;
-            }
-
-            const ATOMIC_UNITS = 100000000;
-
-            // Get the yield_info data range
-            const yieldDataMinHeight = data.yieldData.length > 0 ? data.yieldData[0].block_height : 0;
-            const yieldDataMaxHeight = data.yieldData.length > 0 ? data.yieldData[data.yieldData.length - 1].block_height : 0;
-
-            const updatedStakes = stakes.map(stake => {
-                // For UNLOCKED stakes: keep earnedReward from tx matching (yield_info doesn't cover old blocks)
-                if (stake.status === 'unlocked') {
-                    return stake; // earnedReward already set from matched yield tx
-                }
-
-                // For ACTIVE stakes: calculate accrued yield using wallet2.cpp formula
-                const stakeAmountAtomic = stake.amount * ATOMIC_UNITS;
-                let accruedYieldAtomic = 0;
-
-                // Iterate through each block in the yield data
-                for (const yd of data.yieldData) {
-                    // Skip blocks before stake started
-                    if (yd.block_height < stake.startBlock) continue;
-                    // Skip blocks after current height
-                    if (yd.block_height > currentHeight) continue;
-                    // Skip if no locked coins (prevents division by zero)
-                    if (!yd.locked_coins_tally || yd.locked_coins_tally === 0) continue;
-
-                    // Exact formula from wallet2.cpp lines 2612-2616:
-                    // yield_for_block = (slippage_total_this_block * stake_amount) / locked_coins_tally
-                    const slippage = yd.slippage_total_this_block || 0;
-                    const yieldForBlock = (BigInt(slippage) * BigInt(Math.round(stakeAmountAtomic))) / BigInt(yd.locked_coins_tally);
-                    accruedYieldAtomic += Number(yieldForBlock);
-                }
-
-                // Convert from atomic units to SAL for display
-                const accruedYield = accruedYieldAtomic / ATOMIC_UNITS;
-
-                return {
-                    ...stake,
-                    rewards: Math.max(0, accruedYield)
-                };
-            });
-
-            return updatedStakes;
-        } catch {
-            return stakes;
-        }
-    };
-
     // Refresh wallet data from WASM
     // Only updates state if WASM has actual data to prevent overwriting cached values
     const refreshData = useCallback(() => {
@@ -1649,7 +1989,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             }
 
             // Get balance and transactions from WASM after height has been updated.
-            const bal = walletService.getBalance();
+            const bal = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
             const newTxs = walletService.getTransactions();
 
             // CRITICAL: Only update balance/transactions if WASM actually has data
@@ -1668,7 +2008,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     ...prevTxs,
                     ...newTxs
                 ]);
-                const stakeSourceTxs = mergedTxs;
                 const newTxids = Array.from(new Set(
                     findNewTransactionsByDirection(newTxs, prevTxs).map(tx => tx.txid.slice(0, 8))
                 ));
@@ -1684,165 +2023,36 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     return stillPending;
                 });
 
-                // Parse stakes from MERGED transactions - same data as transaction history
-                const STAKE_LOCK_PERIOD = 21601;
                 const currentHeight = sync.daemonHeight || sync.walletHeight || 0;
-                const parsedStakes: Stake[] = [];
-
-                // Stake TXs are OUTGOING with tx_type 6 (STAKE) or label 'stake'
-                const stakeTxs = stakeSourceTxs.filter(tx =>
-                    tx.type === 'out' && (tx.tx_type === 6 || tx.tx_type_label?.toLowerCase() === 'stake')
-                );
-
-                // Return TXs are INCOMING - could be tx_type 2 (PROTOCOL/Yield) at the unlock height
-                // Use ALL incoming transactions and match by height
-                const incomingTxs = stakeSourceTxs.filter(tx => tx.type === 'in');
-
-                // Sort stake txs by height (oldest first) for deterministic matching
-                const sortedStakeTxs = [...stakeTxs].sort((a, b) => a.height - b.height);
-
-                // Track which incoming txs have been matched to prevent duplicates
-                const matchedTxids = new Set<string>();
-
-                for (const stakeTx of sortedStakeTxs) {
-                    const startBlock = stakeTx.height;
-                    const unlockBlock = startBlock + STAKE_LOCK_PERIOD;
-
-                    // Find all stakes in this block (for proportional reward calculation)
-                    const blockStakes = stakeSourceTxs.filter(t =>
-                        t.height === stakeTx.height &&
-                        t.type === 'out' && (t.tx_type === 6 || t.tx_type_label?.toLowerCase() === 'stake')
-                    );
-
-                    // Get all yield TXs at unlock height
-                    // NOTE: The protocol may combine all stakes from the same block into a SINGLE yield TX
-                    const blockReturns = incomingTxs.filter(t =>
-                        t.height === unlockBlock &&
-                        (t.tx_type === 2 || t.tx_type_label?.toLowerCase() === 'yield')
-                    );
-
-                    // Calculate total staked and total yielded for this block
-                    const totalStakedInBlock = blockStakes.reduce((sum, s) => sum + s.amount, 0);
-                    const totalYieldedInBlock = blockReturns.reduce((sum, r) => sum + r.amount, 0);
-
-                    // Determine the yield TX - use the first/largest one since they may be combined
-                    const yieldTx = blockReturns.length > 0 ? blockReturns[0] : undefined;
-
-                    // Mark yield TX as matched
-                    if (yieldTx) {
-                        matchedTxids.add(yieldTx.txid);
-                    }
-
-                    const hasReturned = !!yieldTx;
-                    const status: 'active' | 'unlocked' =
-                        currentHeight >= unlockBlock ? 'unlocked' : 'active';
-
-                    // Calculate proportional earned reward:
-                    // If multiple stakes share a yield TX, distribute reward proportionally
-                    // Total reward = totalYielded - totalStaked
-                    // This stake's share = (thisStakeAmount / totalStaked) * totalReward
-                    let earnedReward = 0;
-                    if (hasReturned && totalStakedInBlock > 0) {
-                        const totalReward = Math.max(0, totalYieldedInBlock - totalStakedInBlock);
-                        const proportion = stakeTx.amount / totalStakedInBlock;
-                        earnedReward = totalReward * proportion;
-                    }
-
-                    parsedStakes.push({
-                        id: `stake-${stakeTx.txid.slice(0, 8)}`,
-                        txid: stakeTx.txid,
-                        amount: stakeTx.amount,
-                        rewards: 0,
-                        startBlock,
-                        unlockBlock,
-                        currentBlock: currentHeight,
-                        status,
-                        assetType: stakeTx.asset_type || 'SAL',
-                        returnBlock: yieldTx?.height,
-                        yieldTxid: yieldTx?.txid,
-                        earnedReward: hasReturned ? earnedReward : undefined
-                    });
-                }
-
                 const previousStakes = stakesRef.current;
-                const refreshStakeVersion = ++stakeRefreshVersionRef.current;
-                const parsedStakeState = buildStakeDisplayState(
-                    bal,
-                    parsedStakes,
-                    currentHeight
-                );
-                const parsedReconciledBalance = reconcileDisplayBalanceForTestVault(
-                    bal,
-                    stakeSourceTxs,
-                    parsedStakeState.stakes,
-                    currentHeight
-                );
+                const parsedStakeState = getNativeStakeState(currentHeight);
                 const parsedDisplayBalanceChanged = hasBalanceInfoChanged(
                     balanceRef.current,
-                    parsedReconciledBalance.displayBalance
+                    clampUnlockedBalance(bal)
                 );
 
                 // Apply the parsed stake set immediately so the list and balance stay in sync
                 // even if yield enrichment resolves later or out of order.
-                applyStakes(parsedStakeState.stakes);
+                applyStakes(parsedStakeState);
+                void fetchYieldData(parsedStakeState, currentHeight).then((stakesWithRewards) => {
+                    applyStakes(stakesWithRewards);
+                });
 
                 // Recompute the display balance whenever the active stake total changes,
                 // even if the txids are unchanged and an existing tx was just reclassified.
                 const activeStakeTotalChanged = hasActiveStakeBalanceChanged(
                     previousStakes,
-                    parsedStakeState.stakes,
+                    parsedStakeState,
                     currentHeight
                 );
 
                 if (!scanInProgressRef.current && (
                     newTxids.length > 0 ||
                     activeStakeTotalChanged ||
-                    parsedReconciledBalance.usedProjection ||
                     parsedDisplayBalanceChanged
                 )) {
-                    setBalance(parsedReconciledBalance.displayBalance);
+                    setBalance(clampUnlockedBalance(bal));
                 }
-
-                // Fetch yield data async (can't await in setState, but this triggers another render)
-                fetchYieldData(parsedStakeState.stakes, currentHeight).then(stakesWithRewards => {
-                    if (stakeRefreshVersionRef.current !== refreshStakeVersion) {
-                        return;
-                    }
-
-                    const enrichedStakeState = buildStakeDisplayState(
-                        bal,
-                        stakesWithRewards,
-                        currentHeight
-                    );
-                    const enrichedReconciledBalance = reconcileDisplayBalanceForTestVault(
-                        bal,
-                        stakeSourceTxs,
-                        enrichedStakeState.stakes,
-                        currentHeight
-                    );
-                    const enrichedDisplayBalanceChanged = hasBalanceInfoChanged(
-                        balanceRef.current,
-                        enrichedReconciledBalance.displayBalance
-                    );
-                    applyStakes(enrichedStakeState.stakes);
-
-                    if (!scanInProgressRef.current && (
-                        hasActiveStakeBalanceChanged(
-                            parsedStakeState.stakes,
-                            enrichedStakeState.stakes,
-                            currentHeight
-                        ) ||
-                        enrichedReconciledBalance.usedProjection ||
-                        enrichedDisplayBalanceChanged
-                    )) {
-                        setBalance(enrichedReconciledBalance.displayBalance);
-                    }
-                }).catch(() => {
-                    // Keep the parsed stake state that is already applied.
-                });
-
-                // Generate wallet history from MERGED transactions
-                generateWalletHistory(mergedTxs, bal.balanceSAL || bal.balance / 1e8);
 
                 return mergedTxs;
             });
@@ -1894,137 +2104,22 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     }, []);
 
-    // Helper to lookup price at a given timestamp from price history
-    const getPriceAtTime = (timestamp: number, fallbackPrice: number): number => {
-        if (priceHistory.length === 0) return fallbackPrice;
-
-        // Price history is [[timestamp, price], ...] sorted ascending
-        // Find the closest price at or before the given timestamp
-        let price = fallbackPrice;
-        for (const [ts, p] of priceHistory) {
-            if (ts <= timestamp) {
-                price = p;
-            } else {
-                break;
-            }
-        }
-        return price;
-    };
-
-    // Generate wallet history chart data using real MEXC prices
+    // Generate wallet history chart data from native wallet state and historical prices.
     // Uses hourly intervals to match MEXC price history granularity
-    // Calculates BACKWARDS from current balance to ensure accuracy
-    const generateWalletHistory = (txs: WalletTransaction[], currentBalance: number) => {
+    // Reconstructs wallet balance forward from the earliest known wallet event.
+    const generateWalletHistory = (
+        txs: WalletTransaction[],
+        currentBalance: number,
+        historyStakes: Stake[] = stakes
+    ) => {
         // If we have a cached chart already, don't replace it with fallback-priced history.
         // This is a common boot/unlock race on mobile where price history fetch is delayed.
-        if (hydratedWalletHistoryFromCacheRef.current && (!priceHistory || priceHistory.length === 0)) {
+        if (hydratedWalletHistoryFromCacheRef.current && transactions.length === 0 && (!priceHistory || priceHistory.length === 0)) {
             return;
         }
 
-        // 1. Helper: Optimized getPriceAtTime using binary search
-        // priceHistory is expected to be sorted ascending by timestamp
-        const getPriceAtTime = (timestamp: number, fallbackPrice: number): number => {
-            if (!priceHistory || priceHistory.length === 0) return fallbackPrice;
-
-            // Binary search to find the closest price point <= timestamp
-            let low = 0;
-            let high = priceHistory.length - 1;
-            let matchedPrice = fallbackPrice;
-            let found = false;
-
-            while (low <= high) {
-                const mid = Math.floor((low + high) / 2);
-                const [pTime, pValue] = priceHistory[mid];
-
-                if (pTime === timestamp) {
-                    return pValue; // Exact match
-                } else if (pTime < timestamp) {
-                    // This point is before our target, so it's a candidate for "latest known price"
-                    matchedPrice = pValue;
-                    found = true;
-                    low = mid + 1; // Try to find a later one closer to target
-                } else {
-                    high = mid - 1; // This point is future, look earlier
-                }
-            }
-
-            // If timestamp is older than the entire history, use the oldest available price
-            if (!found && priceHistory.length > 0) {
-                return priceHistory[0][1];
-            }
-
-            return matchedPrice;
-        };
-
-        // 2. Setup bounds
-        const now = Date.now();
-        const MEXC_LISTING_DATE = new Date('2025-04-01T00:00:00Z').getTime();
-
-        // Using MEXC_LISTING_DATE as the chart visual start
-        const chartStartTime = MEXC_LISTING_DATE;
-        const hourMs = 60 * 60 * 1000;
-
-        // Sort transactions DESCENDING (Newest -> Oldest) for backward calculation
-        const sortedTxs = [...txs].sort((a, b) => b.timestamp - a.timestamp);
-
-
-        // 3. Build Stake Return Map
-        // We need to know the Principal amount returned at any given block height
-        const returnsByHeight = new Map<number, number>();
-        for (const s of stakes) {
-            if (s.returnBlock && s.returnBlock > 0) {
-                const existing = returnsByHeight.get(s.returnBlock) || 0;
-                returnsByHeight.set(s.returnBlock, existing + s.amount);
-            }
-        }
-
-        // 4. Backward Simulation
-        // Start with the authoritative CURRENT BALANCE
-        let simBalance = currentBalance;
         const fallbackPrice = salPrice > 0 ? salPrice : 0.20;
-
-        const history: ChartDataPoint[] = [];
-        let txIndex = 0;
-
-        // Iterate HOURS backwards.
-        for (let t = now; t >= chartStartTime; t -= hourMs) {
-            // 1. Record State
-            const price = getPriceAtTime(t, fallbackPrice);
-            history.push({
-                date: new Date(t).toISOString(),
-                value: Math.max(0, simBalance) * price
-            });
-
-            // 2. Unwind Transactions
-            const nextTimeStep = t - hourMs;
-            while (txIndex < sortedTxs.length && sortedTxs[txIndex].timestamp > nextTimeStep) {
-                const tx = sortedTxs[txIndex];
-                txIndex++;
-                if (tx.failed) continue;
-
-                const isStake = tx.tx_type === 6 || tx.tx_type_label?.toLowerCase() === 'stake';
-
-                if (tx.type === 'in') {
-                    // Input: Deduct. Exception: Stake Return
-                    const principalReturned = returnsByHeight.get(tx.height) || 0;
-                    if (principalReturned > 0) {
-                        const reward = Math.max(0, tx.amount - principalReturned);
-                        simBalance -= reward;
-                        const remaining = Math.max(0, principalReturned - tx.amount);
-                        if (remaining > 0) returnsByHeight.set(tx.height, remaining); else returnsByHeight.delete(tx.height);
-                    } else {
-                        simBalance -= tx.amount;
-                    }
-                } else {
-                    // Output: Add. Exception: Stake Send
-                    if (isStake) simBalance += (tx.fee || 0);
-                    else simBalance += (tx.amount + (tx.fee || 0));
-                }
-            }
-        }
-
-        // Reverse history to return Oldest -> Newest
-        setWalletHistory(history.reverse());
+        setWalletHistory(buildWalletHistory(txs, historyStakes, priceHistory, fallbackPrice, Date.now()));
     };
 
     // Generate a new mnemonic (seed phrase)
@@ -2075,6 +2170,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         // Store seed in memory only (secure - not persisted to storage)
         sessionSeedRef.current = keys.mnemonic;
 
+        setAddress(keys.address);
+        setLegacyAddress(walletService.getLegacyAddress());
+        setCarrotAddress(walletService.getCarrotAddress());
         setIsWalletReady(true);
         setIsLocked(false);
         refreshData();
@@ -2123,6 +2221,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         // This is critical for true full restores from 0.
         preferredScanStartHeightRef.current = restoreHeight;
 
+        setAddress(keys.address);
+        setLegacyAddress(walletService.getLegacyAddress());
+        setCarrotAddress(walletService.getCarrotAddress());
         setIsWalletReady(true);
         setIsLocked(false);
         refreshData();
@@ -2180,23 +2281,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             const history = idbHistory ? JSON.parse(idbHistory) : (wallet.cachedWalletHistory || []);
 
             if (txs.length > 0) setTransactions(txs);
-            if (history.length > 0) {
+            if (history.length > 0 && txs.length === 0) {
                 hydratedWalletHistoryFromCacheRef.current = true;
                 setWalletHistory(history);
             }
-        }
-        const hydratedCachedStakes = wallet.cachedStakes
-            ? hydrateStakeStatuses(wallet.cachedStakes, wallet.height || 0)
-            : [];
-        if (hydratedCachedStakes.length > 0) {
-            applyStakes(hydratedCachedStakes);
+            // walletHistory is regenerated by the authoritative reactive effect
+            // after transactions/balance/stakes hydrate into React state.
         }
         if (wallet.cachedBalance) {
-            setBalance(clampUnlockedBalance(applyActiveStakeDisplayBalance(
-                wallet.cachedBalance,
-                hydratedCachedStakes,
-                wallet.height || 0
-            )));
+            setBalance(clampUnlockedBalance(wallet.cachedBalance));
         }
         if (wallet.cachedSubaddresses && wallet.cachedSubaddresses.length > 0) {
             setSubaddresses(wallet.cachedSubaddresses);
@@ -2324,6 +2417,21 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             return; // Exit early without continuing setup
         }
 
+        const restoredAddress = walletService.getAddress();
+        if (restoredAddress) {
+            const repairedWallet: EncryptedWallet = {
+                ...wallet,
+                address: restoredAddress,
+                network: getCurrentWalletNetwork(),
+                height: finalRestoreHeight
+            };
+            safeWriteWallet(repairedWallet);
+            markStoredWalletCreated();
+            setAddress(restoredAddress);
+            setLegacyAddress(walletService.getLegacyAddress());
+            setCarrotAddress(walletService.getCarrotAddress());
+        }
+
         // Store seed in memory only (secure - not persisted to storage)
         sessionSeedRef.current = mnemonic;
 
@@ -2346,6 +2454,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             // Failed to load persisted state - continue with cached data only
         }
 
+        fullWalletCacheImportedRef.current = false;
+
         // Import FULL wallet cache (enables sending without full rescan after page refresh)
         if (cachedOutputsHex && cachedOutputsHex.length > 0) {
             // Try new full cache import first, fall back to old outputs import
@@ -2353,6 +2463,21 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             if (typeof walletService.importWalletCache === 'function') {
                 importSuccess = walletService.importWalletCache(cachedOutputsHex);
                 if (importSuccess) {
+                    fullWalletCacheImportedRef.current = true;
+                    const snapshot = captureNativeSnapshot('cache_import_complete', {
+                        importedFullCache: true,
+                        restoreHeight: wallet.height || 0,
+                    });
+                    void recordNativeSnapshotHealth(
+                        'cache_import_complete',
+                        snapshot,
+                        getAuthoritativeNativeBalance(walletService.getBalance()).balance
+                    );
+                    scheduleNativeIntegrityRecovery(
+                        'cache_import_complete',
+                        snapshot,
+                        getAuthoritativeNativeBalance(walletService.getBalance()).balance
+                    );
                 }
             }
 
@@ -2361,6 +2486,21 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 const numImported = walletService.importOutputs(cachedOutputsHex);
                 importSuccess = numImported > 0;
                 if (importSuccess) {
+                    const snapshot = captureNativeSnapshot('outputs_import_complete', {
+                        importedFullCache: false,
+                        importedOutputs: numImported,
+                        restoreHeight: wallet.height || 0,
+                    });
+                    void recordNativeSnapshotHealth(
+                        'outputs_import_complete',
+                        snapshot,
+                        getAuthoritativeNativeBalance(walletService.getBalance()).balance
+                    );
+                    scheduleNativeIntegrityRecovery(
+                        'outputs_import_complete',
+                        snapshot,
+                        getAuthoritativeNativeBalance(walletService.getBalance()).balance
+                    );
                     // PRIVACY-PRESERVING: Restore spent status from cached data (no daemon query)
                     // import_outputs_from_str() resets m_spent=false for all outputs
                     // We restore from locally cached spent key images instead of querying daemon
@@ -2383,6 +2523,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     100
                 );
                 walletService.precomputeSubaddresses(numSubaddresses);
+                await walletService.hydrateRuntimeFullTxContext();
             }
         }
 
@@ -2400,12 +2541,56 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             walletService.setBlockchainHeight(actualNetworkHeight);
         }
 
+        const unlockHydratedBalance = getPreferredHydratedBalance(
+            wallet.cachedBalance,
+            wallet.cachedTransactions || [],
+            [],
+            actualNetworkHeight || finalRestoreHeight || 0
+        );
+        if (unlockHydratedBalance) {
+            setBalance(unlockHydratedBalance);
+        }
+
+        const bootHeight = actualNetworkHeight || finalRestoreHeight || 0;
+        const bootStakes = getNativeStakeState(bootHeight);
+        applyStakes(bootStakes);
+        void fetchYieldData(bootStakes, bootHeight).then((stakesWithRewards) => {
+            applyStakes(stakesWithRewards);
+        });
+
+        const unlockSnapshot = captureNativeSnapshot('unlock_bootstrap_complete', {
+            bootHeight,
+            restoreHeight: finalRestoreHeight,
+        });
+        void recordNativeSnapshotHealth(
+            'unlock_bootstrap_complete',
+            unlockSnapshot,
+            getAuthoritativeNativeBalance(walletService.getBalance()).balance
+        );
+        scheduleNativeIntegrityRecovery(
+            'unlock_bootstrap_complete',
+            unlockSnapshot,
+            getAuthoritativeNativeBalance(walletService.getBalance()).balance
+        );
+
+        // walletHistory is regenerated by the authoritative reactive effect
+        // after transactions/balance/stakes hydrate into React state.
+
         if (actualNetworkHeight > finalRestoreHeight) {
             setSyncStatus(prev => ({
                 ...prev,
+                walletHeight: finalRestoreHeight,
                 daemonHeight: actualNetworkHeight,
                 isSyncing: true,
                 progress: finalRestoreHeight > 0 ? Math.min(100, (finalRestoreHeight / actualNetworkHeight) * 100) : 0
+            }));
+        } else if (actualNetworkHeight > 0) {
+            setSyncStatus(prev => ({
+                ...prev,
+                walletHeight: finalRestoreHeight,
+                daemonHeight: actualNetworkHeight,
+                isSyncing: false,
+                progress: 100
             }));
         }
 
@@ -2429,6 +2614,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
         const preferredScanStartHeight = finalRestoreHeight === 0 && hadData ? 0 : undefined;
         preferredScanStartHeightRef.current = preferredScanStartHeight;
+        needsGapCheckRef.current = true;
 
         setTimeout(() => {
             if (scanInProgressRef.current) return;
@@ -2488,22 +2674,14 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         if (wallet.cachedTransactions && wallet.cachedTransactions.length > 0) {
             setTransactions(wallet.cachedTransactions);
         }
-        const restoredCachedStakes = wallet.cachedStakes
-            ? hydrateStakeStatuses(wallet.cachedStakes, wallet.height || 0)
-            : [];
-        if (restoredCachedStakes.length > 0) {
-            applyStakes(restoredCachedStakes);
-        }
-        // CRITICAL: Add active stakes back to cached balance
-        // v2 cache stores balance WITHOUT stakes to prevent double-counting
-        if (wallet.cachedBalance) {
-            const cachedDisplayBalance = reconcileDisplayBalanceForTestVault(
-                wallet.cachedBalance,
-                wallet.cachedTransactions || [],
-                restoredCachedStakes,
-                wallet.height || 0
-            );
-            setBalance(cachedDisplayBalance.displayBalance);
+        const restoredHydratedBalance = getPreferredHydratedBalance(
+            wallet.cachedBalance,
+            wallet.cachedTransactions || [],
+            [],
+            wallet.height || 0
+        );
+        if (restoredHydratedBalance) {
+            setBalance(restoredHydratedBalance);
         }
         if (wallet.height && wallet.height > 0) {
             setSyncStatus(prev => ({
@@ -2587,6 +2765,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         // Used to detect stale completion events from cancelled/superseded scans
         const currentScanVersion = ++scanVersionRef.current;
         setIsScanning(true);
+        cspScanService.setRecoveryAction('continue');
 
         if (fromHeight === 0) {
             const phase2bAlreadyRequested = localStorage.getItem('salvium_scan_returned_transfers') === 'true';
@@ -2700,7 +2879,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                                     // Find common ancestor by going back blocks
                                     // Conservative: go back 100 blocks from last known height
                                     reorgHeight = Math.max(0, lastKnownHeight - 100);
-                                    void 0 && console.warn(`[WalletContext] REORG DETECTED! Hash mismatch at height ${lastKnownHeight}. Rescanning from ${reorgHeight}`);
+                                    console.warn(`[WalletContext] REORG DETECTED! Hash mismatch at height ${lastKnownHeight}. Rescanning from ${reorgHeight}`);
                                 }
                             }
                         } catch {
@@ -2732,7 +2911,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     const safeHeight = Math.max(0, cachedHeight - 100);
                     walletHeight = safeHeight;
                     walletService.setWalletHeight(safeHeight);
-                    void 0 && console.log(`[WalletContext] Gap check: Rescanning from ${safeHeight} (gap of ${gapSize} blocks detected)`);
+                    console.log(`[WalletContext] Gap check: Rescanning from ${safeHeight} (gap of ${gapSize} blocks detected)`);
                 }
                 // Reset the gap check flag - we've handled it
                 needsGapCheckRef.current = false;
@@ -2769,27 +2948,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             // This catches occasional missed incoming tx detection from prior incremental runs.
             let scanStartHeight = walletHeight;
             if (isIncremental) {
-                const chunkAlignedHeight = Math.floor(walletHeight / CHUNK_SIZE) * CHUNK_SIZE;
-
-                let deepOverlapDue = false;
-                try {
-                    const lastDeepRunRaw = localStorage.getItem(DEEP_OVERLAP_LAST_RUN_KEY);
-                    const lastDeepRun = lastDeepRunRaw ? Number(lastDeepRunRaw) : 0;
-                    deepOverlapDue = !Number.isFinite(lastDeepRun) || lastDeepRun <= 0 || (Date.now() - lastDeepRun) >= DEEP_OVERLAP_INTERVAL_MS;
-                } catch {
-                    deepOverlapDue = false;
-                }
-
-                if (deepOverlapDue) {
-                    scanStartHeight = Math.max(0, chunkAlignedHeight - DEEP_OVERLAP_BLOCKS);
-                    try {
-                        localStorage.setItem(DEEP_OVERLAP_LAST_RUN_KEY, String(Date.now()));
-                    } catch {
-                        // best effort
-                    }
-                } else {
-                    scanStartHeight = Math.max(0, chunkAlignedHeight - (INCREMENTAL_OVERLAP_CHUNKS * CHUNK_SIZE));
-                }
+                scanStartHeight = computeIncrementalScanStartHeight(
+                    walletHeight,
+                    CHUNK_SIZE,
+                    INCREMENTAL_OVERLAP_CHUNKS
+                );
             }
 
             // Set scanStartHeight for smooth progress calculation in LoadingScreen
@@ -2870,12 +3033,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             // EXCEPTION: Skip recovery check if we just restored from vault file - vault has all data,
             // we only need incremental scan for new blocks since the backup was created.
             let actualStartHeight = finalScanStartHeight;
+            let recoveryAction: 'continue' | 'full_rescan' | 'rescan_gaps' = 'continue';
             if (fromHeight === undefined && address && !restoredFromVaultRef.current) {
                 try {
                     const recoveryCheck = await cspScanService.resumeScanSafely(address, networkHeight);
+                    recoveryAction = recoveryCheck.action;
+                    cspScanService.setRecoveryAction(recoveryCheck.action);
 
                     if (recoveryCheck.needsFullRescan) {
-                        void 0 && console.warn(`[WalletContext] Recovery check forcing full rescan: ${recoveryCheck.reason}`);
+                        console.warn(`[WalletContext] Recovery check forcing full rescan: ${recoveryCheck.reason}`);
                         actualStartHeight = 0;
                         // Clear local wallet height to start fresh
                         walletService.setWalletHeight(0);
@@ -2890,13 +3056,16 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     // else: continue with finalScanStartHeight (safe to resume)
                 } catch (e) {
                     // Error in recovery check - be conservative and force full rescan
-                    void 0 && console.error('[WalletContext] Recovery check failed - forcing full rescan:', e);
+                    console.error('[WalletContext] Recovery check failed - forcing full rescan:', e);
+                    recoveryAction = 'full_rescan';
+                    cspScanService.setRecoveryAction('full_rescan');
                     actualStartHeight = 0;
                     walletService.setWalletHeight(0);
                     clearCompletedChunks();
                 }
             } else if (fromHeight !== undefined) {
                 // Explicit fromHeight provided - use it
+                cspScanService.setRecoveryAction(fromHeight === 0 ? 'full_rescan' : 'continue');
                 actualStartHeight = fromHeight;
             }
 
@@ -2919,7 +3088,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             // If recovery forced actualStartHeight=0, we're doing a full rescan and should use
             // full-scan settings (more workers, larger batches, no UI yields). Without this fix,
             // a forced full rescan would run with incremental settings and take 5-10x longer.
-            const effectiveIsIncremental = isIncremental && actualStartHeight > 0;
+            const effectiveIsIncremental =
+                isIncremental &&
+                actualStartHeight > 0 &&
+                recoveryAction === 'continue';
 
             const result = await cspScanService.startScan(
                 actualStartHeight,
@@ -2962,15 +3134,14 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         try {
                             walletService.setBlockchainHeight(networkHeight, true);
                             // Get updated balance from wallet
-                            const updatedBalance = walletService.getBalance();
+                            const updatedBalance = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
                             if (updatedBalance) {
-                                const { stakes: nextStakes, displayBalance } = buildStakeDisplayState(
-                                    updatedBalance,
-                                    stakesRef.current,
-                                    networkHeight
-                                );
+                                const nextStakes = getNativeStakeState(networkHeight);
                                 applyStakes(nextStakes);
-                                setBalance(displayBalance);
+                                void fetchYieldData(nextStakes, networkHeight).then((stakesWithRewards) => {
+                                    applyStakes(stakesWithRewards);
+                                });
+                                setBalance(clampUnlockedBalance(updatedBalance));
                                 // Also update localStorage cache
                                 const encryptedWallet = safeReadWallet();
                                 if (encryptedWallet) {
@@ -3025,10 +3196,17 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
                     // Load cached txs from IndexedDB (fallback to localStorage during migration)
                     let cachedTxs: WalletTransaction[] = [];
+                    let idbTxsRaw: string | null = null;
+                    let idbHistoryRaw: string | null = null;
+                    let idbKeyImagesRaw: string | null = null;
                     if (address) {
-                        const idbTxs = await loadFromIndexedDB(`wallet_txs_${address}`);
-                        if (idbTxs) {
-                            cachedTxs = JSON.parse(idbTxs);
+                        [idbTxsRaw, idbHistoryRaw, idbKeyImagesRaw] = await Promise.all([
+                            loadFromIndexedDB(`wallet_txs_${address}`),
+                            loadFromIndexedDB(`wallet_history_${address}`),
+                            loadFromIndexedDB(`wallet_keyimages_${address}`)
+                        ]);
+                        if (idbTxsRaw) {
+                            cachedTxs = JSON.parse(idbTxsRaw);
                         } else if (encryptedWallet.cachedTransactions?.length) {
                             cachedTxs = encryptedWallet.cachedTransactions;
                         }
@@ -3051,23 +3229,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     // and reports unlockedBalance as balance (since it thinks nothing is locked)
                     // Pass true to advance wallet's internal height (scan is complete)
                     walletService.setBlockchainHeight(networkHeight, true);
-                    const currentBalance = walletService.getBalance();
+                    const nativeBalanceState = getAuthoritativeNativeBalance(walletService.getBalance());
+                    const currentBalance = nativeBalanceState.balance;
 
-                    let cachedBalance = encryptedWallet.cachedBalance;
                     let finalBalance = currentBalance;
-
-                    // MIGRATION: Old caches (v1) stored balance WITH stakes included.
-                    // New format (v2) stores WITHOUT stakes. Check version to handle correctly.
-                    const cacheVersion = (encryptedWallet as any).cachedBalanceVersion || 1;
-
-                    if (cacheVersion === 1 && cachedBalance) {
-                        cachedBalance = normalizeLegacyCachedBalance(
-                            cachedBalance,
-                            encryptedWallet.cachedStakes || [],
-                            networkHeight
-                        );
-                    }
-                    // v2 caches already store balance without stakes, no adjustment needed
 
                     // 4. Handle "Ghost Transactions" - transactions that disappear during reorgs
 
@@ -3076,137 +3241,26 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     // finalScanStartHeight can be stale when recovery forces a full rescan.
                     const isIncrementalScan = actualStartHeight > 0;
 
-                    // CRITICAL: After vault restore, WASM has the full cache imported so its balance is authoritative.
-                    // Don't use cached balance + delta which may perpetuate errors from the vault file.
-                    const wasRestoredFromVault = restoredFromVaultRef.current;
-
-                    // Find genuinely new transactions (in this scan but not in cache)
+                    // Detect WASM state divergence (tab suspension recovery)
+                    // If this trips, schedule a full rescan, but keep native balance as the
+                    // only source of truth for the current session.
+                    const cachedBalance = encryptedWallet.cachedBalance;
                     const newlyFoundTxs = findNewTransactionsByDirection(newTxs, existingTxs);
                     const hasNewTxs = newlyFoundTxs.length > 0;
-
-                    // Track whether finalBalance comes from WASM (needs mempool subtraction) or cache (does not)
-                    let balanceFromWasm = true;
-
-                    // Detect WASM state divergence (tab suspension recovery)
-                    // Only applies to non-incremental scans - incremental scans use cached balance + delta
                     const scanFoundOutputsButFilterEmpty = (result.outputsFound || 0) > 0 && !hasNewTxs;
                     const wasmHasFullState = currentBalance.balance > (cachedBalance?.balance || 0);
-                    const shouldTrustWasmFromSleepWake = !isIncrementalScan && scanFoundOutputsButFilterEmpty && wasmHasFullState;
-
                     const isNewWallet = cachedTxs.length === 0 && (cachedBalance?.balance || 0) === 0;
                     const wasmLostState = !isIncrementalScan && scanFoundOutputsButFilterEmpty && !wasmHasFullState && !isNewWallet;
 
                     if (wasmLostState) {
                         needsFullRescanRef.current = true;
-                        // CRITICAL FIX: When WASM state was lost during tab suspension but scan found outputs,
-                        // the cached balance is likely stale (transactions in cache but balance doesn't reflect them).
-                        // In this case, we should NOT trust the cached balance - use WASM or trigger immediate rescan.
-                        // For now, trust WASM balance as it includes the outputs found in this scan.
-                        void 0 && console.warn('[WalletContext] WASM state loss detected with outputs found - using WASM balance, scheduling full rescan');
-                        finalBalance = currentBalance;
-                        // Skip the incremental balance calculation - go directly to post-processing
+                        console.warn('[WalletContext] WASM state loss detected with outputs found - scheduling full rescan');
                     }
 
-                    if (wasRestoredFromVault || shouldTrustWasmFromSleepWake) {
-                        // WASM balance is authoritative when:
-                        // 1. Vault restore: WASM has imported full cache
-                        // 2. Sleep/wake mismatch: scan found outputs, filter empty, but WASM balance > cached
-                        // FIX: After vault restore, WASM's get_unlocked_balance() may not correctly
-                        // track unlock status for imported outputs. Use cached unlocked as floor
-                        // since maturation doesn't go backwards, and WASM may find more unlocked.
-                        const cachedUnlocked = cachedBalance?.unlockedBalance || 0;
-                        const correctedUnlocked = Math.min(
-                            currentBalance.balance,
-                            Math.max(currentBalance.unlockedBalance, cachedUnlocked)
-                        );
-                        finalBalance = {
-                            ...currentBalance,
-                            unlockedBalance: correctedUnlocked,
-                            unlockedBalanceSAL: correctedUnlocked / 1e8
-                        };
-                    } else if (!wasmLostState && isIncrementalScan && cachedBalance && cachedBalance.balance >= 0) {
-                        // INCREMENTAL SCAN after page reload or backup restore
-                        // ALWAYS use cached balance + delta from new transactions
-                        // WASM balance after incremental scan only includes recently scanned outputs,
-                        // NOT the full wallet history from the imported cache
-                        // NOTE: cachedBalance.balance === 0 is valid (empty wallet receiving first TX)
-
-                        if (hasNewTxs) {
-                            // Calculate delta from genuinely new transactions
-                            const ATOMIC_UNITS = 1e8;
-                            let balanceDelta = 0;
-                            for (const tx of newlyFoundTxs) {
-                                const amountAtomic = Math.round(tx.amount * ATOMIC_UNITS);
-                                if (tx.type === 'in') {
-                                    balanceDelta += amountAtomic;
-                                } else if (tx.type === 'out') {
-                                    // WASM is inconsistent with how it reports amounts:
-                                    // - Regular transfers: amount INCLUDES fee (e.g., send 1.0 + 0.0086 fee = 1.0086)
-                                    // - Stakes: amount does NOT include fee (e.g., stake 1.0 + 0.0086 fee = 1.0)
-                                    const isStake = tx.tx_type === 6 || tx.tx_type_label?.toLowerCase() === 'stake';
-                                    if (isStake && tx.fee) {
-                                        // Stakes: amount is just the staked amount, need to add fee
-                                        balanceDelta -= amountAtomic;
-                                        balanceDelta -= Math.round(tx.fee * 1e8);
-                                    } else {
-                                        // Regular transfers: amount already includes fee
-                                        balanceDelta -= amountAtomic;
-                                    }
-                                }
-                            }
-
-                            // Trust cached balance + delta ONLY
-                            // DON'T use Math.max with WASM balance - it may have double-counted
-                            // outputs from re-ingesting the same chunk multiple times
-                            const newBalance = Math.max(0, cachedBalance.balance + balanceDelta);
-                            const cachedUnlocked = cachedBalance.unlockedBalance || 0;
-                            const hasDebitTxs = newlyFoundTxs.some(tx => tx.type === 'out');
-                            const newUnlocked = resolveUnlockedBalance(
-                                newBalance,
-                                currentBalance.unlockedBalance,
-                                hasDebitTxs ? undefined : cachedUnlocked
-                            );
-
-                            finalBalance = {
-                                balance: newBalance,
-                                unlockedBalance: newUnlocked,
-                                balanceSAL: newBalance / ATOMIC_UNITS,
-                                unlockedBalanceSAL: newUnlocked / ATOMIC_UNITS
-                            };
-                            balanceFromWasm = false; // Cache-based balance, no mempool subtraction needed
-
-                        } else {
-                            // No new transactions found (already in cache or mempool)
-                            // Trust cached balance ONLY - WASM might have double-counted outputs
-                            // The balance should NEVER increase without new transactions
-                            // Unlocked can still rise as outputs mature, so preserve the cached
-                            // unlocked floor unless we see an actual debit.
-                            const ATOMIC_UNITS = 1e8;
-                            const newBalance = cachedBalance.balance;
-                            const newUnlocked = resolveUnlockedBalance(
-                                newBalance,
-                                currentBalance.unlockedBalance,
-                                cachedBalance.unlockedBalance || 0
-                            );
-
-                            finalBalance = {
-                                balance: newBalance,
-                                unlockedBalance: newUnlocked,
-                                balanceSAL: newBalance / ATOMIC_UNITS,
-                                unlockedBalanceSAL: newUnlocked / ATOMIC_UNITS
-                            };
-                            balanceFromWasm = false; // Cache-based balance, no mempool subtraction needed
-                        }
-                    } else if (isIncrementalScan && cachedTxs.length > 0 && !cachedBalance) {
-                        // INCREMENTAL SCAN but CACHE COMPLETELY MISSING (not just zero balance)
-                        // This is a dangerous state: WASM only has partial history (incremental),
-                        // but we have no cached base state to add it to.
-                        // NOTE: cachedBalance === 0 is valid for wallets with no transactions!
-                        // Only trigger recovery when cachedBalance is undefined (truly missing).
-                        // CRITICAL: Also require cachedTxs.length > 0 to distinguish:
-                        //   - Fresh restore (no cached txs) = expected, no recovery needed
-                        //   - Cache loss (had cached txs but lost balance) = needs recovery
-                        // Reset height in localStorage to force full rescan
+                    if (isIncrementalScan && cachedTxs.length > 0 && !cachedBalance) {
+                        // Incremental scan without cached balance means the persistent cache is
+                        // incomplete. Schedule a full rescan, but keep native state authoritative
+                        // for the current render instead of reconstructing balances in React.
                         try {
                             const wallet = safeReadWallet();
                             if (wallet) {
@@ -3217,15 +3271,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             // Failed to reset height for recovery
                         }
 
-                        // Set flag to trigger full rescan after this scan completes
                         needsFullRescanRef.current = true;
-
-                        // Use current balance temporarily (will be corrected after full rescan)
-                        finalBalance = currentBalance;
-                    } else {
-                        // FULL SCAN from block 0 - WASM balance is authoritative
-                        finalBalance = currentBalance;
                     }
+
+                    finalBalance = currentBalance;
 
                     // MEMPOOL DOUBLE-COUNT FIX: Subtract mempool-scanned incoming amounts
                     // When scan_tx is called for mempool transactions, WASM adds those outputs to its state.
@@ -3247,144 +3296,33 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         setMempoolTransactions(cleanedMempoolTxs);
                     }
 
-                    // Now filter for incoming mempool TXs that are truly unconfirmed
-                    // ONLY subtract mempool amounts when balance came from WASM (which includes mempool-scanned outputs)
-                    // Cache-based balance only includes confirmed TXs, so mempool amounts are NOT in it
-                    if (balanceFromWasm) {
-                        const mempoolIncomingTxs = cleanedMempoolTxs.filter(tx => tx.type === 'in' && tx.amount > 0);
-                        if (mempoolIncomingTxs.length > 0) {
-                            const unconfirmedTotal = mempoolIncomingTxs.reduce((sum, tx) => sum + tx.amount, 0);
-                            const unconfirmedAtomic = Math.round(unconfirmedTotal * 1e8);
-
-                            finalBalance = {
-                                ...finalBalance,
-                                balance: Math.max(0, finalBalance.balance - unconfirmedAtomic),
-                                unlockedBalance: Math.max(0, finalBalance.unlockedBalance - unconfirmedAtomic),
-                                balanceSAL: Math.max(0, finalBalance.balanceSAL - unconfirmedTotal),
-                                unlockedBalanceSAL: Math.max(0, finalBalance.unlockedBalanceSAL - unconfirmedTotal)
-                            };
-                        }
-                    }
-
                     finalBalance = clampUnlockedBalance(finalBalance);
 
-                    // Compute stakes from MERGED transaction data (not just new txs)
-                    // We moved this UP so we can include staked amounts in the final balance
-                    const STAKE_LOCK_PERIOD = 21601;
                     const currentHeight = networkHeight;
-                    const computedStakes: Stake[] = [];
-                    // Only OUTGOING tx_type=6 are stakes - incoming are stake change/return outputs
-                    const stakeTxs = stakeSourceTxs.filter(tx =>
-                        tx.type === 'out' && (tx.tx_type === 6 || tx.tx_type_label?.toLowerCase() === 'stake')
-                    );
-                    const yieldTxs = stakeSourceTxs.filter(tx =>
-                        tx.tx_type === 2 || tx.tx_type_label?.toLowerCase() === 'yield'
-                    );
+                    const stakesWithRewards = getNativeStakeState(currentHeight);
+                    void fetchYieldData(stakesWithRewards, currentHeight).then((enrichedStakes) => {
+                        applyStakes(enrichedStakes);
+                    });
+                    finalBalance = clampUnlockedBalance(finalBalance);
 
-                    // Sort stake txs by height (oldest first) for deterministic matching
-                    const sortedStakeTxs = [...stakeTxs].sort((a, b) => a.height - b.height);
-
-                    // Track which yield txs have been matched to prevent duplicates
-                    const matchedYieldTxids = new Set<string>();
-
-                    for (const stakeTx of sortedStakeTxs) {
-                        const startBlock = stakeTx.height;
-                        const unlockBlock = startBlock + STAKE_LOCK_PERIOD;
-
-                        // Find all stakes in this block (for proportional reward calculation)
-                        const blockStakes = stakeSourceTxs.filter(t =>
-                            t.height === stakeTx.height &&
-                            t.type === 'out' && (t.tx_type === 6 || t.tx_type_label?.toLowerCase() === 'stake')
-                        );
-
-                        // Get all yield TXs at unlock height
-                        // NOTE: The protocol may combine all stakes from the same block into a SINGLE yield TX
-                        const blockReturns = stakeSourceTxs.filter(t =>
-                            t.height === unlockBlock &&
-                            (t.tx_type === 2 || t.tx_type_label?.toLowerCase() === 'yield')
-                        );
-
-                        // Calculate total staked and total yielded for this block
-                        const totalStakedInBlock = blockStakes.reduce((sum, s) => sum + s.amount, 0);
-                        const totalYieldedInBlock = blockReturns.reduce((sum, r) => sum + r.amount, 0);
-
-                        // Determine the yield TX - use the first one since they may be combined
-                        const yieldTx = blockReturns.length > 0 ? blockReturns[0] : undefined;
-
-                        // Mark this yield tx as matched
-                        if (yieldTx) {
-                            matchedYieldTxids.add(yieldTx.txid);
-                        }
-
-                        const hasReturned = !!yieldTx;
-                        // Status based on lock period: 'active' while still locked, 'unlocked' after lock period
-                        // Note: hasReturned indicates we found the yield tx (for earnedReward calculation)
-                        const status: 'active' | 'unlocked' =
-                            currentHeight >= unlockBlock ? 'unlocked' : 'active';
-
-                        // Calculate proportional earned reward:
-                        // If multiple stakes share a yield TX, distribute reward proportionally
-                        // Total reward = totalYielded - totalStaked
-                        // This stake's share = (thisStakeAmount / totalStaked) * totalReward
-                        let earnedReward = 0;
-                        if (hasReturned && totalStakedInBlock > 0) {
-                            const totalReward = Math.max(0, totalYieldedInBlock - totalStakedInBlock);
-                            const proportion = stakeTx.amount / totalStakedInBlock;
-                            earnedReward = totalReward * proportion;
-                        }
-
-                        computedStakes.push({
-                            id: `stake-${stakeTx.txid.slice(0, 8)}`,
-                            txid: stakeTx.txid,
-                            amount: stakeTx.amount,
-                            rewards: 0,  // Will be populated below
-                            startBlock,
-                            unlockBlock,
-                            currentBlock: currentHeight,
-                            status,
-                            assetType: stakeTx.asset_type || 'SAL',
-                            returnBlock: yieldTx?.height,
-                            yieldTxid: yieldTx?.txid,
-                            earnedReward: hasReturned ? earnedReward : undefined
-                        });
-                    }
-
-                    // Fetch yield data and update stakes BEFORE caching
-                    // This ensures rewards are persisted across refreshes
-                    let stakesWithRewards = computedStakes;
-                    try {
-                        stakesWithRewards = await fetchYieldData(computedStakes, currentHeight);
-                    } catch (e) {
-                        // Yield fetch failed, using local stakes
-                    }
-                    const {
-                        stakes: normalizedStakes
-                    } = buildStakeDisplayState(finalBalance, stakesWithRewards, currentHeight);
-                    stakesWithRewards = normalizedStakes;
-                    const reconciledBalanceState = reconcileDisplayBalanceForTestVault(
-                        finalBalance,
-                        mergedTxs,
-                        stakesWithRewards,
-                        currentHeight
-                    );
-
-                    // WASM treats staked outputs as "spent" (sent to staking contract),
-                    // so get_balance() does NOT include them. We must add them manually.
-                    // IMPORTANT: Cache stores balance WITHOUT stakes to avoid double-counting on reload.
-                    // Save balance WITHOUT stakes to cache (this is the "base" balance)
-                    const balanceForCache = { ...reconciledBalanceState.baseBalance };
-
-                    // Add stakes to get the display balance
-                    finalBalance = reconciledBalanceState.displayBalance;
-
-                    // Update React state with the calculated balance (WITH stakes for display)
                     setBalance(finalBalance);
+                    const snapshot = captureNativeSnapshot('scan_complete', {
+                        networkHeight,
+                        fullWalletCacheImported: fullWalletCacheImportedRef.current,
+                        nativeSnapshotBalance: nativeBalanceState.snapshot?.totals,
+                        finalBalance: {
+                            balance: finalBalance.balance,
+                            unlockedBalance: finalBalance.unlockedBalance,
+                        },
+                    });
+                    void recordNativeSnapshotHealth('scan_complete', snapshot, finalBalance);
+                    scheduleNativeIntegrityRecovery('scan_complete', snapshot, finalBalance);
 
-                    // Store balance WITHOUT stakes in cache to prevent double-counting on reload
-                    encryptedWallet.cachedBalance = balanceForCache;
-                    (encryptedWallet as any).cachedBalanceVersion = 2; // v2 = stakes NOT included in cachedBalance
+                    // Cache the same authoritative balance that the UI renders so refreshes
+                    // do not fall back to a liquid-only total before native state hydrates.
+                    encryptedWallet.cachedBalance = { ...finalBalance };
+                    (encryptedWallet as any).cachedBalanceVersion = 3; // v3 = native wallet balance source of truth
                     encryptedWallet.cachedTransactions = mergedTxs;
-                    encryptedWallet.cachedStakes = stakesWithRewards;
                     setTransactions(mergedTxs); // CRITICAL: Update UI with newly found transactions
                     applyStakes(stakesWithRewards); // Also update UI state immediately
 
@@ -3429,9 +3367,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         };
                     });
                     setSubaddresses(encryptedWallet.cachedSubaddresses);
-
-                    // Generate wallet history using real MEXC prices and full date range
-                    generateWalletHistory(mergedTxs, finalBalance.balanceSAL);
 
                     // Export FULL wallet cache for persistence (enables sending after page refresh)
                     const cacheExport = walletService.exportWalletCache();
@@ -3514,19 +3449,28 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     // iOS FIX: Use Promise.all for parallel writes to avoid exceeding
                     // iOS Safari's 10-second transaction timeout
                     if (address) {
-                        const savePromises: Promise<void>[] = [];
+                        const savePromises: Promise<unknown>[] = [];
+                        const nextTransactionsJson = largeData.cachedTransactions?.length
+                            ? JSON.stringify(largeData.cachedTransactions)
+                            : null;
+                        const nextHistoryJson = largeData.cachedWalletHistory?.length
+                            ? JSON.stringify(largeData.cachedWalletHistory)
+                            : null;
+                        const nextKeyImagesJson = largeData.cachedSpentKeyImages && Object.keys(largeData.cachedSpentKeyImages).length
+                            ? JSON.stringify(largeData.cachedSpentKeyImages)
+                            : null;
 
                         if (walletCacheHex) {
                             savePromises.push(saveToIndexedDB(`wallet_cache_${address}`, walletCacheHex));
                         }
-                        if (largeData.cachedTransactions?.length) {
-                            savePromises.push(saveToIndexedDB(`wallet_txs_${address}`, JSON.stringify(largeData.cachedTransactions)));
+                        if (nextTransactionsJson) {
+                            savePromises.push(saveToIndexedDBIfChanged(`wallet_txs_${address}`, nextTransactionsJson, idbTxsRaw));
                         }
-                        if (largeData.cachedWalletHistory?.length) {
-                            savePromises.push(saveToIndexedDB(`wallet_history_${address}`, JSON.stringify(largeData.cachedWalletHistory)));
+                        if (nextHistoryJson) {
+                            savePromises.push(saveToIndexedDBIfChanged(`wallet_history_${address}`, nextHistoryJson, idbHistoryRaw));
                         }
-                        if (largeData.cachedSpentKeyImages && Object.keys(largeData.cachedSpentKeyImages).length) {
-                            savePromises.push(saveToIndexedDB(`wallet_keyimages_${address}`, JSON.stringify(largeData.cachedSpentKeyImages)));
+                        if (nextKeyImagesJson) {
+                            savePromises.push(saveToIndexedDBIfChanged(`wallet_keyimages_${address}`, nextKeyImagesJson, idbKeyImagesRaw));
                         }
 
                         // Execute all saves in parallel (iOS Safari timeout fix)
@@ -3595,7 +3539,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         } catch (e) {
             // Scan failed - reset syncing state
             setSyncStatus(prev => ({ ...prev, isSyncing: false }));
-            void 0 && console.error('[WalletContext] Scan failed:', e);
+            console.error('[WalletContext] Scan failed:', e);
         } finally {
             // RACE CONDITION FIX: Only update state if this is still the current scan
             // This prevents stale scan completions from corrupting state
@@ -3625,6 +3569,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     // Send transaction
     const sendTransaction = async (toAddress: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string): Promise<string> => {
+        await assertWalletReadyForSpend();
         const normalizedAssetType = assetType?.trim() || 'SAL1';
         const txHash = await walletService.sendTransaction(toAddress, amount, 1, paymentId, sweepAll, normalizedAssetType);
 
@@ -3651,8 +3596,42 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         return txHash;
     };
 
+    const createTokenTransaction = async (
+        assetType: string,
+        supply: string,
+        size: number,
+        metadata: string = '',
+        burnCostSal: number = 1000
+    ): Promise<string[]> => {
+        const normalizedAssetType = `sal${assetType.trim().toUpperCase()}`.toLowerCase();
+        const txHashes = await walletService.createTokenTransaction(assetType, supply, size, metadata);
+
+        for (const txHash of txHashes) {
+            const pendingTx: WalletTransaction = {
+                txid: txHash,
+                type: 'out',
+                amount: burnCostSal,
+                fee: 0,
+                timestamp: Date.now(),
+                height: 0,
+                confirmations: 0,
+                address: '',
+                payment_id: '',
+                asset_type: normalizedAssetType,
+                tx_type: 9,
+                tx_type_label: 'Create Token',
+                pending: true
+            };
+            setPendingTransactions(prev => [pendingTx, ...prev]);
+        }
+
+        refreshData();
+        return txHashes;
+    };
+
     // Stake transaction
     const stakeTransaction = async (amount: number, sweepAll: boolean = false): Promise<string> => {
+        await assertWalletReadyForSpend();
         const txHash = await walletService.stakeTransaction(amount, 1, sweepAll);
 
         // Add to pending transactions for immediate UI feedback
@@ -3680,6 +3659,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     // Return transaction - sends funds back to original sender
     const returnTransaction = async (txid: string): Promise<string> => {
+        await assertWalletReadyForSpend();
         const txHash = await walletService.returnTransaction(txid);
 
         // Add to pending transactions for immediate UI feedback
@@ -3707,6 +3687,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     // Sweep all - sends ALL unlocked funds to a destination
     const sweepAllTransaction = async (toAddress: string): Promise<string[]> => {
+        await assertWalletReadyForSpend();
         const txHashes = await walletService.sweepAllTransaction(toAddress);
 
         // Add pending transactions for each sweep tx
@@ -3878,7 +3859,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 // Clear cached data but preserve wallet credentials and key images
                 delete wallet.cachedBalance;
                 delete wallet.cachedTransactions;
-                delete wallet.cachedStakes;
                 delete wallet.cachedSubaddresses;
                 delete wallet.cachedWalletHistory;
                 delete wallet.cachedOutputsHex;
@@ -4049,7 +4029,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     let cachedAddress = '';
                     let cachedBalance = null;
                     let cachedTxs: WalletTransaction[] = [];
-                    let cachedStakesData: Stake[] = [];
                     let cachedSubaddrsData: SubAddress[] = [];
                     let cachedHistoryData: ChartDataPoint[] = [];
                     let cachedOutputsHex = '';
@@ -4096,37 +4075,32 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
                             cachedAddress = addr || '';
                             cachedBalance = encryptedWallet.cachedBalance;
-                            cachedStakesData = encryptedWallet.cachedStakes || [];
                             cachedSubaddrsData = encryptedWallet.cachedSubaddresses || [];
                         }
                     } catch (e) { /* ignore */ }
 
                     if (cachedAddress) setAddress(cachedAddress);
                     if (cachedTxs.length > 0) setTransactions(cachedTxs);
-                    const restoredStakes = hydrateStakeStatuses(cachedStakesData, restoreHeight || 0);
-                    if (restoredStakes.length > 0) {
-                        applyStakes(restoredStakes);
-                    }
-                    // CRITICAL: Add active stakes back to cached balance
-                    // v2 cache stores balance WITHOUT stakes to prevent double-counting
-                    if (cachedBalance) {
-                        const cachedDisplayBalance = reconcileDisplayBalanceForTestVault(
-                            cachedBalance,
-                            cachedTxs,
-                            restoredStakes,
-                            restoreHeight || 0
-                        );
-                        setBalance(cachedDisplayBalance.displayBalance);
+                    const hydratedBalance = getPreferredHydratedBalance(
+                        cachedBalance,
+                        cachedTxs,
+                        [],
+                        restoreHeight || 0
+                    );
+                    if (hydratedBalance) {
+                        setBalance(hydratedBalance);
                     }
                     if (cachedSubaddrsData.length > 0) {
                         setSubaddresses(cachedSubaddrsData);
                         // CRITICAL FIX: Update ref immediately so refreshData() can see the labels
                         subaddressesRef.current = cachedSubaddrsData;
                     }
-                    if (cachedHistoryData.length > 0) {
+                    if (cachedHistoryData.length > 0 && cachedTxs.length === 0) {
                         hydratedWalletHistoryFromCacheRef.current = true;
                         setWalletHistory(cachedHistoryData);
                     }
+                    // walletHistory is regenerated by the authoritative reactive effect
+                    // after transactions/balance/stakes hydrate into React state.
                     if (restoreHeight > 0) setSyncStatus(prev => ({ ...prev, walletHeight: restoreHeight }));
 
                     // Try to restore, catch any errors
@@ -4183,14 +4157,86 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         }
                     }
 
+                    let actualNetworkHeight = restoreHeight;
+                    try {
+                        const fetchedHeight = await cspScanService.getNetworkHeight();
+                        if (fetchedHeight > 0) {
+                            actualNetworkHeight = fetchedHeight;
+                        }
+                    } catch {
+                        // Failed to fetch network height during session restore
+                    }
+
+                    if (actualNetworkHeight > 0) {
+                        walletService.setBlockchainHeight(actualNetworkHeight);
+                    } else if (restoreHeight > 0) {
+                        walletService.setBlockchainHeight(restoreHeight);
+                    }
+
+                    const bootHeight = actualNetworkHeight || restoreHeight || 0;
+                    const bootBalance = getPreferredHydratedBalance(
+                        cachedBalance,
+                        cachedTxs,
+                        [],
+                        bootHeight
+                    );
+                    if (bootBalance) {
+                        setBalance(bootBalance);
+                    }
+
+                    const bootStakes = getNativeStakeState(bootHeight);
+                    applyStakes(bootStakes);
+                    void fetchYieldData(bootStakes, bootHeight).then((stakesWithRewards) => {
+                        applyStakes(stakesWithRewards);
+                    });
+
+                    // walletHistory is regenerated by the authoritative reactive effect
+                    // after transactions/balance/stakes hydrate into React state.
+
+                    if (actualNetworkHeight > restoreHeight) {
+                        setSyncStatus(prev => ({
+                            ...prev,
+                            walletHeight: restoreHeight,
+                            daemonHeight: actualNetworkHeight,
+                            isSyncing: true,
+                            progress: restoreHeight > 0 ? Math.min(100, (restoreHeight / actualNetworkHeight) * 100) : 0
+                        }));
+                    } else if (actualNetworkHeight > 0) {
+                        setSyncStatus(prev => ({
+                            ...prev,
+                            walletHeight: restoreHeight,
+                            daemonHeight: actualNetworkHeight,
+                            isSyncing: false,
+                            progress: 100
+                        }));
+                    } else if (restoreHeight > 0) {
+                        setSyncStatus(prev => ({
+                            ...prev,
+                            walletHeight: restoreHeight
+                        }));
+                    }
+
                     setIsWalletReady(true);
                     setIsLocked(false);
-                    if (restoreHeight > 0) walletService.setBlockchainHeight(restoreHeight);
+
+                    const sessionRestoreSnapshot = captureNativeSnapshot('session_restore_complete', {
+                        bootHeight,
+                        restoreHeight,
+                    });
+                    void recordNativeSnapshotHealth(
+                        'session_restore_complete',
+                        sessionRestoreSnapshot,
+                        getAuthoritativeNativeBalance(walletService.getBalance()).balance
+                    );
+                    scheduleNativeIntegrityRecovery(
+                        'session_restore_complete',
+                        sessionRestoreSnapshot,
+                        getAuthoritativeNativeBalance(walletService.getBalance()).balance
+                    );
 
                     const hadDataForInit = (cachedBalance?.balance || 0) > 0 || cachedTxs.length > 0;
-                    if (restoreHeight === 0 && hadDataForInit) {
-                        // Wait for scan
-                    } else {
+                    needsGapCheckRef.current = true;
+                    if (!(restoreHeight === 0 && hadDataForInit)) {
                         refreshData();
                     }
 
@@ -4698,6 +4744,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         lockWallet,
         startScan,
         sendTransaction,
+        createTokenTransaction,
         stakeTransaction,
         returnTransaction,
         sweepAllTransaction,

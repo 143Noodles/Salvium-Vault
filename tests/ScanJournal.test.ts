@@ -25,6 +25,7 @@ import {
   getIncompleteJournal,
   recordScanError,
   saveBalanceCheckpoint,
+  saveCheckpointMetadata,
   forceCleanSlate,
   populateCheckpointFromVaultRestore,
   type ScanJournalEntry,
@@ -209,6 +210,24 @@ describe('ScanJournal', () => {
       expect(entry.transactionsFound).toBe(0);
       expect(entry.errorCount).toBe(0);
       expect(entry.lastUpdateTimestamp).toBeLessThanOrEqual(Date.now());
+    });
+  });
+
+  describe('saveCheckpointMetadata', () => {
+    it('persists incremental scan metadata on an existing checkpoint', async () => {
+      const walletAddress = 'salv1meta';
+      await populateCheckpointFromVaultRestore(walletAddress, 5000, 1000);
+
+      await saveCheckpointMetadata(walletAddress, {
+        lastProcessedStakeReturnHeight: 432100,
+        lastPhase3Issue: 'Phase 3b failed: timeout',
+        lastPhase3IssueTimestamp: 1234567890,
+      });
+
+      const checkpoint = await getCheckpoint(walletAddress);
+      expect(checkpoint?.lastProcessedStakeReturnHeight).toBe(432100);
+      expect(checkpoint?.lastPhase3Issue).toBe('Phase 3b failed: timeout');
+      expect(checkpoint?.lastPhase3IssueTimestamp).toBe(1234567890);
     });
   });
 

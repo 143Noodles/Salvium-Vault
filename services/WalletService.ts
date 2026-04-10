@@ -11,6 +11,31 @@ import {
 // PRODUCTION: Set to false to suppress verbose debug logs
 const DEBUG = false;
 
+function isNativeAuditEnabled(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('nativeAudit') === '1') {
+      return true;
+    }
+  } catch {
+    // Ignore invalid URL state
+  }
+
+  try {
+    return window.localStorage.getItem('nativeAudit') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function debugDisabledResult(): { error: string } {
+  return { error: 'native debug disabled' };
+}
+
 // ============================================================================
 // Centralized error logging for catch blocks
 // ============================================================================
@@ -165,6 +190,266 @@ interface SeedValidationResult {
   error?: string;
 }
 
+export interface WalletStateSnapshotAsset {
+  asset_type: string;
+  balance: string;
+  unlocked_balance: string;
+  locked_stake: string;
+  transfer_index_count: number;
+}
+
+export interface WalletStateSnapshot {
+  success: boolean;
+  error?: string;
+  wallet_height: number;
+  refresh_start_height: number;
+  daemon_height: number;
+  transfer_count: number;
+  transfers_indices_asset_count: number;
+  key_image_count: number;
+  pub_key_count: number;
+  salvium_tx_count: number;
+  locked_coin_count: number;
+  assets: WalletStateSnapshotAsset[];
+  totals: {
+    balance: string;
+    unlocked_balance: string;
+    locked_stake: string;
+  };
+  active_locked_stakes: Array<{
+    key: string;
+    amount: string;
+    asset_type: string;
+    index_major: number;
+  }>;
+}
+
+export interface WalletStakeLifecycleEntry {
+  stake_txid: string;
+  asset_type: string;
+  principal: string;
+  stake_height: number;
+  maturity_height: number;
+  status: 'active' | 'returned' | 'matured_pending_payout';
+  return_address: string;
+  stake_output_key: string;
+  still_locked: boolean;
+  derived_reward: string;
+  realized_reward: string;
+  payout_txid?: string;
+  payout_height?: number;
+  payout_amount?: string;
+}
+
+export interface WalletStakeLifecycle {
+  success: boolean;
+  error?: string;
+  wallet_height?: number;
+  stake_lock_period?: number;
+  yield_info_available?: boolean;
+  yield_info_size?: number;
+  yield_per_stake?: string;
+  total_locked_network?: string;
+  stakes?: WalletStakeLifecycleEntry[];
+  summary?: {
+    active_count: number;
+    returned_count: number;
+    matured_pending_count: number;
+  };
+}
+
+const BASE_ASSET_TYPES = new Set(['SAL', 'SAL1']);
+
+function balanceInfoFromAtomicStrings(balance: string, unlockedBalance: string): BalanceInfo {
+  const balanceBigInt = BigInt(balance || '0');
+  const unlockedBigInt = BigInt(unlockedBalance || '0');
+
+  const balanceAtomic = Number(balanceBigInt);
+  const unlockedAtomic = Number(unlockedBigInt);
+
+  const balanceSAL = Number(balanceBigInt / BigInt(ATOMIC_UNITS)) +
+                     Number(balanceBigInt % BigInt(ATOMIC_UNITS)) / ATOMIC_UNITS;
+  const unlockedBalanceSAL = Number(unlockedBigInt / BigInt(ATOMIC_UNITS)) +
+                             Number(unlockedBigInt % BigInt(ATOMIC_UNITS)) / ATOMIC_UNITS;
+
+  return {
+    balance: balanceAtomic,
+    unlockedBalance: unlockedAtomic,
+    balanceSAL,
+    unlockedBalanceSAL,
+  };
+}
+
+function findBaseAssetSnapshot(
+  snapshot: WalletStateSnapshot | null | undefined
+): WalletStateSnapshotAsset | null {
+  if (!snapshot?.success) {
+    return null;
+  }
+
+  const normalizedAssets = snapshot.assets.map((asset) => ({
+    asset,
+    assetType: String(asset.asset_type || '').toUpperCase(),
+  }));
+
+  return (
+    normalizedAssets.find(({ assetType }) => assetType === 'SAL1')?.asset ||
+    normalizedAssets.find(({ assetType }) => assetType === 'SAL')?.asset ||
+    null
+  );
+}
+
+function getAggregatedBaseAssetSnapshotTotals(
+  snapshot: WalletStateSnapshot | null | undefined
+): { balance: string; unlocked_balance: string; locked_stake: string } | null {
+  if (!snapshot?.success) {
+    return null;
+  }
+
+  const baseAssets = snapshot.assets.filter((asset) =>
+    BASE_ASSET_TYPES.has(String(asset.asset_type || '').toUpperCase())
+  );
+
+  if (baseAssets.length === 0) {
+    return null;
+  }
+
+  let balance = 0n;
+  let unlocked = 0n;
+  let lockedStake = 0n;
+
+  for (const asset of baseAssets) {
+    balance += BigInt(asset.balance || '0');
+    unlocked += BigInt(asset.unlocked_balance || '0');
+    lockedStake += BigInt(asset.locked_stake || '0');
+  }
+
+  return {
+    balance: balance.toString(),
+    unlocked_balance: unlocked.toString(),
+    locked_stake: lockedStake.toString(),
+  };
+}
+
+export function getBaseAssetBalanceFromSnapshot(
+  snapshot: WalletStateSnapshot | null | undefined
+): BalanceInfo | null {
+  if (!snapshot?.success) {
+    return null;
+  }
+
+  const baseAsset = findBaseAssetSnapshot(snapshot);
+  if (baseAsset) {
+    return balanceInfoFromAtomicStrings(baseAsset.balance, baseAsset.unlocked_balance);
+  }
+
+  const aggregatedBaseAssets = getAggregatedBaseAssetSnapshotTotals(snapshot);
+  if (aggregatedBaseAssets) {
+    return balanceInfoFromAtomicStrings(
+      aggregatedBaseAssets.balance,
+      aggregatedBaseAssets.unlocked_balance
+    );
+  }
+
+  if (snapshot.totals) {
+    return balanceInfoFromAtomicStrings(
+      snapshot.totals.balance,
+      snapshot.totals.unlocked_balance
+    );
+  }
+
+  return null;
+}
+
+export function getDisplayAssetBalanceFromSnapshot(
+  snapshot: WalletStateSnapshot | null | undefined
+): BalanceInfo | null {
+  if (!snapshot?.success) {
+    return null;
+  }
+
+  const baseAsset = findBaseAssetSnapshot(snapshot);
+  if (baseAsset) {
+    const totalAtomic = (BigInt(baseAsset.balance || '0') + BigInt(baseAsset.locked_stake || '0')).toString();
+    return balanceInfoFromAtomicStrings(totalAtomic, baseAsset.unlocked_balance);
+  }
+
+  const aggregatedBaseAssets = getAggregatedBaseAssetSnapshotTotals(snapshot);
+  if (aggregatedBaseAssets) {
+    const totalAtomic = (
+      BigInt(aggregatedBaseAssets.balance || '0') +
+      BigInt(aggregatedBaseAssets.locked_stake || '0')
+    ).toString();
+    return balanceInfoFromAtomicStrings(
+      totalAtomic,
+      aggregatedBaseAssets.unlocked_balance
+    );
+  }
+
+  if (snapshot.totals) {
+    const totalAtomic = (
+      BigInt(snapshot.totals.balance || '0') +
+      BigInt(snapshot.totals.locked_stake || '0')
+    ).toString();
+    return balanceInfoFromAtomicStrings(totalAtomic, snapshot.totals.unlocked_balance);
+  }
+
+  return null;
+}
+
+function getBaseAssetAtomicFromSnapshot(
+  snapshot: WalletStateSnapshot | null | undefined,
+  assetType: string
+): { balanceAtomic: string; unlockedBalanceAtomic: string } | null {
+  if (!snapshot?.success || !assetType) {
+    return null;
+  }
+
+  const normalizedAssetType = String(assetType).toUpperCase();
+  if (!BASE_ASSET_TYPES.has(normalizedAssetType)) {
+    return null;
+  }
+
+  const preferredAsset =
+    snapshot.assets.find((asset) => String(asset.asset_type || '').toUpperCase() === normalizedAssetType) ||
+    (normalizedAssetType === 'SAL'
+      ? snapshot.assets.find((asset) => String(asset.asset_type || '').toUpperCase() === 'SAL1')
+      : null);
+
+  if (preferredAsset) {
+    return {
+      balanceAtomic: (
+        BigInt(preferredAsset.balance || '0') +
+        BigInt(preferredAsset.locked_stake || '0')
+      ).toString(),
+      unlockedBalanceAtomic: String(preferredAsset.unlocked_balance || '0'),
+    };
+  }
+
+  const aggregatedBaseAssets = getAggregatedBaseAssetSnapshotTotals(snapshot);
+  if (aggregatedBaseAssets) {
+    return {
+      balanceAtomic: (
+        BigInt(aggregatedBaseAssets.balance || '0') +
+        BigInt(aggregatedBaseAssets.locked_stake || '0')
+      ).toString(),
+      unlockedBalanceAtomic: aggregatedBaseAssets.unlocked_balance,
+    };
+  }
+
+  if (snapshot.totals) {
+    return {
+      balanceAtomic: (
+        BigInt(snapshot.totals.balance || '0') +
+        BigInt(snapshot.totals.locked_stake || '0')
+      ).toString(),
+      unlockedBalanceAtomic: String(snapshot.totals.unlocked_balance || '0'),
+    };
+  }
+
+  return null;
+}
+
 // WasmWallet instance interface - all methods on the class
 interface WasmWalletInstance {
   // Creation / Restoration
@@ -245,6 +530,8 @@ interface WasmWalletInstance {
 
   // Transaction scanning
   scan_tx(tx_blob_hex: string): boolean;
+  get_runtime_full_tx_candidate_hashes?(): string;
+  cache_runtime_full_txs_from_sparse?(ptr: number, size: number): string;
   get_mempool_tx_info(tx_blob_hex: string): string; // Returns JSON with amount, fee, is_incoming
 
   // Transactions
@@ -271,6 +558,8 @@ interface WasmWalletInstance {
 
   // Debug
   debug_input_candidates(): string;
+  debug_spend_openings?(asset_type?: string, max_failures?: number): string;
+  debug_sweep_inputs?(asset_type?: string): string;
   debug_tx_input_selection(from_account: number): string;
   debug_create_tx_path(dest_address: string, amount_str: string): string;
   debug_fee_params(): string;
@@ -284,7 +573,11 @@ interface WasmWalletInstance {
   import_wallet_cache_hex(cache_hex: string): string;  // Returns JSON with status
 
   // Diagnostics
+  get_wallet_state_snapshot?(): string;
+  get_locked_coins_info?(): string;
   get_wallet_diagnostic(): string;
+  check_wallet_health?(): string;
+  get_stake_lifecycle?(): string;
   get_last_error(): string;
   is_initialized(): boolean;
   test_wasm(): string;
@@ -314,11 +607,13 @@ interface WasmWalletInstance {
   describe_multisig_tx_hex?(tx_data_hex: string): string;
   submit_multisig_tx_hex?(tx_data_hex: string): string;
   create_multisig_return_tx_hex?(txid: string): string;
+  create_sweep_all_transaction_json?(address: string, mixin: number, priority: number): string;
+  debug_sweep_transaction?(address: string, mixin: number, priority: number): string;
 }
 
 // WASM Module interface
 interface WasmModule {
-  WasmWallet: new () => WasmWalletInstance;
+  WasmWallet: new (network?: 'mainnet' | 'testnet' | 'stagenet') => WasmWalletInstance;
   get_version?: () => string;
   validate_address?: (address: string) => string;
 
@@ -413,6 +708,13 @@ export class WalletService {
   private mempoolLastEventTime: number = 0;
   private mempoolHeartbeatTimer: any = null;
   private mempoolReconnecting: boolean = false;
+  private hydratedRuntimeFullTxHashes: Set<string> = new Set();
+  private lastRuntimeFullTxHydration = {
+    requested: 0,
+    hydrated: 0,
+    candidateCount: 0,
+    error: null as string | null,
+  };
 
   private constructor() { }
 
@@ -453,7 +755,7 @@ export class WalletService {
   }
 
   private isTokenFeaturesEnabled(): boolean {
-    return this.network === 'testnet';
+    return this.network === 'mainnet' || this.network === 'testnet' || this.network === 'stagenet';
   }
 
   private async loadNetworkConfig(): Promise<void> {
@@ -591,7 +893,15 @@ export class WalletService {
       }
     }).catch(() => { });
 
-    return new this.wasmModule.WasmWallet();
+    try {
+      return new this.wasmModule.WasmWallet(this.network);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('invalid number of parameters')) {
+        throw error;
+      }
+      return new this.wasmModule.WasmWallet();
+    }
   }
 
   /**
@@ -793,6 +1103,14 @@ export class WalletService {
     }
 
     try {
+      const snapshotBalance = getBaseAssetAtomicFromSnapshot(this.getStateSnapshot(), assetType);
+      if (snapshotBalance) {
+        return balanceInfoFromAtomicStrings(
+          snapshotBalance.balanceAtomic,
+          snapshotBalance.unlockedBalanceAtomic
+        );
+      }
+
       const balanceStr = this.walletInstance.get_balance_for_asset
         ? this.walletInstance.get_balance_for_asset(assetType)
         : '0';
@@ -831,6 +1149,11 @@ export class WalletService {
     }
 
     try {
+      const snapshotBalance = getBaseAssetAtomicFromSnapshot(this.getStateSnapshot(), assetType);
+      if (snapshotBalance) {
+        return snapshotBalance;
+      }
+
       const balanceStr = this.walletInstance.get_balance_for_asset
         ? this.walletInstance.get_balance_for_asset(assetType)
         : '0';
@@ -1076,6 +1399,7 @@ export class WalletService {
     if (lower.startsWith('sal') && lower.length >= 7) {
       const suffix = lower.slice(3);
       if (suffix) {
+        set.add(`sal${suffix.toUpperCase()}`);
         set.add(suffix.toUpperCase());
         set.add(suffix);
       }
@@ -1100,9 +1424,14 @@ export class WalletService {
 
     const tokenData = (rawInfo as any)?.sal_token || (rawInfo as any)?.token || rawInfo;
     const supply = tokenData?.supply ?? rawInfo?.supply ?? 0;
-    const decimals = tokenData?.decimals ?? rawInfo?.decimals ?? 0;
-    const metadata = tokenData?.metadata ?? rawInfo?.metadata ?? '';
-    const url = tokenData?.url ?? rawInfo?.url ?? '';
+    const metadataValue = tokenData?.metadata ?? rawInfo?.metadata ?? '';
+    const parsedMetadata = this.parseTokenMetadata(metadataValue);
+    const decimals = tokenData?.decimals ?? rawInfo?.decimals ?? parsedMetadata?.decimals ?? 0;
+    const size = Number(tokenData?.size ?? rawInfo?.size ?? parsedMetadata?.size ?? 0);
+    const name = String(tokenData?.name ?? rawInfo?.name ?? parsedMetadata?.name ?? parsedMetadata?.title ?? '');
+    const url = String(tokenData?.url ?? rawInfo?.url ?? parsedMetadata?.url ?? parsedMetadata?.website ?? '');
+    const signature = String(tokenData?.signature ?? rawInfo?.signature ?? parsedMetadata?.signature ?? '');
+    const metadata = typeof metadataValue === 'string' ? metadataValue : JSON.stringify(metadataValue ?? '');
 
     return {
       status,
@@ -1112,10 +1441,30 @@ export class WalletService {
         supply,
         decimals,
         metadata,
-        url
+        size,
+        name,
+        url,
+        signature
       },
       raw: rawInfo
     };
+  }
+
+  private parseTokenMetadata(metadataValue: unknown): Record<string, unknown> | null {
+    if (typeof metadataValue !== 'string' || metadataValue.trim().length === 0) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(metadataValue);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Metadata is often a plain string; ignore parse failures.
+    }
+
+    return null;
   }
 
   private scoreTokenInfo(info: Record<string, unknown>): number {
@@ -1127,12 +1476,16 @@ export class WalletService {
     const supply = token?.supply;
     const decimals = token?.decimals;
     const metadata = token?.metadata;
+    const name = token?.name;
     const url = token?.url;
+    const signature = token?.signature;
 
     if (supply !== undefined && supply !== null && String(supply) !== '0') score += 2;
     if (decimals !== undefined && decimals !== null) score += 1;
     if (typeof metadata === 'string' && metadata.length > 0) score += 1;
+    if (typeof name === 'string' && name.length > 0) score += 1;
     if (typeof url === 'string' && url.length > 0) score += 1;
+    if (typeof signature === 'string' && signature.length > 0) score += 1;
     return score;
   }
 
@@ -1142,8 +1495,10 @@ export class WalletService {
     const token = (info as any)?.token || {};
     const supply = Number(token?.supply ?? 0);
     const metadata = String(token?.metadata ?? '');
+    const name = String(token?.name ?? '');
     const url = String(token?.url ?? '');
-    return supply === 0 && metadata.length === 0 && url.length === 0;
+    const signature = String(token?.signature ?? '');
+    return supply === 0 && metadata.length === 0 && name.length === 0 && url.length === 0 && signature.length === 0;
   }
 
   private async fetchInferredTokenInfo(assetType: string): Promise<Record<string, unknown> | null> {
@@ -1382,7 +1737,7 @@ export class WalletService {
         txBlob,
         status,
         timestamp: Date.now(),
-        address: this.walletAddress
+        address: this.getAddress()
       };
       const key = `pending_tx_${txHash}`;
       localStorage.setItem(key, JSON.stringify(pending));
@@ -1492,6 +1847,7 @@ export class WalletService {
 
       // Step 0: Inject RPC data (fee estimate, output distribution, etc.)
       await this.injectJsonRpcResponses();
+      await this.hydrateRuntimeFullTxContext();
 
       // Step 1: Pre-fetch and inject forced decoys (Server-side selection)
       const response = await fetch('/api/wallet/get_random_outs', {
@@ -1666,7 +2022,7 @@ export class WalletService {
 
           // Temporary failure - retry if attempts remaining
           if (attempt < MAX_BROADCAST_RETRIES) {
-            void DEBUG && console.warn(`[WalletService] Broadcast attempt ${attempt} failed (${reason}), retrying...`);
+            if (DEBUG) console.warn(`[WalletService] Broadcast attempt ${attempt} failed (${reason}), retrying...`);
             await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
             continue;
           }
@@ -1926,7 +2282,7 @@ export class WalletService {
 
           // Temporary failure - retry if attempts remaining
           if (attempt < MAX_BROADCAST_RETRIES) {
-            void DEBUG && console.warn(`[WalletService] Stake broadcast attempt ${attempt} failed (${reason}), retrying...`);
+            if (DEBUG) console.warn(`[WalletService] Stake broadcast attempt ${attempt} failed (${reason}), retrying...`);
             await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
             continue;
           }
@@ -1980,7 +2336,8 @@ export class WalletService {
 
     try {
       // Check if create_sweep_all_transaction_json exists
-      if (!this.walletInstance.create_sweep_all_transaction_json) {
+      const createSweepAllTransaction = this.walletInstance.create_sweep_all_transaction_json;
+      if (!createSweepAllTransaction) {
         throw new Error('WASM create_sweep_all_transaction_json not available - please update WASM');
       }
 
@@ -2033,7 +2390,8 @@ export class WalletService {
         }
 
         try {
-          const resultJson = this.walletInstance.create_sweep_all_transaction_json(
+          const resultJson = createSweepAllTransaction.call(
+            this.walletInstance,
             address,
             MIXIN,
             priority
@@ -2091,14 +2449,88 @@ export class WalletService {
         throw new Error(lastError || 'Sweep_all failed after max retries');
       }
 
+      let sweepDebugByHash = new Map<string, any>();
+      let sweepDebugByIndex: any[] = [];
+      let sweepInputsDebug: any = null;
+      try {
+        const debugSweepInputs = this.walletInstance.debug_sweep_inputs;
+        if (debugSweepInputs) {
+          const rawSweepInputs = debugSweepInputs.call(this.walletInstance, 'SAL1');
+          const parsedSweepInputs = JSON.parse(rawSweepInputs);
+          if (parsedSweepInputs?.success) {
+            sweepInputsDebug = parsedSweepInputs;
+          }
+        }
+
+        const debugSweepTx = this.walletInstance.debug_sweep_transaction;
+        if (debugSweepTx) {
+          const rawDebug = debugSweepTx.call(this.walletInstance, address, MIXIN, priority);
+          const parsedDebug = JSON.parse(rawDebug);
+          if (parsedDebug?.success && Array.isArray(parsedDebug.transactions)) {
+            sweepDebugByIndex = parsedDebug.transactions.map((tx: any, index: number) => {
+              const selectedTransfers = Array.isArray(tx?.selected_transfers) ? tx.selected_transfers : [];
+              const nonStandardInputs = selectedTransfers.filter((input: any) => input?.tx_type !== 3);
+              return {
+                tx_hash: tx?.tx_hash || null,
+                debug_tx_index: index,
+                selected_transfer_count: selectedTransfers.length,
+                non_standard_inputs: nonStandardInputs,
+                vin_key_images: Array.isArray(tx?.vin_key_images) ? tx.vin_key_images : []
+              };
+            });
+            for (const tx of sweepDebugByIndex) {
+              if (!tx?.tx_hash) continue;
+              sweepDebugByHash.set(tx.tx_hash, tx);
+            }
+          }
+        }
+      } catch (debugError) {
+        if (DEBUG) console.warn('[WalletService] Failed to collect sweep debug context:', debugError);
+      }
+
       // Step 3: Broadcast all transactions with retry mechanism
       const MAX_BROADCAST_RETRIES = 3;
       const BROADCAST_RETRY_DELAY = 2000; // 2 seconds
       const txHashes: string[] = [];
 
-      for (const tx of result.transactions) {
+      for (let txIndex = 0; txIndex < result.transactions.length; txIndex++) {
+        const tx = result.transactions[txIndex];
         const txBlob = tx.tx_blob;
         const txHash = tx.tx_hash;
+        const matchedContext =
+          sweepDebugByHash.get(txHash) ||
+          sweepDebugByIndex[txIndex] ||
+          null;
+        const debugContext = matchedContext
+          ? {
+              ...matchedContext,
+              debug_source: matchedContext.tx_hash === txHash
+                ? 'debug_sweep_transaction_hash'
+                : 'debug_sweep_transaction_index',
+              sweep_inputs_debug: sweepInputsDebug
+            }
+          : sweepInputsDebug
+            ? {
+                tx_hash: txHash,
+                debug_tx_index: txIndex,
+                debug_source: 'debug_sweep_inputs_only',
+                selected_transfer_count: Array.isArray(sweepInputsDebug.selected_inputs)
+                  ? sweepInputsDebug.selected_inputs.length
+                  : 0,
+                non_standard_inputs: Array.isArray(sweepInputsDebug.selected_inputs)
+                  ? sweepInputsDebug.selected_inputs.filter((input: any) => input?.tx_type !== 3)
+                  : [],
+                vin_key_images: [],
+                sweep_inputs_debug: sweepInputsDebug
+              }
+            : {
+                tx_hash: txHash,
+                debug_tx_index: txIndex,
+                debug_source: 'missing',
+                selected_transfer_count: 0,
+                non_standard_inputs: [],
+                vin_key_images: []
+              };
 
         for (let attempt = 1; attempt <= MAX_BROADCAST_RETRIES; attempt++) {
           try {
@@ -2114,7 +2546,10 @@ export class WalletService {
                 'Content-Type': 'application/json',
                 ...getCsrfHeaders(),
               },
-              body: JSON.stringify({ tx_as_hex: txBlob }),
+              body: JSON.stringify({
+                tx_as_hex: txBlob,
+                debug_context: debugContext
+              }),
               signal: controller.signal
             });
 
@@ -2152,7 +2587,7 @@ export class WalletService {
 
             // Temporary failure - retry if attempts remaining
             if (attempt < MAX_BROADCAST_RETRIES) {
-              void DEBUG && console.warn(`[WalletService] Sweep broadcast attempt ${attempt} failed (${reason}), retrying...`);
+              if (DEBUG) console.warn(`[WalletService] Sweep broadcast attempt ${attempt} failed (${reason}), retrying...`);
               await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
               continue;
             }
@@ -2354,7 +2789,7 @@ export class WalletService {
 
           // Temporary failure - retry if attempts remaining
           if (attempt < MAX_BROADCAST_RETRIES) {
-            void DEBUG && console.warn(`[WalletService] Return broadcast attempt ${attempt} failed (${reason}), retrying...`);
+            if (DEBUG) console.warn(`[WalletService] Return broadcast attempt ${attempt} failed (${reason}), retrying...`);
             await new Promise(r => setTimeout(r, BROADCAST_RETRY_DELAY * attempt));
             continue;
           }
@@ -3090,7 +3525,7 @@ export class WalletService {
     try {
       if (typeof this.walletInstance.precompute_subaddresses === 'function') {
         this.walletInstance.precompute_subaddresses(0, count);
-        void DEBUG && console.log(`[WalletService] Precomputed ${count} subaddresses`);
+        if (DEBUG) console.log(`[WalletService] Precomputed ${count} subaddresses`);
       }
     } catch (e) {
       logError('precomputeSubaddresses', e);
@@ -3132,10 +3567,110 @@ export class WalletService {
       if (typeof this.walletInstance.validate_outputs_for_send === 'function') {
         const resultJson = this.walletInstance.validate_outputs_for_send();
         const result = JSON.parse(resultJson);
+        let error: string | undefined = result.error;
+        if (!error && result.valid === false && Array.isArray(result.failures) && result.failures.length > 0) {
+          const preview = result.failures
+            .slice(0, 3)
+            .map((failure: any) => {
+              const txid = typeof failure?.txid === 'string' ? failure.txid.slice(0, 12) : 'unknown';
+              const path = typeof failure?.path === 'string' ? failure.path : 'unknown';
+              const originTxType =
+                typeof failure?.origin_tx_type === 'number' ? failure.origin_tx_type : -1;
+              const scanHintOriginTxType =
+                typeof failure?.scan_hint_origin_tx_type === 'number'
+                  ? failure.scan_hint_origin_tx_type
+                  : -1;
+              const scanHintKo =
+                typeof failure?.scan_hint_ko === 'string' && failure.scan_hint_ko.length > 0
+                  ? failure.scan_hint_ko.slice(0, 12)
+                  : 'unknown';
+              const scanHintKoOriginIdx =
+                typeof failure?.scan_hint_ko_origin_idx === 'number'
+                  ? failure.scan_hint_ko_origin_idx
+                  : -1;
+              const scanHintKoOriginTxType =
+                typeof failure?.scan_hint_ko_origin_tx_type === 'number'
+                  ? failure.scan_hint_ko_origin_tx_type
+                  : -1;
+              const transferCandidateKo =
+                typeof failure?.transfer_candidate_ko === 'string' &&
+                failure.transfer_candidate_ko.length > 0
+                  ? failure.transfer_candidate_ko.slice(0, 12)
+                  : 'none';
+              const transferCandidateOriginIdx =
+                typeof failure?.transfer_candidate_origin_idx === 'number'
+                  ? failure.transfer_candidate_origin_idx
+                  : -1;
+              const transferCandidateOriginTxType =
+                typeof failure?.transfer_candidate_origin_tx_type === 'number'
+                  ? failure.transfer_candidate_origin_tx_type
+                  : -1;
+              const returnMapHit =
+                typeof failure?.return_map_hit === 'boolean'
+                  ? (failure.return_map_hit ? 1 : 0)
+                  : -1;
+              const returnMapSpendable =
+                typeof failure?.return_map_spendable === 'boolean'
+                  ? (failure.return_map_spendable ? 1 : 0)
+                  : -1;
+              const spendMetadataHit =
+                typeof failure?.spend_metadata_hit === 'boolean'
+                  ? (failure.spend_metadata_hit ? 1 : 0)
+                  : -1;
+              const spendMetadataComplete =
+                typeof failure?.spend_metadata_complete === 'boolean'
+                  ? (failure.spend_metadata_complete ? 1 : 0)
+                  : -1;
+              const spendMetadataSemanticallyValid =
+                typeof failure?.spend_metadata_semantically_valid === 'boolean'
+                  ? (failure.spend_metadata_semantically_valid ? 1 : 0)
+                  : -1;
+              const spendMetadataCanOpen =
+                typeof failure?.spend_metadata_can_open === 'boolean'
+                  ? (failure.spend_metadata_can_open ? 1 : 0)
+                  : -1;
+              const runtimeFullTxCached =
+                typeof failure?.runtime_full_tx_cached === 'boolean'
+                  ? (failure.runtime_full_tx_cached ? 1 : 0)
+                  : -1;
+              const roiSumGPrefix =
+                typeof failure?.roi_sum_g_prefix === 'string'
+                  ? failure.roi_sum_g_prefix
+                  : 'none';
+              const roiSenderTPrefix =
+                typeof failure?.roi_sender_t_prefix === 'string'
+                  ? failure.roi_sender_t_prefix
+                  : 'none';
+              const persistedRoiSumGPrefix =
+                typeof failure?.persisted_roi_sum_g_prefix === 'string'
+                  ? failure.persisted_roi_sum_g_prefix
+                  : 'none';
+              const persistedRoiSenderTPrefix =
+                typeof failure?.persisted_roi_sender_t_prefix === 'string'
+                  ? failure.persisted_roi_sender_t_prefix
+                  : 'none';
+              const spendMetadataSumGPrefix =
+                typeof failure?.spend_metadata_sum_g_prefix === 'string'
+                  ? failure.spend_metadata_sum_g_prefix
+                  : 'none';
+              const spendMetadataSenderTPrefix =
+                typeof failure?.spend_metadata_sender_t_prefix === 'string'
+                  ? failure.spend_metadata_sender_t_prefix
+                  : 'none';
+              return `${txid} (${path}, origin=${originTxType}, hint_origin=${scanHintOriginTxType}, ko=${scanHintKo}, ko_idx=${scanHintKoOriginIdx}, ko_origin=${scanHintKoOriginTxType}, return_map=${returnMapHit}, return_spendable=${returnMapSpendable}, spend_meta=${spendMetadataHit}, spend_meta_complete=${spendMetadataComplete}, spend_meta_valid=${spendMetadataSemanticallyValid}, spend_meta_open=${spendMetadataCanOpen}, roi_g=${roiSumGPrefix}, roi_t=${roiSenderTPrefix}, proi_g=${persistedRoiSumGPrefix}, proi_t=${persistedRoiSenderTPrefix}, meta_g=${spendMetadataSumGPrefix}, meta_t=${spendMetadataSenderTPrefix}, cand_ko=${transferCandidateKo}, cand_idx=${transferCandidateOriginIdx}, cand_origin=${transferCandidateOriginTxType}, runtime_tx=${runtimeFullTxCached})`;
+            })
+            .join(', ');
+          const suffix = result.failures.length > 3 ? ` +${result.failures.length - 3} more` : '';
+          const hydration = this.lastRuntimeFullTxHydration;
+          error =
+            `Output validation failed for ${result.failures.length} input(s): ${preview}${suffix}` +
+            ` [rtx_candidates=${hydration.candidateCount}, rtx_requested=${hydration.requested},` +
+            ` rtx_hydrated=${hydration.hydrated}, rtx_error=${hydration.error ?? 'none'}]`;
+        }
         return {
           valid: result.valid !== false,
           needsRefresh: result.needs_refresh === true,
-          error: result.error
+          error
         };
       }
       // If function not available, assume valid (older WASM)
@@ -3949,14 +4484,14 @@ export class WalletService {
     await this.init();
 
     if (!this.wasmModule?.validate_address) {
-      // Fallback: validate Salvium Carrot addresses (v2) without WASM
-      // Matches logic from cryptonote_basic_impl.cpp and base58.cpp
-
-      // Carrot mainnet addresses:
-      // - SC1... (standard) = 98 chars
-      // - SC1s... (subaddress) = 98 chars  
-      // - SC1i... (integrated with payment_id) = 109 chars
-      if (!address.startsWith('SC1')) return false;
+      // Fallback: validate Salvium Carrot prefixes by configured network.
+      const expectedPrefixes = this.network === 'testnet'
+        ? ['SC1T', 'SC1Ts', 'SC1Ti']
+        : this.network === 'stagenet'
+          ? ['SC1S', 'SC1Ss', 'SC1Si']
+          : ['SC1', 'SC1s', 'SC1i'];
+      const hasExpectedPrefix = expectedPrefixes.some(prefix => address.startsWith(prefix));
+      if (!hasExpectedPrefix) return false;
       if (address.length !== 98 && address.length !== 109) return false;
 
       // Validate all characters are valid base58
@@ -4047,11 +4582,72 @@ export class WalletService {
   // ============================================================================
 
   /**
+   * Get the authoritative native wallet state snapshot.
+   * This is the stable source-of-truth surface for comparing scan modes.
+   */
+  getStateSnapshot(): WalletStateSnapshot | null {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return null;
+    }
+
+    try {
+      if (typeof this.walletInstance.get_wallet_state_snapshot !== 'function') {
+        return null;
+      }
+
+      return safeJsonParse<WalletStateSnapshot>(
+        this.walletInstance.get_wallet_state_snapshot(),
+        {
+          success: false,
+          wallet_height: 0,
+          refresh_start_height: 0,
+          daemon_height: 0,
+          transfer_count: 0,
+          transfers_indices_asset_count: 0,
+          key_image_count: 0,
+          pub_key_count: 0,
+          salvium_tx_count: 0,
+          locked_coin_count: 0,
+          assets: [],
+          totals: {
+            balance: '0',
+            unlocked_balance: '0',
+            locked_stake: '0',
+          },
+          active_locked_stakes: [],
+        },
+        'wallet.get_wallet_state_snapshot'
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  getLockedCoinsInfo(): any | null {
+    if (!this.walletInstance || !this.walletInstance.is_initialized()) {
+      return null;
+    }
+
+    try {
+      if (typeof this.walletInstance.get_locked_coins_info !== 'function') {
+        return null;
+      }
+      return JSON.parse(this.walletInstance.get_locked_coins_info());
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Get wallet diagnostic info
    */
   getDiagnostics(): any {
     if (!this.walletInstance || !this.walletInstance.is_initialized()) {
       return null;
+    }
+
+    if (!isNativeAuditEnabled()) {
+      return debugDisabledResult();
     }
 
     try {
@@ -4069,6 +4665,10 @@ export class WalletService {
   debugBalanceIntegrity(top: number = 10): object | null {
     if (!this.walletInstance || !this.walletInstance.is_initialized()) {
       return null;
+    }
+
+    if (!isNativeAuditEnabled()) {
+      return debugDisabledResult();
     }
 
     try {
@@ -4377,6 +4977,94 @@ export class WalletService {
     return Boolean(this.walletInstance.scan_tx(txBlobHex));
   }
 
+  async hydrateRuntimeFullTxContext(): Promise<{ requested: number; hydrated: number }> {
+    if (!this.walletInstance || !this.walletInstance.is_initialized() || !this.wasmModule) {
+      this.lastRuntimeFullTxHydration = {
+        requested: 0,
+        hydrated: 0,
+        candidateCount: 0,
+        error: 'wallet_uninitialized',
+      };
+      return { requested: 0, hydrated: 0 };
+    }
+
+    const getCandidates = this.walletInstance.get_runtime_full_tx_candidate_hashes;
+    const cacheSparse = this.walletInstance.cache_runtime_full_txs_from_sparse;
+    const allocate = this.wasmModule.allocate_binary_buffer;
+    const free = this.wasmModule.free_binary_buffer;
+    const heap = this.wasmModule.HEAPU8;
+
+    if (typeof getCandidates !== 'function' || typeof cacheSparse !== 'function' ||
+        typeof allocate !== 'function' || typeof free !== 'function' || !heap) {
+      this.lastRuntimeFullTxHydration = {
+        requested: 0,
+        hydrated: 0,
+        candidateCount: 0,
+        error: 'runtime_hydration_unavailable',
+      };
+      return { requested: 0, hydrated: 0 };
+    }
+
+    let requested = 0;
+    let hydrated = 0;
+
+    try {
+      const candidatesJson = getCandidates.call(this.walletInstance);
+      const candidates = JSON.parse(candidatesJson);
+      const hashes = Array.isArray(candidates?.hashes)
+        ? candidates.hashes.filter((hash: unknown): hash is string => typeof hash === 'string' && hash.length === 64)
+        : [];
+      this.lastRuntimeFullTxHydration = {
+        requested: 0,
+        hydrated: 0,
+        candidateCount: hashes.length,
+        error: null,
+      };
+      const pendingHashes = hashes.filter(hash => !this.hydratedRuntimeFullTxHashes.has(hash));
+      requested = pendingHashes.length;
+      this.lastRuntimeFullTxHydration.requested = requested;
+
+      for (let i = 0; i < pendingHashes.length; i += 100) {
+        const batch = pendingHashes.slice(i, i + 100);
+        const response = await fetch('/api/wallet/get-transactions-by-hash', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hashes: batch })
+        });
+        if (!response.ok) {
+          throw new Error(`Failed runtime tx hydration fetch: ${response.status} ${response.statusText}`);
+        }
+
+        const sparseData = new Uint8Array(await response.arrayBuffer());
+        const ptr = allocate.call(this.wasmModule, sparseData.length);
+        if (!ptr) {
+          throw new Error(`Failed to allocate ${sparseData.length} bytes for runtime tx hydration`);
+        }
+
+        try {
+          heap.set(sparseData, ptr);
+          const resultJson = cacheSparse.call(this.walletInstance, ptr, sparseData.length);
+          const result = JSON.parse(resultJson);
+          if (result?.success !== true) {
+            throw new Error(result?.error || 'Runtime tx hydration failed');
+          }
+        } finally {
+          free.call(this.wasmModule, ptr);
+        }
+
+        batch.forEach(hash => this.hydratedRuntimeFullTxHashes.add(hash));
+        hydrated += batch.length;
+        this.lastRuntimeFullTxHydration.hydrated = hydrated;
+      }
+    } catch (error) {
+      this.lastRuntimeFullTxHydration.error =
+        error instanceof Error ? error.message : String(error);
+      logError('hydrateRuntimeFullTxContext', error);
+    }
+
+    return { requested, hydrated };
+  }
+
   /**
    * Get mempool transaction info after scanning
    * Returns object with amount, fee, is_incoming, asset_type, timestamp
@@ -4537,9 +5225,74 @@ export class WalletService {
     if (!this.walletInstance) {
       return null;
     }
+    if (!isNativeAuditEnabled()) {
+      return debugDisabledResult();
+    }
     try {
       const result = this.walletInstance.debug_input_candidates();
       return JSON.parse(result);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Debug: Validate spend-opening recovery for current spendable outputs.
+   * Call from console: walletService.debugSpendOpenings('SAL1', 20)
+   */
+  debugSpendOpenings(
+    assetType: string = 'SAL1',
+    maxFailures: number = 20
+  ): object | null {
+    if (!this.walletInstance) {
+      return null;
+    }
+    if (!isNativeAuditEnabled()) {
+      return debugDisabledResult();
+    }
+    try {
+      const walletAny = this.walletInstance as WasmWalletInstance & {
+        debug_spend_openings?: (asset_type?: string, max_failures?: number) => string;
+      };
+      if (typeof walletAny.debug_spend_openings !== 'function') {
+        return { error: 'debug_spend_openings unavailable' };
+      }
+      const result = walletAny.debug_spend_openings(assetType, maxFailures);
+      return JSON.parse(result);
+    } catch {
+      return null;
+    }
+  }
+
+  checkWalletHealth(): object | null {
+    if (!this.walletInstance) {
+      return null;
+    }
+    try {
+      const walletAny = this.walletInstance as WasmWalletInstance & {
+        check_wallet_health?: () => string;
+      };
+      if (typeof walletAny.check_wallet_health !== 'function') {
+        return { error: 'check_wallet_health unavailable' };
+      }
+      return JSON.parse(walletAny.check_wallet_health());
+    } catch {
+      return null;
+    }
+  }
+
+  getStakeLifecycle(): WalletStakeLifecycle | null {
+    if (!this.walletInstance) {
+      return null;
+    }
+    try {
+      const walletAny = this.walletInstance as WasmWalletInstance & {
+        get_stake_lifecycle?: () => string;
+      };
+      if (typeof walletAny.get_stake_lifecycle !== 'function') {
+        return { error: 'get_stake_lifecycle unavailable' };
+      }
+      return JSON.parse(walletAny.get_stake_lifecycle());
     } catch {
       return null;
     }
@@ -4553,6 +5306,9 @@ export class WalletService {
   debugTxInputSelection(fromAccount: number = 0): object | null {
     if (!this.walletInstance) {
       return null;
+    }
+    if (!isNativeAuditEnabled()) {
+      return debugDisabledResult();
     }
     try {
       const result = this.walletInstance.debug_tx_input_selection(fromAccount);
@@ -4571,6 +5327,9 @@ export class WalletService {
     if (!this.walletInstance) {
       return null;
     }
+    if (!isNativeAuditEnabled()) {
+      return debugDisabledResult();
+    }
     try {
       const result = this.walletInstance.debug_create_tx_path(destAddress, amountStr);
       return JSON.parse(result);
@@ -4587,6 +5346,9 @@ export class WalletService {
   debugFeeParams(): object | null {
     if (!this.walletInstance) {
       return null;
+    }
+    if (!isNativeAuditEnabled()) {
+      return debugDisabledResult();
     }
     try {
       const result = this.walletInstance.debug_fee_params();
@@ -4669,11 +5431,13 @@ export class WalletService {
     const allChecks = Object.values(checks);
     const ready = allChecks.filter(c => c.ok).length >= 5; // At least 5 of 7 checks must pass (balance may be 0)
 
-    void 0 && console.table(Object.entries(checks).map(([name, { ok, detail }]) => ({
-      Check: name,
-      Status: ok ? '✅' : '❌',
-      Detail: detail
-    })));
+    if (DEBUG) {
+      console.table(Object.entries(checks).map(([name, { ok, detail }]) => ({
+        Check: name,
+        Status: ok ? '✅' : '❌',
+        Detail: detail
+      })));
+    }
 
     return { ready, checks };
   }

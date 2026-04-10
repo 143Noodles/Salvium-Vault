@@ -13,6 +13,7 @@ let wasmModule = null;
 let walletInstance = null;
 let isInitialized = false;
 let wasmVersion = '3.5.15-parallel-phase2'; // Default version, can be overridden by init message
+let walletNetwork = 'mainnet';
 
 // Batch checkpointing for crash recovery
 let lastProcessedBatch = { id: null, height: 0, timestamp: 0 };
@@ -48,16 +49,25 @@ async function loadWasm(version) {
 }
 
 // Initialize wallet with keys
-async function initWallet(seedHex, password) {
+async function initWallet(seedHex, password, network) {
   if (!wasmModule) {
     throw new Error('WASM not loaded');
   }
 
   try {
-    walletInstance = new wasmModule.WasmWallet();
+    walletNetwork = network === 'testnet' ? 'testnet' : 'mainnet';
+    try {
+      walletInstance = new wasmModule.WasmWallet(walletNetwork);
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      if (!message.includes('invalid number of parameters')) {
+        throw error;
+      }
+      walletInstance = new wasmModule.WasmWallet();
+    }
 
     // Restore from seed
-    const result = walletInstance.restore_from_seed(seedHex, password || '', 0, 'mainnet');
+    const result = walletInstance.restore_from_seed(seedHex, password || '', 0, walletNetwork);
     const parsed = JSON.parse(result);
 
     if (!parsed.success) {
@@ -150,7 +160,7 @@ self.onmessage = async function (e) {
           throw new Error('Failed to load WASM');
         }
 
-        await initWallet(payload.seedHex, payload.password);
+        await initWallet(payload.seedHex, payload.password, payload.network);
 
         self.postMessage({
           type: 'init_result',
