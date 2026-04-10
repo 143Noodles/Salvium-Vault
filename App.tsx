@@ -51,6 +51,8 @@ export enum TabView {
 
 type AppState = 'initializing' | 'setup' | 'loading' | 'dashboard' | 'locked';
 
+const ASSETS_UPDATE_NOTICE_KEY = 'salvium_assets_update_notice_dismissed_v1';
+
 const AppContent: React.FC = () => {
   const { t } = useTranslation();
   const wallet = useWallet();
@@ -58,7 +60,6 @@ const AppContent: React.FC = () => {
 
   const [appState, setAppState] = useState<AppState>('initializing');
   const [activeTab, setActiveTab] = useState<TabView>(TabView.DASHBOARD);
-  const [isTestnet, setIsTestnet] = useState(false);
   const previousTabRef = useRef<TabView>(TabView.DASHBOARD);
   const [dashboardResetKey, setDashboardResetKey] = useState(0);
 
@@ -87,25 +88,9 @@ const AppContent: React.FC = () => {
 
   // Handle hash changes from URL
   useEffect(() => {
-    const loadNetwork = async () => {
-      try {
-        const response = await fetch('/api/network');
-        if (!response.ok) return;
-        const data = await response.json();
-        setIsTestnet(String(data?.network || '').toLowerCase() === 'testnet');
-      } catch {
-        setIsTestnet(false);
-      }
-    };
-
-    void loadNetwork();
-  }, []);
-
-  useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.toLowerCase();
       if (hash && hashToTab[hash] && appState === 'dashboard') {
-        if (hashToTab[hash] === TabView.ASSETS && !isTestnet) return;
         setActiveTab(hashToTab[hash]);
       }
     };
@@ -115,22 +100,17 @@ const AppContent: React.FC = () => {
 
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [appState, isTestnet]);
+  }, [appState]);
 
   // Update URL hash when tab changes (only when logged in)
   useEffect(() => {
-    if (!isTestnet && activeTab === TabView.ASSETS) {
-      setActiveTab(TabView.DASHBOARD);
-      return;
-    }
-
     if (appState === 'dashboard' && tabToHash[activeTab]) {
       const newHash = tabToHash[activeTab];
       if (window.location.hash !== newHash) {
         window.history.replaceState(null, '', newHash);
       }
     }
-  }, [activeTab, appState, isTestnet]);
+  }, [activeTab, appState]);
 
   // Update body class for header visibility
   useEffect(() => {
@@ -173,6 +153,13 @@ const AppContent: React.FC = () => {
 
   // Storage persistence banner state
   const [showStorageBanner, setShowStorageBanner] = useState(false);
+  const [showAssetsUpdateNotice, setShowAssetsUpdateNotice] = useState(() => {
+    try {
+      return localStorage.getItem(ASSETS_UPDATE_NOTICE_KEY) !== 'true';
+    } catch {
+      return true;
+    }
+  });
   const [storageDenied, setStorageDenied] = useState(false);
   const [pwaInstallDismissed, setPwaInstallDismissed] = useState(false);
   const deferredInstallPromptRef = useRef<any>(null);
@@ -390,6 +377,15 @@ const AppContent: React.FC = () => {
     localStorage.setItem('salvium_storage_banner_dismissed', 'true');
   };
 
+  const dismissAssetsUpdateNotice = () => {
+    setShowAssetsUpdateNotice(false);
+    try {
+      localStorage.setItem(ASSETS_UPDATE_NOTICE_KEY, 'true');
+    } catch {
+      // Ignore storage failures; dismissal still applies for this session.
+    }
+  };
+
   useEffect(() => {
     let wakeLock: any = null;
 
@@ -563,7 +559,37 @@ const AppContent: React.FC = () => {
         <MobileHeader activeTab={activeTab} onNavigate={handleNavigate} onLock={lockWallet} />
       )}
       {isMobileOrTablet && (
-        <MobileNavBar activeTab={activeTab} onNavigate={handleNavigate} showAssetsTab={isTestnet} />
+        <MobileNavBar activeTab={activeTab} onNavigate={handleNavigate} showAssetsTab />
+      )}
+      {appState === 'dashboard' && showAssetsUpdateNotice && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-lg rounded-2xl border border-white/10 bg-[#11111d] p-5 shadow-2xl shadow-black/40">
+            <button
+              onClick={dismissAssetsUpdateNotice}
+              className="absolute right-3 top-3 rounded-full p-1.5 text-text-muted transition-colors hover:bg-white/10 hover:text-white"
+              aria-label="Close update notice"
+              title="Close"
+            >
+              <X size={18} />
+            </button>
+
+            <div className="pr-8">
+              <div className="mb-2 text-sm font-semibold uppercase tracking-[0.18em] text-accent-primary">
+                Vault Update
+              </div>
+              <p className="text-sm leading-6 text-text-secondary md:text-base">
+                Salvium Vault has been updated to support Assets. UI is still a work in progress.
+                Many other optimizations included in this update. A one time restore from seed is recommended.
+              </p>
+              <button
+                onClick={dismissAssetsUpdateNotice}
+                className="mt-5 rounded-xl bg-accent-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent-primary/20 transition-colors hover:bg-accent-primary/90"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       <div className="bg-bg-primary text-text-primary flex relative overflow-hidden h-full pt-[56px]">
 
@@ -575,9 +601,7 @@ const AppContent: React.FC = () => {
               <NavItem tab={TabView.SEND} icon={Send} label={t('navigation.send')} />
               <NavItem tab={TabView.RECEIVE} icon={Download} label={t('navigation.receive')} />
               <NavItem tab={TabView.STAKING} icon={TrendingUp} label={t('navigation.staking')} />
-              {isTestnet && (
-                <NavItem tab={TabView.ASSETS} icon={Database} label={t('navigation.assets', { defaultValue: 'Assets' })} />
-              )}
+              <NavItem tab={TabView.ASSETS} icon={Database} label={t('navigation.assets', { defaultValue: 'Assets' })} />
               <NavItem tab={TabView.HISTORY} icon={History} label={t('navigation.history')} />
               <NavItem tab={TabView.SETTINGS} icon={Settings} label={t('navigation.settings')} />
             </nav>
@@ -675,7 +699,7 @@ const AppContent: React.FC = () => {
             )}
 
             {activeTab === TabView.SEND && (
-              <SendPage initialParams={navParams} enableAssetSend={isTestnet} />
+              <SendPage initialParams={navParams} enableAssetSend />
             )}
 
             {activeTab === TabView.RECEIVE && (
@@ -691,7 +715,7 @@ const AppContent: React.FC = () => {
             )}
 
             {activeTab === TabView.ASSETS && (
-              <AssetsPage />
+              <AssetsPage onNavigate={handleNavigate} />
             )}
 
             {activeTab === TabView.SETTINGS && (

@@ -3,6 +3,7 @@ services:
     image: salvium-vault:latest
     container_name: salvium-vault
     restart: unless-stopped
+    cpus: 0.75
     ports:
       - "3001:3000"
     volumes:

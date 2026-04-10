@@ -29,6 +29,7 @@ class CSPScanner {
         // CSP v6: key images CSV for spent detection (OUT tx discovery)
         this.keyImagesCsv = options.keyImagesCsv || '';
         this.apiBaseUrl = options.apiBaseUrl || '';
+        this.cspCacheEpoch = options.cspCacheEpoch || '';
         // Worker scaling
         // - maxWorkerCount: absolute cap
         // - initialWorkerCount: how many workers to start with (autoTune will ramp up)
@@ -313,7 +314,8 @@ class CSPScanner {
         try {
             const fetchStart = performance.now();
 
-            const response = await fetch(`${this.apiBaseUrl}/api/csp-bundle`, {
+            const cacheEpochParam = this.cspCacheEpoch ? `?csp_epoch=${encodeURIComponent(this.cspCacheEpoch)}` : '';
+            const response = await fetch(`${this.apiBaseUrl}/api/csp-bundle${cacheEpochParam}`, {
                 method: 'GET'
             });
 
@@ -485,7 +487,8 @@ class CSPScanner {
         try {
             const fetchStart = performance.now();
 
-            const response = await fetch(`${this.apiBaseUrl}/api/csp-bundle`, {
+            const cacheEpochParam = this.cspCacheEpoch ? `?csp_epoch=${encodeURIComponent(this.cspCacheEpoch)}` : '';
+            const response = await fetch(`${this.apiBaseUrl}/api/csp-bundle${cacheEpochParam}`, {
                 method: 'GET'
             });
 
@@ -686,6 +689,7 @@ class CSPScanner {
                         sViewBalance: this.sViewBalance,
                         keyImagesCsv: this.keyImagesCsv,
                         apiBaseUrl: this.apiBaseUrl,
+                        cspCacheEpoch: this.cspCacheEpoch,
                         stakeReturnHeights: this.stakeReturnHeights,
                         subaddressMapCsv: this.subaddressMapCsv,
                         returnAddressesCsv: this.returnAddressesCsv,

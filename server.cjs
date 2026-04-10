@@ -17,10 +17,15 @@ const path = require('path');
 const axios = require('axios');
 const http = require('http');
 const https = require('https');
+const dns = require('dns');
 const crypto = require('crypto');
 const { pipeline } = require('stream');
-
-const isRender = process.env.RENDER === 'true';
+
+const isRender = process.env.RENDER === 'true';
+
+if (typeof dns.setDefaultResultOrder === 'function') {
+    dns.setDefaultResultOrder('ipv4first');
+}
 
 // ============================================================================
 // SECURITY: Secure random ID generation
@@ -205,8 +210,32 @@ var axiosInstance = axios.create({
     }
 });
 
-const KV_CACHE_DIR = process.env.KV_CACHE_DIR || '/var/data/salvium-cache';
-const KV_CACHE_ENABLED = process.env.ENABLE_KV_CACHE !== 'false';
+const DEFAULT_DATA_DIR = process.env.SALVIUM_DATA_DIR || '/var/data';
+const normalizeDeploymentChannel = (value) => {
+    const normalized = String(value || '').toLowerCase();
+    if (normalized === 'vault-test' || normalized === 'test' || normalized === 'testnet') return 'vault-test';
+    if (normalized === 'vault-live' || normalized === 'live' || normalized === 'mainnet') return 'vault-live';
+    return 'unknown';
+};
+const inferNetworkFromChannel = (channel) => {
+    if (channel === 'vault-test') return 'testnet';
+    return 'mainnet';
+};
+const inferWasmBasenameFromNetwork = (network) => network === 'testnet' ? 'SalviumWalletTestnet' : 'SalviumWallet';
+const inferBrowserNetworkFromNetwork = (network) => network === 'testnet' ? 'testnet' : 'mainnet';
+const SALVIUM_DEPLOYMENT_CHANNEL = normalizeDeploymentChannel(process.env.SALVIUM_DEPLOYMENT_CHANNEL);
+const SALVIUM_NETWORK = (() => {
+    const configured = String(process.env.SALVIUM_NETWORK || '').toLowerCase();
+    if (configured === 'testnet' || configured === 'stagenet' || configured === 'mainnet') return configured;
+    return inferNetworkFromChannel(SALVIUM_DEPLOYMENT_CHANNEL);
+})();
+const resolveNetworkScopedDir = (envKey, leafDir, { scoped = false } = {}) => {
+    if (process.env[envKey]) return process.env[envKey];
+    if (scoped) return path.join(DEFAULT_DATA_DIR, SALVIUM_NETWORK, leafDir);
+    return path.join(DEFAULT_DATA_DIR, leafDir);
+};
+const KV_CACHE_DIR = resolveNetworkScopedDir('KV_CACHE_DIR', 'salvium-cache');
+const KV_CACHE_ENABLED = process.env.ENABLE_KV_CACHE !== 'false';
 
 const fsKv = require('fs');
 if (KV_CACHE_ENABLED) {
@@ -254,10 +283,10 @@ let kv = KV_CACHE_ENABLED ? kvFileOps : null;
 let kvType = KV_CACHE_ENABLED ? 'file' : null;
 console.log(`💾 KV cache: ${KV_CACHE_ENABLED ? 'file-based at ' + KV_CACHE_DIR : 'disabled'}`)
 
-const fs = require('fs').promises;
-const fsSync = require('fs');
-const CACHE_DIR = process.env.CACHE_DIR || '/var/data/salvium-blocks';
-const CACHE_ENABLED = process.env.ENABLE_BLOCK_CACHE !== 'false';
+const fs = require('fs').promises;
+const fsSync = require('fs');
+const CACHE_DIR = resolveNetworkScopedDir('CACHE_DIR', 'salvium-blocks');
+const CACHE_ENABLED = process.env.ENABLE_BLOCK_CACHE !== 'false';
 
 const cacheStats = {
     hits: 0,
@@ -279,9 +308,13 @@ let wasmLoadError = null;
 // ============================================================================
 // CSP CACHE - PRE-GENERATED COMPACT SCAN PROTOCOL FILES
 // ============================================================================
-const CSP_CACHE_DIR = process.env.CSP_CACHE_DIR || '/var/data/salvium-csp';
-const CSP_CACHE_ENABLED = process.env.ENABLE_CSP_CACHE !== 'false';
-const CSP_MAX_RETRIES = 3;
+const CSP_CACHE_DIR = resolveNetworkScopedDir('CSP_CACHE_DIR', 'salvium-csp', { scoped: true });
+const CSP_CACHE_ENABLED = process.env.ENABLE_CSP_CACHE !== 'false';
+const CSP_REBUILD_ON_START = String(
+    process.env.SALVIUM_REBUILD_CSP_CACHE_ON_START || (SALVIUM_NETWORK === 'testnet' ? 'true' : 'false')
+).toLowerCase() === 'true';
+const CSP_CACHE_EPOCH = String(process.env.SALVIUM_CSP_CACHE_EPOCH || `${SALVIUM_NETWORK}-${Date.now()}`);
+const CSP_MAX_RETRIES = 3;
 const CSP_CACHE_SCHEMA_VERSION = 8;
 let cspCacheStats = {
     files: 0,
@@ -318,19 +351,19 @@ let cspBundleStats = {
 // BLOCK TIMESTAMP CACHE - Maps block_height -> Unix timestamp
 // ============================================================================
 const blockTimestampCache = new Map();
-const TIMESTAMP_CACHE_FILE = path.join(process.env.CACHE_DIR || '/var/data/salvium-blocks', 'block-timestamps.json');
+const TIMESTAMP_CACHE_FILE = path.join(CACHE_DIR, 'block-timestamps.json');
 
 const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19081';
 const GLOBAL_DAEMON_BASE_URL = GLOBAL_DAEMON_URL.replace(/\/$/, '');
-const SALVIUM_NETWORK = (() => {
-    const configured = String(process.env.SALVIUM_NETWORK || '').toLowerCase();
-    if (configured === 'testnet' || configured === 'stagenet') return configured;
-    return 'mainnet';
-})();
+const DEFAULT_WASM_BASENAME = 'SalviumWallet';
+const SALVIUM_WASM_BASENAME = String(process.env.SALVIUM_WASM_BASENAME || inferWasmBasenameFromNetwork(SALVIUM_NETWORK))
+    .replace(/\.(js|wasm)$/i, '')
+    .replace(/\.worker$/i, '') || inferWasmBasenameFromNetwork(SALVIUM_NETWORK);
 const SALVIUM_NETWORK_COOKIE = 'salvium_network';
-const DEFAULT_BROWSER_NETWORK = String(process.env.SALVIUM_DEFAULT_BROWSER_NETWORK || 'mainnet').toLowerCase() === 'testnet'
+const DEFAULT_BROWSER_NETWORK = String(process.env.SALVIUM_DEFAULT_BROWSER_NETWORK || inferBrowserNetworkFromNetwork(SALVIUM_NETWORK)).toLowerCase() === 'testnet'
     ? 'testnet'
     : 'mainnet';
+const FORCE_NATIVE_BROWSER_NETWORK = SALVIUM_DEPLOYMENT_CHANNEL === 'vault-live';
 const MAINNET_VAULT_PROXY_URL = (process.env.SALVIUM_MAINNET_VAULT_URL || 'http://salvium-vault:3000').replace(/\/$/, '');
 const TESTNET_VAULT_PROXY_URL = (process.env.SALVIUM_TESTNET_VAULT_URL || 'http://salvium-vault-test:3000').replace(/\/$/, '');
 // Single toggle for test-safe scan behavior in this container.
@@ -338,6 +371,49 @@ const TESTNET_VAULT_PROXY_URL = (process.env.SALVIUM_TESTNET_VAULT_URL || 'http:
 const TESTNET_SAFE_MODE = String(process.env.SALVIUM_TESTNET_SAFE_MODE || '').toLowerCase() === 'true';
 const DISABLE_STAKE_FILTER = String(process.env.SALVIUM_DISABLE_STAKE_FILTER || '').toLowerCase() === 'true' || TESTNET_SAFE_MODE;
 const FORCE_SINGLE_CHUNK_SCAN = String(process.env.SALVIUM_FORCE_SINGLE_CHUNK_SCAN || '').toLowerCase() === 'true' || TESTNET_SAFE_MODE;
+
+function assertDeploymentSafety() {
+    if (SALVIUM_DEPLOYMENT_CHANNEL === 'vault-test') {
+        if (SALVIUM_NETWORK !== 'testnet') {
+            throw new Error(`Unsafe test deployment settings detected: channel=${SALVIUM_DEPLOYMENT_CHANNEL}, network=${SALVIUM_NETWORK}`);
+        }
+        if (DEFAULT_BROWSER_NETWORK !== 'testnet') {
+            throw new Error(`Unsafe test deployment settings detected: channel=${SALVIUM_DEPLOYMENT_CHANNEL}, browser_network=${DEFAULT_BROWSER_NETWORK}`);
+        }
+        if (SALVIUM_WASM_BASENAME !== 'SalviumWalletTestnet') {
+            throw new Error(`Unsafe test deployment settings detected: channel=${SALVIUM_DEPLOYMENT_CHANNEL}, wasm=${SALVIUM_WASM_BASENAME}`);
+        }
+    }
+
+    if (SALVIUM_DEPLOYMENT_CHANNEL === 'vault-live') {
+        if (SALVIUM_NETWORK !== 'mainnet') {
+            throw new Error(`Unsafe live deployment settings detected: channel=${SALVIUM_DEPLOYMENT_CHANNEL}, network=${SALVIUM_NETWORK}`);
+        }
+        if (DEFAULT_BROWSER_NETWORK !== 'mainnet') {
+            throw new Error(`Unsafe live deployment settings detected: channel=${SALVIUM_DEPLOYMENT_CHANNEL}, browser_network=${DEFAULT_BROWSER_NETWORK}`);
+        }
+        if (SALVIUM_WASM_BASENAME !== DEFAULT_WASM_BASENAME) {
+            throw new Error(`Unsafe live deployment settings detected: channel=${SALVIUM_DEPLOYMENT_CHANNEL}, wasm=${SALVIUM_WASM_BASENAME}`);
+        }
+    }
+
+    if (SALVIUM_NETWORK === 'mainnet') {
+        const unsafeFlags = [];
+        if (TESTNET_SAFE_MODE) unsafeFlags.push('SALVIUM_TESTNET_SAFE_MODE=true');
+        if (String(process.env.SALVIUM_DISABLE_STAKE_FILTER || '').toLowerCase() === 'true') unsafeFlags.push('SALVIUM_DISABLE_STAKE_FILTER=true');
+        if (String(process.env.SALVIUM_FORCE_SINGLE_CHUNK_SCAN || '').toLowerCase() === 'true') unsafeFlags.push('SALVIUM_FORCE_SINGLE_CHUNK_SCAN=true');
+        if (String(process.env.SALVIUM_REBUILD_CSP_CACHE_ON_START || '').toLowerCase() === 'true') unsafeFlags.push('SALVIUM_REBUILD_CSP_CACHE_ON_START=true');
+        if (SALVIUM_WASM_BASENAME !== DEFAULT_WASM_BASENAME) unsafeFlags.push(`SALVIUM_WASM_BASENAME=${SALVIUM_WASM_BASENAME}`);
+        if (CSP_CACHE_DIR.includes('/testnet/')) unsafeFlags.push(`CSP_CACHE_DIR=${CSP_CACHE_DIR}`);
+        if (/39081\b/.test(GLOBAL_DAEMON_URL)) unsafeFlags.push(`SALVIUM_RPC_URL=${GLOBAL_DAEMON_URL}`);
+        if (unsafeFlags.length > 0) {
+            throw new Error(`Unsafe mainnet deployment settings detected: ${unsafeFlags.join(', ')}`);
+        }
+    }
+}
+
+assertDeploymentSafety();
+console.log(`🧭 Deployment channel: ${SALVIUM_DEPLOYMENT_CHANNEL} | network: ${SALVIUM_NETWORK} | browser default: ${DEFAULT_BROWSER_NETWORK} | wasm: ${SALVIUM_WASM_BASENAME}`);
 
 async function loadTimestampCache() {
     try {
@@ -600,14 +676,14 @@ async function extractStakesFromBin(binPath, chunkStart) {
     return { stakes, txCount };
 }
 
-async function initWasmModule() {
-    try {
-        const wasmPath = path.join(__dirname, 'wallet', 'SalviumWallet.js');
-        if (!fsSync.existsSync(wasmPath)) {
-            console.warn('⚠️ [WASM] SalviumWallet.js not found at:', wasmPath);
-            console.warn('⚠️ [WASM] Server-side WASM Epee→CSP conversion will be disabled');
-            return;
-        }
+async function initWasmModule() {
+    try {
+        const wasmPath = path.join(__dirname, 'wallet', `${SALVIUM_WASM_BASENAME}.js`);
+        if (!fsSync.existsSync(wasmPath)) {
+            console.warn(`⚠️ [WASM] ${SALVIUM_WASM_BASENAME}.js not found at:`, wasmPath);
+            console.warn('⚠️ [WASM] Server-side WASM Epee→CSP conversion will be disabled');
+            return;
+        }
 
         console.log('🔧 [WASM] Loading server-side WASM module...');
 
@@ -645,13 +721,75 @@ async function initWasmModule() {
         console.error('❌ [WASM] Failed to load module:', err.message);
         console.error('❌ [WASM] Stack:', err.stack);
         console.warn('⚠️ [WASM] Server-side Epee→CSP conversion will be disabled');
-        console.warn('⚠️ [WASM] To enable, rebuild WASM with: -s ENVIRONMENT="web,worker,node"');
-    }
-}
-
-// ============================================================================
-// CSP CACHE FUNCTIONS
-// ============================================================================
+        console.warn('⚠️ [WASM] To enable, rebuild WASM with: -s ENVIRONMENT="web,worker,node"');
+    }
+}
+
+function resolveConfiguredWasmFilename(requestedFilename) {
+    const allowedFiles = new Set(['SalviumWallet.wasm', 'SalviumWallet.js', 'SalviumWallet.worker.js']);
+    if (!allowedFiles.has(requestedFilename)) {
+        return null;
+    }
+
+    const suffix = requestedFilename.slice(DEFAULT_WASM_BASENAME.length);
+    return `${SALVIUM_WASM_BASENAME}${suffix}`;
+}
+
+function resolveConfiguredWasmPath(requestedFilename) {
+    const actualFilename = resolveConfiguredWasmFilename(requestedFilename);
+    if (!actualFilename) {
+        return null;
+    }
+
+    const configuredPath = path.join(process.cwd(), 'wallet', actualFilename);
+    if (fsSync.existsSync(configuredPath)) {
+        return { actualFilename, fullPath: configuredPath };
+    }
+
+    const fallbackPath = path.join(process.cwd(), 'wallet', requestedFilename);
+    if (fsSync.existsSync(fallbackPath)) {
+        return { actualFilename: requestedFilename, fullPath: fallbackPath };
+    }
+
+    return { actualFilename, fullPath: configuredPath };
+}
+
+function sendConfiguredWasmAsset(res, requestedFilename) {
+    const resolved = resolveConfiguredWasmPath(requestedFilename);
+    if (!resolved) {
+        return res.status(404).json({ error: 'File not found' });
+    }
+
+    try {
+        const content = fsSync.readFileSync(resolved.fullPath);
+        const ext = path.extname(resolved.actualFilename);
+        const stat = fsSync.statSync(resolved.fullPath);
+        const etag = `"${stat.size}-${stat.mtimeMs}"`;
+        const contentTypes = {
+            '.wasm': 'application/wasm',
+            '.js': 'application/javascript'
+        };
+
+        res.setHeader('Content-Type', contentTypes[ext] || 'application/octet-stream');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('ETag', etag);
+        res.setHeader('Last-Modified', stat.mtime.toUTCString());
+        res.setHeader('Content-Length', content.length);
+        res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+        return res.send(content);
+    } catch (e) {
+        return res.status(404).json({ error: 'File not found', details: e.message });
+    }
+}
+
+// ============================================================================
+// CSP CACHE FUNCTIONS
+// ============================================================================
 
 function parseCspChunkFilename(filename) {
     const match = filename.match(/csp-v(\d+)-(\d+)-(\d+)\.csp$/);
@@ -680,11 +818,36 @@ async function initCspCache() {
         return;
     }
 
-    try {
-        await fs.mkdir(CSP_CACHE_DIR, { recursive: true });
-        console.log(`🎯 [CSP-Cache] Initialized: ${CSP_CACHE_DIR}`);
-
-        const files = await fs.readdir(CSP_CACHE_DIR);
+    try {
+        await fs.mkdir(CSP_CACHE_DIR, { recursive: true });
+        console.log(`🎯 [CSP-Cache] Initialized: ${CSP_CACHE_DIR}`);
+
+        if (CSP_REBUILD_ON_START) {
+            console.log(`🎯 [CSP-Cache] Startup rebuild enabled for ${SALVIUM_NETWORK} (${CSP_CACHE_EPOCH})`);
+            const filesToRemove = await fs.readdir(CSP_CACHE_DIR);
+            let purged = 0;
+            for (const file of filesToRemove) {
+                try {
+                    await fs.unlink(path.join(CSP_CACHE_DIR, file));
+                    purged++;
+                } catch (err) {
+                    console.warn(`🎯 [CSP-Cache] Failed to remove ${file}: ${err.message}`);
+                }
+            }
+            cspBundleCache = null;
+            cspBundleGzipCache = null;
+            cspBundleStats.size = 0;
+            cspBundleStats.gzipSize = 0;
+            cspBundleStats.chunks = 0;
+            cspBundleStats.firstHeight = 0;
+            cspBundleStats.lastHeight = 0;
+            cspBundleStats.lastBuild = null;
+            cspCacheStats.files = 0;
+            blockHashCache.clear();
+            console.log(`🎯 [CSP-Cache] Startup purge removed ${purged} file(s)`);
+        }
+
+        const files = await fs.readdir(CSP_CACHE_DIR);
         const cspFiles = files.filter(f => f.endsWith('.csp'));
         let validFiles = 0;
         let cleanedFiles = 0;
@@ -1493,9 +1656,16 @@ async function fillMissingCspChunks(missingChunks, chainHeight = null) {
     }
 }
 
-function getCspCacheFilename(startHeight, endHeight) {
-    return path.join(CSP_CACHE_DIR, `csp-v${CSP_CACHE_SCHEMA_VERSION}-${startHeight}-${endHeight}.csp`);
-}
+function getCspCacheFilename(startHeight, endHeight) {
+    return path.join(CSP_CACHE_DIR, `csp-v${CSP_CACHE_SCHEMA_VERSION}-${startHeight}-${endHeight}.csp`);
+}
+
+function getCspResponseCacheControl() {
+    if (SALVIUM_NETWORK === 'testnet') {
+        return 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0';
+    }
+    return 'public, max-age=31536000, immutable';
+}
 
 async function getCspFromCache(startHeight, endHeight) {
     if (!CSP_CACHE_ENABLED) return null;
@@ -3223,6 +3393,10 @@ function parseCookieHeader(cookieHeader) {
 
 function getRequestedVaultNetwork(req) {
     const nativeNetwork = normalizeRequestedBrowserNetwork(SALVIUM_NETWORK, DEFAULT_BROWSER_NETWORK);
+    if (FORCE_NATIVE_BROWSER_NETWORK) {
+        return nativeNetwork;
+    }
+
     const proxyOverride = req.headers['x-salvium-network-override'];
 
     if (proxyOverride) {
@@ -3784,70 +3958,34 @@ app.get('/api/network', noCacheHeaders, (req, res) => {
     const requestedNetwork = getRequestedVaultNetwork(req);
     const disableStakeFilter = requestedNetwork === 'testnet' ? DISABLE_STAKE_FILTER : false;
     const forceSingleChunkScan = requestedNetwork === 'testnet' ? FORCE_SINGLE_CHUNK_SCAN : false;
+    const cspCacheEpoch = requestedNetwork === SALVIUM_NETWORK ? CSP_CACHE_EPOCH : undefined;
 
     if (!disableStakeFilter && !forceSingleChunkScan) {
         // Backward-compatible payload when safe mode is off.
-        return res.json({ network: requestedNetwork });
+        return res.json({ network: requestedNetwork, cspCacheEpoch });
     }
     res.json({
         network: requestedNetwork,
+        cspCacheEpoch,
         disableStakeFilter,
         forceSingleChunkScan
     });
 });
 
 app.get(['/api/wasm/:filename', '/vault/api/wasm/:filename'], (req, res) => {
-    const fs = require('fs');
-    const path = require('path');
-
-    const allowedFiles = ['SalviumWallet.wasm', 'SalviumWallet.js', 'SalviumWallet.worker.js'];
-    const filename = req.params.filename;
-
-    if (!allowedFiles.includes(filename)) {
-        return res.status(404).json({ error: 'File not found' });
-    }
-
-    const fullPath = path.join(process.cwd(), 'wallet', filename);
-
-    try {
-        const content = fs.readFileSync(fullPath);
-
-        const contentTypes = {
-            '.wasm': 'application/wasm',
-            '.js': 'application/javascript'
-        };
-        const ext = path.extname(filename);
-
-        const stat = fs.statSync(fullPath);
-        const etag = `"${stat.size}-${stat.mtimeMs}"`;
-
-        res.setHeader('Content-Type', contentTypes[ext] || 'application/octet-stream');
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-        res.setHeader('ETag', etag);
-        res.setHeader('Last-Modified', stat.mtime.toUTCString());
-        res.setHeader('Content-Length', content.length);
-        res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
-        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-
-        res.send(content);
-    } catch (e) {
-        res.status(404).json({ error: 'File not found', details: e.message });
-    }
-});
-
-app.get(['/api/wasm-info', '/vault/api/wasm-info'], (req, res) => {
-    const fs = require('fs');
-    const path = require('path');
-
-    try {
-        const wasmPath = path.join(process.cwd(), 'wallet', 'SalviumWallet.wasm');
-        const jsPath = path.join(process.cwd(), 'wallet', 'SalviumWallet.js');
-
-        const wasmStat = fs.existsSync(wasmPath) ? fs.statSync(wasmPath) : null;
-        const jsStat = fs.existsSync(jsPath) ? fs.statSync(jsPath) : null;
+    const filename = req.params.filename;
+    return sendConfiguredWasmAsset(res, filename);
+});
+
+app.get(['/api/wasm-info', '/vault/api/wasm-info'], (req, res) => {
+    try {
+        const wasmAsset = resolveConfiguredWasmPath('SalviumWallet.wasm');
+        const jsAsset = resolveConfiguredWasmPath('SalviumWallet.js');
+        const wasmPath = wasmAsset?.fullPath;
+        const jsPath = jsAsset?.fullPath;
+
+        const wasmStat = wasmPath && fsSync.existsSync(wasmPath) ? fsSync.statSync(wasmPath) : null;
+        const jsStat = jsPath && fsSync.existsSync(jsPath) ? fsSync.statSync(jsPath) : null;
 
         let serverBuildId = null;
         if (wasmModule && typeof wasmModule.get_sparse_build_id === 'function') {
@@ -3858,17 +3996,20 @@ app.get(['/api/wasm-info', '/vault/api/wasm-info'], (req, res) => {
             }
         }
 
-        res.json({
-            success: true,
-            wasm: wasmStat ? {
-                size: wasmStat.size,
-                modified: wasmStat.mtime.toISOString(),
-                etag: `"${wasmStat.size}-${wasmStat.mtimeMs}"`
-            } : null,
-            js: jsStat ? {
-                size: jsStat.size,
-                modified: jsStat.mtime.toISOString()
-            } : null,
+        res.json({
+            success: true,
+            configuredBasename: SALVIUM_WASM_BASENAME,
+            wasm: wasmStat ? {
+                filename: wasmAsset?.actualFilename || 'SalviumWallet.wasm',
+                size: wasmStat.size,
+                modified: wasmStat.mtime.toISOString(),
+                etag: `"${wasmStat.size}-${wasmStat.mtimeMs}"`
+            } : null,
+            js: jsStat ? {
+                filename: jsAsset?.actualFilename || 'SalviumWallet.js',
+                size: jsStat.size,
+                modified: jsStat.mtime.toISOString()
+            } : null,
             serverBuildId,
             serverWasmLoaded: !!wasmModule
         });
@@ -4831,10 +4972,12 @@ app.options(['/api/csp-bundle', '/vault/api/csp-bundle'], (req, res) => {
     res.sendStatus(200);
 });
 
-app.get(['/api/csp-bundle', '/vault/api/csp-bundle'], async (req, res) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Expose-Headers', 'X-Bundle-Chunks, X-Bundle-Size, X-Bundle-First-Height, X-Bundle-Last-Height, X-Uncompressed-Size');
-    res.header('Cache-Control', 'public, max-age=3600');
+app.get(['/api/csp-bundle', '/vault/api/csp-bundle'], async (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Expose-Headers', 'X-Bundle-Chunks, X-Bundle-Size, X-Bundle-First-Height, X-Bundle-Last-Height, X-Uncompressed-Size');
+    res.header('Cache-Control', SALVIUM_NETWORK === 'testnet'
+        ? 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0'
+        : 'public, max-age=3600');
 
     try {
         const bundle = await getCspBundle();
@@ -4918,10 +5061,10 @@ app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
         res.header('Content-Type', 'application/octet-stream');
         res.header('X-CSP-Start-Height', alignedStart);
         res.header('X-CSP-End-Height', alignedEnd);
-        res.header('X-CSP-Source', 'cached');
-        res.header('X-CSP-Cache-Status', 'hit');
-        res.header('Cache-Control', 'public, max-age=31536000, immutable');
-        return res.send(cachedCsp);
+        res.header('X-CSP-Source', 'cached');
+        res.header('X-CSP-Cache-Status', 'hit');
+        res.header('Cache-Control', getCspResponseCacheControl());
+        return res.send(cachedCsp);
     }
 
     if (wasmModuleReady && wasmModule) {
@@ -4968,10 +5111,10 @@ app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
             res.header('Content-Type', 'application/octet-stream');
             res.header('X-CSP-Start-Height', alignedStart);
             res.header('X-CSP-End-Height', alignedEnd);
-            res.header('X-CSP-Source', 'generated');
-            res.header('X-CSP-Cache-Status', 'miss-generated');
-            res.header('Cache-Control', shouldCache ? 'public, max-age=31536000, immutable' : 'public, max-age=30');
-            return res.send(cspBuffer);
+            res.header('X-CSP-Source', 'generated');
+            res.header('X-CSP-Cache-Status', 'miss-generated');
+            res.header('Cache-Control', shouldCache ? getCspResponseCacheControl() : 'public, max-age=30');
+            return res.send(cspBuffer);
         }
     }
 
@@ -5106,11 +5249,11 @@ app.get(['/api/csp-batch', '/vault/api/csp-batch'], async (req, res) => {
     res.header('Content-Type', 'application/octet-stream');
     res.header('X-CSP-Chunks', chunksLoaded.toString());
     res.header('X-CSP-Total-Size', totalSize.toString());
-    res.header('X-CSP-Start', alignedStart.toString());
-    res.header('X-CSP-End', endChunk.end.toString());
-    res.header('Cache-Control', 'public, max-age=31536000, immutable');
-    return res.send(batchBuffer);
-});
+    res.header('X-CSP-Start', alignedStart.toString());
+    res.header('X-CSP-End', endChunk.end.toString());
+    res.header('Cache-Control', getCspResponseCacheControl());
+    return res.send(batchBuffer);
+});
 
 // ===========================================================================
 // CSP CACHE STATS ENDPOINT
@@ -6120,20 +6263,46 @@ app.use(express.json({
     type: function (req) { return req.path.indexOf("_binary") === -1 && !req.path.endsWith(".bin"); }
 }));
 
-app.use((req, res, next) => {
-    if (req.method === 'POST') {
-        console.log(`📤 [POST-JSON] ${req.method} ${req.path} Body parsed:`, typeof req.body, Object.keys(req.body || {}).length);
-    }
-    next();
-});
-
-app.use(express.static(path.join(__dirname, 'dist')));
-app.use('/vault', express.static(path.join(__dirname, 'dist')));
-
-app.use('/assets', express.static(path.join(__dirname, 'assets')));
-app.use('/vault/assets', express.static(path.join(__dirname, 'assets')));
-
-app.use('/wallet', express.static(path.join(__dirname, 'wallet'), {
+app.use((req, res, next) => {
+    if (req.method === 'POST') {
+        console.log(`📤 [POST-JSON] ${req.method} ${req.path} Body parsed:`, typeof req.body, Object.keys(req.body || {}).length);
+    }
+    next();
+});
+
+app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return next();
+    }
+
+    const cookies = parseCookieHeader(req.headers.cookie);
+    const cookieNetwork = normalizeRequestedBrowserNetwork(cookies[SALVIUM_NETWORK_COOKIE], '');
+    if (FORCE_NATIVE_BROWSER_NETWORK || cookieNetwork === '') {
+        res.cookie(SALVIUM_NETWORK_COOKIE, DEFAULT_BROWSER_NETWORK, {
+            maxAge: 31536000000,
+            sameSite: 'lax',
+            secure: true,
+            path: '/'
+        });
+    }
+
+    next();
+});
+
+app.use(express.static(path.join(__dirname, 'dist')));
+app.use('/vault', express.static(path.join(__dirname, 'dist')));
+
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
+app.use('/vault/assets', express.static(path.join(__dirname, 'assets')));
+
+app.get(['/wallet/SalviumWallet.js', '/wallet/SalviumWallet.wasm', '/wallet/SalviumWallet.worker.js'], (req, res) => {
+    return sendConfiguredWasmAsset(res, path.basename(req.path));
+});
+app.get(['/vault/wallet/SalviumWallet.js', '/vault/wallet/SalviumWallet.wasm', '/vault/wallet/SalviumWallet.worker.js'], (req, res) => {
+    return sendConfiguredWasmAsset(res, path.basename(req.path));
+});
+
+app.use('/wallet', express.static(path.join(__dirname, 'wallet'), {
     setHeaders: (res, filePath) => {
         if (filePath.endsWith('.wasm')) {
             res.setHeader('Content-Type', 'application/wasm');
@@ -6972,14 +7141,26 @@ app.post(['/api/wallet/get_output_distribution', '/vault/api/wallet/get_output_d
 });
 
 app.post(['/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransaction'], txRateLimit, async (req, res) => {
-    const requestId = generateSecureId(16);
-
-    try {
-        const DAEMON_URL = process.env.SALVIUM_RPC_URL || RPC_NODES[0] || 'http://salvium:19081';
-        const targetUrl = DAEMON_URL.replace(/\/$/, '') + '/sendrawtransaction';
-
-        console.log(`🔗 [Wallet API] Proxying /sendrawtransaction to: ${targetUrl}`);
-        console.log(`🔗 [Wallet API] TX blob length: ${req.body?.tx_as_hex?.length || 0} chars`);
+    const requestId = generateSecureId(16);
+
+    try {
+        const DAEMON_URL = process.env.SALVIUM_RPC_URL || RPC_NODES[0] || 'http://salvium:19081';
+        const targetUrl = DAEMON_URL.replace(/\/$/, '') + '/sendrawtransaction';
+
+        console.log(`🧪 [Wallet API] sendrawtransaction requestId=${requestId} body keys: ${Object.keys(req.body || {}).join(',')}`);
+        console.log(`🔗 [Wallet API] Proxying /sendrawtransaction to: ${targetUrl}`);
+        console.log(`🔗 [Wallet API] TX blob length: ${req.body?.tx_as_hex?.length || 0} chars`);
+        if (req.body?.debug_context) {
+            const debugContext = req.body.debug_context;
+            console.log(`🧪 [Wallet API] TX debug context requestId=${requestId}:`, JSON.stringify({
+                tx_hash: debugContext.tx_hash || null,
+                selected_transfer_count: debugContext.selected_transfer_count || 0,
+                non_standard_inputs_count: Array.isArray(debugContext.non_standard_inputs) ? debugContext.non_standard_inputs.length : 0,
+                non_standard_inputs: debugContext.non_standard_inputs || [],
+                vin_key_images_count: Array.isArray(debugContext.vin_key_images) ? debugContext.vin_key_images.length : 0,
+                vin_key_images_preview: Array.isArray(debugContext.vin_key_images) ? debugContext.vin_key_images.slice(0, 8) : []
+            }, null, 2));
+        }
 
         const config = {
             method: 'POST',
@@ -6995,12 +7176,15 @@ app.post(['/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransactio
 
         const response = await axiosInstance(config);
 
-        if (response.data.status === 'OK' || response.data.status === 'ok') {
-            console.log(`✅ [Wallet API] Transaction broadcast successful`);
-        } else {
-            console.warn(`⚠️ [Wallet API] Transaction broadcast REJECTED:`, JSON.stringify(response.data, null, 2));
-            console.warn(`⚠️ [Wallet API] Rejection reason: ${response.data.reason || response.data.error || 'unknown'}`);
-        }
+        if (response.data.status === 'OK' || response.data.status === 'ok') {
+            console.log(`✅ [Wallet API] Transaction broadcast successful`);
+        } else {
+            console.warn(`⚠️ [Wallet API] Transaction broadcast REJECTED:`, JSON.stringify(response.data, null, 2));
+            console.warn(`⚠️ [Wallet API] Rejection reason: ${response.data.reason || response.data.error || 'unknown'}`);
+            if (req.body?.debug_context) {
+                console.warn(`🧪 [Wallet API] Rejected TX debug context:`, JSON.stringify(req.body.debug_context, null, 2));
+            }
+        }
 
         res.json(response.data);
     } catch (error) {
@@ -7688,7 +7872,12 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
             return res.status(400).json({ error: 'Too many hashes (max 100)' });
         }
 
-        console.log(`⚡ [Sparse By Hash] Fetching ${hashes.length} transactions from daemon...`);
+        const preview = hashes
+            .filter(hash => typeof hash === 'string')
+            .slice(0, 5)
+            .map(hash => hash.substring(0, 12))
+            .join(', ');
+        console.log(`⚡ [Sparse By Hash] Fetching ${hashes.length} transactions from daemon... preview=[${preview}]`);
 
         const indicesByHash = await fetchTxOutputAndAssetIndices(hashes);
 
@@ -7798,7 +7987,9 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
 
         console.log(`⚡ [Sparse By Hash] Built sparse data: ${foundCount} txs, ${output.length} bytes`);
 
-        res.set({
+        console.log(`⚡ [Sparse By Hash] Found ${foundCount}/${hashes.length} requested transactions`);
+
+        res.set({
             'Content-Type': 'application/octet-stream',
             'Content-Length': output.length,
             'Access-Control-Allow-Origin': '*',

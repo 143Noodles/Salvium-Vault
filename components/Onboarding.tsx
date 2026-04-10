@@ -7,6 +7,7 @@ import { isMobile } from 'react-device-detect';
 import { parseBackup, restoreFromBackup, BackupData } from '../services/BackupService';
 import {
   buildOnboardingUrl,
+  buildVaultModeUrl,
   buildVaultModeCookie,
   getVaultModeFromCookie,
   getOnboardingModeFromUrl,
@@ -25,7 +26,7 @@ interface OnboardingProps {
 const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const { t } = useTranslation();
   const wallet = useWallet();
-  const networkSwitcherDisabled = true;
+  const networkSwitcherDisabled = false;
   const [mode, setMode] = useState<OnboardingMode>(() => {
     if (typeof window === 'undefined') return 'initial';
     return getOnboardingModeFromUrl(window.location.href);
@@ -305,7 +306,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
     setSwitchingVaultMode(nextVaultMode);
     document.cookie = buildVaultModeCookie(nextVaultMode);
-    const nextUrl = buildOnboardingUrl(window.location.href, mode);
+    const nextUrl = buildVaultModeUrl(buildOnboardingUrl(window.location.href, mode), nextVaultMode);
     if (nextUrl === window.location.href) {
       window.location.reload();
       return;
@@ -361,11 +362,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
           );
         })}
       </div>
-      {networkSwitcherDisabled ? (
-        <p className="text-[11px] font-medium text-text-muted">
-          Mainnet only for now
-        </p>
-      ) : null}
     </div>
   );
 

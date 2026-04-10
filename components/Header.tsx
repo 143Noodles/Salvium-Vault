@@ -75,7 +75,7 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
 
   const navItems = [
     { label: 'Vault', href: '/', active: true },
-    { label: 'Pools', href: 'https://pool.salvium.tools', active: false, external: true },
+    { label: 'Pool', href: 'https://pool.salvium.tools', active: false, external: true },
   ];
 
   return (

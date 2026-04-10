@@ -25,6 +25,7 @@ let kViewIncoming = '';  // Carrot k_view_incoming key (for Salvium Carrot trans
 let sViewBalance = '';   // Carrot s_view_balance secret (for internal enote tags)
 let keyImagesCsv = '';   // CSP v6: key images CSV for spent detection (OUT tx discovery)
 let apiBaseUrl = '';
+let cspCacheEpoch = '';
 let stakeReturnHeightsStr = '';  // v4.2.0: Comma-separated stake return heights for coinbase filtering
 let subaddressMapCsv = '';  // v5.1.0: Subaddress map for ownership verification (reduces Phase 1 to ~3K matches)
 let returnAddressesCsv = '';  // v11.0: All return addresses for Phase 1 direct stake return matching
@@ -233,6 +234,7 @@ async function handleInit(msg) {
     sViewBalance = msg.sViewBalance || '';    // Carrot s_view_balance (optional but needed for internal enotes)
     keyImagesCsv = msg.keyImagesCsv || '';
     apiBaseUrl = msg.apiBaseUrl || '';
+    cspCacheEpoch = msg.cspCacheEpoch || '';
     DEBUG = msg.debug || false;  // Enable debug logging if requested
 
     // v4.2.0: Stake return heights for coinbase filtering (comma-separated string)
@@ -303,7 +305,8 @@ async function handleScanCsp(msg) {
         // LIVE EDGE FIX: Add cache-busting timestamp for chunks near chain tip
         const isNearTip = startHeight >= 380000;
         const cacheBuster = isNearTip ? `&_t=${Math.floor(Date.now() / 30000)}` : '';
-        let url = `${apiBaseUrl}/api/csp-cached?start_height=${startHeight}&count=${count}&v=${CSP_FORMAT_VERSION}${cacheBuster}`;
+        const cacheEpochParam = cspCacheEpoch ? `&csp_epoch=${encodeURIComponent(cspCacheEpoch)}` : '';
+        let url = `${apiBaseUrl}/api/csp-cached?start_height=${startHeight}&count=${count}&v=${CSP_FORMAT_VERSION}${cacheEpochParam}${cacheBuster}`;
 
         const response = await fetch(url, { redirect: 'follow' });
         if (!response.ok) {
@@ -590,7 +593,8 @@ async function handleScanCspBatch(msg) {
         // The timestamp changes every 30 seconds to match server's Cache-Control: max-age=30.
         const isNearTip = startHeight >= 380000;
         const cacheBuster = isNearTip ? `&_t=${Math.floor(Date.now() / 30000)}` : '';
-        const url = `${apiBaseUrl}/api/csp-batch?start_height=${startHeight}&chunks=${chunkCount}&v=${CSP_FORMAT_VERSION}${cacheBuster}`;
+        const cacheEpochParam = cspCacheEpoch ? `&csp_epoch=${encodeURIComponent(cspCacheEpoch)}` : '';
+        const url = `${apiBaseUrl}/api/csp-batch?start_height=${startHeight}&chunks=${chunkCount}&v=${CSP_FORMAT_VERSION}${cacheEpochParam}${cacheBuster}`;
 
         if (isNearTip) {
             if (DEBUG) void 0 && console.log(`[CSP Worker ${workerId}] 🔥 Live edge batch - cache buster added`);
@@ -842,7 +846,8 @@ async function handleScanKeyImagesOnly(msg) {
         // LIVE EDGE FIX: Add cache-busting for key-images scan too
         const isNearTip = startHeight >= 380000;
         const cacheBuster = isNearTip ? `&_t=${Math.floor(Date.now() / 30000)}` : '';
-        const url = `${apiBaseUrl}/api/csp-batch?start_height=${startHeight}&chunks=${chunkCount}&v=${CSP_FORMAT_VERSION}${cacheBuster}`;
+        const cacheEpochParam = cspCacheEpoch ? `&csp_epoch=${encodeURIComponent(cspCacheEpoch)}` : '';
+        const url = `${apiBaseUrl}/api/csp-batch?start_height=${startHeight}&chunks=${chunkCount}&v=${CSP_FORMAT_VERSION}${cacheEpochParam}${cacheBuster}`;
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 60000);

@@ -2,7 +2,12 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
-import { buildVaultModeCookie, getVaultModeFromCookie } from './utils/vaultNetwork';
+import {
+  buildVaultModeCookie,
+  getDefaultVaultModeForHostname,
+  getVaultModeFromCookie,
+  isTestVaultHostname,
+} from './utils/vaultNetwork';
 
 // Initialize i18n before app renders
 import './i18n';
@@ -17,7 +22,7 @@ console.warn = (...args) => {
 import PWAOnlyGate from './components/PWAOnlyGate';
 
 if (typeof document !== 'undefined' && getVaultModeFromCookie(document.cookie) === null) {
-  document.cookie = buildVaultModeCookie('mainnet');
+  document.cookie = buildVaultModeCookie(getDefaultVaultModeForHostname(window.location.hostname));
 }
 
 // Service worker status tracking for offline support
@@ -39,7 +44,7 @@ const swStatus: ServiceWorkerStatus = {
 // Register service worker for offline support
 if ('serviceWorker' in navigator) {
   const host = window.location.hostname;
-  const isTestVaultHost = host === 'vault-test.salvium.tools' || host === 'test.vault.salvium.tools';
+  const isTestVaultHost = isTestVaultHostname(host);
 
   // Test vault should never use SW cache; it can serve stale CSP/API data between runs.
   if (isTestVaultHost) {
