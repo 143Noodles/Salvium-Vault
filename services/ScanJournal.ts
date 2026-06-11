@@ -1,18 +1,7 @@
-/**
- * ScanJournal.ts - Reliable Scan State Persistence
- *
- * This module provides atomic, journaled scan state persistence to prevent
- * data loss from interruptions (tab close, crash, iOS suspension, etc.)
- *
- * Key Features:
- * 1. Write-ahead journal: State is journaled before being committed
- * 2. Atomic IndexedDB writes: All-or-nothing updates
- * 3. Gap detection: Identifies missed chunks from interrupted scans
- * 4. Session isolation: Scan IDs prevent cross-contamination
- * 5. Coalesced checkpoints: Batches updates to reduce write overhead
- */
+import { debugLog, debugWarn } from '../utils/debug';
+import { reportTaskEvent } from '../utils/clientTelemetry';
+import { buildScanCoverageProof, computeChunksToScan, type ScanCoverageManifest } from '../utils/scanCoverage';
 
-// PRODUCTION: Set to false to suppress verbose debug logs
 const DEBUG = false;
 
 const SCAN_JOURNAL_DB_NAME = 'salvium-scan-journal';
@@ -20,28 +9,32 @@ const SCAN_JOURNAL_DB_VERSION = 1;
 const JOURNAL_STORE = 'journal';
 const CHECKPOINT_STORE = 'checkpoints';
 
-// Coalesced checkpoint settings
-const CHECKPOINT_INTERVAL_MS = 5000;  // Flush checkpoint every 5 seconds
-const CHECKPOINT_CHUNK_THRESHOLD = 10; // Or after 10 new chunks
+const CHECKPOINT_INTERVAL_MS = 5000;
+const CHECKPOINT_CHUNK_THRESHOLD = 25;
 
 export interface ScanJournalEntry {
   scanId: string;
   walletAddress: string;
   startHeight: number;
   targetEndHeight: number;
-  scannedChunks: number[];  // All successfully scanned chunk start heights (Phase 1 complete)
-  ingestedChunks: number[];  // Chunks with transactions ingested by WASM (Phase 2 complete)
-  inProgressChunks: number[];  // Chunks currently being processed (MUST be rescanned on recovery)
-  matchedChunks: number[];  // Chunks with matches (subset of scannedChunks)
+  scannedChunks: number[];
+  ingestedChunks: number[];
+  // In-progress chunks MUST be rescanned on recovery (results may be partial).
+  inProgressChunks: number[];
+  matchedChunks: number[];
+  // Chunks that failed after in-run retries and must be re-scanned on a later pass.
+  // Distinct from inProgressChunks (mid-flight at interruption). Optional for v1 journals.
+  needsRescanChunks?: number[];
+  rescanAttempts?: Record<number, number>;
+  coverageManifest?: ScanCoverageManifest;
   lastUpdateTimestamp: number;
   phase: 'phase1' | 'phase2' | 'complete';
   transactionsFound: number;
   errorCount: number;
   lastError?: string;
-  // Recovery validation fields
-  expectedBalance?: number;  // Balance at last checkpoint (for validation)
-  wasmHeightAtCheckpoint?: number;  // WASM wallet height at last checkpoint
-  wasInterrupted?: boolean;  // Set to true if previous scan was interrupted
+  expectedBalance?: number;
+  wasmHeightAtCheckpoint?: number;
+  wasInterrupted?: boolean;
 }
 
 export interface ScanCheckpoint {
@@ -49,72 +42,178 @@ export interface ScanCheckpoint {
   lastCompletedScanId: string;
   lastCompletedHeight: number;
   lastCompletedTimestamp: number;
-  scannedChunks: number[];  // Cumulative from all successful scans
+  scannedChunks: number[];
   totalTransactionsFound: number;
   lastProcessedStakeReturnHeight?: number;
   lastPhase3Issue?: string;
   lastPhase3IssueTimestamp?: number;
+  lastCoverageManifest?: ScanCoverageManifest;
 }
 
 export interface ScanCompletionProof {
   scanSucceeded: boolean;
   matchedChunks?: number[];
   processedChunks?: number[];
+  expectedStartHeight?: number;
+  expectedEndHeight?: number;
+  chunkSize?: number;
+  spentIndexStart?: number;
+  spentIndexEnd?: number;
 }
 
 let journalDB: IDBDatabase | null = null;
+let journalOpenPromise: Promise<IDBDatabase> | null = null;
 let pendingJournalUpdates: Map<string, Partial<ScanJournalEntry>> = new Map();
 let checkpointFlushTimer: NodeJS.Timeout | null = null;
 let newChunksSinceLastFlush: number = 0;
+let emergencyFlushInFlight: Promise<void> | null = null;
+const flushRetryCounts: Map<string, number> = new Map();
+// Generous cap so a journal merely slow to become visible is never dropped; only a genuinely-gone journal (e.g. post forceCleanSlate) hits it.
+const MAX_FLUSH_RETRIES = 20;
 
-/**
- * Open the scan journal database
- */
-async function openJournalDB(): Promise<IDBDatabase> {
-  if (journalDB && journalDB.name) {
+// Re-merge an unpersisted update into the pending map, unioning chunk arrays so no chunk is lost.
+function requeuePendingUpdate(scanId: string, update: Partial<ScanJournalEntry>): void {
+  const existing = pendingJournalUpdates.get(scanId);
+  if (!existing) {
+    pendingJournalUpdates.set(scanId, {
+      scannedChunks: [...(update.scannedChunks || [])],
+      ingestedChunks: [...(update.ingestedChunks || [])],
+      matchedChunks: [...(update.matchedChunks || [])],
+      transactionsFound: update.transactionsFound || 0,
+    });
+    return;
+  }
+  const union = (a: number[] = [], b: number[] = []) => Array.from(new Set([...a, ...b]));
+  existing.scannedChunks = union(existing.scannedChunks, update.scannedChunks);
+  existing.ingestedChunks = union(existing.ingestedChunks, update.ingestedChunks);
+  existing.matchedChunks = union(existing.matchedChunks, update.matchedChunks);
+  existing.transactionsFound = (existing.transactionsFound || 0) + (update.transactionsFound || 0);
+}
+
+function isRecoverableIDBConnectionError(error: unknown): boolean {
+  const err = error as { name?: string; message?: string } | null;
+  const name = err?.name || '';
+  const message = String(err?.message || error || '').toLowerCase();
+
+  return (
+    name === 'InvalidStateError' ||
+    (name === 'UnknownError' && message.includes('connection')) ||
+    message.includes('database connection is closing') ||
+    message.includes('connection is closing') ||
+    message.includes('indexed database server lost')
+  );
+}
+
+function resetJournalDB(db?: IDBDatabase | null): void {
+  if (!db || journalDB === db) {
+    journalDB = null;
+  }
+  journalOpenPromise = null;
+}
+
+function attachJournalDBHandlers(db: IDBDatabase): void {
+  db.onclose = () => resetJournalDB(db);
+  db.onversionchange = () => {
+    resetJournalDB(db);
+    try {
+      db.close();
+    } catch {
+    }
+  };
+}
+
+async function openJournalDB(forceNew = false): Promise<IDBDatabase> {
+  if (forceNew && journalDB) {
+    try {
+      journalDB.close();
+    } catch {
+    }
+    resetJournalDB(journalDB);
+  }
+
+  if (!forceNew && journalDB) {
     return journalDB;
   }
 
-  return new Promise((resolve, reject) => {
+  if (!forceNew && journalOpenPromise) {
+    return journalOpenPromise;
+  }
+
+  const openPromise = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(SCAN_JOURNAL_DB_NAME, SCAN_JOURNAL_DB_VERSION);
 
     request.onerror = () => {
       void DEBUG && console.error('[ScanJournal] Failed to open database:', request.error);
+      resetJournalDB();
       reject(request.error);
+    };
+
+    // Reject when blocked by another tab's older-version connection; without this the open never settles and all journal writes hang.
+    request.onblocked = () => {
+      void DEBUG && debugWarn('[ScanJournal] Database open blocked by another connection');
+      resetJournalDB();
+      reject(new Error('Scan journal database open blocked by another tab'));
     };
 
     request.onsuccess = () => {
       journalDB = request.result;
+      attachJournalDBHandlers(journalDB);
       resolve(journalDB);
     };
 
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
 
-      // Journal store - active scan state
       if (!db.objectStoreNames.contains(JOURNAL_STORE)) {
         const journalStore = db.createObjectStore(JOURNAL_STORE, { keyPath: 'scanId' });
         journalStore.createIndex('walletAddress', 'walletAddress', { unique: false });
       }
 
-      // Checkpoint store - completed scan state
       if (!db.objectStoreNames.contains(CHECKPOINT_STORE)) {
         db.createObjectStore(CHECKPOINT_STORE, { keyPath: 'walletAddress' });
       }
     };
   });
+
+  const trackedPromise = openPromise.finally(() => {
+    if (journalOpenPromise === trackedPromise) {
+      journalOpenPromise = null;
+    }
+  });
+  journalOpenPromise = trackedPromise;
+
+  return journalOpenPromise;
 }
 
-/**
- * Start a new scan journal entry
- */
+async function openJournalTransaction(
+  storeNames: string | string[],
+  mode: IDBTransactionMode,
+  retryOnClosedConnection = true
+): Promise<IDBTransaction> {
+  const db = await openJournalDB();
+  try {
+    return db.transaction(storeNames, mode);
+  } catch (error) {
+    if (!retryOnClosedConnection || !isRecoverableIDBConnectionError(error)) {
+      throw error;
+    }
+
+    resetJournalDB(db);
+    const reopenedDB = await openJournalDB(true);
+    return reopenedDB.transaction(storeNames, mode);
+  }
+}
+
 export async function startScanJournal(
   scanId: string,
   walletAddress: string,
   startHeight: number,
   targetEndHeight: number
 ): Promise<ScanJournalEntry> {
-  const db = await openJournalDB();
+  reportTaskEvent('started', 'scan.journal', 'start', 'ScanJournal', {
+    scanRangeBlocks: Math.max(0, targetEndHeight - startHeight),
+  });
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readwrite');
 
   const entry: ScanJournalEntry = {
     scanId,
@@ -125,6 +224,7 @@ export async function startScanJournal(
     ingestedChunks: [],
     inProgressChunks: [],
     matchedChunks: [],
+    coverageManifest: undefined,
     lastUpdateTimestamp: Date.now(),
     phase: 'phase1',
     transactionsFound: 0,
@@ -133,26 +233,28 @@ export async function startScanJournal(
   };
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(JOURNAL_STORE, 'readwrite');
     const store = tx.objectStore(JOURNAL_STORE);
 
     const request = store.put(entry);
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(entry);
+    request.onerror = () => {
+      reportTaskEvent('failed', 'scan.journal', 'start_write', 'ScanJournal', {
+        reason: 'indexeddb_write_failed',
+      }, 'warn', request.error?.message || 'journal start write failed');
+      reject(request.error);
+    };
+    request.onsuccess = () => {
+      reportTaskEvent('completed', 'scan.journal', 'started', 'ScanJournal');
+      resolve(entry);
+    };
   });
 }
 
-/**
- * Record successfully scanned chunks (coalesced)
- * Chunks are batched and flushed periodically to reduce write overhead
- */
 export async function recordScannedChunks(
   scanId: string,
   chunkStartHeights: number[],
   matchedChunksOrHasMatches: number[] | boolean = false,
   transactionsFound: number = 0
 ): Promise<void> {
-  // Get or create pending update
   let pending = pendingJournalUpdates.get(scanId);
   if (!pending) {
     pending = {
@@ -167,7 +269,6 @@ export async function recordScannedChunks(
     ? matchedChunksOrHasMatches
     : (matchedChunksOrHasMatches ? chunkStartHeights : []);
 
-  // Add chunks to pending update
   for (const height of chunkStartHeights) {
     if (!pending.scannedChunks!.includes(height)) {
       pending.scannedChunks!.push(height);
@@ -182,27 +283,19 @@ export async function recordScannedChunks(
   }
   pending.transactionsFound = (pending.transactionsFound || 0) + transactionsFound;
 
-  // Schedule flush if not already scheduled
   if (!checkpointFlushTimer) {
     checkpointFlushTimer = setTimeout(() => flushPendingUpdates(), CHECKPOINT_INTERVAL_MS);
   }
 
-  // Force flush if we've accumulated enough chunks
   if (newChunksSinceLastFlush >= CHECKPOINT_CHUNK_THRESHOLD) {
     await flushPendingUpdates();
   }
 }
 
-/**
- * Record successfully ingested chunks (coalesced)
- * Tracks Phase 2 completion - chunks whose transactions have been ingested by WASM.
- * This is separate from scannedChunks (Phase 1) to allow recovery from Phase 2 failures.
- */
 export async function recordIngestedChunks(
   scanId: string,
   chunkStartHeights: number[]
 ): Promise<void> {
-  // Get or create pending update
   let pending = pendingJournalUpdates.get(scanId);
   if (!pending) {
     pending = {
@@ -214,12 +307,10 @@ export async function recordIngestedChunks(
     pendingJournalUpdates.set(scanId, pending);
   }
 
-  // Initialize ingestedChunks array if not present
   if (!pending.ingestedChunks) {
     pending.ingestedChunks = [];
   }
 
-  // Add chunks to pending update
   for (const height of chunkStartHeights) {
     if (!pending.ingestedChunks.includes(height)) {
       pending.ingestedChunks.push(height);
@@ -227,20 +318,15 @@ export async function recordIngestedChunks(
     }
   }
 
-  // Schedule flush if not already scheduled
   if (!checkpointFlushTimer) {
     checkpointFlushTimer = setTimeout(() => flushPendingUpdates(), CHECKPOINT_INTERVAL_MS);
   }
 
-  // Force flush if we've accumulated enough chunks
   if (newChunksSinceLastFlush >= CHECKPOINT_CHUNK_THRESHOLD) {
     await flushPendingUpdates();
   }
 }
 
-/**
- * Flush all pending journal updates to IndexedDB
- */
 export async function flushPendingUpdates(): Promise<void> {
   if (checkpointFlushTimer) {
     clearTimeout(checkpointFlushTimer);
@@ -250,34 +336,51 @@ export async function flushPendingUpdates(): Promise<void> {
   if (pendingJournalUpdates.size === 0) {
     return;
   }
+  const updateCount = pendingJournalUpdates.size;
+  reportTaskEvent('stage', 'scan.journal', 'flush_start', 'ScanJournal', {
+    count: updateCount,
+  });
 
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readwrite');
 
-  // Collect all updates before starting transaction
+  // Snapshot+remove flushed entries from the live map so concurrent record* calls accumulate into fresh entries instead of being wiped on completion.
   const updates: { scanId: string; update: Partial<ScanJournalEntry> }[] = [];
   pendingJournalUpdates.forEach((update, scanId) => {
     updates.push({ scanId, update });
   });
+  for (const { scanId } of updates) {
+    pendingJournalUpdates.delete(scanId);
+  }
+  newChunksSinceLastFlush = 0;
 
-  // Atomic transaction - only clear pending updates after tx.oncomplete confirms
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(JOURNAL_STORE, 'readwrite');
     const store = tx.objectStore(JOURNAL_STORE);
+    const unwritten: { scanId: string; update: Partial<ScanJournalEntry> }[] = [];
 
-    let completedCount = 0;
-    const totalCount = updates.length;
-
-    for (const { scanId, update } of updates) {
+    for (const item of updates) {
+      const { scanId, update } = item;
       const getRequest = store.get(scanId);
 
       getRequest.onsuccess = () => {
         const existing = getRequest.result as ScanJournalEntry | undefined;
         if (!existing) {
-          completedCount++;
+          // Journal not visible yet (race with startScanJournal): retry rather than drop chunks. Bounded so a permanently-absent journal can't leak forever.
+          const attempts = (flushRetryCounts.get(scanId) || 0) + 1;
+          if (attempts <= MAX_FLUSH_RETRIES) {
+            flushRetryCounts.set(scanId, attempts);
+            unwritten.push(item);
+          } else {
+            flushRetryCounts.delete(scanId);
+            reportTaskEvent('failed', 'scan.journal', 'flush_orphan_dropped', 'ScanJournal', {
+              scannedChunkCount: (item.update.scannedChunks || []).length,
+              ingestedChunkCount: (item.update.ingestedChunks || []).length,
+            }, 'warn', `Dropped pending journal update for absent journal ${scanId}`);
+          }
           return;
         }
 
-        // Merge updates
+        flushRetryCounts.delete(scanId);
+
         const mergedScannedChunks = new Set([
           ...existing.scannedChunks,
           ...(update.scannedChunks || [])
@@ -301,46 +404,99 @@ export async function flushPendingUpdates(): Promise<void> {
         };
 
         store.put(updatedEntry);
-        completedCount++;
       };
 
       getRequest.onerror = () => {
-        completedCount++;
+        unwritten.push(item);
       };
     }
 
     tx.oncomplete = () => {
-      // Only clear pending updates AFTER IndexedDB confirms the write
-      pendingJournalUpdates.clear();
-      newChunksSinceLastFlush = 0;
+      for (const item of unwritten) {
+        requeuePendingUpdate(item.scanId, item.update);
+      }
+      reportTaskEvent('completed', 'scan.journal', 'flush_completed', 'ScanJournal', {
+        count: updateCount,
+      });
       resolve();
     };
 
     tx.onerror = () => {
-      // On error, do NOT clear - the updates will be retried on next flush
+      for (const item of updates) {
+        requeuePendingUpdate(item.scanId, item.update);
+      }
+      reportTaskEvent('failed', 'scan.journal', 'flush_failed', 'ScanJournal', {
+        count: updateCount,
+        reason: 'indexeddb_write_failed',
+      }, 'warn', tx.error?.message || 'journal flush failed');
       void DEBUG && console.error('[ScanJournal] Failed to flush pending updates:', tx.error);
       reject(tx.error);
     };
   });
 }
 
-/**
- * Complete a scan and update the checkpoint
- */
+function flushPendingUpdatesBestEffort(reason: string): void {
+  if (pendingJournalUpdates.size === 0 || emergencyFlushInFlight) {
+    return;
+  }
+
+  reportTaskEvent('stage', 'scan.journal', 'emergency_flush', 'ScanJournal', {
+    reason,
+    count: pendingJournalUpdates.size,
+  }, 'warn');
+
+  emergencyFlushInFlight = flushPendingUpdates()
+    .catch((error) => {
+      reportTaskEvent('failed', 'scan.journal', 'emergency_flush_failed', 'ScanJournal', {
+        reason,
+      }, 'warn', error instanceof Error ? error.message : String(error));
+    })
+    .finally(() => {
+      emergencyFlushInFlight = null;
+    });
+}
+
+function installScanJournalLifecycleFlush(): void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return;
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flushPendingUpdatesBestEffort('visibility_hidden');
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    flushPendingUpdatesBestEffort('pagehide');
+  });
+
+  document.addEventListener('freeze', () => {
+    flushPendingUpdatesBestEffort('freeze');
+  });
+}
+
+installScanJournalLifecycleFlush();
+
 export async function completeScanJournal(
   scanId: string,
   finalHeight: number,
   proof?: ScanCompletionProof
 ): Promise<void> {
-  // Flush any pending updates first
+  reportTaskEvent('stage', 'scan.journal', 'complete_start', 'ScanJournal');
   await flushPendingUpdates();
 
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction([JOURNAL_STORE, CHECKPOINT_STORE], 'readwrite');
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([JOURNAL_STORE, CHECKPOINT_STORE], 'readwrite');
     const journalStore = tx.objectStore(JOURNAL_STORE);
     const checkpointStore = tx.objectStore(CHECKPOINT_STORE);
+    let completionProofError: Error | null = null;
+
+    const abortCompletion = (reason: string) => {
+      completionProofError = new Error(`Scan completion proof failed: ${reason}`);
+      tx.abort();
+    };
 
     const getJournalRequest = journalStore.get(scanId);
 
@@ -351,34 +507,48 @@ export async function completeScanJournal(
         return;
       }
 
-      if (proof && !proof.scanSucceeded) {
-        tx.abort();
-        return;
-      }
-
       if ((journal.inProgressChunks || []).length > 0) {
-        tx.abort();
+        abortCompletion(`chunks still in progress: ${(journal.inProgressChunks || []).slice(0, 10).join(', ')}`);
         return;
       }
 
-      const requiredMatchedChunks = proof?.matchedChunks || [];
-      const processedChunkSet = new Set<number>([
-        ...(proof?.processedChunks || []),
-        ...(journal.ingestedChunks || []),
-      ]);
-
-      const missingMatchedChunks = requiredMatchedChunks.filter((chunk) => !processedChunkSet.has(chunk));
-      if (missingMatchedChunks.length > 0) {
-        tx.abort();
+      // A journal owed any deferred rescan cannot be complete, even if the coverage proof
+      // would otherwise pass — those chunks failed and must be retried on a later pass.
+      if ((journal.needsRescanChunks || []).length > 0) {
+        abortCompletion(`chunks awaiting rescan: ${(journal.needsRescanChunks || []).slice(0, 10).join(', ')}`);
         return;
       }
 
-      // Update journal as complete
+      if (proof) {
+        const coverageProof = buildScanCoverageProof({
+          scanSucceeded: proof.scanSucceeded,
+          startHeight: proof.expectedStartHeight ?? journal.startHeight,
+          endHeight: proof.expectedEndHeight ?? journal.targetEndHeight ?? finalHeight,
+          finalHeight,
+          chunkSize: proof.chunkSize ?? 1000,
+          scannedChunks: journal.scannedChunks || [],
+          matchedChunks: proof.matchedChunks ?? journal.matchedChunks ?? [],
+          processedChunks: proof.processedChunks || [],
+          ingestedChunks: journal.ingestedChunks || [],
+          spentIndexStart: proof.spentIndexStart,
+          spentIndexEnd: proof.spentIndexEnd,
+        });
+
+        if (!coverageProof.ok) {
+          abortCompletion(coverageProof.reason);
+          return;
+        }
+
+        journal.coverageManifest = coverageProof.manifest;
+      } else {
+        abortCompletion('missing scan completion proof');
+        return;
+      }
+
       journal.phase = 'complete';
       journal.lastUpdateTimestamp = Date.now();
       journalStore.put(journal);
 
-      // Update checkpoint
       const getCheckpointRequest = checkpointStore.get(journal.walletAddress);
 
       getCheckpointRequest.onsuccess = () => {
@@ -389,41 +559,55 @@ export async function completeScanJournal(
           ...journal.scannedChunks
         ]);
 
+        // Never regress the durable checkpoint height: a stale/second-tab completion must not lower it below what was committed.
+        const safeExistingHeight = Number.isFinite(existing?.lastCompletedHeight)
+          ? Math.max(0, existing!.lastCompletedHeight)
+          : 0;
+        const nextCompletedHeight = Math.max(safeExistingHeight, Math.max(0, finalHeight));
+
         const checkpoint: ScanCheckpoint = {
           walletAddress: journal.walletAddress,
           lastCompletedScanId: scanId,
-          lastCompletedHeight: finalHeight,
+          lastCompletedHeight: nextCompletedHeight,
           lastCompletedTimestamp: Date.now(),
           scannedChunks: Array.from(mergedScannedChunks),
           totalTransactionsFound: (existing?.totalTransactionsFound || 0) + journal.transactionsFound,
           lastProcessedStakeReturnHeight: existing?.lastProcessedStakeReturnHeight || 0,
           lastPhase3Issue: existing?.lastPhase3Issue,
           lastPhase3IssueTimestamp: existing?.lastPhase3IssueTimestamp,
+          lastCoverageManifest: journal.coverageManifest,
         };
 
         checkpointStore.put(checkpoint);
       };
     };
 
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      reportTaskEvent('completed', 'scan.journal', 'complete', 'ScanJournal', {
+        finalRestoreHeight: finalHeight,
+      });
+      resolve();
+    };
     tx.onerror = () => {
+      reportTaskEvent('failed', 'scan.journal', 'complete_failed', 'ScanJournal', {
+        reason: 'indexeddb_write_failed',
+      }, 'warn', tx.error?.message || 'journal complete failed');
       void DEBUG && console.error('[ScanJournal] Failed to complete scan journal:', tx.error);
       reject(tx.error);
     };
     tx.onabort = () => {
-      reject(tx.error || new Error('Scan completion proof failed'));
+      reportTaskEvent('failed', 'scan.journal', 'complete_aborted', 'ScanJournal', {
+        reason: 'completion_proof_failed',
+      }, 'warn', tx.error?.message || 'scan completion proof failed');
+      reject(completionProofError || tx.error || new Error('Scan completion proof failed'));
     };
   });
 }
 
-/**
- * Get the most recent incomplete scan journal for a wallet
- */
 export async function getIncompleteJournal(walletAddress: string): Promise<ScanJournalEntry | null> {
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readonly');
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(JOURNAL_STORE, 'readonly');
     const store = tx.objectStore(JOURNAL_STORE);
     const index = store.index('walletAddress');
 
@@ -432,7 +616,6 @@ export async function getIncompleteJournal(walletAddress: string): Promise<ScanJ
     request.onsuccess = () => {
       const entries = request.result as ScanJournalEntry[];
 
-      // Find the most recent incomplete scan
       const incomplete = entries
         .filter(e => e.phase !== 'complete')
         .sort((a, b) => b.lastUpdateTimestamp - a.lastUpdateTimestamp);
@@ -447,14 +630,10 @@ export async function getIncompleteJournal(walletAddress: string): Promise<ScanJ
   });
 }
 
-/**
- * Get the checkpoint for a wallet
- */
 export async function getCheckpoint(walletAddress: string): Promise<ScanCheckpoint | null> {
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(CHECKPOINT_STORE, 'readonly');
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(CHECKPOINT_STORE, 'readonly');
     const store = tx.objectStore(CHECKPOINT_STORE);
 
     const request = store.get(walletAddress);
@@ -470,10 +649,6 @@ export async function getCheckpoint(walletAddress: string): Promise<ScanCheckpoi
   });
 }
 
-/**
- * Detect gaps in scanned chunks
- * Returns array of chunk start heights that need to be rescanned
- */
 export function detectGaps(
   scannedChunks: number[],
   startHeight: number,
@@ -482,7 +657,6 @@ export function detectGaps(
 ): number[] {
   const gaps: number[] = [];
 
-  // Generate expected chunks
   const alignedStart = Math.floor(startHeight / chunkSize) * chunkSize;
   const scannedSet = new Set(scannedChunks);
 
@@ -495,10 +669,6 @@ export function detectGaps(
   return gaps;
 }
 
-/**
- * Validate and resume an interrupted scan
- * Returns information needed to safely resume
- */
 export async function validateAndResume(
   walletAddress: string,
   targetEndHeight: number,
@@ -517,7 +687,6 @@ export async function validateAndResume(
       getCheckpoint(walletAddress)
     ]);
 
-    // No previous scan data - need full scan
     if (!checkpoint && !incompleteJournal) {
       return {
         canResume: false,
@@ -528,14 +697,12 @@ export async function validateAndResume(
       };
     }
 
-    // Check if there's an incomplete scan that was interrupted
     if (incompleteJournal) {
       const timeSinceUpdate = Date.now() - incompleteJournal.lastUpdateTimestamp;
-      const staleScanThreshold = 24 * 60 * 60 * 1000; // 24 hours
+      const staleScanThreshold = 24 * 60 * 60 * 1000;
 
-      // If the scan is too old, don't try to resume - start fresh
       if (timeSinceUpdate > staleScanThreshold) {
-        void DEBUG && console.warn(`[ScanJournal] Incomplete scan is ${Math.round(timeSinceUpdate / 3600000)}h old - starting fresh`);
+        void DEBUG && debugWarn(`[ScanJournal] Incomplete scan is ${Math.round(timeSinceUpdate / 3600000)}h old - starting fresh`);
         return {
           canResume: false,
           gaps: [],
@@ -545,29 +712,43 @@ export async function validateAndResume(
         };
       }
 
-      // Detect gaps in the incomplete scan
+      // In-progress chunks may be partial: treat as un-scanned, never as a resume floor.
+      const inProgressSet = new Set(incompleteJournal.inProgressChunks || []);
+      const effectiveScanned = (incompleteJournal.scannedChunks || []).filter(
+        (h) => Number.isFinite(h) && !inProgressSet.has(h)
+      );
+
       const gaps = detectGaps(
-        incompleteJournal.scannedChunks,
+        effectiveScanned,
         incompleteJournal.startHeight,
         incompleteJournal.targetEndHeight,
         chunkSize
       );
 
       if (gaps.length > 0) {
-        void DEBUG && console.warn(`[ScanJournal] Found ${gaps.length} gaps in interrupted scan ${incompleteJournal.scanId}`);
+        void DEBUG && debugWarn(`[ScanJournal] Found ${gaps.length} gaps in interrupted scan ${incompleteJournal.scanId}`);
       }
+
+      // Resume from the FIRST hole so no earlier gap is silently skipped; using max(scannedChunks) would permanently miss blocks in earlier gaps.
+      const alignedStart = Math.floor(
+        Math.max(0, incompleteJournal.startHeight) / chunkSize
+      ) * chunkSize;
+      const lastCompletedHeight = gaps.length > 0
+        ? Math.min(...gaps)
+        : (effectiveScanned.length > 0
+            ? Math.min(incompleteJournal.targetEndHeight, Math.max(alignedStart, Math.max(...effectiveScanned) + chunkSize))
+            : alignedStart);
 
       return {
         canResume: true,
         resumeFromScanId: incompleteJournal.scanId,
         gaps,
-        lastCompletedHeight: Math.max(...incompleteJournal.scannedChunks, 0),
+        lastCompletedHeight,
         needsFullRescan: false,
         reason: gaps.length > 0 ? `${gaps.length} chunks need rescanning` : 'Resuming from last position'
       };
     }
 
-    // Have checkpoint but no incomplete scan - check if we need new blocks
     if (checkpoint) {
       const lastHeight = checkpoint.lastCompletedHeight;
 
@@ -581,7 +762,6 @@ export async function validateAndResume(
         };
       }
 
-      // Need to scan new blocks from checkpoint
       return {
         canResume: true,
         gaps: [],
@@ -611,14 +791,10 @@ export async function validateAndResume(
   }
 }
 
-/**
- * Record a scan error
- */
 export async function recordScanError(scanId: string, error: string): Promise<void> {
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readwrite');
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(JOURNAL_STORE, 'readwrite');
     const store = tx.objectStore(JOURNAL_STORE);
 
     const getRequest = store.get(scanId);
@@ -645,15 +821,11 @@ export async function recordScanError(scanId: string, error: string): Promise<vo
   });
 }
 
-/**
- * Clear old journal entries (cleanup)
- */
 export async function cleanupOldJournals(walletAddress: string, keepDays: number = 7): Promise<void> {
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readwrite');
   const cutoffTime = Date.now() - (keepDays * 24 * 60 * 60 * 1000);
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(JOURNAL_STORE, 'readwrite');
     const store = tx.objectStore(JOURNAL_STORE);
     const index = store.index('walletAddress');
 
@@ -677,16 +849,11 @@ export async function cleanupOldJournals(walletAddress: string, keepDays: number
   });
 }
 
-/**
- * Mark chunks as in-progress BEFORE they start processing.
- * This is critical for recovery - any chunks left in inProgressChunks after
- * a crash/interruption MUST be rescanned (their results may be partial).
- */
+// Mark chunks in-progress before processing; any left here after a crash MUST be rescanned (results may be partial).
 export async function markChunksInProgress(scanId: string, chunkStartHeights: number[]): Promise<void> {
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readwrite');
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(JOURNAL_STORE, 'readwrite');
     const store = tx.objectStore(JOURNAL_STORE);
 
     const getRequest = store.get(scanId);
@@ -698,7 +865,6 @@ export async function markChunksInProgress(scanId: string, chunkStartHeights: nu
         return;
       }
 
-      // Add to in-progress (may have duplicates, that's ok)
       const inProgressSet = new Set([
         ...(entry.inProgressChunks || []),
         ...chunkStartHeights
@@ -717,20 +883,15 @@ export async function markChunksInProgress(scanId: string, chunkStartHeights: nu
   });
 }
 
-/**
- * Mark chunks as successfully completed.
- * Moves them from inProgressChunks to scannedChunks.
- * This should be called AFTER results are fully processed and persisted.
- */
+// Move chunks from inProgressChunks to scannedChunks; call only after results are fully processed and persisted.
 export async function markChunksCompleted(
   scanId: string,
   chunkStartHeights: number[],
   hasMatches: boolean = false
 ): Promise<void> {
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readwrite');
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(JOURNAL_STORE, 'readwrite');
     const store = tx.objectStore(JOURNAL_STORE);
 
     const getRequest = store.get(scanId);
@@ -744,14 +905,14 @@ export async function markChunksCompleted(
 
       const completedSet = new Set(chunkStartHeights);
 
-      // Remove from in-progress
       entry.inProgressChunks = (entry.inProgressChunks || []).filter(h => !completedSet.has(h));
+      if (entry.needsRescanChunks && entry.needsRescanChunks.length > 0) {
+        entry.needsRescanChunks = entry.needsRescanChunks.filter(h => !completedSet.has(h));
+      }
 
-      // Add to scanned
       const scannedSet = new Set([...entry.scannedChunks, ...chunkStartHeights]);
       entry.scannedChunks = Array.from(scannedSet);
 
-      // Add to matched if has matches
       if (hasMatches) {
         const matchedSet = new Set([...entry.matchedChunks, ...chunkStartHeights]);
         entry.matchedChunks = Array.from(matchedSet);
@@ -769,10 +930,90 @@ export async function markChunksCompleted(
   });
 }
 
-/**
- * Check if a previous scan was interrupted (has in-progress chunks).
- * If so, those chunks' results may be partial/corrupted.
- */
+// Mark chunks that failed after in-run retries so a later resume re-targets exactly them.
+// Increments a per-chunk attempt counter (for backoff/give-up) and stamps a retry time.
+// Returns the highest attempt count among the recorded chunks, so callers can detect when
+// a chunk has exceeded the deferred-rescan cap.
+export async function recordChunksNeedRescan(
+  scanId: string,
+  chunkStartHeights: number[],
+  error?: string
+): Promise<number> {
+  if (chunkStartHeights.length === 0) return 0;
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readwrite');
+
+  let maxAttempts = 0;
+  return new Promise((resolve, reject) => {
+    const store = tx.objectStore(JOURNAL_STORE);
+    const getRequest = store.get(scanId);
+
+    getRequest.onsuccess = () => {
+      const entry = getRequest.result as ScanJournalEntry | undefined;
+      if (!entry) {
+        resolve(0);
+        return;
+      }
+
+      const needsSet = new Set([...(entry.needsRescanChunks || []), ...chunkStartHeights]);
+      entry.needsRescanChunks = Array.from(needsSet);
+
+      // A chunk owed a rescan is, by definition, not yet validly scanned: drop it from
+      // scannedChunks so the coverage proof and computeChunksToScan both see it as missing.
+      const failedSet = new Set(chunkStartHeights);
+      entry.scannedChunks = (entry.scannedChunks || []).filter(h => !failedSet.has(h));
+      entry.inProgressChunks = (entry.inProgressChunks || []).filter(h => !failedSet.has(h));
+
+      const attempts = { ...(entry.rescanAttempts || {}) };
+      for (const h of chunkStartHeights) {
+        attempts[h] = (attempts[h] || 0) + 1;
+        if (attempts[h] > maxAttempts) maxAttempts = attempts[h];
+      }
+      entry.rescanAttempts = attempts;
+
+      if (error) {
+        entry.lastError = error;
+      }
+      entry.lastUpdateTimestamp = Date.now();
+      store.put(entry);
+    };
+
+    tx.oncomplete = () => resolve(maxAttempts);
+    tx.onerror = () => {
+      void DEBUG && console.error('[ScanJournal] Failed to record chunks needing rescan:', tx.error);
+      reject(tx.error);
+    };
+  });
+}
+
+// Clear the deferred-rescan flag for chunks that have since been successfully scanned.
+export async function clearChunkRescanFlag(scanId: string, chunkStartHeights: number[]): Promise<void> {
+  if (chunkStartHeights.length === 0) return;
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readwrite');
+
+  return new Promise((resolve, reject) => {
+    const store = tx.objectStore(JOURNAL_STORE);
+    const getRequest = store.get(scanId);
+
+    getRequest.onsuccess = () => {
+      const entry = getRequest.result as ScanJournalEntry | undefined;
+      if (!entry || !entry.needsRescanChunks || entry.needsRescanChunks.length === 0) {
+        resolve();
+        return;
+      }
+      const clearSet = new Set(chunkStartHeights);
+      entry.needsRescanChunks = entry.needsRescanChunks.filter(h => !clearSet.has(h));
+      entry.lastUpdateTimestamp = Date.now();
+      store.put(entry);
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => {
+      void DEBUG && console.error('[ScanJournal] Failed to clear chunk rescan flag:', tx.error);
+      reject(tx.error);
+    };
+  });
+}
+
 export async function wasInterrupted(walletAddress: string): Promise<{
   interrupted: boolean;
   inProgressChunks: number[];
@@ -787,7 +1028,7 @@ export async function wasInterrupted(walletAddress: string): Promise<{
   const inProgress = journal.inProgressChunks || [];
 
   if (inProgress.length > 0) {
-    void DEBUG && console.warn(`[ScanJournal] Found ${inProgress.length} chunks that were in-progress when interrupted`);
+    void DEBUG && debugWarn(`[ScanJournal] Found ${inProgress.length} chunks that were in-progress when interrupted`);
     return {
       interrupted: true,
       inProgressChunks: inProgress,
@@ -795,7 +1036,6 @@ export async function wasInterrupted(walletAddress: string): Promise<{
     };
   }
 
-  // Check if journal exists but phase is not complete - indicates interruption
   if (journal.phase !== 'complete') {
     return {
       interrupted: true,
@@ -807,22 +1047,16 @@ export async function wasInterrupted(walletAddress: string): Promise<{
   return { interrupted: false, inProgressChunks: [] };
 }
 
-/**
- * Force a clean slate - clear all journal and checkpoint data for a wallet.
- * Use this when corruption is detected and we need to start completely fresh.
- */
 export async function forceCleanSlate(walletAddress: string): Promise<void> {
-  void DEBUG && console.warn(`[ScanJournal] Forcing clean slate for wallet ${walletAddress.substring(0, 16)}...`);
+  void DEBUG && debugWarn(`[ScanJournal] Forcing clean slate for wallet ${walletAddress.substring(0, 16)}...`);
 
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction([JOURNAL_STORE, CHECKPOINT_STORE], 'readwrite');
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([JOURNAL_STORE, CHECKPOINT_STORE], 'readwrite');
     const journalStore = tx.objectStore(JOURNAL_STORE);
     const checkpointStore = tx.objectStore(CHECKPOINT_STORE);
     const index = journalStore.index('walletAddress');
 
-    // Delete all journals for this wallet
     const request = index.getAll(walletAddress);
     request.onsuccess = () => {
       const entries = request.result as ScanJournalEntry[];
@@ -831,11 +1065,10 @@ export async function forceCleanSlate(walletAddress: string): Promise<void> {
       }
     };
 
-    // Delete checkpoint
     checkpointStore.delete(walletAddress);
 
     tx.oncomplete = () => {
-      console.log('[ScanJournal] Clean slate complete - all scan state cleared');
+      debugLog('[ScanJournal] Clean slate complete - all scan state cleared');
       resolve();
     };
     tx.onerror = () => {
@@ -845,20 +1078,10 @@ export async function forceCleanSlate(walletAddress: string): Promise<void> {
   });
 }
 
-/**
- * Validate recovery is safe to proceed with incremental scan.
- * Returns false (forcing full rescan) if ANY of these conditions are true:
- * 1. Previous scan has in-progress chunks (interrupted mid-operation)
- * 2. Too many gaps detected (> 5% of chunks missing, only when >= 20 chunks in range)
- * 3. Journal timestamp is too old (> 24 hours)
- * 4. Error count in journal is high (> 3 errors)
- *
- * Returns action='rescan_gaps' for small numbers of gaps (<= 50) instead of full_rescan.
- * This prevents vault restore + tab suspend from triggering unnecessary full rescans.
- *
- * FIX v5.52.0: Small gap counts now use rescan_gaps before percentage threshold check.
- * This is CONSERVATIVE by design - when in doubt, force full rescan.
- */
+// Recovery never escalates to a full rescan for coverage reasons: interrupted/in-progress
+// chunks, failed chunks awaiting retry, and gaps of ANY size all resolve to a precise
+// rescan_gaps over exactly the missing chunks. full_rescan is reserved for genuine state
+// corruption (signalled by the caller via worker/WASM invalid, or the catch block below).
 export async function isRecoverySafe(
   walletAddress: string,
   targetEndHeight: number,
@@ -877,85 +1100,36 @@ export async function isRecoverySafe(
       wasInterrupted(walletAddress)
     ]);
 
-    // Check 1: Was there an interruption with in-progress chunks?
-    if (interruptCheck.interrupted && interruptCheck.inProgressChunks.length > 0) {
-      return {
-        safe: false,
-        reason: `Interruption detected: ${interruptCheck.inProgressChunks.length} chunks were processing when interrupted`,
-        action: 'full_rescan',
-        inProgressChunks: interruptCheck.inProgressChunks
-      };
-    }
-
-    // Check 2: Is the journal too old?
-    // NOTE: Removed aggressive 24-hour staleness check. Journal age alone doesn't indicate
-    // corruption - blocks scanned yesterday are still valid today. Only check for actual
-    // data integrity issues (errors, gaps) rather than arbitrary time limits.
-    // This was causing unnecessary full rescans on mobile when users didn't open the app daily.
-
-    // Check 3: Too many errors?
-    if (journal && journal.errorCount > 3) {
-      return {
-        safe: false,
-        reason: `Journal has ${journal.errorCount} errors recorded - state may be corrupted`,
-        action: 'full_rescan'
-      };
-    }
-
-    // Check 4: Gap analysis
-    // IMPORTANT: Only check for gaps within ranges that were SUPPOSED to be scanned.
-    // - Checkpoint represents completed baseline (from vault restore or prior scans)
-    // - Journal represents current incomplete scan's intended range
-    // - New blocks beyond checkpoint are NOT gaps - they're just new blocks to scan
-    
+    // Gaps are only counted within the journal's intended range; new blocks beyond the checkpoint are not gaps.
     const checkpointHeight = checkpoint?.lastCompletedHeight || 0;
-    const mergedScannedChunks = new Set([
+    const mergedScannedChunks = Array.from(new Set([
       ...(checkpoint?.scannedChunks || []),
       ...(journal?.scannedChunks || [])
-    ]);
-    const scannedChunks = Array.from(mergedScannedChunks);
-    
-    // Only check for gaps if there's an incomplete journal with a defined scan range
-    // Gaps are ONLY within the journal's intended range, not beyond checkpoint
-    let gaps: number[] = [];
-    let gapCheckRangeEnd = checkpointHeight;  // Default: no gaps possible beyond checkpoint
-    
+    ]));
+
     if (journal && journal.targetEndHeight > checkpointHeight) {
-      // Journal was scanning from startHeight to targetEndHeight
-      // Only check for gaps in that range (not beyond what journal intended to scan)
-      gapCheckRangeEnd = journal.targetEndHeight;
-      gaps = detectGaps(scannedChunks, journal.startHeight, journal.targetEndHeight, chunkSize);
-      
-      const totalChunks = Math.ceil((journal.targetEndHeight - journal.startHeight) / chunkSize);
-      const gapPercentage = totalChunks > 0 ? (gaps.length / totalChunks) * 100 : 0;
-      
-      // FIX v5.52.0: Check for small gap counts BEFORE percentage threshold
-      // When scan range is small (e.g., 1-10 chunks after vault restore), even 1 missing
-      // chunk = high percentage (10-100%). This was incorrectly triggering full rescans.
-      // Small numbers of gaps should use rescan_gaps, not full_rescan.
-      if (gaps.length > 0 && gaps.length <= 50) {
+      // In-progress (mid-flight at interruption) and needs-rescan (failed, awaiting retry)
+      // chunks both count as not-done, so they fold into the precise to-scan set.
+      const gaps = computeChunksToScan({
+        startHeight: journal.startHeight,
+        endHeight: journal.targetEndHeight,
+        chunkSize,
+        scannedChunks: mergedScannedChunks,
+        inProgressChunks: journal.inProgressChunks || [],
+        needsRescanChunks: journal.needsRescanChunks || [],
+      });
+
+      if (gaps.length > 0) {
         return {
           safe: true,
-          reason: `${gaps.length} gaps detected in scan range - will rescan specific chunks`,
+          reason: `${gaps.length} chunk(s) need (re)scanning - will rescan exactly those`,
           action: 'rescan_gaps',
-          gaps
-        };
-      }
-      
-      // Only apply percentage threshold when there's a significant number of total chunks
-      // This prevents small scan ranges (common after vault restore) from triggering full rescan
-      const MIN_CHUNKS_FOR_PERCENTAGE_CHECK = 20;
-      if (totalChunks >= MIN_CHUNKS_FOR_PERCENTAGE_CHECK && gapPercentage > 5) {
-        return {
-          safe: false,
-          reason: `Too many gaps in scan range: ${gaps.length} chunks missing (${gapPercentage.toFixed(1)}% of ${journal.startHeight}-${journal.targetEndHeight})`,
-          action: 'full_rescan',
-          gaps
+          gaps,
+          inProgressChunks: interruptCheck.inProgressChunks,
         };
       }
     }
 
-    // All checks passed
     return {
       safe: true,
       reason: 'Recovery validation passed',
@@ -963,7 +1137,7 @@ export async function isRecoverySafe(
     };
 
   } catch (error) {
-    // Error during validation - force full rescan to be safe
+    // A genuinely unreadable journal is the only coverage-related reason to start clean.
     return {
       safe: false,
       reason: `Validation error: ${error}`,
@@ -972,19 +1146,14 @@ export async function isRecoverySafe(
   }
 }
 
-/**
- * Save balance checkpoint for validation on recovery.
- * Call this periodically during scan to enable balance consistency checks.
- */
 export async function saveBalanceCheckpoint(
   scanId: string,
   balance: number,
   wasmHeight: number
 ): Promise<void> {
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(JOURNAL_STORE, 'readwrite');
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(JOURNAL_STORE, 'readwrite');
     const store = tx.objectStore(JOURNAL_STORE);
 
     const getRequest = store.get(scanId);
@@ -1008,6 +1177,53 @@ export async function saveBalanceCheckpoint(
   });
 }
 
+export async function pruneCheckpointCoverageFromHeight(
+  walletAddress: string,
+  fromHeight: number,
+  chunkSize: number = 1000
+): Promise<void> {
+  if (!walletAddress) return;
+
+  const alignedHeight = Math.max(0, Math.floor(fromHeight / chunkSize) * chunkSize);
+  const tx = await openJournalTransaction(CHECKPOINT_STORE, 'readwrite');
+
+  return new Promise((resolve, reject) => {
+    const store = tx.objectStore(CHECKPOINT_STORE);
+    const getRequest = store.get(walletAddress);
+
+    getRequest.onsuccess = () => {
+      const checkpoint = getRequest.result as ScanCheckpoint | undefined;
+      if (!checkpoint) {
+        resolve();
+        return;
+      }
+
+      const scannedChunks = (checkpoint.scannedChunks || []).filter((chunk) => chunk < alignedHeight);
+      const lastCoverageManifest = checkpoint.lastCoverageManifest
+        ? {
+            ...checkpoint.lastCoverageManifest,
+            endHeight: Math.min(checkpoint.lastCoverageManifest.endHeight, alignedHeight),
+            expectedChunks: checkpoint.lastCoverageManifest.expectedChunks.filter((chunk) => chunk < alignedHeight),
+            scannedChunks: checkpoint.lastCoverageManifest.scannedChunks.filter((chunk) => chunk < alignedHeight),
+            matchedChunks: checkpoint.lastCoverageManifest.matchedChunks.filter((chunk) => chunk < alignedHeight),
+            ingestedChunks: checkpoint.lastCoverageManifest.ingestedChunks.filter((chunk) => chunk < alignedHeight),
+          }
+        : undefined;
+
+      store.put({
+        ...checkpoint,
+        lastCompletedHeight: Math.min(checkpoint.lastCompletedHeight, alignedHeight),
+        scannedChunks,
+        lastCoverageManifest,
+      } as ScanCheckpoint);
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Failed to prune checkpoint coverage'));
+  });
+}
+
 export async function saveCheckpointMetadata(
   walletAddress: string,
   metadata: Partial<
@@ -1017,10 +1233,9 @@ export async function saveCheckpointMetadata(
     >
   >
 ): Promise<void> {
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(CHECKPOINT_STORE, 'readwrite');
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(CHECKPOINT_STORE, 'readwrite');
     const store = tx.objectStore(CHECKPOINT_STORE);
     const getRequest = store.get(walletAddress);
 
@@ -1045,11 +1260,7 @@ export async function saveCheckpointMetadata(
   });
 }
 
-/**
- * Populate checkpoint from vault file restore.
- * Creates a checkpoint showing all chunks up to the given height are already scanned.
- * This prevents gap detection from triggering a full rescan after vault restore.
- */
+// Mark all chunks up to scannedHeight as already scanned so gap detection won't trigger a full rescan after vault restore.
 export async function populateCheckpointFromVaultRestore(
   walletAddress: string,
   scannedHeight: number,
@@ -1059,28 +1270,53 @@ export async function populateCheckpointFromVaultRestore(
     return;
   }
 
-  const db = await openJournalDB();
+  const tx = await openJournalTransaction(CHECKPOINT_STORE, 'readwrite');
 
-  // Generate array of all chunk start heights from 0 to scannedHeight
-  const scannedChunks: number[] = [];
+  const restoreChunks: number[] = [];
   for (let h = 0; h < scannedHeight; h += chunkSize) {
-    scannedChunks.push(h);
+    restoreChunks.push(h);
   }
 
-  const checkpoint: ScanCheckpoint = {
-    walletAddress,
-    lastCompletedScanId: `vault_restore_${Date.now()}`,
-    lastCompletedHeight: scannedHeight,
-    lastCompletedTimestamp: Date.now(),
-    scannedChunks,
-    totalTransactionsFound: 0  // Unknown from vault, but not critical
-  };
-
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(CHECKPOINT_STORE, 'readwrite');
     const store = tx.objectStore(CHECKPOINT_STORE);
-    store.put(checkpoint);
+    const getRequest = store.get(walletAddress);
+
+    getRequest.onsuccess = () => {
+      const existing = getRequest.result as ScanCheckpoint | undefined;
+      const existingHeight = Number.isFinite(existing?.lastCompletedHeight)
+        ? Math.max(0, existing!.lastCompletedHeight)
+        : 0;
+
+      // Never regress an already-higher checkpoint: restoring an older snapshot must not wipe scan progress beyond it.
+      const mergedChunks = new Set([
+        ...(existing?.scannedChunks || []),
+        ...restoreChunks,
+      ]);
+
+      // Drop a manifest we extend beyond, else a later coverage check could read a stale (short) manifest and wrongly judge the wallet synced.
+      const keepManifest = existingHeight >= scannedHeight;
+
+      const checkpoint: ScanCheckpoint = {
+        walletAddress,
+        lastCompletedScanId: existingHeight > scannedHeight
+          ? (existing?.lastCompletedScanId || `vault_restore_${Date.now()}`)
+          : `vault_restore_${Date.now()}`,
+        lastCompletedHeight: Math.max(existingHeight, scannedHeight),
+        lastCompletedTimestamp: Date.now(),
+        scannedChunks: Array.from(mergedChunks),
+        totalTransactionsFound: existing?.totalTransactionsFound || 0,
+        lastProcessedStakeReturnHeight: existing?.lastProcessedStakeReturnHeight,
+        lastPhase3Issue: existing?.lastPhase3Issue,
+        lastPhase3IssueTimestamp: existing?.lastPhase3IssueTimestamp,
+        lastCoverageManifest: keepManifest ? existing?.lastCoverageManifest : undefined,
+      };
+
+      store.put(checkpoint);
+    };
+    getRequest.onerror = () => reject(getRequest.error);
+
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Failed to populate checkpoint from vault restore'));
   });
 }

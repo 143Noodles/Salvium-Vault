@@ -32,7 +32,8 @@
     "history": "Verlauf",
     "settings": "Einstellungen",
     "dashboard": "Dashboard",
-    "lockWallet": "Wallet Sperren"
+    "lockWallet": "Wallet Sperren",
+    "assets": "Assets"
   },
   "dashboard": {
     "balance": "Guthaben",
@@ -47,7 +48,8 @@
     "noActiveStakes": "Keine aktiven Stakes",
     "earnRewards": "Verdienen Sie Belohnungen durch Staking Ihrer SAL für ~30 Tage.",
     "createNewStake": "Neuen Stake Erstellen",
-    "unlocksIn": "Entsperrt in {{time}} ({{blocks}} Blöcke)"
+    "unlocksIn": "Entsperrt in {{time}} ({{blocks}} Blöcke)",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "Letzte 24 Stunden",
@@ -69,7 +71,7 @@
     "sendAssets": "Assets Senden",
     "creatingTransaction": "Transaktion wird erstellt...",
     "transactionSent": "Transaktion Gesendet!",
-    "amountSent": "{{amount}} SAL wurde an das Netzwerk gesendet.",
+    "amountSent": "{{amount}} {{asset}} wurde an das Netzwerk gesendet.",
     "transactionHash": "Transaktions-Hash",
     "sendAnother": "Weitere Transaktion Senden",
     "addressBook": "Adressbuch",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "Bitte geben Sie einen gültigen positiven Betrag ein",
-      "exceedsBalance": "Betrag übersteigt verfügbares Guthaben"
+      "exceedsBalance": "Betrag übersteigt verfügbares Guthaben",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,8 @@
     "sections": {
       "securityPrivacy": "Sicherheit & Datenschutz",
       "general": "Allgemein",
-      "language": "Sprache"
+      "language": "Sprache",
+      "preferences": "Einstellungen"
     },
     "biometrics": {
       "title": "Mit Biometrie Entsperren",
@@ -222,7 +226,8 @@
       "errors": {
         "fillAll": "Bitte füllen Sie alle Felder aus",
         "mismatch": "Neue Passwörter stimmen nicht überein",
-        "empty": "Passwort darf nicht leer sein"
+        "empty": "Passwort darf nicht leer sein",
+        "minLength": "Das Passwort muss mindestens 8 Zeichen lang sein"
       }
     },
     "blockchain": {
@@ -259,6 +264,14 @@
       "revealButton": "Seed-Phrase Anzeigen",
       "copySeed": "Seed-Phrase Kopieren",
       "neverShare": "Teilen Sie Ihre Seed-Phrase niemals mit jemandem. Der Salvium-Support wird niemals danach fragen. Bewahren Sie sie sicher offline auf."
+    },
+    "connection": {
+      "title": "Verbindung",
+      "description": "Wähle, welcher Salvium-Knoten deine Wallet synchronisiert. Automatisch hält dich auf einem funktionierenden offiziellen Knoten; füge nur dann einen eigenen hinzu, wenn er öffentlich erreichbar ist. In beiden Fällen werden Anfragen über den Vault-Server weitergeleitet und nicht direkt von deinem Gerät gesendet."
+    },
+    "currency": {
+      "title": "Anzeigewährung",
+      "description": "Wähle die Fiat-Währung, in der dein Guthabenwert angezeigt wird."
     }
   },
   "onboarding": {
@@ -435,5 +448,156 @@
     "initializingWallet": "Wallet wird initialisiert...",
     "failedToCreate": "Backup konnte nicht erstellt werden",
     "failedToUnlock": "Wallet konnte nicht entsperrt werden"
+  },
+  "assets": {
+    "title": "Assets",
+    "subtitle": "Alle Assets in deiner Wallet anzeigen und verwalten.",
+    "viewAll": "Alle anzeigen",
+    "viewAllAssets": "Alle Assets anzeigen",
+    "viewAssets": "Assets anzeigen",
+    "create": "Erstellen",
+    "createAsset": "Asset erstellen",
+    "createAssetTransaction": "Asset-Transaktion erstellen",
+    "creating": "Wird erstellt...",
+    "yourAssets": "Deine Assets",
+    "searchAssets": "Assets suchen...",
+    "searchAssetsShort": "Assets suchen",
+    "searchAssetsLabel": "Assets suchen",
+    "searchAssetsLong": "Nach Ticker, Name oder Asset-Typ suchen",
+    "filters": {
+      "all": "Alle Assets",
+      "metadata": "Mit Metadaten",
+      "plain": "Basis-Assets"
+    },
+    "empty": {
+      "noBalances": "Noch keine Asset-Salden",
+      "waitForTransfers": "Erstelle ein Asset oder warte auf eingehende Asset-Transfers.",
+      "noFilterMatches": "Keine Assets entsprechen den aktuellen Filtern.",
+      "noRecentActivity": "Keine aktuelle Asset-Aktivität.",
+      "selectAsset": "Asset auswählen",
+      "chooseAsset": "Wähle ein Asset aus der Liste, um es zu prüfen.",
+      "noTransactions": "Für das ausgewählte Asset wurden keine Transaktionen aufgezeichnet."
+    },
+    "unlock": {
+      "title": "Wallet entsperren, um Assets zu verwalten.",
+      "description": "Asset-Salden, Transfers und Erstellung erfordern eine entsperrte Wallet."
+    },
+    "activation": {
+      "scheduled": "Asset-Aktivierung ist für {{label}} bei Block {{height}} geplant.",
+      "blocksRemaining": "Blöcke verbleibend",
+      "estimatedTime": "Geschätzte Restzeit: {{time}}"
+    },
+    "success": {
+      "submitted": "Asset-Erstellung gesendet",
+      "created": "{{assetType}} wurde erfolgreich gesendet und erscheint hier, sobald die Wallet den Asset-Saldo empfängt oder bestätigt.",
+      "submittedHashes": "Gesendete Transaktions-Hashes"
+    },
+    "labels": {
+      "asset": "Asset",
+      "catalog": "Katalog",
+      "listed": "Gelistet",
+      "name": "Name",
+      "balance": "Saldo",
+      "unlocked": "Entsperrt",
+      "unlockedBalance": "Entsperrter Saldo",
+      "locked": "Gesperrt",
+      "lockedBalance": "Gesperrter Saldo",
+      "standard": "Standard",
+      "type": "Typ",
+      "assetType": "Asset-Typ",
+      "supply": "Angebot",
+      "totalSupply": "Gesamtangebot",
+      "ownershipPercentage": "Eigentumsanteil",
+      "assetId": "Asset-ID",
+      "created": "Erstellt",
+      "decimals": "Dezimalstellen",
+      "amount": "Betrag",
+      "status": "Status",
+      "date": "Datum",
+      "txHash": "TX-Hash",
+      "metadata": "Metadaten",
+      "media": "Medien",
+      "quickActions": "Schnellaktionen",
+      "assetLinks": "Asset-Links",
+      "recentActivity": "Aktuelle Aktivität",
+      "transactionHistory": "Asset-Transaktionsverlauf",
+      "assetOverview": "Asset-Übersicht",
+      "premium": "Premium",
+      "unknown": "Unbekannt"
+    },
+    "actions": {
+      "send": "Senden",
+      "receive": "Empfangen",
+      "sendAsset": "{{ticker}} senden",
+      "receiveAsset": "{{ticker}} empfangen",
+      "open": "Öffnen",
+      "openAssetUrl": "Asset-URL öffnen",
+      "viewCatalog": "Katalog anzeigen",
+      "copyAssetId": "Asset-ID kopieren",
+      "backToAssets": "Zurück zu Assets",
+      "dismiss": "Schließen",
+      "retry": "Wiederholen"
+    },
+    "media": {
+      "explorerImage": "Asset-Bild aus dem Explorer"
+    },
+    "states": {
+      "publicCatalogAsset": "Asset aus öffentlichem Katalog",
+      "inWallet": "{{amount}} {{ticker}} in der Wallet",
+      "catalogOnlyNotice": "Dieses Asset wird aus dem öffentlichen SAL-Katalog geladen. Es befindet sich derzeit nicht in dieser Wallet, daher ist Senden deaktiviert.",
+      "loadingCatalog": "Assets werden geladen...",
+      "catalogLoadFailed": "Der Explorer-Katalog konnte nicht geladen werden.",
+      "catalogEmpty": "Der Explorer hat keine Assets zurückgegeben.",
+      "catalogNoMatches": "Keine Assets entsprechen deiner Suche.",
+      "showingAssets": "{{start}} bis {{end}} von {{total}} Assets werden angezeigt",
+      "unlockedAmount": "Entsperrt: {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "Entsperrt {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "Basis-Asset",
+      "token": "Token"
+    },
+    "createForm": {
+      "cost": "Dieses Asset zu erstellen kostet {{cost}} SAL{{suffix}}",
+      "premiumSuffix": ", weil es ein Premium-Asset-Code ist.",
+      "standardSuffix": ".",
+      "assetCode": "Asset-Code",
+      "premiumNote": "Dies ist ein Premium-Asset-Code. Die Erstellung kostet 10.000 SAL.",
+      "supply": "Angebot",
+      "advanced": "Erweitert",
+      "advancedDescription": "Optionale Token-Metadaten und Größe",
+      "displayName": "Anzeigename",
+      "displayNamePlaceholder": "Beispiel-Asset",
+      "size": "Größe",
+      "projectUrl": "Projekt-URL",
+      "additionalMetadata": "Zusätzliche Metadaten",
+      "additionalMetadataPlaceholder": "Optionales JSON oder Notizen. Strukturierte Felder oben werden automatisch zusammengeführt."
+    },
+    "validation": {
+      "assetCodeRequired": "Asset-Code ist erforderlich.",
+      "assetCodeFormat": "Der Asset-Code muss genau 4 Großbuchstaben oder Ziffern enthalten.",
+      "assetCodePrefix": "Der Asset-Code darf nicht mit 'SAL' beginnen.",
+      "assetCodeReserved": "Der Asset-Code ist reserviert und kann nicht verwendet werden.",
+      "supplyRequired": "Angebot ist erforderlich.",
+      "supplyWhole": "Das Angebot muss eine ganze Zahl sein.",
+      "supplyRange": "Das Angebot muss zwischen 1 und {{max}} liegen.",
+      "supplyInteger": "Das Angebot muss eine gültige ganze Zahl sein.",
+      "decimalsRange": "Dezimalstellen müssen eine ganze Zahl zwischen 0 und {{max}} sein.",
+      "metadataTooLong": "Zusätzliche Metadaten sind zu lang (max. {{max}} Zeichen).",
+      "assetCodeExists": "Asset-Code '{{code}}' existiert bereits."
+    },
+    "transactions": {
+      "pending": "Ausstehend",
+      "received": "Empfangen",
+      "sent": "Gesendet",
+      "awaitingConfirmation": "Wartet auf Bestätigung"
+    },
+    "time": {
+      "lessThanMinute": "weniger als eine Minute"
+    },
+    "errors": {
+      "loadFailed": "Assets konnten nicht geladen werden",
+      "createFailed": "Asset-Transaktion konnte nicht erstellt werden"
+    }
   }
 }

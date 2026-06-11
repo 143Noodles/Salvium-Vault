@@ -1,56 +1,54 @@
+import { BiometricAuth } from '@aparajita/capacitor-biometric-auth';
+import { SecureStorage, KeychainAccess } from '@aparajita/capacitor-secure-storage';
+import { isNativePlatform } from '../utils/runtime';
 
-/**
- * Biometric Service
- * Handles Face ID / Touch ID / Android Biometric unlock.
- * Uses WebAuthn API to verify user presence/identity.
- *
- * SECURITY MODEL (Hybrid Approach):
- * 1. PRF Extension (when available): Derives a cryptographic key directly from the authenticator.
- *    This is true biometric-bound encryption - the key never exists outside the secure enclave.
- *
- * 2. Credential ID Fallback: When PRF isn't available, uses the unique credential ID as key material.
- *    This is better than a hardcoded key since each registration creates a unique credential.
- *    The credential ID is stored in localStorage, so this is still "gatekeeper" security.
- *
- * NOTE: The fallback method requires a biometric check before the password is decrypted,
- * but a sophisticated attacker with localStorage access could theoretically bypass it.
- * PRF mode does not have this limitation.
- */
+// PRF mode binds the key to the authenticator (key never leaves the enclave); credential-id fallback is an app-level gate over localStorage, bypassable by an attacker with localStorage access.
 
 const STORAGE_KEY_BIO_ENABLED = 'salvium_bio_enabled';
-const STORAGE_KEY_BIO_DATA = 'salvium_bio_data'; // Stores { iv, salt, encryptedPassword, credentialId, usesPRF }
+const STORAGE_KEY_BIO_DATA = 'salvium_bio_data';
 const STORAGE_KEY_CREDENTIAL_ID = 'salvium_bio_credential_id';
+const STORAGE_KEY_NATIVE_BIO_ENABLED = 'salvium_native_bio_enabled';
+const NATIVE_PASSWORD_KEY = 'wallet_password';
+const NATIVE_KEY_PREFIX = 'salvium-vault-biometric';
 
-// PRF extension salt - used to derive unique keys per purpose
 const PRF_SALT = new TextEncoder().encode("salvium-vault-biometric-v1");
 
 export const BiometricService = {
-    /**
-     * Check if biometrics are supported and available on this device
-     */
     isAvailable: async (): Promise<boolean> => {
+        if (isNativePlatform()) {
+            try {
+                const info = await BiometricAuth.checkBiometry();
+                return info.isAvailable;
+            } catch (e) {
+                return false;
+            }
+        }
+
         if (!window.PublicKeyCredential) return false;
 
         try {
             const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
             return available;
         } catch (e) {
-            void 0 && console.warn('[BiometricService] Availability check failed:', e);
             return false;
         }
     },
 
-    /**
-     * Check if biometrics are currently enabled for this wallet
-     */
     isEnabled: (): boolean => {
+        if (isNativePlatform()) {
+            return localStorage.getItem(STORAGE_KEY_NATIVE_BIO_ENABLED) === 'true';
+        }
+
         return localStorage.getItem(STORAGE_KEY_BIO_ENABLED) === 'true' && !!localStorage.getItem(STORAGE_KEY_BIO_DATA);
     },
 
-    /**
-     * Check if the current setup uses PRF (higher security) or fallback
-     */
-    getSecurityLevel: (): 'prf' | 'credential-id' | 'none' => {
+    getSecurityLevel: (): 'prf' | 'credential-id' | 'native-secure-storage' | 'none' => {
+        if (isNativePlatform()) {
+            return localStorage.getItem(STORAGE_KEY_NATIVE_BIO_ENABLED) === 'true'
+                ? 'native-secure-storage'
+                : 'none';
+        }
+
         const storedData = localStorage.getItem(STORAGE_KEY_BIO_DATA);
         if (!storedData) return 'none';
 
@@ -62,17 +60,45 @@ export const BiometricService = {
         }
     },
 
-    /**
-     * Enable biometrics: Register a credential and store the encrypted password
-     */
     enable: async (password: string): Promise<boolean> => {
+        if (isNativePlatform()) {
+            try {
+                await configureNativeSecureStorage();
+
+                const info = await BiometricAuth.checkBiometry();
+                if (!info.isAvailable) {
+                    throw new Error('Biometrics not supported');
+                }
+
+                await BiometricAuth.authenticate({
+                    reason: 'Enable biometric unlock for Salvium Vault',
+                    cancelTitle: 'Cancel',
+                    allowDeviceCredential: false,
+                    androidTitle: 'Enable Biometric Unlock',
+                    androidSubtitle: 'Salvium Vault',
+                    androidConfirmationRequired: false,
+                });
+
+                await SecureStorage.setItem(NATIVE_PASSWORD_KEY, password);
+                localStorage.setItem(STORAGE_KEY_NATIVE_BIO_ENABLED, 'true');
+                return true;
+            } catch (e) {
+                localStorage.removeItem(STORAGE_KEY_NATIVE_BIO_ENABLED);
+                try {
+                    await configureNativeSecureStorage();
+                    await SecureStorage.removeItem(NATIVE_PASSWORD_KEY);
+                } catch {
+                }
+                throw e;
+            }
+        }
+
         try {
             if (!window.PublicKeyCredential) throw new Error('Biometrics not supported');
 
             const challenge = new Uint8Array(32);
             window.crypto.getRandomValues(challenge);
 
-            // Try to create credential with PRF extension
             const credential = await navigator.credentials.create({
                 publicKey: {
                     challenge,
@@ -98,43 +124,30 @@ export const BiometricService = {
 
             if (!credential) throw new Error('Failed to create credential');
 
-            // Check if PRF is supported
-            // @ts-ignore - PRF extension not in all TypeScript definitions yet
-            const prfSupported = credential.getClientExtensionResults()?.prf?.enabled === true;
-
-            // Get the credential ID for storage and potential fallback use
             const credentialId = new Uint8Array(credential.rawId);
             const credentialIdBase64 = arrayToBase64(credentialId);
 
-            let encryptionKey: Uint8Array;
-
-            if (prfSupported) {
-                // PRF supported - do an assertion to get the actual PRF output
-                const prfKey = await getPRFKey(credentialIdBase64);
-                if (!prfKey) {
-                    throw new Error('Failed to get PRF key during setup');
-                }
-                encryptionKey = prfKey;
-            } else {
-                // Fallback: derive key from credential ID
-                encryptionKey = await deriveKeyFromCredentialId(credentialIdBase64);
+            // The wrapping key MUST come from the authenticator PRF (hardware-bound, never leaves the
+            // enclave). A credential-id fallback would derive the key from data in localStorage alone
+            // — no real protection for the seed — so refuse rather than ship a false guarantee. Probe
+            // PRF directly (some authenticators surface it only at assertion time, not registration).
+            const encryptionKey = await getPRFKey(credentialIdBase64);
+            if (!encryptionKey) {
+                throw new Error('This device does not support hardware-bound biometric keys (WebAuthn PRF). Unlock with your password instead.');
             }
 
-            // Encrypt the password with the derived key
             const encryptedData = await encryptPassword(password, encryptionKey);
 
-            // Store everything
             localStorage.setItem(STORAGE_KEY_CREDENTIAL_ID, credentialIdBase64);
             localStorage.setItem(STORAGE_KEY_BIO_DATA, JSON.stringify({
                 ...encryptedData,
                 credentialId: credentialIdBase64,
-                usesPRF: prfSupported
+                usesPRF: true
             }));
             localStorage.setItem(STORAGE_KEY_BIO_ENABLED, 'true');
             return true;
 
         } catch (e) {
-            void 0 && console.error('[BiometricService] Enable failed:', e);
             localStorage.removeItem(STORAGE_KEY_BIO_ENABLED);
             localStorage.removeItem(STORAGE_KEY_BIO_DATA);
             localStorage.removeItem(STORAGE_KEY_CREDENTIAL_ID);
@@ -142,55 +155,72 @@ export const BiometricService = {
         }
     },
 
-    /**
-     * Disable biometrics
-     */
     disable: () => {
+        if (isNativePlatform()) {
+            localStorage.removeItem(STORAGE_KEY_NATIVE_BIO_ENABLED);
+            void configureNativeSecureStorage().then(() => SecureStorage.removeItem(NATIVE_PASSWORD_KEY)).catch(() => undefined);
+            return;
+        }
+
         localStorage.removeItem(STORAGE_KEY_BIO_ENABLED);
         localStorage.removeItem(STORAGE_KEY_BIO_DATA);
         localStorage.removeItem(STORAGE_KEY_CREDENTIAL_ID);
     },
 
-    /**
-     * Authenticate and retrieve the password
-     */
     authenticate: async (): Promise<string | null> => {
+        if (isNativePlatform()) {
+            try {
+                await configureNativeSecureStorage();
+
+                await BiometricAuth.authenticate({
+                    reason: 'Unlock Salvium Vault',
+                    cancelTitle: 'Cancel',
+                    allowDeviceCredential: false,
+                    androidTitle: 'Unlock Salvium Vault',
+                    androidSubtitle: 'Authenticate to unlock your wallet',
+                    androidConfirmationRequired: false,
+                });
+
+                const password = await SecureStorage.getItem(NATIVE_PASSWORD_KEY);
+                return typeof password === 'string' && password.length > 0 ? password : null;
+            } catch {
+                return null;
+            }
+        }
+
         try {
             const storedData = localStorage.getItem(STORAGE_KEY_BIO_DATA);
             if (!storedData) throw new Error('Biometrics not set up');
 
             const { iv, salt, data, credentialId, usesPRF } = JSON.parse(storedData);
 
-            let encryptionKey: Uint8Array;
-
-            if (usesPRF) {
-                // Use PRF to derive the key
-                const prfKey = await getPRFKey(credentialId);
-                if (!prfKey) {
-                    return null; // Auth failed or cancelled
-                }
-                encryptionKey = prfKey;
-            } else {
-                // Fallback: verify with biometric, then use credential ID
-                const verified = await verifyBiometric(credentialId);
-                if (!verified) {
-                    return null; // Auth failed or cancelled
-                }
-                encryptionKey = await deriveKeyFromCredentialId(credentialId);
+            // Only hardware-bound PRF enrollments are honored. A legacy credential-id enrollment gave
+            // no real protection, so refuse it and let the user fall back to their password.
+            if (!usesPRF) {
+                return null;
+            }
+            const encryptionKey = await getPRFKey(credentialId);
+            if (!encryptionKey) {
+                return null;
             }
 
-            // Decrypt the password
             const password = await decryptPassword(data, iv, salt, encryptionKey);
             return password;
 
         } catch (e) {
-            void 0 && console.error('[BiometricService] Auth failed:', e);
             return null;
         }
     }
 };
 
-// --- Helper Functions ---
+async function configureNativeSecureStorage(): Promise<void> {
+    await SecureStorage.setKeyPrefix(NATIVE_KEY_PREFIX);
+    // Residual risk: capacitor-secure-storage cannot bind retrieval to a per-op biometric check, so while the device is unlocked the stored password is readable in app context; the biometric prompt is an app-level gate, not a cryptographic binding.
+    try {
+        await SecureStorage.setDefaultKeychainAccess(KeychainAccess.whenPasscodeSetThisDeviceOnly);
+    } catch {
+    }
+}
 
 function arrayToBase64(array: Uint8Array): string {
     return btoa(String.fromCharCode(...array));
@@ -200,9 +230,6 @@ function base64ToArray(base64: string): Uint8Array {
     return Uint8Array.from(atob(base64), c => c.charCodeAt(0));
 }
 
-/**
- * Get a key derived from PRF extension (requires biometric)
- */
 async function getPRFKey(credentialIdBase64: string): Promise<Uint8Array | null> {
     try {
         const challenge = new Uint8Array(32);
@@ -234,84 +261,20 @@ async function getPRFKey(credentialIdBase64: string): Promise<Uint8Array | null>
         // @ts-ignore - PRF extension not in all TypeScript definitions yet
         const prfResults = assertion.getClientExtensionResults()?.prf?.results;
         if (!prfResults?.first) {
-            void 0 && console.warn('[BiometricService] PRF results not available');
             return null;
         }
 
-        // The PRF output is the encryption key
         return new Uint8Array(prfResults.first);
 
     } catch (e) {
-        void 0 && console.error('[BiometricService] PRF key derivation failed:', e);
         return null;
     }
 }
-
-/**
- * Verify biometric without PRF (for fallback mode)
- */
-async function verifyBiometric(credentialIdBase64: string): Promise<boolean> {
-    try {
-        const challenge = new Uint8Array(32);
-        window.crypto.getRandomValues(challenge);
-
-        const assertion = await navigator.credentials.get({
-            publicKey: {
-                challenge,
-                allowCredentials: [{
-                    id: base64ToArray(credentialIdBase64),
-                    type: 'public-key',
-                    transports: ['internal']
-                }],
-                userVerification: 'required',
-                timeout: 60000
-            }
-        });
-
-        return !!assertion;
-
-    } catch (e) {
-        void 0 && console.error('[BiometricService] Biometric verification failed:', e);
-        return false;
-    }
-}
-
-/**
- * Derive an encryption key from the credential ID (fallback method)
- */
-async function deriveKeyFromCredentialId(credentialIdBase64: string): Promise<Uint8Array> {
-    const enc = new TextEncoder();
-
-    // Use the credential ID as key material - unique per registration
-    const keyMaterial = await window.crypto.subtle.importKey(
-        "raw",
-        enc.encode(credentialIdBase64),
-        { name: "HKDF" },
-        false,
-        ["deriveBits"]
-    );
-
-    const derivedBits = await window.crypto.subtle.deriveBits(
-        {
-            name: "HKDF",
-            salt: enc.encode("salvium-vault-credential-key"),
-            info: enc.encode("biometric-encryption"),
-            hash: "SHA-256"
-        },
-        keyMaterial,
-        256
-    );
-
-    return new Uint8Array(derivedBits);
-}
-
-// --- Crypto Functions ---
 
 async function encryptPassword(password: string, keyBytes: Uint8Array) {
     const salt = window.crypto.getRandomValues(new Uint8Array(16));
     const iv = window.crypto.getRandomValues(new Uint8Array(12));
 
-    // Derive AES key from the provided key bytes
     const keyMaterial = await window.crypto.subtle.importKey(
         "raw",
         keyBytes,

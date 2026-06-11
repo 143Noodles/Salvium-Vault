@@ -2,11 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { isMobile, isIOS, isIPad13, isTablet } from 'react-device-detect';
 import { Download, Share, PlusSquare, Copy, Check } from 'lucide-react';
 import { Button } from './UIComponents';
+import { isNativePlatform } from '../utils/runtime';
+import { reportTaskEvent, startTaskTelemetry } from '../utils/clientTelemetry';
 
-// Detect Firefox browser
 const isFirefox = /Firefox/i.test(navigator.userAgent);
 
-// Detect Chromium-based browsers (Chrome, Edge, Opera, Brave, etc.)
 const isChromium = !isFirefox && (
     /Chrome/.test(navigator.userAgent) ||
     /Edg/.test(navigator.userAgent) ||
@@ -14,47 +14,51 @@ const isChromium = !isFirefox && (
     /Brave/.test(navigator.userAgent)
 );
 
-// Detect Safari on iOS (not Chrome/Firefox/etc on iOS)
 const isSafari = /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent);
+const isAndroid = /Android/i.test(navigator.userAgent);
 
-// Capture the install prompt globally in case it fires before React mounts
+// Captured globally in case beforeinstallprompt fires before React mounts.
 let globalDeferredPrompt: any = null;
-// Track callbacks to notify React components when the prompt is captured
 const promptCallbacks: Set<(prompt: any) => void> = new Set();
 
 window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     globalDeferredPrompt = e;
-    // Notify all registered callbacks (React components)
+    reportTaskEvent('stage', 'pwa.install_prompt', 'captured', 'PWAOnlyGate', {
+        source: 'beforeinstallprompt',
+    });
     promptCallbacks.forEach(cb => cb(e));
 });
 
-// Generate Chrome intent URL for Android
 const getChromeIntentUrl = () => {
     const currentUrl = window.location.href;
-    // Android intent to open URL in Chrome
     return `intent://${currentUrl.replace(/^https?:\/\//, '')}#Intent;scheme=https;package=com.android.chrome;end`;
 };
 
-// Component for iOS non-Safari browsers
 const IOSCopyLink: React.FC = () => {
     const [copied, setCopied] = useState(false);
 
     const handleCopy = async () => {
+        const task = startTaskTelemetry('pwa.copy_link', 'PWAOnlyGate');
         try {
             await navigator.clipboard.writeText(window.location.href);
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
+            task.completed();
         } catch (e) {
-            // Fallback for older browsers
-            const input = document.createElement('input');
-            input.value = window.location.href;
-            document.body.appendChild(input);
-            input.select();
-            document.execCommand('copy');
-            document.body.removeChild(input);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
+            try {
+                const input = document.createElement('input');
+                input.value = window.location.href;
+                document.body.appendChild(input);
+                input.select();
+                document.execCommand('copy');
+                if (input.parentNode) input.parentNode.removeChild(input);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+                task.completed('fallback_completed');
+            } catch (fallbackError) {
+                task.failed(fallbackError || e, 'fallback_failed');
+            }
         }
     };
 
@@ -72,7 +76,6 @@ const IOSCopyLink: React.FC = () => {
     );
 };
 
-// Synchronous check for standalone mode (runs immediately, not in useEffect)
 const checkIsStandalone = (): boolean => {
     const isIOSStandalone = (window.navigator as any).standalone === true;
     const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
@@ -82,17 +85,14 @@ const checkIsStandalone = (): boolean => {
     const isTWA = document.referrer.startsWith('android-app://');
     const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
-    // iOS Safari standalone mode
     if (isIOSStandalone) {
         return true;
     }
 
-    // Standard PWA standalone mode
     if (isStandalone) {
         return true;
     }
 
-    // Some Android PWAs use fullscreen or minimal-ui mode
     if (isFullscreen) {
         return true;
     }
@@ -101,12 +101,11 @@ const checkIsStandalone = (): boolean => {
         return true;
     }
 
-    // Android TWA (Trusted Web Activity) detection
     if (isTWA) {
         return true;
     }
 
-    // Heuristic: empty referrer + not browser mode + mobile = likely standalone
+    // Heuristic: empty referrer + not browser mode + mobile = likely standalone.
     if (document.referrer === '' && !isBrowserMode && window.opener === null && isMobileUA) {
         return true;
     }
@@ -114,19 +113,15 @@ const checkIsStandalone = (): boolean => {
     return false;
 };
 
-// Helper to detect if the app is running in "Standalone" (Installed) mode
 const useIsPWA = () => {
-    // Initialize with synchronous check to avoid flash of install screen
     const [isPWA, setIsPWA] = useState(() => checkIsStandalone());
 
     useEffect(() => {
-        // Re-check on mount (in case initial check missed something)
         const isStandalone = checkIsStandalone();
         if (isStandalone !== isPWA) {
             setIsPWA(isStandalone);
         }
 
-        // Listen for display mode changes
         const mediaQuery = window.matchMedia('(display-mode: standalone)');
         const handleChange = () => {
             setIsPWA(checkIsStandalone());
@@ -140,12 +135,13 @@ const useIsPWA = () => {
 };
 
 const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+    if (isNativePlatform()) {
+        return <>{children}</>;
+    }
+
     const isPWA = useIsPWA();
-    // Use ref to avoid stale closure issues with the prompt
     const deferredPromptRef = useRef<any>(globalDeferredPrompt);
-    // State just for triggering re-renders when prompt availability changes
     const [hasPrompt, setHasPrompt] = useState<boolean>(!!globalDeferredPrompt);
-    // Track if we've waited too long for the prompt
     const [promptTimedOut, setPromptTimedOut] = useState(false);
 
     useEffect(() => {
@@ -165,6 +161,9 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             globalDeferredPrompt = e;
             deferredPromptRef.current = e;
             setHasPrompt(true);
+            reportTaskEvent('stage', 'pwa.install_prompt', 'captured_component', 'PWAOnlyGate', {
+                source: 'beforeinstallprompt',
+            });
         };
 
         window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -172,6 +171,9 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         const timeoutId = setTimeout(() => {
             if (!deferredPromptRef.current && !globalDeferredPrompt) {
                 setPromptTimedOut(true);
+                reportTaskEvent('timeout', 'pwa.install_prompt', 'unavailable', 'PWAOnlyGate', {
+                    reason: 'prompt_unavailable',
+                });
             }
         }, 5000);
 
@@ -183,43 +185,46 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     }, []);
 
     const handleInstallClick = useCallback(async () => {
+        const task = startTaskTelemetry('pwa.install_prompt', 'PWAOnlyGate', {
+            browser: isChromium ? 'chromium' : isSafari ? 'safari' : isFirefox ? 'firefox' : 'other',
+        }, 'prompt_click');
         const prompt = deferredPromptRef.current || globalDeferredPrompt;
 
         if (!prompt) {
+            task.failed(new Error('install prompt unavailable'), 'missing_prompt');
             alert('Installation prompt not available. Please reload the page and try again.');
             return;
         }
 
         try {
+            task.stage('prompt_show');
             await prompt.prompt();
 
+            task.stage('user_choice');
             const { outcome } = await prompt.userChoice;
 
             deferredPromptRef.current = null;
             globalDeferredPrompt = null;
             setHasPrompt(false);
+            task.completed('user_choice', {
+                result: outcome === 'accepted' ? 'accepted' : 'dismissed',
+            });
         } catch (error) {
             deferredPromptRef.current = null;
             globalDeferredPrompt = null;
             setHasPrompt(false);
+            task.failed(error, 'prompt_failed');
         }
     }, []);
 
-    // Check if device is mobile OR tablet (including iPad13+)
     const isMobileOrTablet = isMobile || isTablet || isIPad13;
 
-    // 1. If it's Desktop (not mobile/tablet), always render the app.
-    // 2. If it's Mobile/Tablet AND it is already installed (isPWA), render the app.
     if (!isMobileOrTablet || isPWA) {
         return <>{children}</>;
     }
 
-    // ------------------------------------------------------
-    // Mobile AND NOT Installed -> Show Blocker
-    // ------------------------------------------------------
     return (
         <div className="fixed inset-0 bg-[#0f0f1a] flex flex-col items-center justify-center p-6 text-center z-[100]">
-            {/* Background Effects */}
             <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-indigo-900/20 via-[#0f0f1a] to-[#0f0f1a] pointer-events-none"></div>
 
             <div className="relative z-10 flex flex-col items-center max-w-md w-full animate-fade-in">
@@ -235,7 +240,21 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 </p>
 
                 <div className="bg-[#13131f] border border-white/10 rounded-xl p-6 w-full shadow-xl">
-                    {isIOS && isSafari ? (
+                    {isAndroid ? (
+                        <div className="flex flex-col gap-4">
+                            <p className="text-sm text-text-muted mb-2">
+                                Download the Android app to continue.
+                            </p>
+                            <Button
+                                variant="primary"
+                                onClick={() => window.location.replace('/apk')}
+                                className="w-full flex items-center justify-center gap-2 py-3"
+                            >
+                                <Download size={18} />
+                                Download APK
+                            </Button>
+                        </div>
+                    ) : isIOS && isSafari ? (
                         <div className="flex flex-col gap-4 text-left">
                             <div className="flex items-center gap-3 text-text-muted text-sm">
                                 <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center shrink-0">

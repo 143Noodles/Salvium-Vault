@@ -1,21 +1,12 @@
-/**
- * Recovery Options Screen
- * 
- * Displayed when the wallet cache has been cleared (mobile hibernation, browser cache eviction)
- * but the wallet previously had data. Gives user the choice to:
- * 1. Restore from vault backup file (fast - contains cached outputs)
- * 2. Do a full rescan from scratch (slow - downloads all blockchain data)
- */
-
 import React, { useState, useRef } from 'react';
 import { Card, Button, Input } from './UIComponents';
 import { AlertTriangle, Upload, RefreshCw, Shield, Loader2, FileText, Clock, Zap } from './Icons';
 import { parseBackup, restoreFromBackup, BackupData } from '../services/BackupService';
 
 interface RecoveryOptionsScreenProps {
-  onRestoreFromBackup: () => void;  // Called after successful backup restore
-  onStartFullRescan: () => void;    // Called when user chooses full rescan
-  walletAddress: string;            // For display purposes
+  onRestoreFromBackup: () => void;
+  onStartFullRescan: () => void;
+  walletAddress: string;
 }
 
 const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
@@ -23,7 +14,6 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
   onStartFullRescan,
   walletAddress
 }) => {
-  // Backup restore state
   const [backupFile, setBackupFile] = useState<File | null>(null);
   const [backupPassword, setBackupPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -54,37 +44,29 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
     setError('');
 
     try {
-      // Parse and decrypt the backup
       const data = await parseBackup(backupFile, backupPassword);
 
-      // Restore to localStorage and IndexedDB
       await restoreFromBackup(data);
 
-      // Notify parent - it will handle wallet unlock
       onRestoreFromBackup();
     } catch (err: any) {
-      void 0 && console.error('Failed to restore from backup:', err);
       setError(err.message || 'Failed to restore from backup file');
       setIsRestoring(false);
     }
   };
 
-  // Initial choice screen
   if (!showBackupForm) {
     return (
       <div className="fixed inset-0 z-[100] bg-bg-primary overflow-y-auto custom-scrollbar">
         <div className="min-h-full flex items-center justify-center p-4">
-          {/* Background decoration */}
           <div className="absolute inset-0 bg-hero-glow opacity-30"></div>
 
           <Card className="w-full max-w-md relative z-10" glow>
             <div className="flex flex-col items-center text-center space-y-6">
-              {/* Warning Icon */}
               <div className="w-16 h-16 rounded-full bg-yellow-500/10 flex items-center justify-center text-yellow-500 border border-yellow-500/20">
                 <AlertTriangle size={32} />
               </div>
 
-              {/* Title & Explanation */}
               <div>
                 <h2 className="text-2xl font-bold text-white mb-3">Wallet Cache Cleared</h2>
                 <p className="text-text-muted text-sm leading-relaxed">
@@ -93,7 +75,6 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
                 </p>
               </div>
 
-              {/* Address preview */}
               {walletAddress && (
                 <div className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10">
                   <p className="text-xs text-text-muted mb-1">Wallet Address</p>
@@ -101,9 +82,7 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
                 </div>
               )}
 
-              {/* Option Cards */}
               <div className="w-full space-y-3">
-                {/* Option 1: Restore from Vault File */}
                 <button
                   onClick={() => setShowBackupForm(true)}
                   className="w-full group relative overflow-hidden rounded-xl bg-accent-primary/5 border border-accent-primary/20 p-4 text-left transition-all duration-300 hover:border-accent-primary/50 hover:bg-accent-primary/10"
@@ -132,7 +111,6 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
                   </div>
                 </button>
 
-                {/* Option 2: Full Rescan */}
                 <button
                   onClick={onStartFullRescan}
                   className="w-full group relative overflow-hidden rounded-xl bg-white/5 border border-white/10 p-4 text-left transition-all duration-300 hover:border-white/20 hover:bg-white/10"
@@ -158,7 +136,6 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
                 </button>
               </div>
 
-              {/* Security Note */}
               <div className="w-full pt-4 border-t border-white/5">
                 <div className="flex items-center justify-center gap-2 text-xs text-text-muted">
                   <Shield size={14} className="text-accent-primary/70" />
@@ -172,21 +149,17 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
     );
   }
 
-  // Backup restore form
   return (
     <div className="fixed inset-0 z-[100] bg-bg-primary overflow-y-auto custom-scrollbar">
       <div className="min-h-full flex items-center justify-center p-4">
-        {/* Background decoration */}
         <div className="absolute inset-0 bg-hero-glow opacity-30"></div>
 
         <Card className="w-full max-w-md relative z-10" glow>
           <div className="flex flex-col items-center text-center space-y-6">
-            {/* Icon */}
             <div className="w-16 h-16 rounded-full bg-accent-primary/10 flex items-center justify-center text-accent-primary border border-accent-primary/20">
               <FileText size={32} />
             </div>
 
-            {/* Title */}
             <div>
               <h2 className="text-2xl font-bold text-white mb-2">Restore from Backup</h2>
               <p className="text-text-muted text-sm">
@@ -194,7 +167,6 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
               </p>
             </div>
 
-            {/* File Upload */}
             <div className="w-full space-y-4">
               <input
                 ref={fileInputRef}
@@ -217,7 +189,6 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
                 )}
               </button>
 
-              {/* Password Input */}
               <div className="space-y-2 text-left">
                 <label className="text-sm text-text-secondary">Wallet Password</label>
                 <div className="relative">
@@ -242,14 +213,12 @@ const RecoveryOptionsScreen: React.FC<RecoveryOptionsScreenProps> = ({
                 </div>
               </div>
 
-              {/* Error Display */}
               {error && (
                 <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
                   {error}
                 </div>
               )}
 
-              {/* Action Buttons */}
               <div className="flex gap-3 pt-2">
                 <Button
                   variant="secondary"

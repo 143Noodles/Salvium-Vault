@@ -1,0 +1,30 @@
+# ============================================================================
+# Dockerfile.salpay-agent - SalPay receive verifier sidecar
+# ============================================================================
+
+FROM node:22-alpine
+
+LABEL maintainer="Salvium Vault"
+LABEL description="Salvium Vault - SalPay receive verifier sidecar"
+
+WORKDIR /app
+ENV NODE_ENV=production
+ENV SALPAY_AGENT_PORT=3021
+ENV SALPAY_AGENT_DATA_DIR=/var/data
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY salpay-agent.cjs ./
+COPY utils/salpayAgentCore.cjs ./utils/salpayAgentCore.cjs
+COPY utils/salpayRelay.cjs ./utils/salpayRelay.cjs
+
+RUN mkdir -p /var/data && chown -R node:node /var/data /app
+USER node
+
+EXPOSE 3021
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD wget -q -T 5 -O /dev/null "http://127.0.0.1:${SALPAY_AGENT_PORT:-3021}/health" || exit 1
+
+CMD ["node", "salpay-agent.cjs"]

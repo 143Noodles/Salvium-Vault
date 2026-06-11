@@ -4,6 +4,17 @@ import type { Stake } from '../services/WalletContext';
 export interface ChartHistoryPoint {
   date: string;
   value: number;
+  /** Native balance (SAL) at this point — shown alongside fiat in the tooltip. */
+  sal?: number;
+}
+
+function getAtomicHistoryAmountDivisor(finalBalance: number, currentBalance: number): number {
+  if (!Number.isFinite(finalBalance) || !Number.isFinite(currentBalance) || currentBalance <= 0) {
+    return 1;
+  }
+
+  const ratio = finalBalance / currentBalance;
+  return ratio > 1000000 ? ratio : 1;
 }
 
 function getPriceAtTime(
@@ -40,13 +51,25 @@ function getPriceAtTime(
   return matchedPrice;
 }
 
+function isNativeAsset(assetType: string | undefined): boolean {
+  const upper = String(assetType || '').toUpperCase();
+  return upper === '' || upper === 'SAL' || upper === 'SAL1';
+}
+
 export function buildWalletHistory(
-  txs: WalletTransaction[],
-  historyStakes: Stake[],
+  allTxs: WalletTransaction[],
+  allHistoryStakes: Stake[],
   priceHistory: Array<[number, number]>,
   fallbackPrice: number,
-  now: number
+  now: number,
+  currentBalance = 0
 ): ChartHistoryPoint[] {
+  // Wallet value is the NATIVE (SAL1) holding only: token transactions carry token
+  // units, and summing them as if they were SAL inflated the chart far above the
+  // balance card (e.g. $1.76 vs $0.80 on a token-active wallet).
+  const txs = allTxs.filter((tx) => isNativeAsset(tx.asset_type));
+  const historyStakes = allHistoryStakes.filter((s) => isNativeAsset(s.assetType));
+
   const txTimes = txs.filter(tx => tx.timestamp > 0).map(tx => tx.timestamp);
   const stakeTimes = historyStakes
     .map(stake => {
@@ -163,13 +186,20 @@ export function buildWalletHistory(
     })
     .sort((a, b) => a.timestamp - b.timestamp);
 
+  const finalRawBalance = events.reduce((sum, event) => sum + event.delta, 0);
+  const amountDivisor = getAtomicHistoryAmountDivisor(finalRawBalance, currentBalance);
+  const finalDeltaBalance = events.reduce((sum, event) => sum + (event.delta / amountDivisor), 0);
+  const openingBalance = currentBalance > 0
+    ? Math.max(0, currentBalance - finalDeltaBalance)
+    : 0;
+
   const history: ChartHistoryPoint[] = [];
-  let simBalance = 0;
+  let simBalance = openingBalance;
   let txIndex = 0;
 
   for (let t = chartStartTime; t <= now; t += hourMs) {
     while (txIndex < events.length && events[txIndex].timestamp <= t) {
-      simBalance += events[txIndex].delta;
+      simBalance += events[txIndex].delta / amountDivisor;
       txIndex++;
     }
 
@@ -177,8 +207,87 @@ export function buildWalletHistory(
     history.push({
       date: new Date(t).toISOString(),
       value: Math.max(0, simBalance) * price,
+      sal: Math.max(0, simBalance),
     });
   }
 
+  while (txIndex < events.length && events[txIndex].timestamp <= now) {
+    simBalance += events[txIndex].delta / amountDivisor;
+    txIndex++;
+  }
+
+  // Pin the LATEST point to the wallet's actual balance, not the replayed
+  // reconstruction: the chart's tip must equal the balance card by construction
+  // (historical points remain best-effort estimates of the trajectory).
+  const fallbackTipSal = currentBalance > 0 ? currentBalance : Math.max(0, simBalance);
+  const currentPoint = {
+    date: new Date(now).toISOString(),
+    value: fallbackTipSal * fallbackPrice,
+    sal: fallbackTipSal,
+  };
+
+  const lastTimestamp = history.length > 0
+    ? new Date(history[history.length - 1].date).getTime()
+    : 0;
+  if (history.length === 0) {
+    history.push(currentPoint);
+  } else if (now - lastTimestamp > 60 * 1000) {
+    history.push(currentPoint);
+  } else {
+    history[history.length - 1] = currentPoint;
+  }
+
+  return history;
+}
+
+/** Map a block height to a wall-clock ms timestamp using TWO anchors: a fixed past
+ * reference and the present (current tip == now). Scaling by the actual average block
+ * time between anchors keeps the recent end exact -- a fixed 120s/block assumption
+ * drifted ~2 days over 8 months, which drew a flat artificial shelf between the last
+ * mapped point and the pinned live tip. */
+export function makeHeightToTime(tipHeight: number, now: number): (h: number) => number {
+  const REFERENCE_HEIGHT = 334750;
+  const REFERENCE_TIMESTAMP = new Date('2025-10-13T00:00:00Z').getTime();
+  const FALLBACK_BLOCK_MS = 120 * 1000;
+  const span = tipHeight - REFERENCE_HEIGHT;
+  const avgBlockMs = tipHeight > REFERENCE_HEIGHT + 1000 && now > REFERENCE_TIMESTAMP
+    ? (now - REFERENCE_TIMESTAMP) / span
+    : FALLBACK_BLOCK_MS;
+  return (h: number) => now - (tipHeight - h) * avgBlockMs;
+}
+
+/** EXACT wallet history from the WASM's transfer-table series ([height, atomicBalance]
+ * pairs): no delta-replay heuristics. Values are balance x price-at-time. */
+export function buildExactWalletHistory(
+  pairs: Array<[number, number]>,
+  priceHistory: Array<[number, number]>,
+  fallbackPrice: number,
+  now: number,
+  currentBalance = 0,
+  tipHeight = 0
+): ChartHistoryPoint[] {
+  if (!Array.isArray(pairs) || pairs.length === 0) return [];
+  const ATOMIC = 1e8;
+  const lastPairHeight = Number(pairs[pairs.length - 1][0]);
+  const heightToTime = makeHeightToTime(tipHeight > 0 ? tipHeight : lastPairHeight, now);
+  const history: ChartHistoryPoint[] = [];
+  for (const [h, atomic] of pairs) {
+    const t = Math.min(now, heightToTime(Number(h)));
+    const bal = Math.max(0, Number(atomic)) / ATOMIC;
+    const price = getPriceAtTime(priceHistory, t, fallbackPrice);
+    history.push({ date: new Date(t).toISOString(), value: bal * price, sal: bal });
+  }
+  // Pin the live tip to the actual balance x current price (card parity).
+  const tipSal = currentBalance > 0 ? currentBalance : Math.max(0, Number(pairs[pairs.length - 1][1]) / ATOMIC);
+  const tip = {
+    date: new Date(now).toISOString(),
+    value: tipSal * fallbackPrice,
+    sal: tipSal,
+  };
+  if (history.length > 0 && now - new Date(history[history.length - 1].date).getTime() < 60 * 1000) {
+    history[history.length - 1] = tip;
+  } else {
+    history.push(tip);
+  }
   return history;
 }

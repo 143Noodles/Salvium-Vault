@@ -1,11 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { TabView } from '../App';
+import { TabView } from '../utils/tabView';
 import { useWallet } from '../services/WalletContext';
 import { Settings, Lock, X, Activity, Server, Database } from './Icons';
 import { isDesktop } from '../utils/device';
 
-// Device detection helpers
 const isDesktopOnly = isDesktop;
 
 interface MobileHeaderProps {
@@ -21,65 +20,77 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
     const [showNetworkModal, setShowNetworkModal] = useState(false);
     const wallet = useWallet();
 
-    // Network status derived from wallet context
     const hasDaemonHeight = wallet.syncStatus.daemonHeight > 0;
-    const isSynced = !wallet.syncStatus.isSyncing &&
-        wallet.syncStatus.walletHeight >= wallet.syncStatus.daemonHeight &&
-        hasDaemonHeight;
+    const isSynced = wallet.scanHealth.status === 'synced' &&
+        wallet.scanHealth.terminalState === 'success' &&
+        wallet.scanHealth.committed &&
+        wallet.scanHealth.cacheCommitted &&
+        wallet.scanHealth.balanceTrusted &&
+        !wallet.scanHealth.repairRequired &&
+        hasDaemonHeight &&
+        wallet.scanHealth.currentHeight >= wallet.syncStatus.daemonHeight;
     const isConnected = hasDaemonHeight;
-    const isConnecting = wallet.isWalletReady && !hasDaemonHeight && typeof navigator !== 'undefined' && navigator.onLine !== false;
+    const [connectionGraceExpired, setConnectionGraceExpired] = useState(false);
+    useEffect(() => {
+        if (hasDaemonHeight) {
+            setConnectionGraceExpired(false);
+            return;
+        }
+        const timer = setTimeout(() => setConnectionGraceExpired(true), 20000);
+        return () => clearTimeout(timer);
+    }, [hasDaemonHeight]);
+    const isConnecting = !hasDaemonHeight &&
+        !connectionGraceExpired &&
+        typeof navigator !== 'undefined' &&
+        navigator.onLine !== false;
 
     return (
         <>
             <header
                 id="mobile-header"
-                className="fixed top-0 left-0 right-0 bg-[#0f0f1a]/90 backdrop-blur-xl border-b border-white/5 z-50 lg:hidden flex items-center justify-between px-4 transition-all duration-200"
-                style={{ paddingTop: 'env(safe-area-inset-top)', height: 'var(--mobile-header-height)' }}
+                className="mobile-header-shell fixed top-0 left-0 right-0 bg-[#0f0f1a]/90 backdrop-blur-xl border-b border-white/5 z-50 lg:hidden flex items-center justify-between transition-all duration-200"
+                style={{ paddingTop: 'var(--safe-area-top)', height: 'var(--mobile-header-height)' }}
             >
-                {/* Left: Logo & Title */}
-                <div className="flex items-center gap-2.5">
+                <div className="mobile-brand flex items-center">
                     <img
                         src="/assets/img/salvium.png"
                         alt="Salvium"
-                        className="w-7 h-7"
+                        className="mobile-brand-logo shrink-0"
                     />
-                    <h1 className="text-lg font-bold text-white tracking-wide">
+                    <h1 className="mobile-brand-title font-bold text-white tracking-wide">
                         Salvium Vault
                     </h1>
                 </div>
 
-                {/* Right: Status, Lock, Settings */}
-                <div className="flex items-center gap-1">
-                    {/* Network Status */}
+                <div className="mobile-header-actions flex items-center">
                     <div
                         onClick={() => setShowNetworkModal(true)}
-                        className="flex items-center gap-1.5 px-2 py-1 bg-white/5 rounded-full border border-white/5 mr-1 active:scale-95 transition-transform cursor-pointer"
+                        className="mobile-status-pill flex items-center bg-white/5 rounded-full border border-white/5 active:scale-95 transition-transform cursor-pointer"
                     >
                         <div className={`w-1.5 h-1.5 rounded-full ${(!isConnected && !isConnecting) ? 'bg-red-500' : isSynced ? 'bg-accent-success shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-accent-warning'} ${isSynced ? 'animate-pulse' : ''}`}></div>
-                        <span className="text-[10px] font-medium text-text-muted">
+                        <span className="mobile-status-text font-medium text-text-muted">
                             {(!isConnected && !isConnecting) ? t('network.error') : isSynced ? t('network.synced') : t('network.syncing')}
                         </span>
                     </div>
 
                     <button
                         onClick={onLock}
-                        className="p-2 text-text-muted hover:text-white active:scale-95 transition-transform"
+                        className="mobile-icon-button inline-flex items-center justify-center text-text-muted hover:text-white active:scale-95 transition-transform"
                         aria-label="Lock Wallet"
                     >
-                        <Lock size={20} />
+                        <Lock />
                     </button>
 
                     <button
                         onClick={() => onNavigate(TabView.SETTINGS)}
-                        className={`p-2 transition-transform active:scale-95 ${activeTab === TabView.SETTINGS ? 'text-accent-primary' : 'text-text-muted hover:text-white'}`}
+                        className={`mobile-icon-button inline-flex items-center justify-center transition-transform active:scale-95 ${activeTab === TabView.SETTINGS ? 'text-accent-primary' : 'text-text-muted hover:text-white'}`}
                         aria-label="Settings"
                     >
-                        <Settings size={22} />
+                        <Settings />
                     </button>
                 </div>
             </header>
 
-            {/* Network Overlay */}
             {showNetworkModal && (
                 <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in" onClick={() => setShowNetworkModal(false)}>
                     <div className="bg-[#131320] w-full sm:w-[400px] rounded-t-2xl sm:rounded-2xl border border-white/10 p-5 space-y-4 animate-slide-up sm:animate-zoom-in" onClick={e => e.stopPropagation()}>
@@ -96,7 +107,6 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
                         </div>
 
                         <div className="space-y-3">
-                            {/* Status Card */}
                             <div className="p-3 bg-white/5 rounded-xl border border-white/5 flex items-center justify-between">
                                 <div className="flex items-center gap-3">
                                     <div className={`w-2 h-2 rounded-full ${isSynced ? 'bg-accent-success shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-accent-warning'}`}></div>
@@ -114,7 +124,6 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
                                 )}
                             </div>
 
-                            {/* Heights Grid */}
                             <div className="grid grid-cols-2 gap-3">
                                 <div className="p-3 bg-black/20 rounded-xl border border-white/5">
                                     <div className="flex items-center gap-2 mb-2 text-text-muted shrink-0">

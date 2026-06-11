@@ -8,19 +8,18 @@ import {
     normalizeWalletStorageNetwork,
     type WalletStorageNetwork
 } from '../utils/walletStorage';
+import { reportTaskEvent, startTaskTelemetry } from '../utils/clientTelemetry';
 
-// Version 2: Added m_recovered_spend_pubkey serialization to transfer_details
-// Old vault files (version 1) are incompatible and must be restored from seed
+// v2 added m_recovered_spend_pubkey; v1 vaults are incompatible and must be restored from seed.
 const BACKUP_VERSION = 2;
 const MIN_SUPPORTED_VERSION = 2;
 const IDB_NAME = 'salvium_vault_cache_v2';
 const IDB_STORE = 'wallet_cache';
 const IDB_VERSION = 1;
+const VAULT_RESTORE_PENDING_KEY = 'salvium_vault_restore_pending';
+const VAULT_RESTORE_STARTED_AT_KEY = 'salvium_vault_restore_started_at';
 
-/**
- * RACE CONDITION FIX: IndexedDB access queue to serialize concurrent operations
- * Prevents transaction conflicts when multiple scans/saves happen simultaneously
- */
+// Serializes concurrent IndexedDB operations to avoid transaction conflicts.
 class IDBAccessQueue {
     private queue: Array<{ operation: () => Promise<any>; resolve: (value: any) => void; reject: (error: any) => void }> = [];
     private isProcessing = false;
@@ -51,10 +50,6 @@ class IDBAccessQueue {
 
 const idbQueue = new IDBAccessQueue();
 
-/**
- * ERROR HANDLING: Retry IndexedDB operations with exponential backoff
- * Handles transient errors like database blocked, quota issues
- */
 async function withIDBRetry<T>(
     operation: () => Promise<T>,
     maxRetries: number = 3,
@@ -68,7 +63,6 @@ async function withIDBRetry<T>(
         } catch (error: any) {
             lastError = error;
 
-            // Check if error is retryable
             const isRetryable =
                 error.name === 'InvalidStateError' ||
                 error.name === 'TransactionInactiveError' ||
@@ -80,7 +74,6 @@ async function withIDBRetry<T>(
                 throw error;
             }
 
-            // Exponential backoff with jitter
             const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 50;
             await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -90,7 +83,6 @@ async function withIDBRetry<T>(
 }
 
 function openCacheDB(): Promise<IDBDatabase> {
-    // RACE CONDITION FIX: Use queue to serialize database open operations
     return idbQueue.enqueue(() => withIDBRetry(() => new Promise((resolve, reject) => {
         const request = indexedDB.open(IDB_NAME, IDB_VERSION);
         request.onerror = () => reject(request.error);
@@ -112,11 +104,9 @@ async function saveToIndexedDB(key: string, value: string): Promise<void> {
             const store = tx.objectStore(IDB_STORE);
             const request = store.put({ key, value });
             request.onerror = () => {
-                db.close(); // Close on error
-                // QUOTA FIX: Check for QuotaExceededError and fall back to compressed storage
+                db.close();
                 const error = request.error;
                 if (error && (error.name === 'QuotaExceededError' || error.message?.includes('quota'))) {
-                    // Attempt localStorage fallback with truncation warning
                     tryLocalStorageFallback(key, value).then(resolve).catch(reject);
                 } else {
                     reject(error);
@@ -125,7 +115,7 @@ async function saveToIndexedDB(key: string, value: string): Promise<void> {
             request.onsuccess = () => resolve();
             tx.oncomplete = () => db.close();
             tx.onerror = () => {
-                db.close(); // Close on transaction error
+                db.close();
                 const error = tx.error;
                 if (error && (error.name === 'QuotaExceededError' || error.message?.includes('quota'))) {
                     tryLocalStorageFallback(key, value).then(resolve).catch(reject);
@@ -135,8 +125,6 @@ async function saveToIndexedDB(key: string, value: string): Promise<void> {
             };
         });
     } catch (e: any) {
-        // QUOTA FIX: IndexedDB may be completely unavailable (private browsing, disabled)
-        // Fall back to localStorage with warning
         if (e && (e.name === 'QuotaExceededError' || e.message?.includes('quota') || e.name === 'InvalidStateError')) {
             return tryLocalStorageFallback(key, value);
         }
@@ -144,13 +132,8 @@ async function saveToIndexedDB(key: string, value: string): Promise<void> {
     }
 }
 
-/**
- * localStorage fallback when IndexedDB quota is exceeded
- * Attempts to store data with progressive truncation if needed
- */
 async function tryLocalStorageFallback(key: string, value: string): Promise<void> {
     try {
-        // Try to compress first to reduce size
         let dataToStore = value;
         try {
             const compressed = await compressString(value);
@@ -158,20 +141,16 @@ async function tryLocalStorageFallback(key: string, value: string): Promise<void
                 dataToStore = `COMPRESSED:${compressed}`;
             }
         } catch {
-            // Compression failed, use raw value
         }
 
-        // Try localStorage with progressively smaller data
         const MAX_ATTEMPTS = 5;
         let currentData = dataToStore;
         for (let i = 0; i < MAX_ATTEMPTS; i++) {
             try {
                 localStorage.setItem(`idb_fallback_${key}`, currentData);
-                void 0 && console.warn(`[BackupService] Used localStorage fallback for key: ${key} (size: ${currentData.length})`);
                 return;
             } catch (e: any) {
                 if (e.name === 'QuotaExceededError' && i < MAX_ATTEMPTS - 1) {
-                    // Truncate to 75% of current size
                     currentData = currentData.substring(0, Math.floor(currentData.length * 0.75));
                 } else {
                     throw e;
@@ -179,8 +158,6 @@ async function tryLocalStorageFallback(key: string, value: string): Promise<void
             }
         }
     } catch {
-        // Final fallback: just warn and continue without saving
-        void 0 && console.warn(`[BackupService] Failed to save ${key} - quota exceeded in both IndexedDB and localStorage`);
     }
 }
 
@@ -197,27 +174,21 @@ async function loadFromIndexedDB(key: string): Promise<string | null> {
                 if (result) {
                     resolve(result);
                 } else {
-                    // Check localStorage fallback
                     resolve(loadFromLocalStorageFallback(key));
                 }
             };
             tx.oncomplete = () => db.close();
         });
     } catch {
-        // IndexedDB failed - check localStorage fallback
         return loadFromLocalStorageFallback(key);
     }
 }
 
-/**
- * Load from localStorage fallback (when IndexedDB quota was exceeded)
- */
 async function loadFromLocalStorageFallback(key: string): Promise<string | null> {
     try {
         const data = localStorage.getItem(`idb_fallback_${key}`);
         if (!data) return null;
 
-        // Check if data is compressed
         if (data.startsWith('COMPRESSED:')) {
             const compressed = data.substring(11);
             return await decompressString(compressed);
@@ -228,7 +199,6 @@ async function loadFromLocalStorageFallback(key: string): Promise<string | null>
     }
 }
 
-// Return addresses IndexedDB (separate DB for RETURN tx detection)
 const RETURN_ADDR_DB_NAME = 'salvium-return-addresses';
 const RETURN_ADDR_DB_VERSION = 1;
 const RETURN_ADDR_STORE = 'addresses';
@@ -277,7 +247,6 @@ async function saveReturnAddressesToDB(walletAddress: string, addressesCsv: stri
             tx.oncomplete = () => db.close();
         });
     } catch (e) {
-        void 0 && console.warn('[BackupService] Failed to save return addresses:', e);
     }
 }
 
@@ -293,10 +262,10 @@ export interface BackupData {
     };
     walletCacheCompressed?: string;
     returnOutputMap?: Record<string, any>;
-    returnAddressesCsv?: string;  // Return addresses for RETURN tx detection
+    returnAddressesCsv?: string;
     integrity?: {
-        hash: string;  // SHA-256 of unencrypted backup data
-        chunks?: number;  // Number of compression chunks
+        hash: string;
+        chunks?: number;
     };
 }
 
@@ -308,7 +277,6 @@ async function resolveCurrentVaultNetwork(): Promise<WalletStorageNetwork> {
             return normalizeWalletStorageNetwork(data?.network);
         }
     } catch {
-        // Keep mainnet fallback
     }
 
     return 'mainnet';
@@ -354,17 +322,11 @@ async function decompressString(base64Data: string): Promise<string> {
     return await response.text();
 }
 
-/**
- * Chunked compression for large data to avoid memory pressure
- * Splits data into chunks, compresses each, then concatenates
- */
 async function compressStringChunked(data: string, chunkSize: number = 1024 * 1024): Promise<{ compressed: string; chunks: number }> {
-    // For small data, use single compression
     if (data.length < chunkSize) {
         return { compressed: await compressString(data), chunks: 1 };
     }
 
-    // Split into chunks and compress each
     const chunks: string[] = [];
     for (let i = 0; i < data.length; i += chunkSize) {
         const chunk = data.slice(i, i + chunkSize);
@@ -372,20 +334,14 @@ async function compressStringChunked(data: string, chunkSize: number = 1024 * 10
         chunks.push(compressedChunk);
     }
 
-    // Join with delimiter
     return { compressed: chunks.join('|CHUNK|'), chunks: chunks.length };
 }
 
-/**
- * Decompress chunked data
- */
 async function decompressStringChunked(compressedData: string, chunkCount?: number): Promise<string> {
-    // Check if this is chunked data
     if (!compressedData.includes('|CHUNK|')) {
         return await decompressString(compressedData);
     }
 
-    // Split by delimiter and decompress each
     const chunks = compressedData.split('|CHUNK|');
     const decompressed: string[] = [];
     for (const chunk of chunks) {
@@ -394,9 +350,6 @@ async function decompressStringChunked(compressedData: string, chunkCount?: numb
     return decompressed.join('');
 }
 
-/**
- * Calculate SHA-256 hash of data for integrity verification
- */
 async function calculateIntegrityHash(data: string): Promise<string> {
     const encoder = new TextEncoder();
     const dataBuffer = encoder.encode(data);
@@ -405,16 +358,11 @@ async function calculateIntegrityHash(data: string): Promise<string> {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/**
- * Verify backup data integrity
- */
 async function verifyBackupIntegrity(backupData: BackupData, originalJson: string): Promise<boolean> {
     if (!backupData.integrity?.hash) {
-        // No integrity hash - old backup format, skip verification
         return true;
     }
 
-    // Calculate hash of data without integrity field
     const dataForHash = { ...backupData };
     delete dataForHash.integrity;
     const dataJson = JSON.stringify(dataForHash);
@@ -427,12 +375,16 @@ interface EncryptedBackup {
     encrypted: string;
     iv: string;
     salt: string;
+    // Absent on pre-KDF-upgrade backups; decrypt() then uses the legacy 100k count so old .vault files still restore.
+    iterations?: number;
 }
 
 export async function generateBackup(password: string): Promise<Blob> {
+    const task = startTaskTelemetry('wallet.backup_generate', 'BackupService');
     const currentNetwork = await resolveCurrentVaultNetwork();
     const walletJson = getStoredWalletJsonForNetwork(currentNetwork);
     if (!walletJson) {
+        task.failed(new Error('No wallet found to backup'), 'wallet_missing');
         throw new Error('No wallet found to backup');
     }
     const wallet = JSON.parse(walletJson);
@@ -440,25 +392,29 @@ export async function generateBackup(password: string): Promise<Blob> {
     let walletCacheHex: string | undefined;
     if (wallet.address) {
         const cacheKey = `wallet_cache_${wallet.address}`;
+        task.stage('cache_load');
         const cachedData = await loadFromIndexedDB(cacheKey);
         if (cachedData) {
             walletCacheHex = cachedData;
         }
     } else {
-        void 0 && console.warn('[BackupService] Cannot load wallet cache: address missing');
     }
 
     let walletCacheCompressed: string | undefined;
     let compressionChunks: number | undefined;
     if (walletCacheHex) {
         try {
-            // Use chunked compression for large caches to avoid memory pressure on mobile
-            const result = await compressStringChunked(walletCacheHex, 1024 * 1024); // 1MB chunks
+            task.stage('cache_compress', {
+                cacheSizeBucket: walletCacheHex.length > 5_000_000 ? 'gt_5mb' : walletCacheHex.length > 1_000_000 ? '1_5mb' : 'lt_1mb',
+            });
+            const result = await compressStringChunked(walletCacheHex, 1024 * 1024);
             walletCacheCompressed = result.compressed;
             compressionChunks = result.chunks;
             walletCacheHex = undefined;
         } catch (e) {
-            void 0 && console.warn('[BackupService] Compression failed, falling back to raw hex', e);
+            reportTaskEvent('failed', 'wallet.backup_generate', 'cache_compress', 'BackupService', {
+                reason: 'compression_failed',
+            }, 'warn', e instanceof Error ? e.message : String(e || 'compression failed'));
         }
     }
 
@@ -479,23 +435,26 @@ export async function generateBackup(password: string): Promise<Blob> {
             try {
                 returnOutputMap = JSON.parse(returnMapJson);
             } catch (e) {
-                void 0 && console.warn('[BackupService] Failed to parse return_output_map:', e);
             }
         }
     }
 
-    // Load return addresses from IndexedDB (for RETURN tx detection on restore)
     let returnAddressesCsv: string | undefined;
     if (wallet.address) {
         try {
+            task.stage('return_addresses_load');
             const cached = await loadReturnAddresses(wallet.address);
             if (cached && cached.length >= 64) {
                 returnAddressesCsv = cached;
                 const count = cached.split(',').filter((s: string) => s.length === 64).length;
-                void 0 && console.log(`[BackupService] Including ${count} return addresses in backup`);
+                reportTaskEvent('completed', 'wallet.backup_return_addresses', 'loaded', 'BackupService', {
+                    count,
+                });
             }
         } catch (e) {
-            void 0 && console.warn('[BackupService] Failed to load return addresses for backup:', e);
+            reportTaskEvent('failed', 'wallet.backup_return_addresses', 'load_failed', 'BackupService', {
+                reason: 'load_failed',
+            }, 'warn', e instanceof Error ? e.message : String(e || 'return address load failed'));
         }
     }
 
@@ -511,7 +470,6 @@ export async function generateBackup(password: string): Promise<Blob> {
         returnAddressesCsv
     };
 
-    // Calculate integrity hash before adding the integrity field
     const integrityHash = await calculateIntegrityHash(JSON.stringify(backupDataWithoutIntegrity));
 
     const backupData: BackupData = {
@@ -523,58 +481,118 @@ export async function generateBackup(password: string): Promise<Blob> {
     };
 
     const backupJson = JSON.stringify(backupData);
-    const { encrypted, iv, salt } = await encrypt(backupJson, password);
+    task.stage('encrypt');
+    const { encrypted, iv, salt, iterations } = await encrypt(backupJson, password);
 
-    const encryptedBackup: EncryptedBackup = { encrypted, iv, salt };
+    // Round-trip verify before handing the file to the user: catches an encrypt/encode bug that would otherwise only surface at restore time.
+    try {
+        const roundTrip = await decrypt(encrypted, iv, salt, password, iterations);
+        if (roundTrip !== backupJson) {
+            throw new Error('content mismatch');
+        }
+    } catch (verifyErr) {
+        task.failed?.('verify_failed');
+        throw new Error('Backup verification failed - the backup was NOT created. Please try again.');
+    }
+
+    const encryptedBackup: EncryptedBackup = { encrypted, iv, salt, iterations };
+    task.completed('generated', {
+        cachePresent: Boolean(walletCacheCompressed || walletCacheHex),
+        count: contacts.length,
+    });
     return new Blob([JSON.stringify(encryptedBackup)], { type: 'application/octet-stream' });
 }
 
 export async function downloadBackup(password: string): Promise<void> {
+    const task = startTaskTelemetry('wallet.backup_download', 'BackupService');
     const blob = await generateBackup(password);
+    task.stage('download_prepare');
     const filename = `salvium.vault`;
+
+    // Touch devices: anchor-click blob download is often silently ignored by the OS, so use Web Share and only report success when a save path actually ran. Desktop keeps anchor download.
+    const isTouch = typeof navigator !== 'undefined'
+        && ((navigator.maxTouchPoints || 0) > 0 || (typeof window !== 'undefined' && 'ontouchstart' in window));
+    try {
+        const file = new File([blob], filename, { type: 'application/octet-stream' });
+        const nav = navigator as any;
+        const canShareFile = isTouch
+            && typeof nav.canShare === 'function'
+            && nav.canShare({ files: [file] })
+            && typeof nav.share === 'function';
+        if (canShareFile) {
+            try {
+                await nav.share({ files: [file], title: filename });
+                task.completed('shared');
+                return;
+            } catch (shareErr: any) {
+                const name = shareErr?.name || '';
+                const msg = shareErr?.message || '';
+                if (name === 'AbortError' || /abort|cancel/i.test(msg)) {
+                    task.failed?.('share_cancelled');
+                    throw new Error('Backup was cancelled - no file was saved. Please export your backup again.');
+                }
+            }
+        }
+    } catch (fileErr: any) {
+        if (fileErr instanceof Error && /no file was saved/.test(fileErr.message)) throw fileErr;
+    }
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
+    a.remove();
     URL.revokeObjectURL(url);
+    task.completed();
 }
 
 export async function parseBackup(file: File, password: string): Promise<BackupData> {
+    const task = startTaskTelemetry('wallet.backup_parse', 'BackupService', {
+        cacheSizeBucket: file.size > 5_000_000 ? 'gt_5mb' : file.size > 1_000_000 ? '1_5mb' : 'lt_1mb',
+    });
     const fileContent = await file.text();
 
     let encryptedBackup: EncryptedBackup;
     try {
+        task.stage('parse_container');
         encryptedBackup = JSON.parse(fileContent);
     } catch {
+        task.failed(new Error('Invalid backup file format'), 'parse_container');
         throw new Error('Invalid backup file format');
     }
 
     if (!encryptedBackup.encrypted || !encryptedBackup.iv || !encryptedBackup.salt) {
+        task.failed(new Error('Invalid backup file structure'), 'validate_container');
         throw new Error('Invalid backup file structure');
     }
 
     let backupJson: string;
     try {
-        backupJson = await decrypt(encryptedBackup.encrypted, encryptedBackup.iv, encryptedBackup.salt, password);
+        task.stage('decrypt');
+        backupJson = await decrypt(encryptedBackup.encrypted, encryptedBackup.iv, encryptedBackup.salt, password, encryptedBackup.iterations);
     } catch {
+        task.failed(new Error('Incorrect password or corrupted backup file'), 'decrypt');
         throw new Error('Incorrect password or corrupted backup file');
     }
 
     let backupData: BackupData;
     try {
+        task.stage('parse_payload');
         backupData = JSON.parse(backupJson);
     } catch {
+        task.failed(new Error('Corrupted backup data'), 'parse_payload');
         throw new Error('Corrupted backup data');
     }
 
     if (!backupData.version || backupData.version > BACKUP_VERSION) {
+        task.failed(new Error('Unsupported backup version'), 'version_check');
         throw new Error('Unsupported backup version. Please update the app.');
     }
 
     if (backupData.version < MIN_SUPPORTED_VERSION) {
+        task.failed(new Error('Backup version too old'), 'version_check');
         throw new Error(
             'This vault file is from an older version and is no longer compatible. ' +
             'Please restore your wallet using your seed phrase instead. ' +
@@ -583,31 +601,48 @@ export async function parseBackup(file: File, password: string): Promise<BackupD
     }
 
     if (!backupData.wallet) {
+        task.failed(new Error('Backup file is missing wallet data'), 'wallet_missing');
         throw new Error('Backup file is missing wallet data');
     }
 
-    // Verify backup integrity if hash is present
+    task.stage('integrity_check');
     const isIntegrityValid = await verifyBackupIntegrity(backupData, backupJson);
     if (!isIntegrityValid) {
+        task.failed(new Error('Backup file integrity check failed'), 'integrity_check');
         throw new Error('Backup file integrity check failed. The file may be corrupted.');
     }
 
+    task.completed('parsed', {
+        cachePresent: Boolean(backupData.walletCacheHex || backupData.walletCacheCompressed || backupData.wallet?.cachedOutputsHex),
+        restorePhase2Attempt: backupData.returnAddressesCsv ? 1 : 0,
+    });
     return backupData;
 }
 
 export async function restoreFromBackup(backupData: BackupData): Promise<void> {
+    const task = startTaskTelemetry('wallet.backup_restore_service', 'BackupService', {
+        cachePresent: Boolean(backupData.walletCacheHex || backupData.walletCacheCompressed || backupData.wallet?.cachedOutputsHex),
+        restorePhase2Attempt: backupData.returnAddressesCsv ? 1 : 0,
+    });
     const currentNetwork = await resolveCurrentVaultNetwork();
     const backupNetwork = backupData.wallet?.network
         ? normalizeWalletStorageNetwork(backupData.wallet.network)
         : currentNetwork;
 
     if (backupData.wallet?.network && backupNetwork !== currentNetwork) {
+        task.failed(new Error('backup network mismatch'), 'network_check');
         throw new Error(`This vault backup belongs to ${backupNetwork}, but the current vault is ${currentNetwork}.`);
     }
 
     if (!backupData.wallet?.network && currentNetwork !== 'mainnet') {
+        task.failed(new Error('legacy backup network mismatch'), 'network_check');
         throw new Error('This vault backup predates network tagging and must be restored on the mainnet vault.');
     }
+
+    localStorage.setItem('salvium_initial_scan_complete', 'false');
+    localStorage.removeItem('salvium_restore_scan_finished');
+    localStorage.setItem(VAULT_RESTORE_PENDING_KEY, 'true');
+    localStorage.setItem(VAULT_RESTORE_STARTED_AT_KEY, String(Date.now()));
 
     writeStoredWalletForNetwork(currentNetwork, backupData.wallet);
 
@@ -615,13 +650,15 @@ export async function restoreFromBackup(backupData: BackupData): Promise<void> {
 
     if (backupData.walletCacheCompressed) {
         try {
-            // Use chunked decompression if backup has chunk info
+            task.stage('cache_decompress');
             walletCacheHex = await decompressStringChunked(
                 backupData.walletCacheCompressed,
                 backupData.integrity?.chunks
             );
         } catch (e) {
-            void 0 && console.error('[BackupService] Decompression failed:', e);
+            reportTaskEvent('failed', 'wallet.backup_restore_service', 'cache_decompress', 'BackupService', {
+                reason: 'decompress_failed',
+            }, 'warn', e instanceof Error ? e.message : String(e || 'decompress failed'));
         }
     }
 
@@ -633,15 +670,18 @@ export async function restoreFromBackup(backupData: BackupData): Promise<void> {
         try {
             const address = backupData.wallet.address;
             if (!address) {
-                void 0 && console.warn('[BackupService] Cannot restore cache: backup is missing wallet address');
+                task.failed(new Error('backup missing wallet address'), 'cache_restore');
                 localStorage.setItem('salvium_initial_scan_complete', 'false');
                 return;
             }
             const cacheKey = `wallet_cache_${address}`;
+            task.stage('cache_restore');
             await saveToIndexedDB(cacheKey, walletCacheHex);
             localStorage.setItem('salvium_initial_scan_complete', 'false');
         } catch (e) {
-            void 0 && console.error('[BackupService] Failed to save cache to IndexedDB:', e);
+            reportTaskEvent('failed', 'wallet.backup_restore_service', 'cache_restore', 'BackupService', {
+                reason: 'cache_restore_failed',
+            }, 'warn', e instanceof Error ? e.message : String(e || 'cache restore failed'));
             localStorage.setItem('salvium_initial_scan_complete', 'false');
         }
     } else {
@@ -661,29 +701,35 @@ export async function restoreFromBackup(backupData: BackupData): Promise<void> {
         try {
             localStorage.setItem(returnMapKey, JSON.stringify(backupData.returnOutputMap));
         } catch (e) {
-            void 0 && console.warn('[BackupService] Failed to restore return_output_map:', e);
         }
     }
 
-    // Restore return addresses to IndexedDB (for RETURN tx detection)
     if (backupData.returnAddressesCsv && backupData.wallet?.address) {
         try {
+            task.stage('return_addresses_restore');
             await saveReturnAddressesToDB(backupData.wallet.address, backupData.returnAddressesCsv);
             const count = backupData.returnAddressesCsv.split(',').filter((s: string) => s.length === 64).length;
-            void 0 && console.log(`[BackupService] Restored ${count} return addresses from backup`);
+            reportTaskEvent('completed', 'wallet.backup_return_addresses', 'restored', 'BackupService', {
+                count,
+            });
         } catch (e) {
-            void 0 && console.warn('[BackupService] Failed to restore return addresses:', e);
+            reportTaskEvent('failed', 'wallet.backup_return_addresses', 'restore_failed', 'BackupService', {
+                reason: 'restore_failed',
+            }, 'warn', e instanceof Error ? e.message : String(e || 'return address restore failed'));
         }
     }
 
-    // Populate scan journal checkpoint so gap detection knows these blocks are already scanned
-    // Use snapshotHeight (when cache was generated) or height (wallet height) from the backup
+    // Seed the journal checkpoint so gap detection treats restored blocks as already scanned.
     const scannedHeight = backupData.wallet?.snapshotHeight || backupData.wallet?.height || 0;
     if (backupData.wallet?.address && scannedHeight > 0) {
         try {
+            task.stage('journal_checkpoint');
             await populateCheckpointFromVaultRestore(backupData.wallet.address, scannedHeight);
         } catch (e) {
-            void 0 && console.warn('[BackupService] Failed to populate scan checkpoint:', e);
+            reportTaskEvent('failed', 'wallet.backup_restore_service', 'journal_checkpoint', 'BackupService', {
+                reason: 'checkpoint_failed',
+            }, 'warn', e instanceof Error ? e.message : String(e || 'checkpoint failed'));
         }
     }
+    task.completed('restored');
 }

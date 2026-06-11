@@ -32,7 +32,8 @@
     "history": "Geçmiş",
     "settings": "Ayarlar",
     "dashboard": "Panel",
-    "lockWallet": "Cüzdanı Kilitle"
+    "lockWallet": "Cüzdanı Kilitle",
+    "assets": "Varlıklar"
   },
   "dashboard": {
     "balance": "Bakiye",
@@ -47,7 +48,8 @@
     "noActiveStakes": "Aktif stake yok",
     "earnRewards": "SAL'ınızı ~30 gün stake ederek ödül kazanın.",
     "createNewStake": "Yeni Stake Oluştur",
-    "unlocksIn": "{{time}} içinde açılır ({{blocks}} blok)"
+    "unlocksIn": "{{time}} içinde açılır ({{blocks}} blok)",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "Son 24 Saat",
@@ -69,7 +71,7 @@
     "sendAssets": "Varlık Gönder",
     "creatingTransaction": "İşlem Oluşturuluyor...",
     "transactionSent": "İşlem Gönderildi!",
-    "amountSent": "{{amount}} SAL ağa gönderildi.",
+    "amountSent": "{{amount}} {{asset}} ağa gönderildi.",
     "transactionHash": "İşlem Hash'i",
     "sendAnother": "Başka İşlem Gönder",
     "addressBook": "Adres Defteri",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "Lütfen geçerli bir pozitif miktar girin",
-      "exceedsBalance": "Miktar kullanılabilir bakiyeyi aşıyor"
+      "exceedsBalance": "Miktar kullanılabilir bakiyeyi aşıyor",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,8 @@
     "sections": {
       "securityPrivacy": "Güvenlik ve Gizlilik",
       "general": "Genel",
-      "language": "Dil"
+      "language": "Dil",
+      "preferences": "Tercihler"
     },
     "biometrics": {
       "title": "Biyometri ile Aç",
@@ -222,7 +226,8 @@
       "errors": {
         "fillAll": "Lütfen tüm alanları doldurun",
         "mismatch": "Yeni şifreler eşleşmiyor",
-        "empty": "Şifre boş olamaz"
+        "empty": "Şifre boş olamaz",
+        "minLength": "Parola en az 8 karakter olmalıdır"
       }
     },
     "blockchain": {
@@ -259,6 +264,14 @@
       "revealButton": "Reveal Seed Phrase",
       "copySeed": "Copy Seed Phrase",
       "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
+    },
+    "connection": {
+      "title": "Bağlantı",
+      "description": "Cüzdanınızı hangi Salvium düğümünün senkronize edeceğini seçin. Otomatik mod sizi sağlıklı bir resmi düğümde tutar; yalnızca herkese açık şekilde erişilebiliyorsa kendi düğümünüzü ekleyin. Her durumda istekler cihazınızdan doğrudan gönderilmek yerine vault sunucusu üzerinden yönlendirilir."
+    },
+    "currency": {
+      "title": "Görüntüleme para birimi",
+      "description": "Bakiye değerinizi göstermek için kullanılan itibari para birimini seçin."
     }
   },
   "onboarding": {
@@ -435,5 +448,156 @@
     "initializingWallet": "Cüzdan başlatılıyor...",
     "failedToCreate": "Yedek oluşturulamadı",
     "failedToUnlock": "Cüzdan kilidi açılamadı"
+  },
+  "assets": {
+    "title": "Varlıklar",
+    "subtitle": "Cüzdanınızdaki tüm varlıkları görüntüleyin ve yönetin.",
+    "viewAll": "Tümünü Gör",
+    "viewAllAssets": "Tüm Varlıkları Gör",
+    "viewAssets": "Varlıkları Gör",
+    "create": "Oluştur",
+    "createAsset": "Varlık Oluştur",
+    "createAssetTransaction": "Varlık İşlemi Oluştur",
+    "creating": "Oluşturuluyor...",
+    "yourAssets": "Varlıklarınız",
+    "searchAssets": "Varlık ara...",
+    "searchAssetsShort": "Varlık ara",
+    "searchAssetsLabel": "Varlık Ara",
+    "searchAssetsLong": "Ticker, ad veya varlık türüne göre ara",
+    "filters": {
+      "all": "Tüm Varlıklar",
+      "metadata": "Meta verili",
+      "plain": "Temel Varlıklar"
+    },
+    "empty": {
+      "noBalances": "Henüz varlık bakiyesi yok",
+      "waitForTransfers": "Bir varlık oluşturun veya gelen varlık transferlerini bekleyin.",
+      "noFilterMatches": "Geçerli filtrelerle eşleşen varlık yok.",
+      "noRecentActivity": "Yakın zamanda varlık etkinliği yok.",
+      "selectAsset": "Bir varlık seçin",
+      "chooseAsset": "İncelemek için listeden bir varlık seçin.",
+      "noTransactions": "Seçilen varlık için kayıtlı işlem yok."
+    },
+    "unlock": {
+      "title": "Varlıkları yönetmek için cüzdanın kilidini açın.",
+      "description": "Varlık bakiyeleri, transferler ve oluşturma için kilidi açık bir cüzdan gerekir."
+    },
+    "activation": {
+      "scheduled": "Varlık Aktivasyonu {{label}} için {{height}} bloğunda planlandı.",
+      "blocksRemaining": "blok kaldı",
+      "estimatedTime": "Tahmini kalan süre: {{time}}"
+    },
+    "success": {
+      "submitted": "Varlık oluşturma gönderildi",
+      "created": "{{assetType}} başarıyla gönderildi ve cüzdan varlık bakiyesini aldığında veya onayladığında burada görünecek.",
+      "submittedHashes": "Gönderilen işlem hashleri"
+    },
+    "labels": {
+      "asset": "Varlık",
+      "catalog": "Katalog",
+      "listed": "Listelenen",
+      "name": "Ad",
+      "balance": "Bakiye",
+      "unlocked": "Kilidi açık",
+      "unlockedBalance": "Kilidi açık bakiye",
+      "locked": "Kilitli",
+      "lockedBalance": "Kilitli bakiye",
+      "standard": "Standart",
+      "type": "Tür",
+      "assetType": "Varlık türü",
+      "supply": "Arz",
+      "totalSupply": "Toplam arz",
+      "ownershipPercentage": "Sahiplik yüzdesi",
+      "assetId": "Varlık ID",
+      "created": "Oluşturuldu",
+      "decimals": "Ondalıklar",
+      "amount": "Tutar",
+      "status": "Durum",
+      "date": "Tarih",
+      "txHash": "TX Hash",
+      "metadata": "Meta veri",
+      "media": "Medya",
+      "quickActions": "Hızlı işlemler",
+      "assetLinks": "Varlık bağlantıları",
+      "recentActivity": "Son etkinlik",
+      "transactionHistory": "Varlık işlem geçmişi",
+      "assetOverview": "Varlık özeti",
+      "premium": "Premium",
+      "unknown": "Bilinmiyor"
+    },
+    "actions": {
+      "send": "Gönder",
+      "receive": "Al",
+      "sendAsset": "{{ticker}} gönder",
+      "receiveAsset": "{{ticker}} al",
+      "open": "Aç",
+      "openAssetUrl": "Varlık URL’sini aç",
+      "viewCatalog": "Kataloğu gör",
+      "copyAssetId": "Varlık ID’sini kopyala",
+      "backToAssets": "Varlıklara dön",
+      "dismiss": "Kapat",
+      "retry": "Tekrar dene"
+    },
+    "media": {
+      "explorerImage": "Explorer varlık görseli"
+    },
+    "states": {
+      "publicCatalogAsset": "Herkese açık katalog varlığı",
+      "inWallet": "Cüzdanda {{amount}} {{ticker}}",
+      "catalogOnlyNotice": "Bu varlık herkese açık SAL kataloğundan yüklendi. Şu anda bu cüzdanda değil, bu yüzden gönderme devre dışı.",
+      "loadingCatalog": "Varlıklar yükleniyor...",
+      "catalogLoadFailed": "Explorer kataloğu yüklenemedi.",
+      "catalogEmpty": "Explorer hiç varlık döndürmedi.",
+      "catalogNoMatches": "Aramanızla eşleşen varlık yok.",
+      "showingAssets": "{{total}} varlıktan {{start}} - {{end}} arası gösteriliyor",
+      "unlockedAmount": "Kilidi açık: {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "Kilidi açık {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "Temel varlık",
+      "token": "Token"
+    },
+    "createForm": {
+      "cost": "Bu varlığı oluşturmak {{cost}} SAL{{suffix}} tutar",
+      "premiumSuffix": " çünkü bu premium bir varlık kodudur.",
+      "standardSuffix": ".",
+      "assetCode": "Varlık kodu",
+      "premiumNote": "Bu premium bir varlık kodudur. Oluşturma maliyeti 10.000 SAL.",
+      "supply": "Arz",
+      "advanced": "Gelişmiş",
+      "advancedDescription": "İsteğe bağlı token meta verisi ve boyut",
+      "displayName": "Görünen ad",
+      "displayNamePlaceholder": "Örnek Varlık",
+      "size": "Boyut",
+      "projectUrl": "Proje URL’si",
+      "additionalMetadata": "Ek meta veri",
+      "additionalMetadataPlaceholder": "İsteğe bağlı JSON veya notlar. Yukarıdaki yapılandırılmış alanlar otomatik olarak birleştirilir."
+    },
+    "validation": {
+      "assetCodeRequired": "Varlık kodu gereklidir.",
+      "assetCodeFormat": "Varlık kodu tam olarak 4 büyük harf veya rakam olmalıdır.",
+      "assetCodePrefix": "Varlık kodu 'SAL' ile başlayamaz.",
+      "assetCodeReserved": "Varlık kodu ayrılmıştır ve kullanılamaz.",
+      "supplyRequired": "Arz gereklidir.",
+      "supplyWhole": "Arz tam sayı olmalıdır.",
+      "supplyRange": "Arz 1 ile {{max}} arasında olmalıdır.",
+      "supplyInteger": "Arz geçerli bir tam sayı olmalıdır.",
+      "decimalsRange": "Ondalıklar 0 ile {{max}} arasında bir tam sayı olmalıdır.",
+      "metadataTooLong": "Ek meta veri çok uzun (maks. {{max}} karakter).",
+      "assetCodeExists": "Varlık kodu '{{code}}' zaten var."
+    },
+    "transactions": {
+      "pending": "Beklemede",
+      "received": "Alındı",
+      "sent": "Gönderildi",
+      "awaitingConfirmation": "Onay bekleniyor"
+    },
+    "time": {
+      "lessThanMinute": "bir dakikadan az"
+    },
+    "errors": {
+      "loadFailed": "Varlıklar yüklenemedi",
+      "createFailed": "Varlık işlemi oluşturulamadı"
+    }
   }
 }

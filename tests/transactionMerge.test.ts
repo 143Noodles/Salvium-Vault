@@ -268,4 +268,44 @@ describe('mergeTransactionLifecycle', () => {
     expect(merged.filter((tx) => tx.txid === 'tx-4')).toHaveLength(2);
     expect(merged.some((tx) => tx.pending)).toBe(false);
   });
+
+  it('keeps the local pending amount when the mempool row reports zero for an outgoing tx', () => {
+    const merged = mergeTransactionLifecycle(
+      [],
+      [
+        {
+          txid: 'tx-pending-out',
+          type: 'out',
+          tx_type: 0,
+          tx_type_label: 'Broadcasting',
+          amount: 0,
+          fee: 0.001,
+          timestamp: 320,
+          height: 0,
+          confirmations: 0,
+          asset_type: 'SAL1',
+          pending: true,
+        },
+      ],
+      [
+        {
+          txid: 'tx-pending-out',
+          type: 'out',
+          tx_type: 0,
+          tx_type_label: 'Transfer',
+          amount: 0.03,
+          fee: 0,
+          timestamp: 300,
+          height: 0,
+          confirmations: 0,
+          asset_type: 'SAL1',
+          pending: true,
+        },
+      ]
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].amount).toBe(0.03);
+    expect(merged[0].tx_type_label).toBe('Broadcasting');
+  });
 });

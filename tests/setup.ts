@@ -26,11 +26,17 @@ if (typeof globalThis.TextEncoder === 'undefined') {
 export async function clearMockStores() {
   // Delete all IndexedDB databases
   const databases = await indexedDB.databases?.() || [];
-  for (const db of databases) {
-    if (db.name) {
-      indexedDB.deleteDatabase(db.name);
+  await Promise.all(databases.map((db) => new Promise<void>((resolve, reject) => {
+    if (!db.name) {
+      resolve();
+      return;
     }
-  }
+
+    const request = indexedDB.deleteDatabase(db.name);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => resolve();
+  })));
 }
 
 // Mock localStorage

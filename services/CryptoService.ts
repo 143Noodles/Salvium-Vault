@@ -1,18 +1,19 @@
-/**
- * Crypto Service for Wallet Encryption
- * 
- * Uses Web Crypto API to securely encrypt/decrypt wallet seeds with user passwords.
- * PBKDF2 for key derivation, AES-GCM for encryption.
- */
+// Wallet encryption: PBKDF2 (SHA-256) key derivation + AES-GCM, via Web Crypto API.
 
-const PBKDF2_ITERATIONS = 100000;
+// Legacy vaults stored no iterations field and used 100k; decrypt() must default to this so they still open. Do not change.
+export const LEGACY_PBKDF2_ITERATIONS = 100000;
+// New encryptions store this alongside ciphertext so it can be raised later without breaking older data.
+export const DEFAULT_PBKDF2_ITERATIONS = 600000;
 const SALT_LENGTH = 16;
 const IV_LENGTH = 12;
 
-/**
- * Derive an encryption key from password using PBKDF2
- */
-async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
+function normalizeIterations(iterations?: number): number {
+  return Number.isFinite(iterations) && (iterations as number) > 0
+    ? Math.floor(iterations as number)
+    : LEGACY_PBKDF2_ITERATIONS;
+}
+
+async function deriveKey(password: string, salt: Uint8Array, iterations: number): Promise<CryptoKey> {
   const encoder = new TextEncoder();
   const passwordKey = await crypto.subtle.importKey(
     'raw',
@@ -26,7 +27,7 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
     {
       name: 'PBKDF2',
       salt: salt.buffer as ArrayBuffer,
-      iterations: PBKDF2_ITERATIONS,
+      iterations,
       hash: 'SHA-256'
     },
     passwordKey,
@@ -36,17 +37,21 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
   );
 }
 
-/**
- * Encrypt data with password using AES-GCM
- */
-export async function encrypt(data: string, password: string): Promise<{
+// Callers MUST persist the returned `iterations` alongside iv/salt and pass it back to decrypt().
+export async function encrypt(
+  data: string,
+  password: string,
+  iterations: number = DEFAULT_PBKDF2_ITERATIONS
+): Promise<{
   encrypted: string;
   iv: string;
   salt: string;
+  iterations: number;
 }> {
+  const usedIterations = normalizeIterations(iterations);
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
   const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
-  const key = await deriveKey(password, salt);
+  const key = await deriveKey(password, salt, usedIterations);
 
   const encoder = new TextEncoder();
   const encrypted = await crypto.subtle.encrypt(
@@ -58,24 +63,24 @@ export async function encrypt(data: string, password: string): Promise<{
   return {
     encrypted: arrayBufferToBase64(encrypted),
     iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
-    salt: arrayBufferToBase64(salt.buffer as ArrayBuffer)
+    salt: arrayBufferToBase64(salt.buffer as ArrayBuffer),
+    iterations: usedIterations
   };
 }
 
-/**
- * Decrypt data with password using AES-GCM
- */
+// `iterations` defaults to LEGACY 100k: old data has no stored field (passes undefined) and must still decrypt.
 export async function decrypt(
   encryptedData: string,
   iv: string,
   salt: string,
-  password: string
+  password: string,
+  iterations?: number
 ): Promise<string> {
   const saltBytes = base64ToArrayBuffer(salt);
   const ivBytes = base64ToArrayBuffer(iv);
   const encryptedBytes = base64ToArrayBuffer(encryptedData);
 
-  const key = await deriveKey(password, new Uint8Array(saltBytes));
+  const key = await deriveKey(password, new Uint8Array(saltBytes), normalizeIterations(iterations));
 
   const decrypted = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: new Uint8Array(ivBytes) },
@@ -87,14 +92,9 @@ export async function decrypt(
   return decoder.decode(decrypted);
 }
 
-/**
- * Convert ArrayBuffer to base64 string
- */
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
-  // PERFORMANCE: Use chunked processing to avoid call stack overflow for large buffers
-  // and reduce string concatenation overhead
-  const CHUNK_SIZE = 0x8000; // 32KB chunks
+  const CHUNK_SIZE = 0x8000;
   const chunks: string[] = [];
   for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
     const chunk = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
@@ -103,23 +103,16 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(chunks.join(''));
 }
 
-/**
- * Convert base64 string to ArrayBuffer
- */
 export function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const binary = atob(base64);
   const len = binary.length;
   const bytes = new Uint8Array(len);
-  // PERFORMANCE: Use direct assignment instead of charCodeAt in tight loop
   for (let i = 0; i < len; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes.buffer;
 }
 
-/**
- * Hash a password for comparison (not for encryption)
- */
 export async function hashPassword(password: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(password);
@@ -127,48 +120,21 @@ export async function hashPassword(password: string): Promise<string> {
   return arrayBufferToBase64(hash);
 }
 
-/**
- * Constant-time string comparison to prevent timing attacks
- * Used for comparing password hashes or other sensitive strings
- * @param a First string to compare
- * @param b Second string to compare
- * @returns True if strings are equal
- */
+// Constant-time comparison to prevent timing attacks on sensitive strings. Folds the length
+// difference into the accumulator and iterates the full max length (no early-return branch).
 export function constantTimeEquals(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    // Compare against same-length string to maintain constant time
-    // (length difference is already leaked, but comparison time shouldn't reveal more)
-    const dummy = 'x'.repeat(a.length);
-    let result = 0;
-    for (let i = 0; i < a.length; i++) {
-      result |= a.charCodeAt(i) ^ dummy.charCodeAt(i);
-    }
-    return false;
-  }
-
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  let result = a.length ^ b.length;
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    result |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   }
   return result === 0;
 }
 
-/**
- * Compare two password hashes in constant time
- * @param hash1 First hash (base64)
- * @param hash2 Second hash (base64)
- * @returns True if hashes match
- */
 export function compareHashes(hash1: string, hash2: string): boolean {
   return constantTimeEquals(hash1, hash2);
 }
 
-/**
- * Sanitize error messages to remove sensitive information
- * Removes hex keys, mnemonics, seeds, and other sensitive data
- * @param message Error message to sanitize
- * @returns Sanitized message safe for display
- */
 export function sanitizeErrorMessage(message: string): string {
   return message
     .replace(/[a-fA-F0-9]{64}/g, '[REDACTED_KEY]')

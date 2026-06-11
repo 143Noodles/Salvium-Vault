@@ -1,65 +1,39 @@
-/**
- * CSPScanner.js - Compact Scan Protocol Scanner
- * Parallel scanning using binary protocol.
- */
-
 class CSPScanner {
-    /**
-     * Create a new CSP scanner
-     * @param {Object} options Configuration options
-     * @param {string} options.viewSecretKey - 64-char hex view secret key
-     * @param {string} options.publicSpendKey - 64-char hex public spend key (REQUIRED for Phase 2 check)
-     * @param {string} options.kViewIncoming - 64-char hex Carrot k_view_incoming key (REQUIRED for Salvium)
-    * @param {string} options.sViewBalance - 64-char hex Carrot s_view_balance secret (needed for internal enote tags)
-     * @param {string} options.apiBaseUrl - API base URL (e.g., 'http://localhost:3000')
-     * @param {number} options.workerCount - Number of parallel workers (default: 4)
-     * @param {number} options.chunkSize - Blocks per chunk (default: 1000)
-     * @param {Object} options.masterWallet - Reference to main thread wallet (optional)
-     * @param {number[]} options.stakeReturnHeights - Heights where stake returns occur (for coinbase filtering)
-     * @param {Function} options.onProgress - Progress callback
-     * @param {Function} options.onMatch - Match callback (view tag matches)
-     * @param {Function} options.onComplete - Completion callback
-     * @param {Function} options.onError - Error callback
-     */
     constructor(options) {
         this.viewSecretKey = options.viewSecretKey;
         this.publicSpendKey = options.publicSpendKey || '';
-        this.kViewIncoming = options.kViewIncoming || '';  // Carrot key - CRITICAL for Salvium
-        this.sViewBalance = options.sViewBalance || '';    // Carrot key - for internal enote view tags
-        // CSP v6: key images CSV for spent detection (OUT tx discovery)
+        this.kViewIncoming = options.kViewIncoming || '';
+        this.sViewBalance = options.sViewBalance || '';
         this.keyImagesCsv = options.keyImagesCsv || '';
-        this.apiBaseUrl = options.apiBaseUrl || '';
+        this.apiBaseUrl = this.resolveApiBaseUrl(options.apiBaseUrl);
         this.cspCacheEpoch = options.cspCacheEpoch || '';
-        // Worker scaling
-        // - maxWorkerCount: absolute cap
-        // - initialWorkerCount: how many workers to start with (autoTune will ramp up)
         const defaultMax = options.workerCount || Math.min(navigator.hardwareConcurrency || 4, 6);
         this.maxWorkerCount = Math.max(1, options.maxWorkerCount || defaultMax);
         const defaultInitial = Math.min(2, this.maxWorkerCount);
         this.workerCount = Math.max(1, Math.min(this.maxWorkerCount, options.initialWorkerCount || defaultInitial));
         this.enabledWorkerCount = this.workerCount;
+        const requestedStartupRamp = Number.isFinite(options.startupRampWorkerCount)
+            ? options.startupRampWorkerCount
+            : this.workerCount;
+        this.startupRampWorkerCount = Math.max(
+            this.workerCount,
+            Math.min(this.maxWorkerCount, requestedStartupRamp)
+        );
         this.autoTune = options.autoTune !== false;
         this.chunkSize = options.chunkSize || 1000;
         this.masterWallet = options.masterWallet || null;
 
-        // Stake return heights for coinbase filtering
         this.stakeReturnHeights = options.stakeReturnHeights || [];
 
-        // Subaddress map for ownership verification
         this.subaddressMapCsv = options.subaddressMapCsv || '';
 
-        // Return addresses for RETURN transaction detection
         this.returnAddressesCsv = options.returnAddressesCsv || '';
 
-        // BATCH MODE: Fetch multiple chunks per request to reduce network round-trips
-        // Default: 20 chunks (20,000 blocks) per batch request for fewer network round-trips
         this.batchSize = options.batchSize || 20;
-        this.useBatchMode = options.useBatchMode !== false;  // Enabled by default
+        this.useBatchMode = options.useBatchMode !== false;
 
-        // BUNDLE/STREAMING MODE: Can be memory-heavy on mobile WebViews
         this.useBundleMode = options.useBundleMode;
 
-        // Auto-tune state
         this._perChunkMsSamples = [];
         this._recentErrors = 0;
         this._lastTuneAt = 0;
@@ -69,29 +43,47 @@ class CSPScanner {
 
         this.DEBUG = options.debug || false;
 
-        // Callbacks
         this.onProgress = options.onProgress || (() => { });
         this.onMatch = options.onMatch || (() => { });
+        // Invoked after each task completes with the chunk-aligned starts that finished, plus
+        // the subset that had matches. Lets the caller persist progress incrementally (crash
+        // safety) rather than only in one bulk write at the end of the scan. Default no-op.
+        this.onChunksScanned = options.onChunksScanned || (() => { });
+
+        // Persistent per-chunk byte cache (Cache Storage), so a re-scan / reload doesn't
+        // re-download the chain. Disabled where unsafe: no Cache Storage, or Android (tight
+        // storage quota — caching there is a future refinement). The cache is ONLY a byte
+        // source; coverage stays journal-authoritative, so a cache miss just re-fetches.
+        this._chunkCachePromise = null;
+        this._chunkCacheDisabled = (typeof caches === 'undefined')
+            || /Android/i.test((typeof navigator !== 'undefined' && navigator.userAgent) || '');
+
+        // Returned-transfer pass flag: when true, workers only match the return-address set and
+        // skip ownership crypto. Broadcast to workers via setReturnMatchOnly().
+        this.returnMatchOnly = false;
         this.onComplete = options.onComplete || (() => { });
         this.onError = options.onError || (() => { });
+        this.onTelemetry = options.onTelemetry || (() => { });
 
-        // State
         this.workers = [];
         this.taskQueue = [];
         this.pendingTasks = 0;
         this.isScanning = false;
         this.scanAborted = false;
+        this.streamDispatchInProgress = false;
         this.totalBlocks = 0;
         this.scannedBlocks = 0;
         this.startTime = 0;
 
-        // Match tracking
         this.allMatches = [];
-        this.matchedBlocks = new Set();  // Heights with view tag matches
-        this.matchedChunks = new Set();  // Chunk start heights that had matches (for targeted rescan)
-        this.scannedChunks = new Set();  // ALL successfully scanned chunks (for gap detection after interruption)
+        this.matchedBlocks = new Set();
+        this.matchedChunks = new Set();
+        this.scannedChunks = new Set();
+        // Ingest floor: matches below this height are NOT collected for phase-3 sparse
+        // ingest (they are the wallet history already in the tail chunk before the requested
+        // start). 0 = no filtering (full restore). Set per-scan in scan() to the requested start.
+        this.ingestFloorHeight = 0;
 
-        // Statistics
         this.stats = {
             totalChunks: 0,
             completedChunks: 0,
@@ -105,31 +97,127 @@ class CSPScanner {
             startHeight: 0,
             endHeight: 0,
             elapsedMs: 0,
-            // CSP v4: Carrot filtering stats
             carrotCoinbaseChecked: 0,
             carrotCoinbaseMatched: 0,
             carrotRingctPassthrough: 0,
-            // CSP v6: Spent detection stats
             inputsScanned: 0,
             spentOutputsFound: 0
         };
 
-        // Cached WASM for workers
         this.wasmBinary = null;
         this.patchedJsCode = null;
+        this.workerScriptSource = null;
     }
 
-    /**
-     * Track main-thread responsiveness (rough proxy for GC/CPU pressure).
-     * Uses requestAnimationFrame delay; works across browsers.
-     */
+    emitTelemetry(type, context = {}, level = 'info', message) {
+        try {
+            this.onTelemetry(type, {
+                level,
+                message,
+                context: {
+                    workerCount: this.workerCount,
+                    maxWorkerCount: this.maxWorkerCount,
+                    enabledWorkerCount: this.enabledWorkerCount,
+                    startupRampWorkerCount: this.startupRampWorkerCount,
+                    batchSize: this.batchSize,
+                    chunkSize: this.chunkSize,
+                    useBundleMode: this.useBundleMode !== false,
+                    useBatchMode: this.useBatchMode !== false,
+                    completedChunks: this.stats?.completedChunks || 0,
+                    totalChunks: this.stats?.totalChunks || 0,
+                    bytesReceived: this.stats?.bytesReceived || 0,
+                    ...context
+                }
+            });
+        } catch (_) {
+        }
+    }
+
+    getWorkerControlTimeoutMs(operation = 'control') {
+        const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '';
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(ua);
+        if (operation === 'init') {
+            return isMobile ? 60000 : 30000;
+        }
+        return isMobile ? 30000 : 15000;
+    }
+
+    isDocumentHidden() {
+        return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    }
+
+    createVisibilityAwareInitWatchdog({ workerId, timeoutMs, workerStartedAt, onTimeout }) {
+        let activeMs = 0;
+        let lastObservedAt = performance.now();
+        let lastHidden = this.isDocumentHidden();
+        let timer = null;
+        let cleanedUp = false;
+        const canObserveVisibility = typeof document !== 'undefined'
+            && typeof document.addEventListener === 'function'
+            && typeof document.removeEventListener === 'function';
+
+        const observeElapsed = () => {
+            const now = performance.now();
+            if (!lastHidden) {
+                activeMs += Math.max(0, now - lastObservedAt);
+            }
+            lastObservedAt = now;
+            lastHidden = this.isDocumentHidden();
+            return now;
+        };
+
+        const schedule = () => {
+            if (cleanedUp) return;
+            const remainingMs = Math.max(0, timeoutMs - activeMs);
+            timer = setTimeout(check, Math.min(1000, Math.max(50, remainingMs)));
+        };
+
+        const handleVisibilityChange = () => {
+            const now = observeElapsed();
+            const hidden = this.isDocumentHidden();
+            this.emitTelemetry(hidden ? 'scan.worker_init_suspended_hidden' : 'scan.worker_init_resumed_visible', {
+                workerId,
+                activeInitMs: Math.round(activeMs),
+                wallDurationMs: Math.round(now - workerStartedAt),
+                visibilityState: hidden ? 'hidden' : 'visible'
+            });
+            lastHidden = hidden;
+            lastObservedAt = now;
+        };
+
+        const check = () => {
+            timer = null;
+            observeElapsed();
+            if (activeMs >= timeoutMs && !this.isDocumentHidden()) {
+                onTimeout(Math.round(activeMs));
+                return;
+            }
+            schedule();
+        };
+
+        if (canObserveVisibility) {
+            document.addEventListener('visibilitychange', handleVisibilityChange);
+        }
+        schedule();
+
+        return () => {
+            cleanedUp = true;
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            if (canObserveVisibility) {
+                document.removeEventListener('visibilitychange', handleVisibilityChange);
+            }
+        };
+    }
+
     startUiLagMonitor() {
         if (this._uiLagTimer) return;
         const tick = () => {
             const t0 = performance.now();
             requestAnimationFrame(() => {
                 const lag = performance.now() - t0;
-                // EWMA to smooth noise
                 this._uiLagEwmaMs = this._uiLagEwmaMs ? (0.8 * this._uiLagEwmaMs + 0.2 * lag) : lag;
             });
         };
@@ -179,8 +267,15 @@ class CSPScanner {
             ]);
 
             const initPromises = [];
-            for (let id = this.workers.length; id < target; id++) {
-                initPromises.push(this.createWorker(id, wasmBinary, patchedJsCode));
+            const usedWorkerIds = new Set(this.workers.map(w => w.id));
+            const missingWorkerCount = Math.max(0, target - this.workers.length);
+            let nextWorkerId = 0;
+            for (let created = 0; created < missingWorkerCount; created++) {
+                while (usedWorkerIds.has(nextWorkerId)) {
+                    nextWorkerId++;
+                }
+                usedWorkerIds.add(nextWorkerId);
+                initPromises.push(this.createWorker(nextWorkerId, wasmBinary, patchedJsCode));
             }
             await Promise.all(initPromises);
         } finally {
@@ -192,7 +287,6 @@ class CSPScanner {
         const target = Math.max(1, Math.min(this.maxWorkerCount, targetCount));
         this.enabledWorkerCount = target;
 
-        // Enable lowest ids first (stable)
         const sorted = [...this.workers].sort((a, b) => a.id - b.id);
         for (let i = 0; i < sorted.length; i++) {
             const w = sorted[i];
@@ -209,7 +303,6 @@ class CSPScanner {
             }
         }
 
-        // If we just enabled workers, try to feed them.
         for (let i = 0; i < target; i++) {
             this.scheduleNextTask();
         }
@@ -221,31 +314,30 @@ class CSPScanner {
         if (this.scanAborted) return;
 
         const now = Date.now();
-        // Don’t thrash: tune at most every 6 seconds.
         if (now - this._lastTuneAt < 6000) return;
 
         const medianMs = this.getMedianPerChunkMs();
         if (!medianMs) return;
 
-        // Heuristics:
-        // - If UI is laggy or we had errors, back off.
-        // - If UI is responsive and chunks are fast, ramp up.
         let desired = this.enabledWorkerCount;
+        let emittedRampTelemetry = false;
 
         const uiLag = this._uiLagEwmaMs || 0;
         const hadErrors = this._recentErrors > 0;
+        const hasBacklog = this.taskQueue && this.taskQueue.length > 0;
+        const isVisible = !this.isDocumentHidden();
 
         if (hadErrors || uiLag > 140) {
             desired = Math.max(1, desired - 1);
-        } else {
-            // If we have plenty of work queued and per-chunk time is low, scale up.
-            const hasBacklog = this.taskQueue && this.taskQueue.length > 0;
-            if (hasBacklog && uiLag < 80 && medianMs < 1600) {
+        } else if (hasBacklog && isVisible) {
+            if (this.enabledWorkerCount < this.startupRampWorkerCount && uiLag < 100 && medianMs < 10000) {
+                desired = Math.min(this.startupRampWorkerCount, desired + 1);
+                emittedRampTelemetry = true;
+            } else if (uiLag < 80 && medianMs < 1600) {
                 desired = Math.min(this.maxWorkerCount, desired + 1);
             }
         }
 
-        // Reset error counter after making a decision.
         this._recentErrors = 0;
 
         if (desired === this.enabledWorkerCount) {
@@ -253,51 +345,190 @@ class CSPScanner {
             return;
         }
 
-        // Scale up by creating workers if needed, then enable/disable.
         await this.ensureWorkers(desired);
         this.setEnabledWorkers(desired);
         this._lastTuneAt = now;
 
+        if (emittedRampTelemetry) {
+            this.emitTelemetry('scan.worker_startup_ramp', {
+                desiredWorkerCount: desired,
+                medianChunkMs: Math.round(medianMs),
+                uiLagMs: Math.round(uiLag)
+            });
+        }
+
         if (this.DEBUG) {
-            void 0 && console.log(`[CSPScanner] 🔧 AutoTune: workers=${this.enabledWorkerCount}/${this.maxWorkerCount}, medianChunkMs=${medianMs.toFixed(0)}, uiLag=${uiLag.toFixed(0)}ms`);
         }
     }
 
-    /**
-     * Fetch and cache the WASM binary
-     * Cache-busting version - increment when deploying new WASM
-     */
-    static WASM_VERSION = '5.53.6-testnet-fix2-wasm11-returnfix';
+    static WASM_VERSION = '8.1.4-20260611';
+
+    // fetch() with a hard timeout so a stuck/half-open connection can't hang init/scan forever.
+    static async fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
+        if (typeof AbortController === 'undefined') {
+            return fetch(url, options);
+        }
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
 
 
+    resolveApiBaseUrl(apiBaseUrl) {
+        if (apiBaseUrl) return String(apiBaseUrl).replace(/\/+$/, '');
+
+        try {
+            if (typeof window !== 'undefined' && window.location?.origin) {
+                return window.location.origin;
+            }
+        } catch (_) {
+        }
+
+        return '';
+    }
+
+    getBulkBaseUrl() {
+        // Bulk data (271MB bundle) served from cdn.salvium.tools to bypass the Cloudflare
+        // throttle. Same-origin fallback for localhost/dev.
+        // DEPLOY HAZARD GUARD: cdn.salvium.tools reverse-proxies to the salvium-vault-TEST
+        // container (Caddyfile), so ONLY vault-test may use it. Routing prod through it served a
+        // version-skewed scanner WASM to prod clients (the 2026-06-10 rollback). Before re-adding
+        // prod here, point a dedicated host at the prod container.
+        try {
+            const h = (typeof window !== 'undefined' && window.location && window.location.hostname) || '';
+            if (h === 'vault-test.salvium.tools') {
+                return 'https://cdn.salvium.tools';
+            }
+        } catch (_) {}
+        return this.apiBaseUrl;
+    }
+
+
+    getWorkerScriptUrl() {
+        const version = encodeURIComponent(CSPScanner.WASM_VERSION);
+        const epoch = this.cspCacheEpoch ? `&csp_epoch=${encodeURIComponent(this.cspCacheEpoch)}` : '';
+        return `/vault/wallet/csp-scanner.worker.js?v=${version}${epoch}`;
+    }
+
+    getWorkerScriptFetchUrl() {
+        const version = encodeURIComponent(CSPScanner.WASM_VERSION);
+        return `/vault/wallet/csp-scanner.worker.js?v=${version}`;
+    }
+
+    async fetchWorkerScriptSource(workerStartedAt = performance.now()) {
+        if (this.workerScriptSource) return this.workerScriptSource;
+
+        const scriptUrl = this.getWorkerScriptFetchUrl();
+        this.emitTelemetry('scan.worker_script_fetch_started', {
+            workerScriptVersion: CSPScanner.WASM_VERSION,
+            workerScriptUrl: scriptUrl
+        });
+
+        // Default HTTP caching: the URL carries ?v=<WASM_VERSION> and the server serves versioned
+        // requests immutable, so a new deploy = new URL. 'no-store' here forced a ~145KB re-download
+        // on EVERY scan (measured 16 fetches in 8 minutes during catch-up/retry churn).
+        const response = await CSPScanner.fetchWithTimeout(scriptUrl, {}, 90000);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch scanner worker script: ${response.status}`);
+        }
+
+        const source = await response.text();
+        if (!source || !source.includes('requestWasmPayload') || !source.includes('self.onmessage')) {
+            throw new Error('Fetched scanner worker script did not contain the expected bootstrap code');
+        }
+
+        this.workerScriptSource = source;
+        this.emitTelemetry('scan.worker_script_fetch_completed', {
+            durationMs: Math.round(performance.now() - workerStartedAt),
+            jsBytes: source.length,
+            workerScriptVersion: CSPScanner.WASM_VERSION,
+            workerScriptUrl: scriptUrl
+        });
+        return this.workerScriptSource;
+    }
+
+    async createWorkerInstance(workerId, workerStartedAt = performance.now()) {
+        const workerScriptUrl = this.getWorkerScriptUrl();
+        const canUseBlobWorker = typeof Blob !== 'undefined'
+            && typeof URL !== 'undefined'
+            && typeof URL.createObjectURL === 'function'
+            && typeof fetch === 'function';
+
+        if (canUseBlobWorker) {
+            try {
+                const source = await this.fetchWorkerScriptSource(workerStartedAt);
+                const blob = new Blob([
+                    `${source}\n//# sourceURL=${workerScriptUrl}`
+                ], { type: 'text/javascript' });
+                const objectUrl = URL.createObjectURL(blob);
+                return {
+                    worker: new Worker(objectUrl),
+                    objectUrl,
+                    scriptUrl: workerScriptUrl,
+                    source: 'blob',
+                    workerId
+                };
+            } catch (error) {
+                const message = error?.message || String(error || 'Blob worker creation failed');
+                this.emitTelemetry('scan.worker_blob_create_failed', {
+                    workerId,
+                    durationMs: Math.round(performance.now() - workerStartedAt),
+                    workerScriptVersion: CSPScanner.WASM_VERSION,
+                    workerScriptUrl,
+                    reason: message
+                }, 'warn', message);
+            }
+        }
+
+        return {
+            worker: new Worker(workerScriptUrl),
+            objectUrl: null,
+            scriptUrl: workerScriptUrl,
+            source: 'url',
+            workerId
+        };
+    }
+
+
+    static bulkWasmUrl(file) {
+        // Scanner WASM via cdn.salvium.tools to bypass the Cloudflare throttle (plain fetch,
+        // no Worker, so cross-origin is fine). Same-origin for dev.
+        // vault-test ONLY -- see getBulkBaseUrl() deploy-hazard note (cdn proxies to the TEST
+        // container; a cdn-routed prod build fetches version-skewed wasm = the rollback cause).
+        try {
+            const h = (typeof location !== 'undefined' && location.hostname) ||
+                      (typeof self !== 'undefined' && self.location && self.location.hostname) || '';
+            if (h === 'vault-test.salvium.tools') {
+                return 'https://cdn.salvium.tools/api/wasm/' + file + '?v=' + CSPScanner.WASM_VERSION;
+            }
+        } catch (e) {}
+        return '/vault/api/wasm/' + file + '?v=' + CSPScanner.WASM_VERSION;
+    }
 
     async fetchWasmBinary() {
         if (this.wasmBinary) return this.wasmBinary;
 
-        // Use API endpoint to bypass CDN caching
-        const response = await fetch('/vault/api/wasm/SalviumWallet.wasm?v=' + CSPScanner.WASM_VERSION);
+        const response = await CSPScanner.fetchWithTimeout(CSPScanner.bulkWasmUrl('SalviumWallet.wasm'), {}, 90000);
         if (!response.ok) {
             throw new Error(`Failed to fetch WASM: ${response.status}`);
         }
         this.wasmBinary = await response.arrayBuffer();
-        if (this.DEBUG) void 0 && console.log(`[CSPScanner] WASM binary: ${(this.wasmBinary.byteLength / 1024 / 1024).toFixed(2)} MB`);
         return this.wasmBinary;
     }
 
-    /**
-     * Fetch and patch the JS wrapper
-     */
     async fetchPatchedJs() {
         if (this.patchedJsCode) return this.patchedJsCode;
 
-        // Use API endpoint to bypass CDN caching
-        const response = await fetch('/vault/api/wasm/SalviumWallet.js?v=' + CSPScanner.WASM_VERSION);
+        const response = await CSPScanner.fetchWithTimeout(CSPScanner.bulkWasmUrl('SalviumWallet.js'), {}, 90000);
         if (!response.ok) {
             throw new Error(`Failed to fetch JS: ${response.status}`);
         }
         let jsCode = await response.text();
 
-        // Patch out pthread initialization for single-threaded workers
         jsCode = jsCode.replace(/PThread\.init\(\);/g, '/* CSPScanner: disabled */');
         jsCode = jsCode.replace(/var pthreadPoolSize = \d+;/g, 'var pthreadPoolSize = 0;');
 
@@ -305,31 +536,219 @@ class CSPScanner {
         return this.patchedJsCode;
     }
 
-    /**
-     * Stream CSP bundle and process chunks as they arrive
-     * This allows scanning to start immediately without waiting for full download
-     * Returns the bundle data for any chunks that need re-processing
-     */
+    _cacheBucketName() {
+        return `csp-chunks/${this.cspCacheEpoch || 'default'}`;
+    }
+
+    _chunkCacheUrl(startHeight) {
+        // Synthetic same-origin-ish URL; only used as a Cache Storage key.
+        return `https://csp-chunk.local/__csp_chunk__/${startHeight}`;
+    }
+
+    // Cheap non-cryptographic integrity check (FNV-1a) to detect partial/corrupted writes.
+    _chunkHash(bytes) {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < bytes.length; i++) {
+            h ^= bytes[i];
+            h = Math.imul(h, 0x01000193);
+        }
+        return (h >>> 0).toString(16);
+    }
+
+    async _getChunkCache() {
+        if (this._chunkCacheDisabled) return null;
+        if (this._chunkCachePromise) return this._chunkCachePromise;
+        this._chunkCachePromise = (async () => {
+            try {
+                const current = this._cacheBucketName();
+                // Drop stale-epoch buckets wholesale (server rotated CSP_CACHE_EPOCH).
+                const keys = await caches.keys();
+                await Promise.all(
+                    keys.filter((k) => k.startsWith('csp-chunks/') && k !== current)
+                        .map((k) => caches.delete(k).catch(() => { }))
+                );
+                return await caches.open(current);
+            } catch {
+                return null;
+            }
+        })();
+        return this._chunkCachePromise;
+    }
+
+    // Write-through: persist one chunk's bytes. Fire-and-forget; on quota pressure, disable
+    // caching for the session (graceful degradation to download-every-time).
+    async cacheChunk(startHeight, endHeight, bytes) {
+        if (this._chunkCacheDisabled) return;
+        const cache = await this._getChunkCache();
+        if (!cache) return;
+        try {
+            // x-sha (native SubtleCrypto) is the fast read-side integrity check; x-hash
+            // (FNV) remains for environments without crypto.subtle and legacy entries.
+            let shaHex = '';
+            try {
+                if (typeof crypto !== 'undefined' && crypto.subtle) {
+                    const d = await crypto.subtle.digest('SHA-256', bytes.buffer ? bytes : new Uint8Array(bytes));
+                    shaHex = Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, '0')).join('');
+                }
+            } catch (_) { }
+            const headers = {
+                'x-end-height': String(endHeight),
+                'x-len': String(bytes.length),
+                'x-hash': this._chunkHash(bytes),
+            };
+            if (shaHex) headers['x-sha'] = shaHex;
+            const resp = new Response(bytes, { headers });
+            await cache.put(this._chunkCacheUrl(startHeight), resp);
+        } catch (e) {
+            if (e && e.name === 'QuotaExceededError') {
+                this._chunkCacheDisabled = true;
+                this.emitTelemetry('scan.scanner_chunk_cache_quota', {
+                    requestHeight: startHeight,
+                }, 'warn', 'Chunk cache quota exceeded; disabling cache for session');
+            }
+        }
+    }
+
+    // Read-through: if EVERY chunk in [alignedStart, endHeight) is cached and passes its
+    // integrity check, dispatch the whole range from cache and return true (no network).
+    // Any miss/corruption returns false → caller falls back to the normal fetch path.
+    async tryDispatchFromCache(alignedStart, endHeight) {
+        if (this._chunkCacheDisabled) return false;
+        const cache = await this._getChunkCache();
+        if (!cache) return false;
+
+        const needed = [];
+        for (let h = alignedStart; h < endHeight; h += this.chunkSize) needed.push(h);
+        if (needed.length === 0) return false;
+
+        const datas = new Map();
+        const tailStart = needed[needed.length - 1];
+        let tailFromNetwork = false;
+        let sinceYield = 0;
+        for (const h of needed) {
+            const isTail = h === tailStart;
+            let match;
+            try {
+                match = await cache.match(this._chunkCacheUrl(h));
+            } catch {
+                return false;
+            }
+            if (!match) {
+                // Tail miss degrades to a network fetch for just that chunk; any other
+                // miss rejects the whole range (normal full-fetch path).
+                if (isTail) { tailFromNetwork = true; continue; }
+                return false;
+            }
+            const buf = new Uint8Array(await match.arrayBuffer());
+            const expectedLen = parseInt(match.headers.get('x-len') || '0', 10);
+            if (buf.length !== expectedLen || expectedLen === 0) {
+                if (isTail) { tailFromNetwork = true; continue; }
+                return false; // truncated/partial -> treat as miss
+            }
+            // Tail freshness: a cached tail chunk written when the chain was shorter
+            // passes length/hash checks but silently OMITS the newest blocks. Only a
+            // COMPLETE final chunk (inclusive end = start + chunkSize - 1) is accepted
+            // from cache; a partial tip-chunk is stale by construction (the tip moves)
+            // and is fetched from the network instead -- without rejecting the rest.
+            if (isTail) {
+                const cachedEnd = parseInt(match.headers.get('x-end-height') || '0', 10);
+                if (!Number.isFinite(cachedEnd) || cachedEnd < h + this.chunkSize - 1) {
+                    tailFromNetwork = true;
+                    continue;
+                }
+            }
+            // Integrity: SHA-256 via native SubtleCrypto when the entry carries x-sha
+            // (~0.5s for a full 285MB range, async). Byte-wise JS FNV is the fallback
+            // for legacy entries / environments without crypto.subtle -- recomputing it
+            // over the whole range blocked the UI at 0% for minutes, hence sha-first.
+            const expectedSha = match.headers.get('x-sha') || '';
+            if (expectedSha && typeof crypto !== 'undefined' && crypto.subtle) {
+                try {
+                    const d = await crypto.subtle.digest('SHA-256', buf);
+                    const shaHex = Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, '0')).join('');
+                    if (shaHex !== expectedSha) return false;
+                } catch (_) {
+                    if (this._chunkHash(buf) !== (match.headers.get('x-hash') || '')) return false;
+                }
+            } else {
+                const expectedHash = match.headers.get('x-hash') || '';
+                if (this._chunkHash(buf) !== expectedHash) return false;
+            }
+            datas.set(h, buf);
+            if (++sinceYield >= 16) {
+                sinceYield = 0;
+                await new Promise((r) => setTimeout(r, 0));
+            }
+        }
+
+        await this.initWorkers();
+        for (const h of needed) {
+            if (tailFromNetwork && h === tailStart) {
+                // Workers fetch isBatch tasks from the network themselves (the normal
+                // batch-mode machinery), so the fresh tail rides the existing path.
+                this.taskQueue.push({
+                    startHeight: h,
+                    chunkCount: 1,
+                    isBatch: true,
+                });
+                continue;
+            }
+            this.taskQueue.push({
+                startHeight: h,
+                count: this.chunkSize,
+                actualCount: this.chunkSize,
+                isBatch: false,
+                useBundle: true,
+                bundleData: datas.get(h),
+            });
+        }
+        this.stats.totalChunks = needed.length;
+        this.emitTelemetry('scan.scanner_cache_full_hit', {
+            responseItems: needed.length,
+            tailFromNetwork,
+            scanWindowStart: alignedStart,
+            scanWindowEnd: endHeight,
+        });
+        return true;
+    }
+
     async streamCspBundle() {
+        const managesDispatchState = !this.streamDispatchInProgress;
+        if (managesDispatchState) this.streamDispatchInProgress = true;
+        // Highest height the bundle stream has contiguously dispatched, so the
+        // caller can recover (batch-fetch) the remainder if the stream aborts.
+        this.streamLastDispatchedEnd = 0;
+        let streamStallTimer = null;
         try {
             const fetchStart = performance.now();
+            this.emitTelemetry('scan.scanner_bundle_stream_started', {
+                scanWindowStart: this.stats.startHeight || 0,
+                scanWindowEnd: this.stats.endHeight || 0
+            });
 
             const cacheEpochParam = this.cspCacheEpoch ? `?csp_epoch=${encodeURIComponent(this.cspCacheEpoch)}` : '';
-            const response = await fetch(`${this.apiBaseUrl}/api/csp-bundle${cacheEpochParam}`, {
-                method: 'GET'
+            // Stall watchdog: abort if no bytes arrive for 60s (reset on each read); a bare reader.read() never settles on a half-open socket.
+            const STREAM_STALL_MS = 60000;
+            const streamController = new AbortController();
+            streamStallTimer = setTimeout(() => streamController.abort(), STREAM_STALL_MS);
+            const response = await fetch(`${this.getBulkBaseUrl()}/api/csp-bundle${cacheEpochParam}`, {
+                method: 'GET',
+                signal: streamController.signal
             });
 
             if (!response.ok) {
-                void 0 && console.log(`[CSPScanner] 📦 Bundle not available (${response.status}) - using chunk mode`);
+                clearTimeout(streamStallTimer);
+                this.emitTelemetry('scan.scanner_bundle_stream_unavailable', {
+                    httpStatus: response.status
+                }, 'warn', `Bundle unavailable: HTTP ${response.status}`);
                 return null;
             }
 
             const reader = response.body.getReader();
             const contentLength = parseInt(response.headers.get('X-Uncompressed-Size') || response.headers.get('Content-Length') || '0');
 
-            // Accumulate data as it streams in (amortized growth; avoids O(n^2) copies)
             let receivedBytes = 0;
-            let buffer = new Uint8Array(1024 * 1024); // 1MB initial
+            let buffer = new Uint8Array(1024 * 1024);
             let bufferLen = 0;
 
             const ensureCapacity = (additionalBytes) => {
@@ -342,37 +761,38 @@ class CSPScanner {
                 buffer = next;
             };
 
-            // Header info (populated after we read enough)
             let headerParsed = false;
             let chunkCount = 0;
             let firstHeight = 0;
             let lastHeight = 0;
             let headerSize = 0;
-            let chunkIndex = []; // Array of {startHeight, endHeight, dataOffset, dataLength}
+            let chunkIndex = [];
 
-            // Track which chunks we've dispatched for processing
             let chunksDispatched = 0;
             let chunksProcessed = 0;
 
-            // Process data as it arrives
             while (true) {
                 const { done, value } = await reader.read();
 
                 if (done) break;
 
-                // Append new data to buffer
+                clearTimeout(streamStallTimer);
+                streamStallTimer = setTimeout(() => streamController.abort(), STREAM_STALL_MS);
+
                 ensureCapacity(value.length);
                 buffer.set(value, bufferLen);
                 bufferLen += value.length;
                 receivedBytes += value.length;
 
-                // Parse header once we have enough data
                 if (!headerParsed && bufferLen >= 20) {
                     const view = new DataView(buffer.buffer, 0, bufferLen);
                     const magic = view.getUint32(0, true);
 
                     if (magic !== 0x43535042) {
-                        void 0 && console.warn('[CSPScanner] 📦 Invalid bundle magic - using chunk mode');
+                        this.emitTelemetry('scan.scanner_bundle_stream_invalid', {
+                            reason: 'invalid-magic',
+                            bytesReceived: receivedBytes
+                        }, 'warn', 'Invalid bundle magic');
                         return null;
                     }
 
@@ -382,7 +802,6 @@ class CSPScanner {
                     headerSize = 20 + (chunkCount * 16);
                 }
 
-                // Parse chunk index once we have the full header
                 if (!headerParsed && bufferLen >= headerSize && headerSize > 0) {
                     const view = new DataView(buffer.buffer, 0, headerSize);
 
@@ -398,9 +817,14 @@ class CSPScanner {
                     }
 
                     headerParsed = true;
+                    this.emitTelemetry('scan.scanner_bundle_header_parsed', {
+                        responseItems: chunkCount,
+                        scanWindowStart: firstHeight,
+                        scanWindowEnd: lastHeight,
+                        responseBytes: contentLength || 0
+                    });
                 }
 
-                // Dispatch chunks for processing as they become available
                 if (headerParsed) {
                     const dataStart = headerSize;
 
@@ -409,42 +833,47 @@ class CSPScanner {
                         const chunkDataStart = dataStart + chunk.dataOffset;
                         const chunkDataEnd = chunkDataStart + chunk.dataLength;
 
-                        // Check if we have enough data for this chunk
                         if (bufferLen >= chunkDataEnd) {
-                            // NEW: Filter chunks outside request range
                             const alignedStart = Math.floor(this.stats.startHeight / this.chunkSize) * this.chunkSize;
                             const alignedEnd = this.stats.endHeight;
 
                             if (chunk.startHeight >= alignedStart && chunk.startHeight < alignedEnd) {
-                                // Extract chunk data and dispatch to worker
                                 const chunkData = buffer.slice(chunkDataStart, chunkDataEnd);
 
-                                // Queue task for this chunk
                                 this.taskQueue.push({
                                     startHeight: chunk.startHeight,
                                     count: this.chunkSize,
                                     actualCount: this.chunkSize,
                                     isBatch: false,
                                     useBundle: true,
-                                    bundleData: chunkData  // Include the actual data
+                                    bundleData: chunkData
                                 });
+
+                                // Write-through to the CacheStorage chunk cache (re-wired: this
+                                // call had no call sites, so tryDispatchFromCache always missed and
+                                // every restore re-downloaded the full bundle). Fire-and-forget;
+                                // quota pressure self-disables inside cacheChunk.
+                                this.cacheChunk(chunk.startHeight, chunk.endHeight, chunkData).catch(() => { });
                             }
-                            // Else: Skip this chunk (it's outside our scan range)
 
                             chunk.dispatched = true;
                             chunksDispatched++;
+                            this.streamLastDispatchedEnd = chunk.endHeight + 1;
+                            if (chunksDispatched === 1 || chunksDispatched === chunkIndex.length || chunksDispatched % 50 === 0) {
+                                this.emitTelemetry('scan.scanner_bundle_chunk_dispatched', {
+                                    requestHeight: chunk.startHeight,
+                                    responseItems: chunksDispatched,
+                                    responseRemaining: Math.max(0, chunkIndex.length - chunksDispatched),
+                                    responseBytes: receivedBytes
+                                });
+                            }
 
-                            // Start workers if not already running (no longer needed - workers init before streaming)
-
-                            // Try to process tasks
                             this.scheduleNextTask();
                         } else {
-                            // Not enough data yet for this chunk, stop checking
                             break;
                         }
                     }
 
-                    // Progress update every 10%
                     if (contentLength > 0) {
                         const pct = Math.floor((receivedBytes / contentLength) * 100);
                         if (pct % 10 === 0 && pct > 0) {
@@ -455,14 +884,27 @@ class CSPScanner {
                 }
             }
 
+            clearTimeout(streamStallTimer);
+
+            // Reject a truncated stream so tail chunks aren't silently skipped; falling back to chunk mode re-fetches the range.
+            if (contentLength > 0 && receivedBytes < contentLength) {
+                this.emitTelemetry('scan.scanner_bundle_stream_truncated', {
+                    responseBytes: receivedBytes,
+                    expectedBytes: contentLength,
+                }, 'warn', `Bundle truncated: ${receivedBytes}/${contentLength} bytes`);
+                return null;
+            }
+
             const fetchMs = performance.now() - fetchStart;
             const sizeMB = (receivedBytes / 1024 / 1024).toFixed(2);
 
-
-
-            // Store for any remaining processing
             this.stats.totalChunks = chunksDispatched;
             this.stats.bytesReceived = receivedBytes;
+            this.emitTelemetry('scan.scanner_bundle_stream_completed', {
+                responseItems: chunksDispatched,
+                responseBytes: receivedBytes,
+                durationMs: Math.round(fetchMs)
+            });
 
             return {
                 data: buffer.slice(0, bufferLen),
@@ -474,39 +916,37 @@ class CSPScanner {
             };
 
         } catch (err) {
-            void 0 && console.log('[CSPScanner] 📦 Stream failed:', err.message, '- using chunk mode');
+            if (streamStallTimer) clearTimeout(streamStallTimer);
+            this.emitTelemetry('scan.scanner_bundle_stream_failed', {
+                reason: err?.message || String(err),
+                bytesReceived: this.stats?.bytesReceived || 0
+            }, 'warn', err?.message || String(err));
             return null;
+        } finally {
+            if (managesDispatchState) this.streamDispatchInProgress = false;
         }
     }
 
-    /**
-     * Legacy: Fetch entire CSP bundle at once (used if streaming fails)
-     * Returns null if bundle not available, otherwise returns parsed bundle data
-     */
     async fetchCspBundle() {
         try {
             const fetchStart = performance.now();
 
             const cacheEpochParam = this.cspCacheEpoch ? `?csp_epoch=${encodeURIComponent(this.cspCacheEpoch)}` : '';
-            const response = await fetch(`${this.apiBaseUrl}/api/csp-bundle${cacheEpochParam}`, {
+            const response = await CSPScanner.fetchWithTimeout(`${this.getBulkBaseUrl()}/api/csp-bundle${cacheEpochParam}`, {
                 method: 'GET'
-            });
+            }, 60000);
 
             if (!response.ok) {
-                void 0 && console.log(`[CSPScanner] 📦 Bundle not available (${response.status}) - using chunk mode`);
                 return null;
             }
 
             const bundleData = await response.arrayBuffer();
             const fetchMs = performance.now() - fetchStart;
 
-            // Parse bundle header
             const view = new DataView(bundleData);
             const magic = view.getUint32(0, true);
 
-            // Validate magic "CSPB" (0x43535042)
             if (magic !== 0x43535042) {
-                void 0 && console.warn('[CSPScanner] 📦 Invalid bundle magic - using chunk mode');
                 return null;
             }
 
@@ -515,7 +955,6 @@ class CSPScanner {
             const firstHeight = view.getUint32(12, true);
             const lastHeight = view.getUint32(16, true);
 
-            // Parse chunk index (20 bytes fixed header + 16 bytes per chunk)
             const headerSize = 20 + (chunkCount * 16);
             const chunks = [];
 
@@ -524,13 +963,12 @@ class CSPScanner {
                 chunks.push({
                     startHeight: view.getUint32(offset, true),
                     endHeight: view.getUint32(offset + 4, true),
-                    dataOffset: view.getUint32(offset + 8, true),  // Offset from data section start
+                    dataOffset: view.getUint32(offset + 8, true),
                     dataLength: view.getUint32(offset + 12, true)
                 });
             }
 
             const sizeMB = (bundleData.byteLength / 1024 / 1024).toFixed(2);
-
 
             return {
                 data: new Uint8Array(bundleData),
@@ -542,50 +980,35 @@ class CSPScanner {
             };
 
         } catch (err) {
-            void 0 && console.log('[CSPScanner] 📦 Bundle fetch failed:', err.message, '- using chunk mode');
             return null;
         }
     }
 
-    /**
-     * Extract a single CSP chunk from bundle data
-     * @param {Object} bundle - Parsed bundle from fetchCspBundle()
-     * @param {number} startHeight - Chunk start height (must be 1000-aligned)
-     * @returns {Uint8Array|null} - CSP data for chunk, or null if not in bundle
-     */
     extractChunkFromBundle(bundle, startHeight) {
         if (!bundle || !bundle.chunks) return null;
 
-        // Find chunk in index
         const chunk = bundle.chunks.find(c => c.startHeight === startHeight);
         if (!chunk) return null;
 
-        // Extract data (offset is relative to data section which starts after header)
         const dataStart = bundle.headerSize + chunk.dataOffset;
         const dataEnd = dataStart + chunk.dataLength;
 
         if (dataEnd > bundle.data.length) {
-            void 0 && console.warn(`[CSPScanner] Bundle chunk ${startHeight} exceeds bundle size`);
             return null;
         }
 
         return bundle.data.slice(dataStart, dataEnd);
     }
 
-    /**
-     * Check if batch CSP endpoint is available
-     */
     async checkBatchSupport() {
         if (!this.useBatchMode) return false;
 
         try {
-            // Try a quick HEAD request to check if endpoint exists
-            const response = await fetch(`${this.apiBaseUrl}/api/csp-batch?start_height=0&chunks=1`, {
+            const response = await CSPScanner.fetchWithTimeout(`${this.apiBaseUrl}/api/csp-batch?start_height=0&chunks=1`, {
                 method: 'GET'
-            });
+            }, 30000);
 
             if (response.ok) {
-                if (this.DEBUG) void 0 && console.log('[CSPScanner] ✅ Batch CSP endpoint available - using batch mode');
                 return true;
             } else {
                 return false;
@@ -595,26 +1018,20 @@ class CSPScanner {
         }
     }
 
-    /**
-     * Ensure workers are initialized (lazy init for streaming mode)
-     */
     async initWorkers() {
         if (this.workers.length > 0 && this.workers.every(w => w.ready)) {
-            return; // Already initialized
+            return;
         }
 
         if (this.workers.length > 0 && this.workers.every(w => w.ready)) {
-            return; // Already initialized
+            return;
         }
 
-
-        // Fetch WASM/JS
         const [wasmBinary, patchedJsCode] = await Promise.all([
             this.fetchWasmBinary(),
             this.fetchPatchedJs()
         ]);
 
-        // Create initial workers (autoTune may ramp up later)
         const initPromises = [];
         for (let i = 0; i < this.workerCount; i++) {
             initPromises.push(this.createWorker(i, wasmBinary, patchedJsCode));
@@ -623,23 +1040,16 @@ class CSPScanner {
 
     }
 
-    /**
-     * Initialize the scanner - creates workers and loads WASM
-     */
     async init() {
 
-
-        // Check for batch support and fetch WASM/JS in parallel
         const [wasmBinary, patchedJsCode, batchSupported] = await Promise.all([
             this.fetchWasmBinary(),
             this.fetchPatchedJs(),
             this.checkBatchSupport()
         ]);
 
-        // Update batch mode based on server support
         this.useBatchMode = batchSupported;
 
-        // Create initial workers (autoTune may ramp up later)
         const initPromises = [];
         for (let i = 0; i < this.workerCount; i++) {
             initPromises.push(this.createWorker(i, wasmBinary, patchedJsCode));
@@ -648,12 +1058,41 @@ class CSPScanner {
 
     }
 
-    /**
-     * Create and initialize a single CSP worker
-     */
     async createWorker(id, wasmBinary, patchedJsCode) {
+        const workerStartedAt = performance.now();
+        const timeoutMs = this.getWorkerControlTimeoutMs('init');
+        let workerRecord;
+        try {
+            workerRecord = await this.createWorkerInstance(id, workerStartedAt);
+        } catch (error) {
+            const message = error?.message || String(error || 'Worker creation failed');
+            this.emitTelemetry('scan.worker_create_failed', {
+                workerId: id,
+                durationMs: Math.round(performance.now() - workerStartedAt),
+                workerScriptVersion: CSPScanner.WASM_VERSION,
+                reason: message
+            }, 'error', message);
+            throw error;
+        }
+
         return new Promise((resolve, reject) => {
-            const worker = new Worker('/vault/wallet/csp-scanner.worker.js');
+            let stopInitWatchdog = null;
+            let settled = false;
+            this.emitTelemetry('scan.worker_created', {
+                workerId: id,
+                workerCount: this.workerCount,
+                enabledWorkerCount: this.enabledWorkerCount,
+                workerScriptVersion: CSPScanner.WASM_VERSION,
+                workerScriptSource: workerRecord.source,
+                workerScriptUrl: workerRecord.scriptUrl
+            });
+            const worker = workerRecord.worker;
+            let workerObjectUrl = workerRecord.objectUrl;
+            const revokeWorkerObjectUrl = () => {
+                if (!workerObjectUrl || typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') return;
+                try { URL.revokeObjectURL(workerObjectUrl); } catch (_) { }
+                workerObjectUrl = null;
+            };
             const workerState = {
                 id,
                 worker,
@@ -667,90 +1106,207 @@ class CSPScanner {
 
             this.workers.push(workerState);
 
+            const cleanupInit = () => {
+                if (stopInitWatchdog) {
+                    stopInitWatchdog();
+                    stopInitWatchdog = null;
+                }
+                if (proactiveLoadTimer) {
+                    clearTimeout(proactiveLoadTimer);
+                    proactiveLoadTimer = null;
+                }
+                revokeWorkerObjectUrl();
+                worker.removeEventListener('message', initHandler);
+                worker.removeEventListener('error', initErrorHandler);
+            };
+
+            let wasmPayloadSent = false;
+            let proactiveLoadTimer = null;
+            const sendWasmPayload = (trigger) => {
+                if (settled || wasmPayloadSent) return;
+                wasmPayloadSent = true;
+                this.emitTelemetry('scan.worker_wasm_payload_sent', {
+                    workerId: id,
+                    trigger,
+                    durationMs: Math.round(performance.now() - workerStartedAt),
+                    workerScriptVersion: CSPScanner.WASM_VERSION,
+                    wasmBytes: wasmBinary?.byteLength || 0,
+                    jsBytes: patchedJsCode?.length || 0
+                });
+                try {
+                    const payloadWasmBinary = wasmBinary && typeof wasmBinary.slice === 'function'
+                        ? wasmBinary.slice(0)
+                        : wasmBinary;
+                    const transferList = payloadWasmBinary instanceof ArrayBuffer ? [payloadWasmBinary] : [];
+                    worker.postMessage({
+                        type: 'LOAD_WASM',
+                        wasmBinary: payloadWasmBinary,
+                        patchedJsCode: patchedJsCode
+                    }, transferList);
+                } catch (err) {
+                    failInit(err);
+                }
+            };
+
+            const failInit = (error, telemetryType = 'scan.worker_init_failed', extraContext = {}) => {
+                if (settled) return;
+                settled = true;
+                cleanupInit();
+                const workerIndex = this.workers.indexOf(workerState);
+                if (workerIndex !== -1) {
+                    this.workers.splice(workerIndex, 1);
+                }
+                try { worker.terminate(); } catch (_) { }
+                const message = error?.message || String(error || 'Worker initialization failed');
+                this.emitTelemetry(telemetryType, {
+                    workerId: id,
+                    durationMs: Math.round(performance.now() - workerStartedAt),
+                    reason: message,
+                    visibilityState: this.isDocumentHidden() ? 'hidden' : 'visible',
+                    ...extraContext
+                }, telemetryType === 'scan.worker_init_timeout' ? 'warn' : 'error', message);
+                reject(error instanceof Error ? error : new Error(message));
+            };
+
+            const finishInit = (msg) => {
+                if (settled) return;
+                settled = true;
+                cleanupInit();
+                workerState.ready = true;
+                this.emitTelemetry('scan.worker_init_completed', {
+                    durationMs: Math.round(performance.now() - workerStartedAt),
+                    subaddressCount: msg.subaddressCount || 0,
+                    hasWallet: true
+                });
+                if (!msg.hasCarrotKey && this.DEBUG) {
+                }
+                if (msg.hasStakeFilter && this.DEBUG) {
+                }
+                if (msg.hasOwnershipCheck && this.DEBUG) {
+                }
+                worker.addEventListener('message', this.handleWorkerMessage.bind(this));
+
+                worker.addEventListener('error', (err) => {
+                    const task = workerState.currentTask || null;
+                    const details = {
+                        workerId: id,
+                        message: err?.message || 'Worker error',
+                        taskStartHeight: task?.startHeight,
+                        taskIsBatch: !!task?.isBatch,
+                        taskChunkCount: task?.chunkCount,
+                        taskUseBundle: !!task?.useBundle,
+                        taskHasInlineData: !!task?.bundleData
+                    };
+
+                    this.emitTelemetry('scan.worker_crashed', {
+                        requestHeight: task?.startHeight || 0,
+                        responseItems: task?.chunkCount || 0,
+                        useBundleMode: !!task?.useBundle || !!task?.bundleData,
+                        useBatchMode: !!task?.isBatch,
+                        reason: details.message
+                    }, 'error', details.message);
+                    this.onError({ type: 'WORKER_CRASH', ...details });
+
+                    if (this.scanAborted) {
+                        try { worker.terminate(); } catch (_) { }
+                        return;
+                    }
+
+                    // A single crash is usually recoverable; re-queue this worker's chunk and replace it. Give up only after many crashes.
+                    this.workerCrashCount = (this.workerCrashCount || 0) + 1;
+                    const MAX_WORKER_CRASHES = 8;
+                    if (this.workerCrashCount > MAX_WORKER_CRASHES) {
+                        this.scanAborted = true;
+                        this.taskQueue = [];
+                        try { worker.terminate(); } catch (_) { }
+                        if (this._scanReject) {
+                            this._scanReject(new Error(`Aborting scan after ${this.workerCrashCount} worker crashes; last: ${details.message}`));
+                        }
+                        return;
+                    }
+
+                    void this.recoverStuckWorker(workerState, task, 0);
+                });
+
+                resolve();
+            };
+
             const initHandler = (e) => {
                 const msg = e.data;
 
                 if (msg.type === 'NEED_WASM') {
-                    // Send WASM binary to worker
-                    worker.postMessage({
-                        type: 'LOAD_WASM',
-                        wasmBinary: wasmBinary,
-                        patchedJsCode: patchedJsCode
+                    this.emitTelemetry('scan.worker_need_wasm', {
+                        workerId: id,
+                        reason: msg.reason || 'worker-request',
+                        durationMs: Math.round(performance.now() - workerStartedAt)
+                    });
+                    sendWasmPayload(msg.reason || 'need_wasm');
+                } else if (msg.type === 'WASM_LOAD_STARTED') {
+                    this.emitTelemetry('scan.worker_wasm_load_started', {
+                        workerId: id,
+                        durationMs: Math.round(performance.now() - workerStartedAt),
+                        wasmBytes: msg.wasmBytes || 0,
+                        jsBytes: msg.jsBytes || 0
                     });
                 } else if (msg.type === 'READY') {
-                    if (this.DEBUG) void 0 && console.log(`[CSPScanner] Worker ${id} ready (WASM: ${msg.version})`);
-                    // Initialize with required keys and maps
-                    worker.postMessage({
-                        type: 'INIT',
-                        workerId: id,
-                        viewSecretKey: this.viewSecretKey,
-                        publicSpendKey: this.publicSpendKey,
-                        kViewIncoming: this.kViewIncoming,
-                        sViewBalance: this.sViewBalance,
-                        keyImagesCsv: this.keyImagesCsv,
-                        apiBaseUrl: this.apiBaseUrl,
-                        cspCacheEpoch: this.cspCacheEpoch,
-                        stakeReturnHeights: this.stakeReturnHeights,
-                        subaddressMapCsv: this.subaddressMapCsv,
-                        returnAddressesCsv: this.returnAddressesCsv,
-                        debug: this.DEBUG
+                    this.emitTelemetry('scan.worker_ready', {
+                        durationMs: Math.round(performance.now() - workerStartedAt),
+                        workerCount: this.workerCount,
+                        enabledWorkerCount: this.enabledWorkerCount
                     });
-                } else if (msg.type === 'INIT_DONE') {
-                    workerState.ready = true;
-                    if (!msg.hasCarrotKey && this.DEBUG) {
-                        void 0 && console.warn(`[CSPScanner] ⚠️ Worker ${id} has NO Carrot key - Carrot transactions will be missed!`);
-                    }
-                    if (msg.hasStakeFilter && this.DEBUG) {
-                        void 0 && console.log(`[CSPScanner] Worker ${id} has stake filter enabled`);
-                    }
-                    if (msg.hasOwnershipCheck && this.DEBUG) {
-                        void 0 && console.log(`[CSPScanner] ✅ Worker ${id} has ownership verification enabled (${msg.subaddressCount} subaddresses)`);
-                    }
-                    worker.removeEventListener('message', initHandler);
-                    worker.addEventListener('message', this.handleWorkerMessage.bind(this));
-
-                    // IMPORTANT: after init, errors should fail the scan (otherwise it can appear to “freeze”).
-                    worker.addEventListener('error', (err) => {
-                        const task = workerState.currentTask || null;
-                        const details = {
+                    try {
+                        worker.postMessage({
+                            type: 'INIT',
                             workerId: id,
-                            message: err?.message || 'Worker error',
-                            taskStartHeight: task?.startHeight,
-                            taskIsBatch: !!task?.isBatch,
-                            taskChunkCount: task?.chunkCount,
-                            taskUseBundle: !!task?.useBundle,
-                            taskHasInlineData: !!task?.bundleData
-                        };
-
-                        void 0 && console.error('[CSPScanner] ❌ Worker crashed during scan:', details);
-                        this.onError({ type: 'WORKER_CRASH', ...details });
-
-                        // Fail fast (better than partial/incorrect results)
-                        this.scanAborted = true;
-                        this.taskQueue = [];
-                        try { worker.terminate(); } catch (_) { }
-
-                        if (this._scanReject) {
-                            this._scanReject(new Error(`Worker ${id} crashed during scan: ${details.message}`));
-                        }
-                    });
-
-                    resolve();
+                            viewSecretKey: this.viewSecretKey,
+                            publicSpendKey: this.publicSpendKey,
+                            kViewIncoming: this.kViewIncoming,
+                            sViewBalance: this.sViewBalance,
+                            keyImagesCsv: this.keyImagesCsv,
+                            apiBaseUrl: this.apiBaseUrl,
+                            cspCacheEpoch: this.cspCacheEpoch,
+                            stakeReturnHeights: this.stakeReturnHeights,
+                            subaddressMapCsv: this.subaddressMapCsv,
+                            returnAddressesCsv: this.returnAddressesCsv,
+                            debug: this.DEBUG
+                        });
+                    } catch (err) {
+                        failInit(err);
+                    }
+                } else if (msg.type === 'INIT_DONE') {
+                    finishInit(msg);
                 } else if (msg.type === 'ERROR') {
-                    reject(new Error(`Worker ${id} error: ${msg.error}`));
+                    failInit(new Error(`Worker ${id} error: ${msg.error}`));
                 }
             };
 
-            worker.addEventListener('message', initHandler);
-            worker.addEventListener('error', (e) => {
-                reject(new Error(`Worker ${id} crashed: ${e.message}`));
+            const initErrorHandler = (e) => {
+                failInit(new Error(`Worker ${id} crashed during initialization: ${e.message || 'unknown error'}`));
+            };
+
+            stopInitWatchdog = this.createVisibilityAwareInitWatchdog({
+                workerId: id,
+                timeoutMs,
+                workerStartedAt,
+                onTimeout: (activeInitMs) => {
+                    failInit(
+                        new Error(`Worker ${id} did not initialize within ${timeoutMs}ms`),
+                        'scan.worker_init_timeout',
+                        { activeInitMs }
+                    );
+                }
             });
+
+            worker.addEventListener('message', initHandler);
+            worker.addEventListener('error', initErrorHandler);
+
+            // Don't depend on the worker's first NEED_WASM; some browsers delay/drop it under restore load.
+            proactiveLoadTimer = setTimeout(() => {
+                sendWasmPayload('proactive');
+            }, 50);
         });
     }
 
-    /**
-     * Handle messages from workers during scanning
-     */
     handleWorkerMessage(e) {
         const msg = e.data;
 
@@ -767,10 +1323,6 @@ class CSPScanner {
         }
     }
 
-    /**
-     * Hot-update scanning keys in all workers (used for Phase 1b spent discovery).
-     * This avoids reloading WASM and lets us re-scan once key images exist.
-     */
     async updateKeys({ keyImagesCsv, subaddressMapCsv, returnAddressesCsv, stakeReturnHeightsStr } = {}) {
         const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -784,50 +1336,118 @@ class CSPScanner {
             this.returnAddressesCsv = returnAddressesCsv;
         }
         if (typeof stakeReturnHeightsStr === 'string') {
-            // Optional: allow refreshing stake filter string too
             this.stakeReturnHeightsStr = stakeReturnHeightsStr;
         }
 
-        const updates = this.workers.map((w) => {
-            return new Promise((resolve) => {
+        const workers = (this.workers || []).filter((w) => w && w.worker);
+        if (workers.length === 0) {
+            throw new Error('No CSP workers are available for key update');
+        }
+
+        const timeoutMs = this.getWorkerControlTimeoutMs('updateKeys');
+        const updates = workers.map((w) => {
+            return new Promise((resolve, reject) => {
+                let settled = false;
+                let timeout = null;
+
+                const cleanup = () => {
+                    if (timeout) {
+                        clearTimeout(timeout);
+                        timeout = null;
+                    }
+                    w.worker.removeEventListener('message', handler);
+                    w.worker.removeEventListener('error', errorHandler);
+                };
+
+                const fail = (error) => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    reject(error instanceof Error ? error : new Error(String(error)));
+                };
+
                 const handler = (e) => {
                     const msg = e.data;
                     if (msg && msg.type === 'UPDATE_KEYS_DONE' && msg.requestId === requestId && msg.workerId === w.id) {
-                        w.worker.removeEventListener('message', handler);
+                        if (settled) return;
+                        settled = true;
+                        cleanup();
                         resolve(msg);
                     }
                 };
 
+                const errorHandler = (e) => {
+                    fail(new Error(`Worker ${w.id} crashed during key update: ${e.message || 'unknown error'}`));
+                };
+
+                timeout = setTimeout(() => {
+                    fail(new Error(`Worker ${w.id} did not acknowledge key update within ${timeoutMs}ms`));
+                }, timeoutMs);
+
                 w.worker.addEventListener('message', handler);
-                w.worker.postMessage({
-                    type: 'UPDATE_KEYS',
-                    workerId: w.id,
-                    requestId,
-                    keyImagesCsv: this.keyImagesCsv,
-                    subaddressMapCsv: this.subaddressMapCsv,
-                    returnAddressesCsv: this.returnAddressesCsv,
-                    stakeReturnHeightsStr: this.stakeReturnHeightsStr || ''
-                });
+                w.worker.addEventListener('error', errorHandler);
+
+                try {
+                    w.worker.postMessage({
+                        type: 'UPDATE_KEYS',
+                        workerId: w.id,
+                        requestId,
+                        keyImagesCsv: this.keyImagesCsv,
+                        subaddressMapCsv: this.subaddressMapCsv,
+                        returnAddressesCsv: this.returnAddressesCsv,
+                        stakeReturnHeightsStr: this.stakeReturnHeightsStr || ''
+                    });
+                } catch (e) {
+                    fail(e);
+                }
             });
         });
 
-        return Promise.all(updates);
+        const results = await Promise.allSettled(updates);
+        const failures = results.filter((result) => result.status === 'rejected');
+        if (failures.length > 0) {
+            const reason = failures
+                .map((result) => result.reason?.message || String(result.reason || 'unknown failure'))
+                .join('; ');
+            this.emitTelemetry('scan.worker_update_keys_failed', {
+                requestId,
+                failedWorkerCount: failures.length,
+                responseItems: workers.length,
+                durationMs: timeoutMs,
+                reason
+            }, 'warn', reason);
+            throw new Error(`CSP worker key update failed: ${reason}`);
+        }
+
+        return results.map((result) => result.value);
     }
 
     async updateReturnAddresses(returnAddressesCsv) {
-        return this.updateKeys({ returnAddressesCsv });
+        try {
+            return await this.updateKeys({ returnAddressesCsv });
+        } catch (error) {
+            const reason = error?.message || String(error || 'Unknown key update failure');
+            this.emitTelemetry('scan.worker_update_keys_retry', {
+                reason,
+                responseItems: this.workers?.length || 0
+            }, 'warn', reason);
+            console.warn('[CSPScanner] Worker key update failed; reinitializing workers and retrying', error);
+            await this.reinitializeWorkers();
+            return this.updateKeys({ returnAddressesCsv });
+        }
     }
 
-    /**
-     * Rescan cached bundle data with updated keys (e.g., new return addresses).
-     * This is MUCH faster than a full scan() because it skips the network download.
-     * Returns the same result format as scan().
-     *
-     * @param {number} startHeight - Start height (default: 0)
-     * @param {number} endHeight - End height (default: bundle's last height)
-     * @returns {Promise<Object>} - Scan results with matches
-     */
-    async rescanCached(startHeight = 0, endHeight = null) {
+    // Broadcast the return-match-only flag to all workers. Per-worker message ordering
+    // guarantees workers see this before any SCAN task dispatched afterwards.
+    setReturnMatchOnly(value) {
+        this.returnMatchOnly = !!value;
+        const workers = (this.workers || []).filter(w => w && w.worker);
+        for (const w of workers) {
+            try { w.worker.postMessage({ type: 'SET_RETURN_MATCH_ONLY', value: this.returnMatchOnly }); } catch { }
+        }
+    }
+
+    async rescanCached(startHeight = 0, endHeight = null, options = {}) {
         if (!this.cachedBundle || !this.cachedBundle.chunks || this.cachedBundle.chunks.length === 0) {
             return { matches: [], matchCount: 0, matchedChunks: [], blocksScanned: 0, blocksPerSecond: 0, stats: {} };
         }
@@ -836,25 +1456,26 @@ class CSPScanner {
             throw new Error('Scan already in progress');
         }
 
-        // Use bundle's end height if not specified
+        // Returned-transfer pass: skip ownership crypto, match only the return-address set.
+        this.setReturnMatchOnly(!!(options && options.returnMatchOnly));
+
         if (endHeight === null) {
             endHeight = this.cachedBundle.lastHeight + 1;
         }
 
         const scanStart = performance.now();
 
-        // Reset state
         this.isScanning = true;
         this.scanAborted = false;
         this.taskQueue = [];
         this.allMatches = [];
         this.matchedChunks.clear();
         this.scannedBlocks = 0;
+        this.ingestFloorHeight = 0; // explicit-range rescan: ingest everything in range
         this.totalBlocks = endHeight - startHeight;
         this.startTime = performance.now();
         this.pendingTasks = 0;
 
-        // Reset stats
         this.stats = {
             totalChunks: 0,
             completedChunks: 0,
@@ -873,14 +1494,19 @@ class CSPScanner {
             carrotRingctPassthrough: 0
         };
 
-        // Queue tasks for all cached chunks within range
+        this._scanFinished = false;
+        const scanPromise = new Promise((resolve, reject) => {
+            this._scanResolve = resolve;
+            this._scanReject = reject;
+        });
+
         for (const chunk of this.cachedBundle.chunks) {
             if (chunk.startHeight >= startHeight && chunk.startHeight < endHeight) {
                 this.taskQueue.push({
                     startHeight: chunk.startHeight,
                     count: this.chunkSize,
                     actualCount: Math.min(this.chunkSize, endHeight - chunk.startHeight),
-                    useBundle: true  // Use cached bundle data
+                    useBundle: true
                 });
                 this.stats.totalChunks++;
             }
@@ -891,25 +1517,18 @@ class CSPScanner {
             return { matches: [], matchCount: 0, matchedChunks: [], blocksScanned: 0, blocksPerSecond: 0, stats: {} };
         }
 
-        // Return promise that resolves when scan completes
         return new Promise((resolve, reject) => {
             this._scanResolve = (results) => {
                 resolve(results);
             };
             this._scanReject = reject;
 
-            // Start processing
             for (let i = 0; i < this.workers.length; i++) {
                 this.scheduleNextTask();
             }
         });
     }
 
-    /**
-     * Phase 1b: Key-image-only scan
-     * Optimized scan checking only for spent key images.
-     * Returns: { spent: [{tx_idx, block_height, input_idx, key_image}], stats }
-     */
     async scanKeyImagesOnly(startHeight, endHeight, keyImagesCsv) {
         if (!this.workers || this.workers.length === 0) {
             throw new Error('Workers not initialized');
@@ -921,25 +1540,79 @@ class CSPScanner {
         const scanStart = performance.now();
         const totalChunks = Math.ceil((endHeight - startHeight) / this.chunkSize);
 
-        if (this.DEBUG) void 0 && console.log(`[CSPScanner] 🔍 Phase 1b FAST: Key-image scan from ${startHeight} to ${endHeight} (${totalChunks} chunks)`);
 
-        // Build list of chunk batches
         const batchSize = this.batchSize || 20;
         const batches = [];
         for (let h = startHeight; h < endHeight; h += this.chunkSize * batchSize) {
             batches.push(h);
         }
 
-        // Track results
         let allSpent = [];
         let totalInputsScanned = 0;
         let completedBatches = 0;
+        let erroredBatches = 0;
+        let chunkErrorCount = 0;
+        const failedBatchStarts = [];
         let pendingBatches = 0;
 
         return new Promise((resolve, reject) => {
-            // Message handler for key image results
+            // Stall watchdog: a crash mid key-image scan posts no RESULT/ERROR, so resolve with partial results and mark outstanding batches failed for Phase-3 fallback.
+            let lastActivity = performance.now();
+            let settled = false;
+            const KEY_IMAGE_STALL_MS = 90000;
+            const stallTimer = setInterval(() => {
+                if (settled) return;
+                if (performance.now() - lastActivity < KEY_IMAGE_STALL_MS) return;
+                settled = true;
+                clearInterval(stallTimer);
+                this.workers.forEach(w => w.worker.removeEventListener('message', handleMessage));
+                this.emitTelemetry('scan.key_images_stalled', {
+                    responseItems: completedBatches,
+                    scanIssueCount: pendingBatches,
+                }, 'error', `Key-image scan stalled with ${pendingBatches} batches outstanding`);
+                resolve({
+                    spent: allSpent,
+                    failedBatchCount: erroredBatches + pendingBatches,
+                    failedBatchStarts: failedBatchStarts.slice(),
+                    chunkErrorCount,
+                    stalled: true,
+                    stats: {
+                        inputsScanned: totalInputsScanned,
+                        spentFound: allSpent.length,
+                        totalMs: Math.round(performance.now() - scanStart)
+                    }
+                });
+            }, 15000);
+            // Errored batches MUST count toward completion, else the last erroring batch hangs this promise. failedBatchCount signals partial spent detection.
+            const finishIfDone = () => {
+                if (settled) return true;
+                if (completedBatches + erroredBatches >= batches.length && pendingBatches === 0) {
+                    settled = true;
+                    clearInterval(stallTimer);
+                    cleanup();
+                    const totalMs = performance.now() - scanStart;
+                    resolve({
+                        spent: allSpent,
+                        failedBatchCount: erroredBatches,
+                        failedBatchStarts: failedBatchStarts.slice(),
+                        chunkErrorCount,
+                        stats: {
+                            inputsScanned: totalInputsScanned,
+                            spentFound: allSpent.length,
+                            totalMs: Math.round(totalMs)
+                        }
+                    });
+                    return true;
+                }
+                return false;
+            };
+
             const handleMessage = (e) => {
                 const msg = e.data;
+                if (settled) return;
+                if (msg.type === 'KEY_IMAGES_RESULT' || msg.type === 'KEY_IMAGES_ERROR') {
+                    lastActivity = performance.now();
+                }
 
                 if (msg.type === 'KEY_IMAGES_RESULT') {
                     pendingBatches--;
@@ -947,36 +1620,22 @@ class CSPScanner {
 
                     if (msg.spent && msg.spent.length > 0) {
                         allSpent.push(...msg.spent);
-                        if (this.DEBUG) void 0 && console.log(`[CSPScanner] 💸 Found ${msg.spent.length} spent outputs at batch ${msg.startHeight}`);
                     }
                     totalInputsScanned += msg.stats?.inputsScanned || 0;
+                    chunkErrorCount += msg.stats?.chunkErrors || 0;
 
-                    // Dispatch more work if available
                     dispatchNextBatch();
 
-                    // Check if done
-                    if (completedBatches >= batches.length && pendingBatches === 0) {
-                        cleanup();
-                        const totalMs = performance.now() - scanStart;
-                        if (this.DEBUG) void 0 && console.log(`[CSPScanner] ✅ Phase 1b FAST complete: ${allSpent.length} spent found, ${totalInputsScanned} inputs scanned in ${(totalMs / 1000).toFixed(1)}s`);
-                        resolve({
-                            spent: allSpent,
-                            stats: {
-                                inputsScanned: totalInputsScanned,
-                                spentFound: allSpent.length,
-                                totalMs: Math.round(totalMs)
-                            }
-                        });
-                    }
+                    finishIfDone();
                 } else if (msg.type === 'KEY_IMAGES_ERROR') {
                     pendingBatches--;
-                    void 0 && console.warn(`[CSPScanner] Key image scan error:`, msg.error);
-                    // Continue with other batches
+                    erroredBatches++;
+                    if (Number.isFinite(msg.startHeight)) failedBatchStarts.push(msg.startHeight);
                     dispatchNextBatch();
+                    finishIfDone();
                 }
             };
 
-            // Add handlers to all workers
             this.workers.forEach(w => {
                 w.worker.addEventListener('message', handleMessage);
             });
@@ -994,7 +1653,6 @@ class CSPScanner {
                     nextBatchIndex++;
                     pendingBatches++;
 
-                    // Round-robin to workers
                     const workerIdx = (nextBatchIndex - 1) % this.workers.length;
                     const worker = this.workers[workerIdx];
 
@@ -1007,27 +1665,24 @@ class CSPScanner {
                 }
             };
 
-            // Start initial batches
             dispatchNextBatch();
+            finishIfDone();
         });
     }
 
 
-    /**
-     * Handle BATCH scan result from worker (multiple chunks at once)
-     */
     handleScanBatchResult(msg) {
-        const { workerId, startHeight, endHeight, chunksProcessed, blocksProcessed, stats, matches, spent } = msg;
+        const { workerId, startHeight, endHeight, chunksProcessed, blocksProcessed, stats, matches, spent, scannedChunks, missingChunks, missingReason } = msg;
+        const scannedChunkStarts = Array.isArray(scannedChunks) && scannedChunks.length > 0
+            ? [...new Set(scannedChunks.filter(h => Number.isFinite(h)))].sort((a, b) => a - b)
+            : Array.from({ length: chunksProcessed || 0 }, (_, i) => startHeight + (i * this.chunkSize));
 
-        this.recordTaskTiming(workerId, chunksProcessed || 1);
+        this.recordTaskTiming(workerId, scannedChunkStarts.length || 1);
 
-        // OPTIMIZATION v3.5.12: Only log batches with matches or every 10th batch
         if (this.DEBUG && (matches?.length > 0 || this.stats.completedChunks % 100 < chunksProcessed)) {
-            void 0 && console.log(`[CSPScanner] 📦 Batch ${startHeight}-${endHeight}: chunks=${chunksProcessed}, blocks=${blocksProcessed}, matches=${matches?.length || 0}`);
         }
 
-        // Update statistics
-        this.stats.completedChunks += chunksProcessed;
+        this.stats.completedChunks += scannedChunkStarts.length;
         this.stats.totalTxs += stats.txCount || 0;
         this.stats.totalOutputs += stats.outputCount || 0;
         this.stats.viewTagMatches += stats.viewTagMatches || 0;
@@ -1035,35 +1690,43 @@ class CSPScanner {
         this.stats.bytesReceived += stats.bytesReceived || 0;
         this.stats.fetchTimeMs += stats.fetchMs || 0;
         this.stats.scanTimeMs += stats.scanMs || 0;
-        // CSP v4: Carrot filtering stats
         this.stats.carrotCoinbaseChecked += stats.carrotCoinbaseChecked || 0;
         this.stats.carrotCoinbaseMatched += stats.carrotCoinbaseMatched || 0;
         this.stats.carrotRingctPassthrough += stats.carrotRingctPassthrough || 0;
-        // CSP v6: Spent detection stats
         this.stats.inputsScanned += stats.inputsScanned || 0;
         this.stats.spentOutputsFound += stats.spentOutputsFound || 0;
+        const workerState = this.workers.find(w => w.id === workerId);
+        if (this.stats.completedChunks === scannedChunkStarts.length || this.stats.completedChunks % 25 === 0 || (matches?.length || 0) > 0) {
+            this.emitTelemetry('scan.worker_task_completed', {
+                requestKind: 'batch',
+                requestHeight: startHeight,
+                responseItems: scannedChunkStarts.length,
+                responseBytes: stats.bytesReceived || 0,
+                durationMs: workerState?.taskStartTime ? Date.now() - workerState.taskStartTime : 0,
+                completedChunks: this.stats.completedChunks,
+                totalChunks: this.stats.totalChunks,
+                matchCount: matches?.length || 0,
+                viewTagMatches: stats.viewTagMatches || 0,
+            });
+        }
 
-        // OPTIMIZATION v3.5.12: Removed per-batch match rate logging - too verbose
-        // Match rate can be calculated from final stats
+        this.scannedBlocks += blocksProcessed || (scannedChunkStarts.length * this.chunkSize);
 
-        // Track blocks processed
-        this.scannedBlocks += blocksProcessed;
-
-        // Track ALL successfully scanned chunks (for gap detection)
-        // Calculate all chunk start heights covered by this batch
-        for (let i = 0; i < chunksProcessed; i++) {
-            const chunkStartHeight = startHeight + (i * this.chunkSize);
+        for (const chunkStartHeight of scannedChunkStarts) {
             this.scannedChunks.add(chunkStartHeight);
         }
 
-        // Store matches + spent matches
         const spentArr = Array.isArray(spent) ? spent : [];
         const matchArr = Array.isArray(matches) ? matches : [];
 
         if (matchArr.length > 0 || spentArr.length > 0) {
             for (const match of matchArr) {
-                // WASM returns block_height directly - use it and derive chunkStart
                 const blockHeight = match.block_height || match.blockHeight || startHeight;
+                // Skip matches below the per-scan ingest floor (wallet history already in the
+                // tail chunk before the requested start) so phase-3 doesn't re-ingest them.
+                // Fail-safe: only drop on a REAL known height (never on a fallback) => lossless.
+                const matchRealHeight = Number(match.block_height ?? match.blockHeight);
+                if (Number.isFinite(matchRealHeight) && matchRealHeight > 0 && matchRealHeight < this.ingestFloorHeight) continue;
                 const chunkStart = match.chunkStart || Math.floor(blockHeight / 1000) * 1000;
                 this.matchedChunks.add(chunkStart);
                 this.allMatches.push({
@@ -1076,6 +1739,10 @@ class CSPScanner {
 
             for (const spentMatch of spentArr) {
                 const blockHeight = spentMatch.height || spentMatch.block_height || startHeight;
+                // Skip spends below the floor (already ingested + re-detected by the dedicated
+                // spent-index pass over [startHeight,endHeight]). Fail-safe known height => lossless.
+                const spentRealHeight = Number(spentMatch.height ?? spentMatch.block_height);
+                if (Number.isFinite(spentRealHeight) && spentRealHeight > 0 && spentRealHeight < this.ingestFloorHeight) continue;
                 const chunkStart = spentMatch.chunkStart || Math.floor(blockHeight / 1000) * 1000;
                 this.matchedChunks.add(chunkStart);
                 this.allMatches.push({
@@ -1096,26 +1763,82 @@ class CSPScanner {
             });
         }
 
-        // Free up worker and check for partial batch completion
-        const workerState = this.workers.find(w => w.id === workerId);
         if (workerState) {
             const currentTask = workerState.currentTask;
 
-            if (currentTask && currentTask.isBatch && chunksProcessed > 0 && chunksProcessed < currentTask.chunkCount) {
-                const remainingChunks = currentTask.chunkCount - chunksProcessed;
-                const nextStartHeight = startHeight + (chunksProcessed * this.chunkSize);
+            if (currentTask && currentTask.isBatch && scannedChunkStarts.length > 0 && scannedChunkStarts.length < currentTask.chunkCount) {
+                const scannedSet = new Set(scannedChunkStarts);
+                const missingStarts = [];
+                for (let i = 0; i < currentTask.chunkCount; i++) {
+                    const expectedStart = currentTask.startHeight + (i * this.chunkSize);
+                    if (!scannedSet.has(expectedStart)) {
+                        missingStarts.push(expectedStart);
+                    }
+                }
 
-                if (this.DEBUG) void 0 && console.warn(`[CSPScanner] Worker ${workerId} partial batch: ${chunksProcessed}/${currentTask.chunkCount} chunks. Re-queuing`);
+                this.emitTelemetry('scan.worker_partial_batch_requeued', {
+                    requestHeight: startHeight,
+                    responseItems: scannedChunkStarts.length,
+                    missingChunkCount: missingStarts.length,
+                    missingReason: missingReason || 'unknown',
+                    serverMissingChunkCount: Array.isArray(missingChunks) ? missingChunks.length : 0,
+                }, 'warn', `Partial CSP batch at ${startHeight}; re-queuing missing chunks`);
 
-                // Push to front of queue to maintain approximate order
-                this.taskQueue.unshift({
-                    startHeight: nextStartHeight,
-                    chunkCount: remainingChunks,
-                    isBatch: true
-                });
-            } else if (currentTask && chunksProcessed === 0) {
-                // 404 or beyond chain tip - don't re-queue, just complete this batch
-                if (this.DEBUG) void 0 && console.log(`[CSPScanner] Batch at ${startHeight} returned 0 chunks (beyond chain tip or error) - not re-queuing`);
+                const groupedMissing = [];
+                for (const missingStart of missingStarts) {
+                    const lastGroup = groupedMissing[groupedMissing.length - 1];
+                    if (lastGroup && lastGroup.startHeight + (lastGroup.chunkCount * this.chunkSize) === missingStart) {
+                        lastGroup.chunkCount++;
+                    } else {
+                        groupedMissing.push({
+                            startHeight: missingStart,
+                            chunkCount: 1,
+                            isBatch: true
+                        });
+                    }
+                }
+
+                for (let i = groupedMissing.length - 1; i >= 0; i--) {
+                    this.taskQueue.unshift(groupedMissing[i]);
+                }
+            } else if (currentTask && scannedChunkStarts.length === 0) {
+                const reason = (missingReason || '').toLowerCase();
+                const isGenuineTip = reason === 'beyond_tip' || reason === 'beyond_chain_tip' || reason === 'tip';
+                if (currentTask.isBatch && !isGenuineTip) {
+                    // 0 chunks for a non-tip reason (transient cache/generation failure): bounded re-queue so the batch isn't silently dropped.
+                    this.zeroChunkRequeueCount = this.zeroChunkRequeueCount || {};
+                    const zKey = `zc_${currentTask.startHeight}`;
+                    const zCount = (this.zeroChunkRequeueCount[zKey] || 0) + 1;
+                    this.zeroChunkRequeueCount[zKey] = zCount;
+                    const ZERO_CHUNK_MAX_REQUEUE = 3;
+                    if (zCount <= ZERO_CHUNK_MAX_REQUEUE) {
+                        this.emitTelemetry('scan.worker_empty_batch_requeued', {
+                            requestHeight: startHeight,
+                            responseItems: 0,
+                            missingReason: missingReason || 'unknown',
+                            scanIssueCount: zCount,
+                        }, 'warn', `Empty CSP batch at ${startHeight} (${missingReason}); re-queuing`);
+                        this.taskQueue.unshift({
+                            startHeight: currentTask.startHeight,
+                            chunkCount: currentTask.chunkCount,
+                            isBatch: true,
+                            isRetry: true,
+                        });
+                    } else {
+                        this.failedBatches = this.failedBatches || [];
+                        this.failedBatches.push({
+                            startHeight: currentTask.startHeight,
+                            chunkCount: currentTask.chunkCount,
+                            error: `empty batch (${missingReason}) after ${ZERO_CHUNK_MAX_REQUEUE} retries`,
+                        });
+                        this.emitTelemetry('scan.worker_empty_batch_giveup', {
+                            requestHeight: startHeight,
+                            missingReason: missingReason || 'unknown',
+                            scanIssueCount: zCount,
+                        }, 'error', `Empty CSP batch at ${startHeight} dropped after ${ZERO_CHUNK_MAX_REQUEUE} retries`);
+                    }
+                } else {
+                }
             }
 
             workerState.busy = false;
@@ -1125,10 +1848,15 @@ class CSPScanner {
                 workerState.enabled = false;
                 workerState.disableAfterTask = false;
             }
+            // Decrement only when the worker is still tracked; a stale result for an already-recovered worker must not double-decrement.
+            this.pendingTasks--;
         }
-        this.pendingTasks--;
 
-        // Report progress
+        if (scannedChunkStarts.length > 0) {
+            const matchedForBatch = scannedChunkStarts.filter(h => this.matchedChunks.has(h));
+            try { this.onChunksScanned(scannedChunkStarts, matchedForBatch); } catch { }
+        }
+
         const progress = this.scannedBlocks / this.totalBlocks;
         this.onProgress({
             progress,
@@ -1141,22 +1869,16 @@ class CSPScanner {
             currentChunk: { startHeight, endHeight, workerId }
         });
 
-        // Schedule next task or complete
         this.scheduleNextTask();
 
-        // Opportunistic tuning
         this.maybeAutoTune();
     }
 
-    /**
-     * Handle scan result from worker
-     */
     handleScanResult(msg) {
         const { workerId, startHeight, endHeight, stats, matches, spent, actualCount } = msg;
 
         this.recordTaskTiming(workerId, 1);
 
-        // Update statistics
         this.stats.completedChunks++;
         this.stats.totalTxs += stats.txCount || 0;
         this.stats.totalOutputs += stats.outputCount || 0;
@@ -1165,32 +1887,41 @@ class CSPScanner {
         this.stats.bytesReceived += stats.bytesReceived || 0;
         this.stats.fetchTimeMs += stats.fetchMs || 0;
         this.stats.scanTimeMs += stats.scanMs || 0;
-        // CSP v4: Carrot filtering stats
         this.stats.carrotCoinbaseChecked += stats.carrotCoinbaseChecked || 0;
         this.stats.carrotCoinbaseMatched += stats.carrotCoinbaseMatched || 0;
         this.stats.carrotRingctPassthrough += stats.carrotRingctPassthrough || 0;
-        // CSP v6: Spent detection stats
         this.stats.inputsScanned += stats.inputsScanned || 0;
         this.stats.spentOutputsFound += stats.spentOutputsFound || 0;
+        if (this.stats.completedChunks === 1 || this.stats.completedChunks % 25 === 0 || (matches?.length || 0) > 0) {
+            const workerStateForTiming = this.workers.find(w => w.id === workerId);
+            this.emitTelemetry('scan.worker_task_completed', {
+                requestKind: 'single',
+                requestHeight: startHeight,
+                responseItems: 1,
+                responseBytes: stats.bytesReceived || 0,
+                durationMs: workerStateForTiming?.taskStartTime ? Date.now() - workerStateForTiming.taskStartTime : 0,
+                completedChunks: this.stats.completedChunks,
+                totalChunks: this.stats.totalChunks,
+                matchCount: matches?.length || 0,
+                viewTagMatches: stats.viewTagMatches || 0,
+            });
+        }
 
-        // Track blocks processed - use actualCount if provided (for cache-aligned requests)
         const blocksInChunk = actualCount || (endHeight - startHeight) || this.chunkSize;
         this.scannedBlocks += blocksInChunk;
 
-        // Track this chunk as successfully scanned (for gap detection after interruption)
         this.scannedChunks.add(startHeight);
 
         const spentArr = Array.isArray(spent) ? spent : [];
         const matchArr = Array.isArray(matches) ? matches : [];
 
-        // Store matches and track chunks that need full rescan
         if (matchArr.length > 0 || spentArr.length > 0) {
-            // Track this chunk for targeted rescan
             this.matchedChunks.add(startHeight);
 
             for (const match of matchArr) {
-                // WASM returns block_height directly - use it and derive chunkStart
                 const blockHeight = match.block_height || match.blockHeight || startHeight;
+                const matchRealHeight = Number(match.block_height ?? match.blockHeight);
+                if (Number.isFinite(matchRealHeight) && matchRealHeight > 0 && matchRealHeight < this.ingestFloorHeight) continue;
                 const chunkStart = match.chunkStart || Math.floor(blockHeight / 1000) * 1000;
                 this.allMatches.push({
                     ...match,
@@ -1202,6 +1933,8 @@ class CSPScanner {
 
             for (const spentMatch of spentArr) {
                 const blockHeight = spentMatch.height || spentMatch.block_height || startHeight;
+                const spentRealHeight = Number(spentMatch.height ?? spentMatch.block_height);
+                if (Number.isFinite(spentRealHeight) && spentRealHeight > 0 && spentRealHeight < this.ingestFloorHeight) continue;
                 const chunkStart = spentMatch.chunkStart || Math.floor(blockHeight / 1000) * 1000;
                 this.allMatches.push({
                     ...spentMatch,
@@ -1211,7 +1944,6 @@ class CSPScanner {
                 });
             }
 
-            // Callback for matches
             this.onMatch({
                 workerId,
                 startHeight,
@@ -1222,7 +1954,6 @@ class CSPScanner {
             });
         }
 
-        // Free up worker
         const workerState = this.workers.find(w => w.id === workerId);
         if (workerState) {
             workerState.busy = false;
@@ -1232,10 +1963,12 @@ class CSPScanner {
                 workerState.enabled = false;
                 workerState.disableAfterTask = false;
             }
+            // Decrement only when still tracked; recoverStuckWorker already decremented/re-queued, else pendingTasks goes negative.
+            this.pendingTasks--;
         }
-        this.pendingTasks--;
 
-        // Report progress
+        try { this.onChunksScanned([startHeight], this.matchedChunks.has(startHeight) ? [startHeight] : []); } catch { }
+
         const progress = this.scannedBlocks / this.totalBlocks;
         this.onProgress({
             progress,
@@ -1248,48 +1981,52 @@ class CSPScanner {
             currentChunk: { startHeight, endHeight, workerId }
         });
 
-        // Schedule next task or complete
         this.scheduleNextTask();
 
-        // Opportunistic tuning
         this.maybeAutoTune();
     }
 
-    /**
-     * Handle scan error from worker
-     */
     handleScanError(msg) {
         const { workerId, startHeight, error, chunkCount } = msg;
 
-        // Count toward backoff decisions
         this._recentErrors = (this._recentErrors || 0) + 1;
 
-        // Get the failed task details before freeing worker
         const workerState = this.workers.find(w => w.id === workerId);
         const failedTask = workerState?.currentTask;
 
-        // Track retry count for this batch
         const retryKey = `batch_${startHeight}`;
         this.retryCount = this.retryCount || {};
         const currentRetries = this.retryCount[retryKey] || 0;
         const MAX_RETRIES = 3;
 
-        // Determine if this is a retryable error (502, 503, timeout, network errors)
+        // Transient node/proxy conditions; skipping any would leave a silent gap, so always retry these.
         const isRetryable = error && (
+            error.includes('429') ||
+            error.includes('500') ||
             error.includes('502') ||
             error.includes('503') ||
             error.includes('504') ||
             error.toLowerCase().includes('timeout') ||
             error.toLowerCase().includes('network') ||
+            error.toLowerCase().includes('abort') ||
             error.includes('fetch failed') ||
             error.includes('Failed to fetch') ||
-            error.includes('NetworkError')
+            error.includes('NetworkError') ||
+            error.includes('empty body') ||
+            error.includes('size mismatch')
         );
 
-        void 0 && console.error(`[CSPScanner] Worker ${workerId} error at height ${startHeight} (retry ${currentRetries}/${MAX_RETRIES}):`, error);
+        this.emitTelemetry('scan.worker_task_failed', {
+            requestHeight: startHeight,
+            responseItems: chunkCount || failedTask?.chunkCount || 0,
+            requestKind: failedTask?.isBatch ? 'batch' : 'single',
+            reason: error || 'worker scan error',
+            scanIssueCount: currentRetries + 1,
+        }, isRetryable && currentRetries < MAX_RETRIES ? 'warn' : 'error', error || 'worker scan error');
 
-        // Free up worker
+        let workerWasTracked = false;
         if (workerState) {
+            workerWasTracked = true;
             workerState.busy = false;
             workerState.currentTask = null;
 
@@ -1298,18 +2035,25 @@ class CSPScanner {
                 workerState.disableAfterTask = false;
             }
         }
-        this.pendingTasks--;
+        // Decrement only when still tracked; a stale error for an already-replaced worker must not double-decrement.
+        if (workerWasTracked) {
+            this.pendingTasks--;
+        }
 
-        // RETRY LOGIC: Re-queue failed batches if retryable and under max retries
         if (isRetryable && currentRetries < MAX_RETRIES && failedTask) {
             this.retryCount[retryKey] = currentRetries + 1;
 
-            // Wait a bit before retrying (exponential backoff)
-            const delay = Math.min(1000 * Math.pow(2, currentRetries), 10000); // 1s, 2s, 4s max 10s
-            void 0 && console.warn(`[CSPScanner] 🔄 Scheduling retry ${currentRetries + 1}/${MAX_RETRIES} for batch ${startHeight} in ${delay}ms`);
+            const delay = Math.min(1000 * Math.pow(2, currentRetries), 10000);
+            this.emitTelemetry('scan.worker_task_retry_scheduled', {
+                requestHeight: startHeight,
+                responseItems: failedTask.chunkCount || this.batchSize,
+                requestKind: failedTask.isBatch !== false ? 'batch' : 'single',
+                durationMs: delay,
+                scanIssueCount: currentRetries + 1,
+                reason: error || 'retryable worker scan error',
+            }, 'warn', error || 'retryable worker scan error');
 
             setTimeout(() => {
-                // Re-add task to front of queue for priority retry
                 this.taskQueue.unshift({
                     startHeight: failedTask.startHeight,
                     chunkCount: failedTask.chunkCount || this.batchSize,
@@ -1319,7 +2063,6 @@ class CSPScanner {
                 this.scheduleNextTask();
             }, delay);
 
-            // Don't count as scanned yet - will be retried
             this.onError({
                 workerId,
                 startHeight,
@@ -1328,15 +2071,9 @@ class CSPScanner {
                 retryCount: currentRetries + 1
             });
         } else {
-            // Max retries exceeded or non-retryable error - skip this batch
             if (currentRetries >= MAX_RETRIES) {
-                void 0 && console.error(`[CSPScanner] ❌ SKIPPING batch ${startHeight} after ${MAX_RETRIES} failed retries`);
             }
 
-            // Mark as scanned (even though failed) to continue progress
-            this.scannedBlocks += this.useBatchMode ? (this.batchSize * this.chunkSize) : this.chunkSize;
-
-            // Track failed batches for potential manual retry later
             this.failedBatches = this.failedBatches || [];
             this.failedBatches.push({
                 startHeight,
@@ -1359,9 +2096,111 @@ class CSPScanner {
         this.maybeAutoTune();
     }
 
-    /**
-     * Schedule next task to a free worker
-     */
+    async recoverStuckWorker(workerState, stuckTask, elapsedMs) {
+        if (!workerState || workerState.recovering) return;
+        workerState.recovering = true;
+
+        const workerId = workerState.id;
+        const requestHeight = stuckTask?.startHeight || 0;
+        const responseItems = stuckTask?.chunkCount || 1;
+        const requestKind = stuckTask?.isBatch ? 'batch' : (stuckTask?.useBundle ? 'bundle' : 'single');
+
+        this.emitTelemetry('scan.worker_task_watchdog_requeue', {
+            workerId,
+            requestHeight,
+            responseItems,
+            requestKind,
+            durationMs: Math.round(elapsedMs || 0),
+            scanIssueCount: 1,
+            reason: 'worker task exceeded watchdog timeout'
+        }, 'warn', `Worker ${workerId} exceeded task watchdog timeout`);
+
+        if (workerState.busy) {
+            this.pendingTasks = Math.max(0, this.pendingTasks - 1);
+        }
+
+        workerState.busy = false;
+        workerState.currentTask = null;
+        workerState.taskStartTime = null;
+
+        const workerIndex = this.workers.indexOf(workerState);
+        if (workerIndex !== -1) {
+            this.workers.splice(workerIndex, 1);
+        }
+
+        try {
+            workerState.worker.terminate();
+        } catch (_) {
+        }
+
+        if (stuckTask && !this.scanAborted) {
+            // Bound watchdog requeues so a chunk that deterministically hangs the worker can't stall the scan forever; drop to failedBatches after the cap.
+            this.watchdogRequeueCount = this.watchdogRequeueCount || {};
+            const wdKey = `wd_${stuckTask.startHeight}`;
+            const wdCount = (this.watchdogRequeueCount[wdKey] || 0) + 1;
+            this.watchdogRequeueCount[wdKey] = wdCount;
+            const WATCHDOG_MAX_REQUEUE = 3;
+
+            if (wdCount <= WATCHDOG_MAX_REQUEUE) {
+                this.taskQueue.unshift({
+                    ...stuckTask,
+                    isRetry: true
+                });
+            } else {
+                this.failedBatches = this.failedBatches || [];
+                this.failedBatches.push({
+                    startHeight: stuckTask.startHeight,
+                    chunkCount: stuckTask.chunkCount || 1,
+                    error: `watchdog requeue exceeded ${WATCHDOG_MAX_REQUEUE} attempts`,
+                });
+                this.emitTelemetry('scan.worker_task_watchdog_giveup', {
+                    workerId,
+                    requestHeight,
+                    responseItems,
+                    requestKind,
+                    scanIssueCount: wdCount,
+                    reason: 'watchdog requeue cap exceeded'
+                }, 'error', `Chunk ${stuckTask.startHeight} dropped after ${WATCHDOG_MAX_REQUEUE} watchdog requeues`);
+            }
+        }
+
+        if (this.scanAborted) return;
+
+        try {
+            await this.ensureWorkers(Math.max(1, this.enabledWorkerCount));
+        } catch (error) {
+            const message = error?.message || String(error || 'Failed to replace stuck worker');
+            this.emitTelemetry('scan.worker_watchdog_replacement_failed', {
+                workerId,
+                requestHeight,
+                reason: message
+            }, 'error', message);
+            this.onError({
+                workerId,
+                startHeight: requestHeight,
+                error: message,
+                willRetry: false,
+                skipped: false
+            });
+            // Settle, don't strand: with no replacement worker the queue would sit with
+            // pendingTasks possibly 0 and nothing re-entering dispatch -- the scanPromise
+            // would never resolve. If other workers remain, hand them the queue; if none,
+            // reject the scan so the caller's retry machinery takes over.
+            const liveWorkers = this.workers.filter((w) => w.ready && w.enabled !== false);
+            if (liveWorkers.length > 0) {
+                this.scheduleNextTask();
+            } else if (this._scanReject) {
+                const rej = this._scanReject;
+                this._scanReject = null;
+                rej(new Error('All scan workers failed and replacement failed: ' + message));
+            }
+            return;
+        }
+
+        this.setEnabledWorkers(Math.min(this.enabledWorkerCount, this.workers.length));
+        this.scheduleNextTask();
+    }
+
     scheduleNextTask() {
         if (this.scanAborted) {
             if (this.pendingTasks === 0) {
@@ -1370,44 +2209,44 @@ class CSPScanner {
             return;
         }
 
-        // Find free worker
         const freeWorker = this.workers.find(w => w.ready && !w.busy && w.enabled !== false);
         if (!freeWorker) return;
 
-        // Get next task
         const task = this.taskQueue.shift();
         if (!task) {
-            // No more tasks - check if done
-            if (this.pendingTasks === 0) {
+            if (this.pendingTasks === 0 && !this.streamDispatchInProgress) {
                 this.finishScan();
             }
             return;
         }
 
-        // Assign task to worker
         freeWorker.busy = true;
         freeWorker.currentTask = task;
-        freeWorker.taskStartTime = Date.now();  // Track when task started
+        freeWorker.taskStartTime = Date.now();
         this.pendingTasks++;
 
-        // OPTIMIZATION v3.5.12: Only log every 10th task assignment (reduce console spam)
         if (this.DEBUG && (this.stats.completedChunks % 100 === 0)) {
             const mode = task.bundleData ? 'stream' : (task.useBundle ? 'bundle' : (task.isBatch ? 'batch' : 'single'));
-            void 0 && console.log(`[CSPScanner] 🚀 Worker ${freeWorker.id} starting ${mode} at ${task.startHeight}`);
+        }
+        const mode = task.bundleData ? 'stream' : (task.useBundle ? 'bundle' : (task.isBatch ? 'batch' : 'single'));
+        if (this.stats.completedChunks === 0 || this.stats.completedChunks % 25 === 0 || task.isRetry) {
+            this.emitTelemetry('scan.worker_task_started', {
+                requestKind: mode,
+                requestHeight: task.startHeight || 0,
+                responseItems: task.chunkCount || 1,
+                useBundleMode: mode === 'stream' || mode === 'bundle',
+                useBatchMode: mode === 'batch',
+                scanIssueCount: task.isRetry ? 1 : 0,
+            }, task.isRetry ? 'warn' : 'info');
         }
 
-        // Use streaming bundle, cached bundle, batch mode, or single-chunk mode
         if (task.bundleData) {
-            // STREAMING MODE: Data was embedded directly in task during stream
+            // Copy bundleData instead of transferring it: a requeued stuck task must not hit DataCloneError on a detached ArrayBuffer.
             const cspData = task.bundleData;
-            // Transfer without extra copy when possible
-            let dataToSend;
-            if (cspData && cspData.byteOffset === 0 && cspData.byteLength === cspData.buffer.byteLength) {
-                dataToSend = cspData.buffer;
-            } else {
-                // Ensure we transfer an exact-sized buffer
-                dataToSend = (cspData ? cspData.slice() : new Uint8Array(0)).buffer;
-            }
+            const sourceView = cspData
+                ? new Uint8Array(cspData.buffer, cspData.byteOffset, cspData.byteLength)
+                : new Uint8Array(0);
+            const dataToSend = new Uint8Array(sourceView).buffer;
             freeWorker.worker.postMessage({
                 type: 'SCAN_CSP_DIRECT',
                 startHeight: task.startHeight,
@@ -1416,19 +2255,16 @@ class CSPScanner {
                 cspData: dataToSend
             }, [dataToSend]);
         } else if (task.useBundle && this.cachedBundle) {
-            // BUNDLE MODE: Extract from cached bundle
             const cspData = this.extractChunkFromBundle(this.cachedBundle, task.startHeight);
             if (cspData) {
                 freeWorker.worker.postMessage({
-                    type: 'SCAN_CSP_DIRECT',  // New message type for pre-fetched data
+                    type: 'SCAN_CSP_DIRECT',
                     startHeight: task.startHeight,
                     count: task.count || this.chunkSize,
                     actualCount: task.actualCount || task.count || this.chunkSize,
-                    cspData: cspData.buffer  // Transfer ArrayBuffer
-                }, [cspData.buffer]);  // Transfer ownership for zero-copy
+                    cspData: cspData.buffer
+                }, [cspData.buffer]);
             } else {
-                if (this.DEBUG) void 0 && console.warn(`[CSPScanner] Bundle chunk ${task.startHeight} not found - falling back to fetch`);
-                // Fall back to single fetch
                 freeWorker.worker.postMessage({
                     type: 'SCAN_CSP',
                     startHeight: task.startHeight,
@@ -1437,14 +2273,12 @@ class CSPScanner {
                 });
             }
         } else if (task.isBatch) {
-            // BATCH MODE: Fetch multiple chunks at once
             freeWorker.worker.postMessage({
                 type: 'SCAN_CSP_BATCH',
                 startHeight: task.startHeight,
                 chunkCount: task.chunkCount
             });
         } else {
-            // SINGLE CHUNK MODE: Legacy behavior
             freeWorker.worker.postMessage({
                 type: 'SCAN_CSP',
                 startHeight: task.startHeight,
@@ -1453,35 +2287,37 @@ class CSPScanner {
             });
         }
 
-        // Watchdog: Check if this task takes too long (120s max)
         if (!this._watchdogInterval) {
+            this._strandedTicks = 0;
             this._watchdogInterval = setInterval(() => {
                 const now = Date.now();
                 for (const w of this.workers) {
                     if (w.busy && w.taskStartTime && (now - w.taskStartTime) > 120000) {
-                        void 0 && console.error(`[CSPScanner] ⚠️ WATCHDOG: Worker ${w.id} stuck for >120s on ${w.currentTask?.startHeight}`);
-                        // Force release the worker and re-queue the task
-                        const stuckTask = w.currentTask;
-                        w.busy = false;
-                        w.currentTask = null;
-                        w.taskStartTime = null;
-                        this.pendingTasks--;
-                        if (stuckTask) {
-                            if (this.DEBUG) void 0 && console.log(`[CSPScanner] Re-queuing stuck task: ${stuckTask.startHeight}`);
-                            this.taskQueue.unshift(stuckTask);
-                        }
-                        this.scheduleNextTask();
+                        void this.recoverStuckWorker(w, w.currentTask, now - w.taskStartTime);
                     }
                 }
-            }, 30000); // Check every 30 seconds
+                // Stranded-queue detection: tasks waiting, nothing in flight, and no
+                // dispatch happening means scheduleNextTask was never re-entered after
+                // some failure path -- the scanPromise would pend forever. Re-kick it.
+                if (this.isScanning && this.taskQueue.length > 0 && this.pendingTasks === 0) {
+                    this._strandedTicks = (this._strandedTicks || 0) + 1;
+                    if (this._strandedTicks >= 2) {
+                        this._strandedTicks = 0;
+                        this.emitTelemetry('scan.stranded_queue_rekicked', {
+                            queued: this.taskQueue.length,
+                            workers: this.workers.length,
+                        }, 'warn');
+                        for (let i = 0; i < Math.max(1, this.enabledWorkerCount); i++) {
+                            this.scheduleNextTask();
+                        }
+                    }
+                } else {
+                    this._strandedTicks = 0;
+                }
+            }, 30000);
         }
     }
 
-    /**
-     * Start scanning a block range
-     * @param {number} startHeight - Starting block height
-     * @param {number} endHeight - Ending block height (exclusive)
-     */
     async scan(startHeight, endHeight) {
         if (this.isScanning) {
             throw new Error('Scan already in progress');
@@ -1492,8 +2328,25 @@ class CSPScanner {
         this.taskQueue = [];
         this.allMatches = [];
         this.matchedBlocks.clear();
-        this.scannedChunks.clear();  // Reset scanned chunks tracking
+        this.scannedChunks.clear();
+        this.failedBatches = [];
+        this.retryCount = {};
+        this.watchdogRequeueCount = {};
+        this.zeroChunkRequeueCount = {};
+        this.workerCrashCount = 0;
+        this.pendingTasks = 0;
+        this.streamDispatchInProgress = false;
+        this._scanResolve = null;
+        this._scanReject = null;
         this.scannedBlocks = 0;
+        // Scope phase-3 sparse ingest to the requested window [startHeight, endHeight].
+        // The worker fetches/scans whole chunk-aligned chunks, so a tail catch-up
+        // re-discovers the wallet history below startHeight in the tail chunk; filtering
+        // matches below startHeight stops re-ingesting it (the dominant per-catch-up freeze).
+        // The caller already includes any small reorg overlap in startHeight (lossless;
+        // deep reorgs are caught by hash-checkpoint detection). startHeight===0 (full
+        // restore) => floor 0 => no filtering.
+        this.ingestFloorHeight = Math.max(0, startHeight | 0);
         this.totalBlocks = endHeight - startHeight;
         this.startTime = performance.now();
 
@@ -1501,7 +2354,6 @@ class CSPScanner {
             this.startUiLagMonitor();
         }
 
-        // Reset stats
         this.stats = {
             totalChunks: 0,
             completedChunks: 0,
@@ -1515,70 +2367,95 @@ class CSPScanner {
             startHeight,
             endHeight,
             elapsedMs: 0,
-            // CSP v4: Carrot filtering stats
             carrotCoinbaseChecked: 0,
             carrotCoinbaseMatched: 0,
             carrotRingctPassthrough: 0
         };
 
-        // Build task queue - ALIGN to chunkSize boundaries for cache efficiency
+        this._scanFinished = false;
+        const scanPromise = new Promise((resolve, reject) => {
+            this._scanResolve = resolve;
+            this._scanReject = reject;
+        });
+
         const alignedStart = Math.floor(startHeight / this.chunkSize) * this.chunkSize;
         const alignedEnd = endHeight;
         const chunksNeeded = Math.ceil((alignedEnd - alignedStart) / this.chunkSize);
 
-        // =====================================================================
-        // STREAMING BUNDLE MODE: Download and process chunks as they arrive
-        // =====================================================================
-        const useStreaming = this.useBundleMode !== false && chunksNeeded > 10;
+        // Read-through cache: if the entire range is already cached locally, dispatch from
+        // disk and skip the network entirely. Any miss falls through to the normal fetch.
+        if (await this.tryDispatchFromCache(alignedStart, alignedEnd)) {
+            for (let i = 0; i < this.enabledWorkerCount; i++) {
+                this.scheduleNextTask();
+            }
+            return scanPromise;
+        }
+
+        // Stream the full bundle only for true full rescans; keep dispatch open until post-bundle gap tasks are queued so the live tail isn't skipped.
+        const useStreaming = this.useBundleMode !== false && alignedStart === 0 && chunksNeeded > 10;
+        this.emitTelemetry('scan.scanner_mode_selected', {
+            scanWindowStart: startHeight,
+            scanWindowEnd: endHeight,
+            scanRangeBlocks: Math.max(0, endHeight - startHeight),
+            requestHeight: alignedStart,
+            responseItems: chunksNeeded,
+            useBundleMode: useStreaming,
+            useBatchMode: this.useBatchMode !== false,
+            batchSize: this.batchSize,
+            chunkSize: this.chunkSize
+        });
 
         if (useStreaming) {
-            if (this.DEBUG) void 0 && console.log(`[CSPScanner] 🚀 STREAMING MODE: Starting bundle stream (${chunksNeeded} chunks needed)...`);
 
-            // streamCspBundle() will push tasks to this.taskQueue and call scheduleNextTask()
-            // as chunks arrive, so we need workers ready first
             await this.initWorkers();
 
+            this.streamDispatchInProgress = true;
             const bundle = await this.streamCspBundle();
             if (bundle && bundle.chunkCount > 0) {
-                if (this.DEBUG) void 0 && console.log(`[CSPScanner] 🚀 STREAMING MODE: ${bundle.chunkCount} chunks processed via stream`);
                 this.cachedBundle = bundle;
-
-                // Check if bundle covers the full scan range
-                // If chain has grown beyond bundle.lastHeight, queue batch tasks for remaining chunks
-                const bundleEndHeight = bundle.lastHeight + 1; // Bundle goes to lastHeight inclusive
-                if (bundleEndHeight < endHeight) {
-                    const gapStart = Math.floor(bundleEndHeight / this.chunkSize) * this.chunkSize;
-                    const gapChunks = Math.ceil((endHeight - gapStart) / this.chunkSize);
-
-                    if (this.DEBUG) void 0 && console.log(`[CSPScanner] 📦 Bundle ends at ${bundle.lastHeight}, need ${gapChunks} more chunks to reach ${endHeight}`);
-
-                    // Queue batch tasks for chunks beyond the bundle
-                    const blocksPerBatch = this.batchSize * this.chunkSize;
-                    for (let h = gapStart; h < endHeight; h += blocksPerBatch) {
-                        const remainingChunks = Math.ceil((endHeight - h) / this.chunkSize);
-                        const chunksInThisBatch = Math.min(this.batchSize, remainingChunks);
-
-                        this.taskQueue.push({
-                            startHeight: h,
-                            chunkCount: chunksInThisBatch,
-                            isBatch: true
-                        });
-                    }
-
-                    this.stats.totalChunks += gapChunks;
-                    if (this.DEBUG) void 0 && console.log(`[CSPScanner] 📦 Queued ${this.taskQueue.length} batch tasks for post-bundle gap`);
-                }
-            } else {
-                if (this.DEBUG) void 0 && console.log(`[CSPScanner] 📦 Streaming failed, falling back to batch mode`);
             }
+
+            // Cover EVERY chunk the bundle stream did not dispatch - whether it
+            // completed normally, was truncated, or aborted (e.g. the stall
+            // watchdog firing on a slow / back-pressured download). An interrupted
+            // bundle must never leave chunks unscanned: queue the remainder as
+            // batch fetches so phase 1 can always complete.
+            const streamCoveredEnd = (bundle && bundle.chunkCount > 0)
+                ? (bundle.lastHeight + 1)
+                : (this.streamLastDispatchedEnd || alignedStart);
+            if (streamCoveredEnd < endHeight) {
+                const gapStart = Math.floor(streamCoveredEnd / this.chunkSize) * this.chunkSize;
+                const gapChunks = Math.ceil((endHeight - gapStart) / this.chunkSize);
+                const blocksPerBatch = this.batchSize * this.chunkSize;
+                for (let h = gapStart; h < endHeight; h += blocksPerBatch) {
+                    const remainingChunks = Math.ceil((endHeight - h) / this.chunkSize);
+                    const chunksInThisBatch = Math.min(this.batchSize, remainingChunks);
+
+                    this.taskQueue.push({
+                        startHeight: h,
+                        chunkCount: chunksInThisBatch,
+                        isBatch: true
+                    });
+                }
+
+                this.stats.totalChunks += gapChunks;
+
+                if (!(bundle && bundle.chunkCount > 0)) {
+                    this.emitTelemetry('scan.scanner_bundle_gap_recovered', {
+                        requestHeight: gapStart,
+                        scanWindowEnd: endHeight,
+                        responseRemaining: gapChunks
+                    }, 'warn', 'Bundle stream incomplete; recovering ' + gapChunks + ' chunk(s) from ' + gapStart + ' via batch mode');
+                }
+            }
+
+            this.streamDispatchInProgress = false;
+            this.scheduleNextTask();
         }
 
 
-        // If streaming/bundle mode didn't set up tasks (or was skipped), use batch or single chunk mode
         if (this.taskQueue.length === 0 && this.stats.completedChunks === 0) {
-            if (this.DEBUG) void 0 && console.log(`[CSPScanner] 📦 Using ${chunksNeeded <= 10 ? 'incremental' : 'batch'} mode for ${chunksNeeded} chunks`);
             if (this.useBatchMode) {
-                // BATCH MODE: Create tasks that fetch multiple chunks at once
                 const blocksPerBatch = this.batchSize * this.chunkSize;
 
                 for (let h = alignedStart; h < endHeight; h += blocksPerBatch) {
@@ -1593,9 +2470,14 @@ class CSPScanner {
                 }
 
                 this.stats.totalChunks = Math.ceil((endHeight - alignedStart) / this.chunkSize);
-                if (this.DEBUG) void 0 && console.log(`[CSPScanner] BATCH MODE: ${this.totalBlocks.toLocaleString()} blocks in ${this.taskQueue.length} batch requests (${this.batchSize} chunks/batch)`);
+                this.emitTelemetry('scan.scanner_batch_queue_ready', {
+                    scanWindowStart: startHeight,
+                    scanWindowEnd: endHeight,
+                    responseItems: this.taskQueue.length,
+                    totalChunks: this.stats.totalChunks,
+                    batchSize: this.batchSize
+                });
             } else {
-                // SINGLE CHUNK MODE: Legacy behavior
                 for (let h = alignedStart; h < endHeight; h += this.chunkSize) {
                     const chunkStart = Math.max(h, startHeight);
                     const chunkEnd = Math.min(h + this.chunkSize, endHeight);
@@ -1612,33 +2494,152 @@ class CSPScanner {
                     }
                 }
                 this.stats.totalChunks = this.taskQueue.length;
-                if (this.DEBUG) void 0 && console.log(`[CSPScanner] Starting scan: ${this.totalBlocks.toLocaleString()} blocks in ${this.stats.totalChunks} chunks`);
+                this.emitTelemetry('scan.scanner_single_queue_ready', {
+                    scanWindowStart: startHeight,
+                    scanWindowEnd: endHeight,
+                    responseItems: this.taskQueue.length,
+                    totalChunks: this.stats.totalChunks,
+                    chunkSize: this.chunkSize
+                });
             }
         }
 
-        if (this.DEBUG) void 0 && console.log(`[CSPScanner] Using ${this.workerCount} workers, ${this.chunkSize} blocks/chunk`);
 
-        // Start initial tasks (one per enabled worker)
         for (let i = 0; i < this.enabledWorkerCount; i++) {
             this.scheduleNextTask();
         }
 
-        // Return promise that resolves when scan completes
-        return new Promise((resolve, reject) => {
+        return scanPromise;
+    }
+
+    // Scan a precise set of [startHeight, endHeight) runs (chunk-aligned), e.g. the exact
+    // gap set produced by computeChunksToScan/coalesceChunksToRuns on resume. Never streams
+    // (streaming is only valid from height 0); accumulates all runs into one result with the
+    // same shape as scan(). Each block in the runs is scanned at most once.
+    async scanRuns(runs) {
+        if (this.isScanning) {
+            throw new Error('Scan already in progress');
+        }
+        const normalizedRuns = (Array.isArray(runs) ? runs : [])
+            .map((r) => ({
+                startHeight: Math.floor(Math.max(0, r.startHeight) / this.chunkSize) * this.chunkSize,
+                endHeight: Math.max(0, r.endHeight),
+            }))
+            .filter((r) => r.endHeight > r.startHeight)
+            .sort((a, b) => a.startHeight - b.startHeight);
+
+        if (normalizedRuns.length === 0) {
+            // Nothing to do — return an empty, successful result.
+            return { matches: [], matchCount: 0, matchedChunks: [], scannedChunks: [], failedBatches: [], blocksScanned: 0, blocksPerSecond: 0, stats: {} };
+        }
+
+        const overallStart = normalizedRuns[0].startHeight;
+        const overallEnd = normalizedRuns[normalizedRuns.length - 1].endHeight;
+        const totalBlocks = normalizedRuns.reduce((sum, r) => sum + (r.endHeight - r.startHeight), 0);
+
+        this.isScanning = true;
+        this.scanAborted = false;
+        this.taskQueue = [];
+        this.allMatches = [];
+        this.matchedBlocks.clear();
+        this.scannedChunks.clear();
+        this.failedBatches = [];
+        this.retryCount = {};
+        this.watchdogRequeueCount = {};
+        this.zeroChunkRequeueCount = {};
+        this.workerCrashCount = 0;
+        this.pendingTasks = 0;
+        this.streamDispatchInProgress = false;
+        this._scanResolve = null;
+        this._scanReject = null;
+        this.scannedBlocks = 0;
+        this.ingestFloorHeight = 0; // precise gap-run scan: ingest everything in the runs
+        this.totalBlocks = totalBlocks;
+        this.startTime = performance.now();
+
+        if (this.autoTune) {
+            this.startUiLagMonitor();
+        }
+
+        this.stats = {
+            totalChunks: 0,
+            completedChunks: 0,
+            totalTxs: 0,
+            totalOutputs: 0,
+            viewTagMatches: 0,
+            derivations: 0,
+            bytesReceived: 0,
+            fetchTimeMs: 0,
+            scanTimeMs: 0,
+            startHeight: overallStart,
+            endHeight: overallEnd,
+            elapsedMs: 0,
+            carrotCoinbaseChecked: 0,
+            carrotCoinbaseMatched: 0,
+            carrotRingctPassthrough: 0
+        };
+
+        this._scanFinished = false;
+        const scanPromise = new Promise((resolve, reject) => {
             this._scanResolve = resolve;
             this._scanReject = reject;
         });
+
+        await this.initWorkers();
+
+        let totalChunks = 0;
+        for (const run of normalizedRuns) {
+            const alignedStart = run.startHeight;
+            const endHeight = run.endHeight;
+            if (this.useBatchMode) {
+                const blocksPerBatch = this.batchSize * this.chunkSize;
+                for (let h = alignedStart; h < endHeight; h += blocksPerBatch) {
+                    const remainingChunks = Math.ceil((endHeight - h) / this.chunkSize);
+                    const chunksInThisBatch = Math.min(this.batchSize, remainingChunks);
+                    this.taskQueue.push({ startHeight: h, chunkCount: chunksInThisBatch, isBatch: true });
+                }
+                totalChunks += Math.ceil((endHeight - alignedStart) / this.chunkSize);
+            } else {
+                for (let h = alignedStart; h < endHeight; h += this.chunkSize) {
+                    const chunkStart = Math.max(h, run.startHeight);
+                    const chunkEnd = Math.min(h + this.chunkSize, endHeight);
+                    const count = chunkEnd - chunkStart;
+                    if (count > 0) {
+                        this.taskQueue.push({ startHeight: h, count: this.chunkSize, actualStart: chunkStart, actualCount: count, isBatch: false });
+                        totalChunks++;
+                    }
+                }
+            }
+        }
+        this.stats.totalChunks = totalChunks;
+
+        this.emitTelemetry('scan.scanner_runs_queue_ready', {
+            scanWindowStart: overallStart,
+            scanWindowEnd: overallEnd,
+            responseItems: this.taskQueue.length,
+            totalChunks,
+            runCount: normalizedRuns.length,
+        });
+
+        if (this.taskQueue.length === 0) {
+            this.isScanning = false;
+            return { matches: [], matchCount: 0, matchedChunks: [], scannedChunks: [], failedBatches: [], blocksScanned: 0, blocksPerSecond: 0, stats: {} };
+        }
+
+        for (let i = 0; i < this.enabledWorkerCount; i++) {
+            this.scheduleNextTask();
+        }
+
+        return scanPromise;
     }
 
-    /**
-     * Finish the scan and report results
-     */
     finishScan() {
+        if (this._scanFinished) return;
+        this._scanFinished = true;
         this.isScanning = false;
         this.stopUiLagMonitor();
         this.stats.elapsedMs = performance.now() - this.startTime;
 
-        // Clear watchdog timer
         if (this._watchdogInterval) {
             clearInterval(this._watchdogInterval);
             this._watchdogInterval = null;
@@ -1647,79 +2648,86 @@ class CSPScanner {
         const elapsedSec = this.stats.elapsedMs / 1000;
         const blocksPerSec = this.scannedBlocks / elapsedSec;
 
-        // Condensed summary - single line for production, verbose for DEBUG
-        if (this.DEBUG) void 0 && console.log(`[CSPScanner] ✅ Phase 1: ${this.scannedBlocks.toLocaleString()} blocks in ${elapsedSec.toFixed(1)}s (${blocksPerSec.toFixed(0)} blk/s) | ${this.stats.viewTagMatches} matches → ${this.matchedChunks.size} chunks`);
-
-        // Report any failed batches that couldn't be retried
         if (this.failedBatches && this.failedBatches.length > 0) {
-            void 0 && console.warn(`[CSPScanner] ⚠️ ${this.failedBatches.length} batches failed after max retries:`);
             for (const fb of this.failedBatches) {
-                void 0 && console.warn(`  - Batch ${fb.startHeight}: ${fb.error} (${fb.retries} retries)`);
             }
         }
 
         if (this.DEBUG) {
-            void 0 && console.log(`[CSPScanner] Details: ${this.stats.totalTxs.toLocaleString()} txs, ${this.stats.totalOutputs.toLocaleString()} outputs, ${this.stats.derivations.toLocaleString()} derivations`);
-            void 0 && console.log(`[CSPScanner] Network: ${(this.stats.bytesReceived / 1024 / 1024).toFixed(2)} MB, fetch ${(this.stats.fetchTimeMs / 1000).toFixed(1)}s, WASM ${(this.stats.scanTimeMs / 1000).toFixed(1)}s`);
-            // CSP v4: Log Carrot filtering effectiveness
             if (this.stats.carrotCoinbaseChecked > 0 || this.stats.carrotRingctPassthrough > 0) {
                 const carrotFiltered = this.stats.carrotCoinbaseChecked - this.stats.carrotCoinbaseMatched;
-                void 0 && console.log(`[CSPScanner] Carrot: ${this.stats.carrotCoinbaseChecked} coinbase checked (${this.stats.carrotCoinbaseMatched} matched, ${carrotFiltered} filtered), ${this.stats.carrotRingctPassthrough} RingCT passthrough`);
             }
         }
 
         const results = {
             matches: this.allMatches,
             matchCount: this.stats.viewTagMatches,
-            matchedChunks: Array.from(this.matchedChunks).sort((a, b) => a - b),  // Sorted chunk start heights
-            scannedChunks: Array.from(this.scannedChunks).sort((a, b) => a - b),  // ALL scanned chunks for gap detection
+            matchedChunks: Array.from(this.matchedChunks).sort((a, b) => a - b),
+            scannedChunks: Array.from(this.scannedChunks).sort((a, b) => a - b),
             blocksScanned: this.scannedBlocks,
             blocksPerSecond: blocksPerSec,
             stats: { ...this.stats },
-            failedBatches: this.failedBatches || []  // Include failed batches for potential manual retry
+            failedBatches: this.failedBatches || []
         };
 
         this.onComplete(results);
 
         if (this._scanResolve) {
-            this._scanResolve(results);
+            const resolve = this._scanResolve;
+            this._scanResolve = null;
+            resolve(results);
         }
     }
 
-    /**
-     * Abort the current scan
-     */
     abort() {
         if (!this.isScanning) return;
 
-        if (this.DEBUG) void 0 && console.log('[CSPScanner] Aborting scan...');
         this.scanAborted = true;
+        this.isScanning = false;
         this.taskQueue = [];
 
         this.stopUiLagMonitor();
 
-        // Stop all workers
+        // Settle the scan promise on abort when nothing is in flight: scheduleNextTask
+        // (the normal finisher) only runs from worker results, and with pendingTasks===0
+        // there are none coming -- the caller's await would hang even after cancelling.
+        if (this.pendingTasks === 0) {
+            try { this.finishScan(); } catch (_) { }
+        }
+
+        // LEAK FIX: the 30s watchdog interval's closure roots `this` (incl. the full cachedBundle,
+        // ~271MB). It was only cleared in finishScan(), which never runs for a cancelled/crashed
+        // scan -- every aborted restore permanently retained the whole scanner.
+        if (this._watchdogInterval) {
+            clearInterval(this._watchdogInterval);
+            this._watchdogInterval = null;
+        }
+
         for (const workerState of this.workers) {
             workerState.worker.postMessage({ type: 'STOP' });
         }
     }
 
-    /**
-     * Terminate all workers and clean up
-     */
     destroy() {
         this.abort();
+        this.isScanning = false;
+        if (this._watchdogInterval) {
+            clearInterval(this._watchdogInterval);
+            this._watchdogInterval = null;
+        }
         for (const workerState of this.workers) {
             workerState.worker.terminate();
         }
         this.workers = [];
+        // Release the big buffers immediately: a destroyed scanner can otherwise keep the 271MB
+        // bundle + 6MB wasm binary + queued chunk slices alive until GC sees the last external ref.
+        this.cachedBundle = null;
+        this.wasmBinary = null;
+        this.patchedJsCode = null;
+        this.taskQueue = [];
+        this.allMatches = [];
     }
 
-    /**
-     * Verify all workers are healthy after suspension/backgrounding.
-     * Returns true if all workers respond successfully, false if any are unhealthy.
-     * Uses adaptive timeout: 5000ms on mobile, 2000ms on desktop.
-     */
     async verifyWorkerHealth() {
         if (!this.workers || this.workers.length === 0) {
             return false;
@@ -1730,16 +2738,22 @@ class CSPScanner {
 
         const healthChecks = this.workers.map((w) => {
             return new Promise((resolve) => {
+                let settled = false;
+                const finish = (result) => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timeout);
+                    w.worker.removeEventListener('message', handler);
+                    resolve(result);
+                };
                 const timeout = setTimeout(() => {
-                    resolve({ workerId: w.id, healthy: false, reason: 'timeout' });
+                    finish({ workerId: w.id, healthy: false, reason: 'timeout' });
                 }, timeoutMs);
 
                 const handler = (e) => {
                     const msg = e.data;
                     if (msg && msg.type === 'HEALTH_CHECK_RESPONSE' && msg.workerId === w.id) {
-                        clearTimeout(timeout);
-                        w.worker.removeEventListener('message', handler);
-                        resolve({
+                        finish({
                             workerId: w.id,
                             healthy: msg.healthy,
                             reason: msg.error || null
@@ -1748,7 +2762,15 @@ class CSPScanner {
                 };
 
                 w.worker.addEventListener('message', handler);
-                w.worker.postMessage({ type: 'HEALTH_CHECK' });
+                try {
+                    w.worker.postMessage({ type: 'HEALTH_CHECK' });
+                } catch (e) {
+                    finish({
+                        workerId: w.id,
+                        healthy: false,
+                        reason: e?.message || 'postMessage failed'
+                    });
+                }
             });
         });
 
@@ -1757,46 +2779,56 @@ class CSPScanner {
 
         if (!allHealthy) {
             const unhealthy = results.filter(r => !r.healthy);
-            console.warn(`[CSPScanner] ⚠️ Worker health check failed: ${unhealthy.length}/${results.length} workers unhealthy`);
+            console.warn(`[CSPScanner] Worker health check failed: ${unhealthy.length}/${results.length} workers unhealthy`);
             for (const r of unhealthy) {
                 console.warn(`  - Worker ${r.workerId}: ${r.reason || 'unknown'}`);
             }
         } else if (this.DEBUG) {
-            console.log(`[CSPScanner] ✅ All ${results.length} workers healthy`);
+            console.log(`[CSPScanner] All ${results.length} workers healthy`);
         }
 
         return allHealthy;
     }
 
-    /**
-     * Reinitialize all workers (use after health check failure).
-     * Terminates existing workers and creates new ones.
-     */
     async reinitializeWorkers() {
-        console.log('[CSPScanner] 🔄 Reinitializing workers...');
+        console.log('[CSPScanner] Reinitializing workers...');
 
-        // Terminate existing workers
+        // Re-queue every busy worker's chunk and reset pendingTasks BEFORE terminating, else in-flight tasks are orphaned and the scan hangs.
+        let hadInflightTasks = false;
+        for (const workerState of this.workers) {
+            if (workerState.busy && workerState.currentTask) {
+                hadInflightTasks = true;
+                this.taskQueue.unshift({ ...workerState.currentTask, isRetry: true });
+            }
+            workerState.busy = false;
+            workerState.currentTask = null;
+            workerState.taskStartTime = null;
+        }
+        if (hadInflightTasks) {
+            this.pendingTasks = 0;
+        }
+
         for (const workerState of this.workers) {
             try {
                 workerState.worker.terminate();
             } catch {
-                // Ignore termination errors
             }
         }
         this.workers = [];
 
-        // Clear cached WASM to force reload
         this.wasmBinary = null;
         this.patchedJsCode = null;
 
-        // Reinitialize
         await this.init();
 
-        console.log('[CSPScanner] ✅ Workers reinitialized');
+        if (this.isScanning && !this.scanAborted && this.taskQueue.length > 0) {
+            this.scheduleNextTask();
+        }
+
+        console.log('[CSPScanner] Workers reinitialized');
     }
 }
 
-// Export for use in wallet.html
 if (typeof window !== 'undefined') {
     window.CSPScanner = CSPScanner;
 }

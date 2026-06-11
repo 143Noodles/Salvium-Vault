@@ -2,21 +2,21 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isMobile, isTablet, isIPad13 } from 'react-device-detect';
 
-// Device detection helpers for responsive layouts
 const isTabletDevice = isTablet || isIPad13;
-const isMobileOrTablet = isMobile || isTabletDevice; // Tablets use mobile layouts
+const isMobileOrTablet = isMobile || isTabletDevice;
 import { Card, Button } from './UIComponents';
 import { History, Download, Search, Filter, Check } from './Icons';
 import TransactionList from './TransactionList';
 import TransactionOverlay from './TransactionOverlay';
 import { useWallet } from '../services/WalletContext';
+import { startTaskTelemetry } from '../utils/clientTelemetry';
 
 const HistoryPage: React.FC = () => {
    const { t } = useTranslation();
    const wallet = useWallet();
    const [copied, setCopied] = useState(false);
-   const [searchInput, setSearchInput] = useState(''); // Immediate input state
-   const [searchQuery, setSearchQuery] = useState(''); // Debounced search state
+   const [searchInput, setSearchInput] = useState('');
+   const [searchQuery, setSearchQuery] = useState('');
    const [selectedTxId, setSelectedTxId] = useState<string | null>(null);
 
    useEffect(() => {
@@ -32,23 +32,22 @@ const HistoryPage: React.FC = () => {
       if (transactions.length === 0) {
          return;
       }
+      const task = startTaskTelemetry('history.export', 'HistoryPage', {
+         count: transactions.length,
+      });
 
-      // Format: txhash,amount,asset,type,tx_type,date
       const header = 'Transaction Hash,Amount,Asset,Direction,Type,Date';
       const rows = transactions.map(tx => {
          const sign = tx.type === 'in' ? '+' : '-';
          let date = '1970-01-01T00:00:00.000Z';
          try {
-            // WASM wallet timestamps are in seconds (usually) or milliseconds
-            // Guard against undefined/null
             const ts = tx.timestamp || 0;
-            const isSeconds = ts < 100000000000; // < 100 billion (year 5138)
+            const isSeconds = ts < 100000000000;
             const dateObj = new Date(isSeconds ? ts * 1000 : ts);
             if (!isNaN(dateObj.getTime())) {
                date = dateObj.toISOString();
             }
          } catch (e) {
-            void 0 && console.warn('Invalid date for tx export:', tx.txid);
          }
          const asset = tx.asset_type || 'SAL';
          const txTypeLabel = tx.tx_type_label || (tx.type === 'in' ? 'Received' : 'Sent');
@@ -61,8 +60,9 @@ const HistoryPage: React.FC = () => {
          await navigator.clipboard.writeText(csvContent);
          setCopied(true);
          setTimeout(() => setCopied(false), 2000);
+         task.completed();
       } catch (err) {
-         void 0 && console.error('Failed to copy:', err);
+         task.failed(err, 'clipboard_failed');
       }
    };
 
@@ -121,45 +121,46 @@ const HistoryPage: React.FC = () => {
 
    return (
       <div className={`animate-fade-in space-y-4 md:p-0 flex flex-col ${isMobileOrTablet
-         ? 'h-full'
+         ? 'h-full min-h-0'
          : 'h-[calc(100vh-7rem)] space-y-6'
          }`}>
-         {/* Layout constrained to viewport */}
-         <Card className="flex flex-col flex-1 min-h-0 overflow-hidden relative">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 relative z-20">
+         <Card
+            noPadding={isMobileOrTablet}
+            className={`flex flex-col flex-1 min-h-0 overflow-hidden relative ${isMobileOrTablet ? '' : 'p-6'}`}
+         >
+            <div className={`flex flex-col sm:flex-row justify-between items-start sm:items-center relative z-20 ${isMobileOrTablet ? 'gap-2 mb-2 px-2 pt-1' : 'gap-4 mb-6'}`}>
                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-accent-primary/10 rounded-lg text-accent-primary">
-                     <History size={24} />
+                  <div className={`${isMobileOrTablet ? 'p-1.5' : 'p-2'} bg-accent-primary/10 rounded-lg text-accent-primary`}>
+                     <History className={isMobileOrTablet ? 'w-5 h-5' : 'w-6 h-6'} />
                   </div>
                   <div>
-                     <h2 className="text-xl font-bold text-white">{t('history.title')}</h2>
+                     <h2 className={`${isMobileOrTablet ? 'text-lg leading-tight' : 'text-xl'} font-bold text-white`}>{t('history.title')}</h2>
                      <p className="text-text-muted text-xs">
                         {t('history.transactionsFound', { count: filteredTransactions.length })}
                      </p>
                   </div>
                </div>
 
-               <div className="flex flex-wrap gap-3 w-full sm:w-auto items-center">
-                  <div className="relative flex-1 sm:flex-none sm:w-64">
+               <div className={`${isMobileOrTablet ? 'grid grid-cols-2 gap-2' : 'flex flex-wrap gap-3'} w-full sm:w-auto items-center min-w-0`}>
+                  <div className={`${isMobileOrTablet ? 'col-span-2' : ''} relative flex-1 sm:flex-none sm:w-64`}>
                      <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
                      <input
-                        className="w-full bg-black/20 border border-white/10 rounded-xl pl-10 pr-4 py-2 text-sm text-white placeholder-text-muted focus:outline-none focus:border-accent-primary/50 transition-all"
+                        className={`w-full bg-black/20 border border-white/10 rounded-xl pl-10 pr-4 text-white placeholder-text-muted focus:outline-none focus:border-accent-primary/50 transition-all ${isMobileOrTablet ? 'h-9 py-1.5 text-xs' : 'py-2 text-sm'}`}
                         placeholder={t('history.searchPlaceholder')}
                         value={searchInput}
                         onChange={(e) => setSearchInput(e.target.value)}
                      />
                   </div>
 
-                  {/* Filter Dropdown */}
                   <div className="relative">
                      <Button
                         variant={filterTypes.size > 0 ? 'primary' : 'secondary'}
                         size="sm"
-                        className="px-4"
+                        className={isMobileOrTablet ? 'w-full !px-2 !py-2 !text-xs min-w-0' : 'px-4'}
                         onClick={() => setIsFilterOpen(!isFilterOpen)}
                      >
                         <Filter size={16} className="mr-2" />
-                        {t('history.filter')} {filterTypes.size > 0 && `(${filterTypes.size})`}
+                        <span className="truncate">{t('history.filter')} {filterTypes.size > 0 && `(${filterTypes.size})`}</span>
                      </Button>
 
                      {isFilterOpen && (
@@ -202,7 +203,7 @@ const HistoryPage: React.FC = () => {
                   <Button
                      variant="secondary"
                      size="sm"
-                     className="px-4"
+                     className={isMobileOrTablet ? 'w-full !px-2 !py-2 !text-xs min-w-0' : 'px-4'}
                      onClick={handleExport}
                      disabled={wallet.transactions.length === 0}
                   >
@@ -219,8 +220,9 @@ const HistoryPage: React.FC = () => {
                </div>
             </div>
 
-            <div className="flex-1 overflow-auto -mx-6 px-0 md:px-6 h-full min-h-0">
+            <div className={`flex-1 overflow-auto h-full min-h-0 ${isMobileOrTablet ? 'px-0 pb-1' : 'px-0'}`}>
                <TransactionList
+                  compact={isMobileOrTablet}
                   transactions={filteredTransactions}
                   onTxClick={(txId) => setSelectedTxId(txId)}
                />

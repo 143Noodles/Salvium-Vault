@@ -32,7 +32,8 @@
     "history": "Geschiedenis",
     "settings": "Instellingen",
     "dashboard": "Dashboard",
-    "lockWallet": "Wallet Vergrendelen"
+    "lockWallet": "Wallet Vergrendelen",
+    "assets": "Assets"
   },
   "dashboard": {
     "balance": "Saldo",
@@ -47,7 +48,8 @@
     "noActiveStakes": "Geen actieve stakes",
     "earnRewards": "Verdien beloningen door SAL te staken voor ~30 dagen.",
     "createNewStake": "Nieuwe Stake Maken",
-    "unlocksIn": "Ontgrendelt in {{time}} ({{blocks}} blokken)"
+    "unlocksIn": "Ontgrendelt in {{time}} ({{blocks}} blokken)",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "Laatste 24 Uur",
@@ -69,7 +71,7 @@
     "sendAssets": "Assets Verzenden",
     "creatingTransaction": "Transactie Maken...",
     "transactionSent": "Transactie Verzonden!",
-    "amountSent": "{{amount}} SAL is naar het netwerk verzonden.",
+    "amountSent": "{{amount}} {{asset}} is naar het netwerk verzonden.",
     "transactionHash": "Transactie Hash",
     "sendAnother": "Nog een Transactie Verzenden",
     "addressBook": "Adresboek",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "Voer een geldig positief bedrag in",
-      "exceedsBalance": "Bedrag overschrijdt beschikbaar saldo"
+      "exceedsBalance": "Bedrag overschrijdt beschikbaar saldo",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,8 @@
     "sections": {
       "securityPrivacy": "Beveiliging & Privacy",
       "general": "Algemeen",
-      "language": "Taal"
+      "language": "Taal",
+      "preferences": "Voorkeuren"
     },
     "biometrics": {
       "title": "Ontgrendelen met Biometrie",
@@ -222,7 +226,8 @@
       "errors": {
         "fillAll": "Vul alle velden in",
         "mismatch": "Nieuwe wachtwoorden komen niet overeen",
-        "empty": "Wachtwoord mag niet leeg zijn"
+        "empty": "Wachtwoord mag niet leeg zijn",
+        "minLength": "Het wachtwoord moet minstens 8 tekens bevatten"
       }
     },
     "blockchain": {
@@ -259,6 +264,14 @@
       "revealButton": "Reveal Seed Phrase",
       "copySeed": "Copy Seed Phrase",
       "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
+    },
+    "connection": {
+      "title": "Verbinding",
+      "description": "Kies welke Salvium-node je wallet synchroniseert. Automatisch houdt je op een gezonde officiële node; voeg alleen je eigen node toe als deze openbaar bereikbaar is. Hoe dan ook worden verzoeken via de vault-server geproxyd in plaats van rechtstreeks vanaf je apparaat verzonden."
+    },
+    "currency": {
+      "title": "Weergavevaluta",
+      "description": "Kies de fiatvaluta waarin de waarde van je saldo wordt weergegeven."
     }
   },
   "onboarding": {
@@ -435,5 +448,156 @@
     "initializingWallet": "Wallet initialiseren...",
     "failedToCreate": "Back-up maken mislukt",
     "failedToUnlock": "Wallet ontgrendelen mislukt"
+  },
+  "assets": {
+    "title": "Assets",
+    "subtitle": "Bekijk en beheer alle assets in je wallet.",
+    "viewAll": "Alles bekijken",
+    "viewAllAssets": "Alle assets bekijken",
+    "viewAssets": "Assets bekijken",
+    "create": "Maken",
+    "createAsset": "Asset maken",
+    "createAssetTransaction": "Assettransactie maken",
+    "creating": "Maken...",
+    "yourAssets": "Je assets",
+    "searchAssets": "Assets zoeken...",
+    "searchAssetsShort": "Assets zoeken",
+    "searchAssetsLabel": "Assets zoeken",
+    "searchAssetsLong": "Zoek op ticker, naam of assettype",
+    "filters": {
+      "all": "Alle assets",
+      "metadata": "Met metadata",
+      "plain": "Basisassets"
+    },
+    "empty": {
+      "noBalances": "Nog geen assetsaldi",
+      "waitForTransfers": "Maak een asset of wacht op inkomende assetoverdrachten.",
+      "noFilterMatches": "Geen assets komen overeen met je huidige filters.",
+      "noRecentActivity": "Geen recente assetactiviteit.",
+      "selectAsset": "Selecteer een asset",
+      "chooseAsset": "Kies een asset uit de lijst om te bekijken.",
+      "noTransactions": "Geen transacties vastgelegd voor de geselecteerde asset."
+    },
+    "unlock": {
+      "title": "Ontgrendel de wallet om assets te beheren.",
+      "description": "Assetsaldi, overdrachten en aanmaken vereisen een ontgrendelde wallet."
+    },
+    "activation": {
+      "scheduled": "Assetactivatie staat gepland voor {{label}} bij blok {{height}}.",
+      "blocksRemaining": "blokken resterend",
+      "estimatedTime": "Geschatte resterende tijd: {{time}}"
+    },
+    "success": {
+      "submitted": "Assetaanmaak verzonden",
+      "created": "{{assetType}} is succesvol verzonden en verschijnt hier zodra de wallet het assetsaldo ontvangt of bevestigt.",
+      "submittedHashes": "Verzonden transactiehashes"
+    },
+    "labels": {
+      "asset": "Asset",
+      "catalog": "Catalogus",
+      "listed": "Vermeld",
+      "name": "Naam",
+      "balance": "Saldo",
+      "unlocked": "Ontgrendeld",
+      "unlockedBalance": "Ontgrendeld saldo",
+      "locked": "Vergrendeld",
+      "lockedBalance": "Vergrendeld saldo",
+      "standard": "Standaard",
+      "type": "Type",
+      "assetType": "Assettype",
+      "supply": "Voorraad",
+      "totalSupply": "Totale voorraad",
+      "ownershipPercentage": "Eigendomsaandeel",
+      "assetId": "Asset-ID",
+      "created": "Aangemaakt",
+      "decimals": "Decimalen",
+      "amount": "Bedrag",
+      "status": "Status",
+      "date": "Datum",
+      "txHash": "TX-hash",
+      "metadata": "Metadata",
+      "media": "Media",
+      "quickActions": "Snelle acties",
+      "assetLinks": "Assetlinks",
+      "recentActivity": "Recente activiteit",
+      "transactionHistory": "Assettransactiegeschiedenis",
+      "assetOverview": "Assetoverzicht",
+      "premium": "Premium",
+      "unknown": "Onbekend"
+    },
+    "actions": {
+      "send": "Verzenden",
+      "receive": "Ontvangen",
+      "sendAsset": "{{ticker}} verzenden",
+      "receiveAsset": "{{ticker}} ontvangen",
+      "open": "Openen",
+      "openAssetUrl": "Asset-URL openen",
+      "viewCatalog": "Catalogus bekijken",
+      "copyAssetId": "Asset-ID kopiëren",
+      "backToAssets": "Terug naar assets",
+      "dismiss": "Sluiten",
+      "retry": "Opnieuw"
+    },
+    "media": {
+      "explorerImage": "Assetafbeelding uit explorer"
+    },
+    "states": {
+      "publicCatalogAsset": "Asset uit openbare catalogus",
+      "inWallet": "{{amount}} {{ticker}} in wallet",
+      "catalogOnlyNotice": "Deze asset is geladen uit de openbare SAL-catalogus. Hij staat momenteel niet in deze wallet, dus verzenden is uitgeschakeld.",
+      "loadingCatalog": "Assets laden...",
+      "catalogLoadFailed": "De explorercatalogus kon niet worden geladen.",
+      "catalogEmpty": "De explorer heeft geen assets teruggegeven.",
+      "catalogNoMatches": "Geen assets komen overeen met je zoekopdracht.",
+      "showingAssets": "{{start}} tot {{end}} van {{total}} assets weergegeven",
+      "unlockedAmount": "Ontgrendeld: {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "Ontgrendeld {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "Basisasset",
+      "token": "Token"
+    },
+    "createForm": {
+      "cost": "Deze asset maken kost {{cost}} SAL{{suffix}}",
+      "premiumSuffix": " omdat dit een premium assetcode is.",
+      "standardSuffix": ".",
+      "assetCode": "Assetcode",
+      "premiumNote": "Dit is een premium assetcode. Maken kost 10.000 SAL.",
+      "supply": "Voorraad",
+      "advanced": "Geavanceerd",
+      "advancedDescription": "Optionele tokenmetadata en grootte",
+      "displayName": "Weergavenaam",
+      "displayNamePlaceholder": "Voorbeeldasset",
+      "size": "Grootte",
+      "projectUrl": "Project-URL",
+      "additionalMetadata": "Aanvullende metadata",
+      "additionalMetadataPlaceholder": "Optionele JSON of notities. Gestructureerde velden hierboven worden automatisch samengevoegd."
+    },
+    "validation": {
+      "assetCodeRequired": "Assetcode is vereist.",
+      "assetCodeFormat": "Assetcode moet precies 4 hoofdletters of cijfers zijn.",
+      "assetCodePrefix": "Assetcode mag niet beginnen met 'SAL'.",
+      "assetCodeReserved": "Assetcode is gereserveerd en kan niet worden gebruikt.",
+      "supplyRequired": "Voorraad is vereist.",
+      "supplyWhole": "Voorraad moet een geheel getal zijn.",
+      "supplyRange": "Voorraad moet tussen 1 en {{max}} liggen.",
+      "supplyInteger": "Voorraad moet een geldig geheel getal zijn.",
+      "decimalsRange": "Decimalen moeten een geheel getal tussen 0 en {{max}} zijn.",
+      "metadataTooLong": "Aanvullende metadata is te lang (max. {{max}} tekens).",
+      "assetCodeExists": "Assetcode '{{code}}' bestaat al."
+    },
+    "transactions": {
+      "pending": "In behandeling",
+      "received": "Ontvangen",
+      "sent": "Verzonden",
+      "awaitingConfirmation": "Wacht op bevestiging"
+    },
+    "time": {
+      "lessThanMinute": "minder dan een minuut"
+    },
+    "errors": {
+      "loadFailed": "Assets laden mislukt",
+      "createFailed": "Assettransactie maken mislukt"
+    }
   }
 }

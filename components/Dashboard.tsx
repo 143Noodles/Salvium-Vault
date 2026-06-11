@@ -2,11 +2,11 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isMobile, isBrowser, isTablet, isIPad13 } from 'react-device-detect';
 
-// Device detection helpers for responsive layouts
 const isTabletDevice = isTablet || isIPad13;
-const isMobileOrTablet = isMobile || isTabletDevice; // Tablets use mobile layouts
-import { TabView } from '../App';
+const isMobileOrTablet = isMobile || isTabletDevice;
+import { TabView } from '../utils/tabView';
 import { useWallet, WalletStats } from '../services/WalletContext';
+import { useCurrency } from '../services/CurrencyContext';
 import { Card, Button, Badge, TruncatedAddress } from './UIComponents';
 import BalanceChart from './BalanceChart';
 import TransactionList from './TransactionList';
@@ -42,15 +42,14 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
    const [copied, setCopied] = useState(false);
    const [selectedTxId, setSelectedTxId] = useState<string | null>(null);
    const wallet = useWallet();
+   const { formatFiat } = useCurrency();
 
-   // Close transaction overlay when resetKey changes (user clicked Dashboard while already on Dashboard)
    useEffect(() => {
       if (resetKey && resetKey > 0) {
          setSelectedTxId(null);
       }
    }, [resetKey]);
 
-   // Use real wallet address
    const walletAddress = wallet.address || '';
 
    const copyToClipboard = useCallback(() => {
@@ -62,17 +61,17 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
    }, [walletAddress]);
 
    const unlockedBalance = stats.unlockedBalance;
+   const lockedBalance = stats.lockedBalance || 0;
+   const isBalanceReady = stats.isBalanceReady;
+   const hasLockedBalance = isBalanceReady && lockedBalance > 0.000001;
 
-   // Memoize filtered active stakes to prevent recalculation on every render
    const activeStakes = useMemo(() =>
       wallet.stakes.filter(s => s.status === 'active'),
       [wallet.stakes]
    );
 
-   // APY fetched from Explorer API - same calculation as Explorer staking page
    const [currentApy, setCurrentApy] = useState<number | null>(null);
-   
-   // Fetch APY from Explorer on mount
+
    useEffect(() => {
       const fetchApy = async () => {
          try {
@@ -83,8 +82,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
             if (!response.ok) throw new Error('Failed to fetch');
             
             const data = await response.json();
-            
-            // Calculate APY from the most recent unstake with valid yield (mirrors Explorer logic)
+
             if (data.unstake && Array.isArray(data.unstake)) {
                for (const tx of data.unstake) {
                   const yieldAmount = tx.yield ?? 0;
@@ -92,18 +90,18 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
                   
                   if (yieldAmount > 0 && totalAmount > yieldAmount) {
                      const principal = totalAmount - yieldAmount;
-                     const monthlyRate = yieldAmount / principal;
-                     // APY = (1 + monthlyRate)^12 - 1
-                     const apy = (Math.pow(1 + monthlyRate, 12) - 1) * 100;
+                     // Clamp monthly rate so a bad explorer row can't overflow (1+rate)^12 into Infinity APY.
+                     const monthlyRate = principal > 0 ? yieldAmount / principal : 0;
+                     const apyRaw = (Math.pow(1 + Math.min(monthlyRate, 10), 12) - 1) * 100;
+                     const apy = Number.isFinite(apyRaw) ? Math.min(apyRaw, 100000) : 0;
                      setCurrentApy(apy);
                      return;
                   }
                }
             }
-            // Fallback if no valid unstakes
             setCurrentApy(10.5);
          } catch {
-            setCurrentApy(10.5); // Fallback on error
+            setCurrentApy(10.5);
          }
       };
       
@@ -115,7 +113,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
          ? 'flex flex-col h-full'
          : 'overflow-hidden grid grid-cols-12 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] h-[calc(100vh-7rem)] p-0'
          }`}>
-         {/* 1. HERO SECTION (Total Balance + Address) - 8 Cols */}
          <div className={`flex flex-col min-h-0 ${isMobileOrTablet
             ? 'col-span-1 flex-shrink-0'
             : 'col-span-8 flex-shrink h-full'
@@ -127,14 +124,11 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
             >
 
 
-               {/* Enhanced Atmospheric Background */}
                <div className="absolute inset-0 bg-[url('/noise.svg')] opacity-10 mix-blend-overlay pointer-events-none"></div>
-               {/* Removed top-right glow as requested */}
                <div className="absolute bottom-0 left-0 w-full h-1/2 bg-gradient-to-t from-accent-primary/5 to-transparent pointer-events-none"></div>
 
-               <div className="relative z-10 flex flex-col h-full p-2 md:p-2">
-                  {/* Header */}
-                  <div className="flex justify-between items-start shrink-0 mb-2 md:mb-0">
+               <div className={`relative z-10 flex flex-col h-full p-2 md:p-2 ${isMobileOrTablet ? 'justify-center gap-3' : ''}`}>
+                  <div className={`flex justify-between items-start shrink-0 ${isMobileOrTablet ? 'mb-0' : 'mb-2 md:mb-0'}`}>
                      <div className="flex items-center gap-3">
                         <div className="p-2 bg-gradient-to-br from-accent-primary/20 to-accent-secondary/20 rounded-lg text-white">
                            <Wallet size={20} className="w-5 h-5" />
@@ -149,39 +143,43 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
                      </button>
                   </div>
 
-                  {/* Balance */}
-                  <div className="md:mt-6 md:mb-auto relative">
+                  <div className={`${isMobileOrTablet ? '' : 'md:mt-6 md:mb-auto'} relative`}>
                      <div className="absolute -left-4 top-1/2 -translate-y-1/2 w-1 h-12 md:h-24 bg-gradient-to-b from-transparent via-accent-primary to-transparent opacity-50"></div>
 
                      <div className="flex items-baseline gap-2 md:gap-3">
                         <span className={`font-bold text-white font-sans tracking-tight drop-shadow-2xl break-all leading-none text-[9vw] ${!isMobileOrTablet ? 'md:text-[min(18cqh,4.5rem)]' : 'md:text-[min(9vw,4rem)]'}`}>
-                           {hideBalance ? '******' : formatSAL(Math.floor(stats.balance * 1000) / 1000)}
+                           {hideBalance ? '******' : isBalanceReady ? formatSAL(Math.floor(stats.balance * 1000) / 1000) : '---'}
                         </span>
                         <span className={`font-bold text-transparent bg-clip-text bg-gradient-to-r from-accent-primary to-accent-secondary text-[3.6vw] ${!isMobileOrTablet ? 'md:text-[min(8cqh,1.875rem)]' : 'md:text-[min(3.6vw,1.6rem)]'}`}>SAL</span>
                      </div>
 
-                     <div className="flex items-center gap-3 mt-2 pl-1">
-                        {/* Unlocked Amount Display */}
+                     <div className="flex items-center gap-3 mt-2 pl-1 flex-wrap">
                         <div className="flex items-center gap-2 opacity-80 hover:opacity-100 transition-opacity">
                            <Unlock size={12} className="text-text-secondary" />
                            <p className={`font-medium text-text-secondary text-xs whitespace-nowrap ${!isMobileOrTablet ? 'md:text-[min(3.5cqh,0.75rem)]' : ''}`}>
-                              {t('dashboard.unlocked')}: <span className="text-white font-mono">{hideBalance ? '****' : formatSAL(Math.floor(unlockedBalance * 1000) / 1000) + ' SAL'}</span>
+                              {t('dashboard.unlocked')}: <span className="text-white font-mono">{hideBalance ? '****' : isBalanceReady ? formatSAL(Math.floor(unlockedBalance * 1000) / 1000) + ' SAL' : '---'}</span>
                            </p>
                         </div>
                         <span className={`text-text-muted text-xs ${!isMobileOrTablet ? 'md:text-[min(3.5cqh,0.75rem)]' : ''}`}>|</span>
 
-                        {/* USD Value */}
                         <p className={`font-medium text-text-secondary text-xs ${!isMobileOrTablet ? 'md:text-[min(3.5cqh,0.75rem)]' : ''}`}>
-                           {hideBalance ? '$****' : `$${stats.balanceUsd.toLocaleString()}`}
+                           {hideBalance ? '****' : isBalanceReady ? formatFiat(stats.balanceUsd) : '---'}
                         </p>
                      </div>
+
+                     {hasLockedBalance && (
+                        <div className="flex items-center gap-2 mt-2 pl-1 text-xs text-accent-warning/90">
+                           <Clock size={12} className="shrink-0" />
+                           <p className={`font-medium ${!isMobileOrTablet ? 'md:text-[min(3.5cqh,0.75rem)]' : ''}`}>
+                              {t('dashboard.lockedChange')}: <span className="font-mono text-white">{hideBalance ? '****' : formatSAL(Math.floor(lockedBalance * 1000) / 1000) + ' SAL'}</span>
+                           </p>
+                        </div>
+                     )}
                   </div>
 
-                  {/* Footer: Address & Actions - Hidden on Mobile and Tablet */}
                   {!isMobileOrTablet && (
                      <div className="flex mt-6 flex-col gap-5 shrink-0">
 
-                        {/* Address Display (Sexy Glass) - Full Width */}
                         <div className="group/addr cursor-pointer w-full" onClick={copyToClipboard}>
                            <div className="flex justify-between items-center mb-2 px-1">
                               <p className="text-text-secondary uppercase tracking-widest font-bold text-xs">{t('dashboard.primaryAddress')}</p>
@@ -202,7 +200,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
                            </div>
                         </div>
 
-                        {/* Action Buttons */}
                         <div className="flex gap-3">
                            <Button className="flex-1 px-8 shadow-indigo-500/20 hover:shadow-indigo-500/40 py-2.5 h-auto" onClick={() => onNavigate(TabView.SEND)}>
                               <Send size={18} className="mr-2" />
@@ -220,7 +217,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
             </Card>
          </div>
 
-         {/* 2. ACTIVE STAKES - 4 Cols - HIDDEN ON MOBILE AND TABLET */}
          {!isMobileOrTablet && (
             <div className="col-span-4 h-full">
                <Card
@@ -252,12 +248,12 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
                         </div>
                      ) : (
                         activeStakes.map((stake: any) => {
-                           const totalDuration = stake.unlockBlock - stake.startBlock;
+                           // Guard against zero/negative duration which would yield width:'NaN%'.
+                           const totalDuration = Math.max(1, stake.unlockBlock - stake.startBlock);
                            const elapsed = stake.currentBlock - stake.startBlock;
                            const progress = Math.min(100, Math.max(0, (elapsed / totalDuration) * 100));
                            const remaining = Math.max(0, stake.unlockBlock - stake.currentBlock);
 
-                           // Calculate time estimate: 2 minutes per block
                            const remainingMinutes = remaining * 2;
                            const days = Math.floor(remainingMinutes / (60 * 24));
                            const hours = Math.floor((remainingMinutes % (60 * 24)) / 60);
@@ -275,7 +271,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
                                     <span className="font-mono text-accent-success shadow-glow-sm text-xs">{hideBalance ? '****' : '+' + stake.rewards + ' SAL'}</span>
                                  </div>
 
-                                 {/* Sexy Progress Bar */}
                                  <div className="h-1.5 w-full bg-black rounded-full overflow-hidden mb-3 border border-white/5">
                                     <div
                                        className="h-full bg-gradient-to-r from-accent-primary via-accent-secondary to-accent-primary bg-[length:200%_100%] animate-[shimmer_2s_linear_infinite] rounded-full shadow-[0_0_10px_rgba(99,102,241,0.5)]"
@@ -296,7 +291,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
                      )}
                   </div>
 
-                  {/* Button Footer - Always Visible */}
                   <div className="pt-4 mt-auto border-t border-white/5 flex-shrink-0 relative z-10">
                      <Button
                         variant="primary"
@@ -312,21 +306,20 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
             </div>
          )}
 
-         {/* 3. CHART SECTION - 8 Cols */}
-         <div className={`flex flex-col flex-1 min-h-0 overflow-hidden ${isMobileOrTablet
+         <div className={`flex flex-col flex-1 min-h-0 ${isMobileOrTablet ? 'overflow-visible' : 'overflow-hidden'} ${isMobileOrTablet
             ? ''
             : 'col-span-8 h-full'
             }`}>
-            <Card className="flex-1 flex flex-col bg-[#131320] border-white/5 h-full md:min-h-0" noPadding>
-               <div className="flex justify-between items-center mb-2 flex-shrink-0 px-5 pt-5">
-                  <div className="flex items-center gap-4">
-                     <div className="p-2 bg-gradient-to-br from-accent-primary/20 to-accent-secondary/20 rounded-lg text-white">
-                        <TrendingUp size={20} />
+            <Card className={`flex-1 flex flex-col bg-[#131320] border-white/5 h-full md:min-h-0 ${isMobileOrTablet ? 'min-h-[10rem] overflow-hidden' : ''}`} noPadding>
+               <div className={`flex justify-between items-center flex-shrink-0 ${isMobileOrTablet ? 'px-2 pt-2 mb-0' : 'px-5 pt-5 mb-2'}`}>
+                  <div className={`flex items-center min-w-0 ${isMobileOrTablet ? 'gap-2' : 'gap-4'}`}>
+                     <div className={`${isMobileOrTablet ? 'p-1.5' : 'p-2'} bg-gradient-to-br from-accent-primary/20 to-accent-secondary/20 rounded-lg text-white shrink-0`}>
+                        <TrendingUp className={isMobileOrTablet ? 'w-4 h-4' : 'w-5 h-5'} />
                      </div>
-                     <h3 className="text-white font-bold text-base">{t('dashboard.walletPerformance')}</h3>
+                     <h3 className={`${isMobileOrTablet ? 'text-sm leading-tight' : 'text-base'} text-white font-bold whitespace-nowrap`}>{t('dashboard.walletPerformance')}</h3>
                   </div>
                </div>
-               <div className="flex flex-col flex-1 w-full bg-gradient-to-b from-[#131320] to-[#0f0f18]/50 relative min-h-0 pb-1">
+               <div className={`flex flex-col flex-1 w-full bg-gradient-to-b from-[#131320] to-[#0f0f18]/50 relative min-h-0 ${isMobileOrTablet ? 'px-[1px] pb-2' : 'pb-1'}`}>
                   {hideBalance && (
                      <div className="absolute inset-0 z-10 flex items-center justify-center backdrop-blur-sm bg-bg-primary/20">
                         <div className="flex flex-col items-center gap-2 text-text-muted">
@@ -342,7 +335,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
             </Card>
          </div>
 
-         {/* 4. TRANSACTIONS - 4 Cols - HIDDEN ON MOBILE AND TABLET */}
          {!isMobileOrTablet && (
             <div className="col-span-4 h-full">
                <Card noPadding className="h-full min-h-[15.625rem] overflow-hidden flex flex-col border-white/5 bg-[#131320] relative">

@@ -32,7 +32,8 @@
     "history": "Historique",
     "settings": "Paramètres",
     "dashboard": "Tableau de bord",
-    "lockWallet": "Verrouiller le Portefeuille"
+    "lockWallet": "Verrouiller le Portefeuille",
+    "assets": "Actifs"
   },
   "dashboard": {
     "balance": "Solde",
@@ -47,7 +48,8 @@
     "noActiveStakes": "Aucun stake actif",
     "earnRewards": "Gagnez des récompenses en stakant vos SAL pendant ~30 jours.",
     "createNewStake": "Créer un Nouveau Stake",
-    "unlocksIn": "Déblocage dans {{time}} ({{blocks}} blocs)"
+    "unlocksIn": "Déblocage dans {{time}} ({{blocks}} blocs)",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "Dernières 24 Heures",
@@ -69,7 +71,7 @@
     "sendAssets": "Envoyer les Actifs",
     "creatingTransaction": "Création de la Transaction...",
     "transactionSent": "Transaction Envoyée !",
-    "amountSent": "{{amount}} SAL ont été envoyés au réseau.",
+    "amountSent": "{{amount}} {{asset}} ont été envoyés au réseau.",
     "transactionHash": "Hash de Transaction",
     "sendAnother": "Envoyer une Autre Transaction",
     "addressBook": "Carnet d'Adresses",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "Veuillez entrer un montant positif valide",
-      "exceedsBalance": "Le montant dépasse le solde disponible"
+      "exceedsBalance": "Le montant dépasse le solde disponible",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,8 @@
     "sections": {
       "securityPrivacy": "Sécurité et Confidentialité",
       "general": "Général",
-      "language": "Langue"
+      "language": "Langue",
+      "preferences": "Préférences"
     },
     "biometrics": {
       "title": "Déverrouiller avec Biométrie",
@@ -222,7 +226,8 @@
       "errors": {
         "fillAll": "Veuillez remplir tous les champs",
         "mismatch": "Les nouveaux mots de passe ne correspondent pas",
-        "empty": "Le mot de passe ne peut pas être vide"
+        "empty": "Le mot de passe ne peut pas être vide",
+        "minLength": "Le mot de passe doit comporter au moins 8 caractères"
       }
     },
     "blockchain": {
@@ -259,6 +264,14 @@
       "revealButton": "Révéler la Phrase Seed",
       "copySeed": "Copier la Phrase Seed",
       "neverShare": "Ne partagez jamais votre phrase seed avec personne. Le support Salvium ne la demandera jamais. Conservez-la en lieu sûr hors ligne."
+    },
+    "connection": {
+      "title": "Connexion",
+      "description": "Choisissez quel nœud Salvium synchronise votre portefeuille. Le mode automatique vous maintient sur un nœud officiel sain ; n'ajoutez le vôtre que s'il est accessible publiquement. Dans tous les cas, les requêtes sont relayées par le serveur du vault plutôt qu'envoyées directement depuis votre appareil."
+    },
+    "currency": {
+      "title": "Devise d'affichage",
+      "description": "Choisissez la devise fiat utilisée pour afficher la valeur de votre solde."
     }
   },
   "onboarding": {
@@ -435,5 +448,156 @@
     "initializingWallet": "Initialisation du portefeuille...",
     "failedToCreate": "Échec de la création de la sauvegarde",
     "failedToUnlock": "Échec du déverrouillage du portefeuille"
+  },
+  "assets": {
+    "title": "Actifs",
+    "subtitle": "Consultez et gérez tous les actifs de votre portefeuille.",
+    "viewAll": "Tout voir",
+    "viewAllAssets": "Voir tous les actifs",
+    "viewAssets": "Voir les actifs",
+    "create": "Créer",
+    "createAsset": "Créer un actif",
+    "createAssetTransaction": "Créer une transaction d’actif",
+    "creating": "Création...",
+    "yourAssets": "Vos actifs",
+    "searchAssets": "Rechercher des actifs...",
+    "searchAssetsShort": "Rechercher des actifs",
+    "searchAssetsLabel": "Rechercher des actifs",
+    "searchAssetsLong": "Rechercher par ticker, nom ou type d’actif",
+    "filters": {
+      "all": "Tous les actifs",
+      "metadata": "Avec métadonnées",
+      "plain": "Actifs basiques"
+    },
+    "empty": {
+      "noBalances": "Aucun solde d’actif pour le moment",
+      "waitForTransfers": "Créez un actif ou attendez des transferts entrants.",
+      "noFilterMatches": "Aucun actif ne correspond aux filtres actuels.",
+      "noRecentActivity": "Aucune activité récente d’actif.",
+      "selectAsset": "Sélectionner un actif",
+      "chooseAsset": "Choisissez un actif dans la liste pour l’inspecter.",
+      "noTransactions": "Aucune transaction enregistrée pour l’actif sélectionné."
+    },
+    "unlock": {
+      "title": "Déverrouillez le portefeuille pour gérer les actifs.",
+      "description": "Les soldes, transferts et créations d’actifs nécessitent un portefeuille déverrouillé."
+    },
+    "activation": {
+      "scheduled": "L’activation des actifs est prévue pour {{label}} au bloc {{height}}.",
+      "blocksRemaining": "blocs restants",
+      "estimatedTime": "Temps restant estimé : {{time}}"
+    },
+    "success": {
+      "submitted": "Création d’actif envoyée",
+      "created": "{{assetType}} a été envoyé avec succès et apparaîtra ici lorsque le portefeuille recevra ou confirmera le solde de l’actif.",
+      "submittedHashes": "Hashs de transaction envoyés"
+    },
+    "labels": {
+      "asset": "Actif",
+      "catalog": "Catalogue",
+      "listed": "Listés",
+      "name": "Nom",
+      "balance": "Solde",
+      "unlocked": "Déverrouillé",
+      "unlockedBalance": "Solde déverrouillé",
+      "locked": "Verrouillé",
+      "lockedBalance": "Solde verrouillé",
+      "standard": "Standard",
+      "type": "Type",
+      "assetType": "Type d’actif",
+      "supply": "Offre",
+      "totalSupply": "Offre totale",
+      "ownershipPercentage": "Pourcentage de propriété",
+      "assetId": "ID de l’actif",
+      "created": "Créé",
+      "decimals": "Décimales",
+      "amount": "Montant",
+      "status": "Statut",
+      "date": "Date",
+      "txHash": "Hash TX",
+      "metadata": "Métadonnées",
+      "media": "Média",
+      "quickActions": "Actions rapides",
+      "assetLinks": "Liens de l’actif",
+      "recentActivity": "Activité récente",
+      "transactionHistory": "Historique des transactions de l’actif",
+      "assetOverview": "Aperçu de l’actif",
+      "premium": "Premium",
+      "unknown": "Inconnu"
+    },
+    "actions": {
+      "send": "Envoyer",
+      "receive": "Recevoir",
+      "sendAsset": "Envoyer {{ticker}}",
+      "receiveAsset": "Recevoir {{ticker}}",
+      "open": "Ouvrir",
+      "openAssetUrl": "Ouvrir l’URL de l’actif",
+      "viewCatalog": "Voir le catalogue",
+      "copyAssetId": "Copier l’ID de l’actif",
+      "backToAssets": "Retour aux actifs",
+      "dismiss": "Fermer",
+      "retry": "Réessayer"
+    },
+    "media": {
+      "explorerImage": "Image d’actif de l’explorateur"
+    },
+    "states": {
+      "publicCatalogAsset": "Actif du catalogue public",
+      "inWallet": "{{amount}} {{ticker}} dans le portefeuille",
+      "catalogOnlyNotice": "Cet actif est chargé depuis le catalogue public SAL. Il n’est pas actuellement dans ce portefeuille, donc l’envoi est désactivé.",
+      "loadingCatalog": "Chargement des actifs...",
+      "catalogLoadFailed": "Le catalogue de l’explorateur n’a pas pu être chargé.",
+      "catalogEmpty": "L’explorateur n’a renvoyé aucun actif.",
+      "catalogNoMatches": "Aucun actif ne correspond à votre recherche.",
+      "showingAssets": "Affichage de {{start}} à {{end}} sur {{total}} actifs",
+      "unlockedAmount": "Déverrouillé : {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "Déverrouillé {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "Actif de base",
+      "token": "Jeton"
+    },
+    "createForm": {
+      "cost": "La création de cet actif coûte {{cost}} SAL{{suffix}}",
+      "premiumSuffix": " car il s’agit d’un code d’actif premium.",
+      "standardSuffix": ".",
+      "assetCode": "Code de l’actif",
+      "premiumNote": "Ceci est un code d’actif premium. Sa création coûte 10 000 SAL.",
+      "supply": "Offre",
+      "advanced": "Avancé",
+      "advancedDescription": "Métadonnées et taille facultatives du jeton",
+      "displayName": "Nom affiché",
+      "displayNamePlaceholder": "Actif exemple",
+      "size": "Taille",
+      "projectUrl": "URL du projet",
+      "additionalMetadata": "Métadonnées supplémentaires",
+      "additionalMetadataPlaceholder": "JSON ou notes facultatifs. Les champs structurés ci-dessus sont fusionnés automatiquement."
+    },
+    "validation": {
+      "assetCodeRequired": "Le code de l’actif est obligatoire.",
+      "assetCodeFormat": "Le code de l’actif doit contenir exactement 4 lettres majuscules ou chiffres.",
+      "assetCodePrefix": "Le code de l’actif ne peut pas commencer par 'SAL'.",
+      "assetCodeReserved": "Le code de l’actif est réservé et ne peut pas être utilisé.",
+      "supplyRequired": "L’offre est obligatoire.",
+      "supplyWhole": "L’offre doit être un nombre entier.",
+      "supplyRange": "L’offre doit être comprise entre 1 et {{max}}.",
+      "supplyInteger": "L’offre doit être un entier valide.",
+      "decimalsRange": "Les décimales doivent être un entier entre 0 et {{max}}.",
+      "metadataTooLong": "Les métadonnées supplémentaires sont trop longues (max. {{max}} caractères).",
+      "assetCodeExists": "Le code de l’actif '{{code}}' existe déjà."
+    },
+    "transactions": {
+      "pending": "En attente",
+      "received": "Reçu",
+      "sent": "Envoyé",
+      "awaitingConfirmation": "En attente de confirmation"
+    },
+    "time": {
+      "lessThanMinute": "moins d’une minute"
+    },
+    "errors": {
+      "loadFailed": "Impossible de charger les actifs",
+      "createFailed": "Impossible de créer la transaction d’actif"
+    }
   }
 }

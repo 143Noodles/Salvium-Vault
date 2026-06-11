@@ -1,7 +1,6 @@
 import React from 'react';
 import { Icons } from './Icons';
 
-// --- BUTTON ---
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
   isLoading?: boolean;
@@ -37,7 +36,6 @@ export const Button: React.FC<ButtonProps> = ({
   );
 };
 
-// --- INPUT ---
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   error?: string;
@@ -64,14 +62,12 @@ export const Input: React.FC<InputProps> = ({ label, error, rightElement, classN
   );
 };
 
-// --- CARD ---
 export const Card: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
   <div className={`bg-dark-850 border border-dark-700 rounded-xl p-6 shadow-md ${className}`}>
     {children}
   </div>
 );
 
-// --- LOGO ---
 export const Logo: React.FC<{ size?: 'sm' | 'lg' }> = ({ size = 'lg' }) => (
   <div className={`flex items-center gap-3 ${size === 'lg' ? 'mb-8' : ''}`}>
     <img 

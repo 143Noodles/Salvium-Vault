@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { isMobile, isTablet, isIPad13 } from 'react-device-detect';
 
-// Device detection helpers
 const isTabletDevice = isTablet || isIPad13;
 const isMobileOrTablet = isMobile || isTabletDevice;
 
-// ChevronDown icon component
 const ChevronDown = ({ className }: { className?: string }) => (
   <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="6 9 12 15 18 9"></polyline>
@@ -22,10 +20,8 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
   const [price, setPrice] = useState<string | null>(null);
   const explorerRef = useRef<HTMLDivElement>(null);
 
-  // Strictly hide on mobile and tablet devices
   if (isMobileOrTablet) return null;
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (explorerRef.current && !explorerRef.current.contains(event.target as Node)) {
@@ -37,35 +33,29 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Fetch price from backend proxy (handles CORS, fallbacks to CoinGecko)
-  // Uses AbortController for timeout to prevent hanging requests
   useEffect(() => {
-    const fetchPrice = async () => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-
+    // WalletContext owns the /api/price poller (120s) and mirrors each fresh
+    // price to localStorage ('salvium_sal_price'). Read that mirror instead of
+    // running a duplicate fetch interval. (salPrice is not exposed on
+    // WalletContextType, and useWallet throws outside WalletProvider, so the
+    // persisted mirror is the safe source without touching WalletContext.)
+    const readPrice = () => {
       try {
-        // Use our backend proxy which handles CORS and has fallback sources
-        const response = await fetch('/api/price', { signal: controller.signal });
-        clearTimeout(timeoutId);
-        const data = await response.json();
-        if (data.success && data.price) {
-          setPrice(parseFloat(data.price).toFixed(6));
+        const cached = localStorage.getItem('salvium_sal_price');
+        const parsed = cached ? parseFloat(cached) : NaN;
+        if (Number.isFinite(parsed) && parsed > 0) {
+          setPrice(parsed.toFixed(6));
         }
-      } catch (e) {
-        clearTimeout(timeoutId);
-        // Silently fail - price display is optional, wallet should still work
-        void 0 && console.error('Failed to fetch price:', e);
+      } catch {
+        // localStorage unavailable; keep last rendered price.
       }
     };
 
-    fetchPrice();
-    // Refresh every 2 minutes
-    const interval = setInterval(fetchPrice, 120000);
+    readPrice();
+    const interval = setInterval(readPrice, 30000);
     return () => clearInterval(interval);
   }, []);
 
-  // Explorer dropdown items
   const explorerItems = [
     { label: 'Home', href: 'https://explorer.salvium.tools/' },
     { label: 'Blocks', href: 'https://explorer.salvium.tools/blocks' },
@@ -82,7 +72,6 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
     <header className="hidden lg:block bg-dark-900/95 border-b border-dark-700 sticky top-0 z-50 backdrop-blur-md">
       <div className="max-w-[1400px] mx-auto px-4 md:px-8">
         <div className="flex justify-between items-center h-16">
-          {/* Logo */}
           <a href="/" className="flex items-center gap-3 text-dark-400 hover:text-dark-400 no-underline z-50">
             <img
               src="/assets/img/salvium.png"
@@ -92,10 +81,8 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
             <span className="font-mono font-semibold text-xl hidden sm:inline">SALVIUM VAULT</span>
           </a>
 
-          {/* Desktop Navigation */}
           {showNav && (
             <nav className="hidden md:flex items-center gap-8">
-              {/* Explorer Dropdown */}
               <div ref={explorerRef} className="relative">
                 <button
                   onClick={() => setExplorerOpen(!explorerOpen)}
@@ -136,7 +123,6 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
                 </a>
               ))}
 
-              {/* Price Badge */}
               {price && (
                 <div className="bg-gradient-to-r from-salvium-primary to-salvium-secondary text-white px-4 py-2 rounded-md font-mono font-semibold text-[0.95rem]">
                   ${price}
@@ -147,11 +133,9 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
 
         </div>
 
-        {/* Mobile Navigation */}
         {showNav && menuOpen && (
           <nav className="md:hidden py-4 border-t border-dark-700">
             <div className="flex flex-col gap-4">
-              {/* Explorer Section */}
               <div className="text-xs uppercase text-dark-600 font-semibold tracking-wider px-2">Explorer</div>
               {explorerItems.map((item) => (
                 <a

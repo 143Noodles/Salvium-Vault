@@ -32,7 +32,8 @@
     "history": "السجل",
     "settings": "الإعدادات",
     "dashboard": "لوحة التحكم",
-    "lockWallet": "قفل المحفظة"
+    "lockWallet": "قفل المحفظة",
+    "assets": "الأصول"
   },
   "dashboard": {
     "balance": "الرصيد",
@@ -47,7 +48,8 @@
     "noActiveStakes": "لا توجد تخزينات نشطة",
     "earnRewards": "اكسب مكافآت عن طريق تخزين SAL لمدة ~30 يوم.",
     "createNewStake": "إنشاء تخزين جديد",
-    "unlocksIn": "يُفتح خلال {{time}} ({{blocks}} كتلة)"
+    "unlocksIn": "يُفتح خلال {{time}} ({{blocks}} كتلة)",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "آخر 24 ساعة",
@@ -69,7 +71,7 @@
     "sendAssets": "إرسال الأصول",
     "creatingTransaction": "جار إنشاء المعاملة...",
     "transactionSent": "تم إرسال المعاملة!",
-    "amountSent": "تم إرسال {{amount}} SAL إلى الشبكة.",
+    "amountSent": "تم إرسال {{amount}} {{asset}} إلى الشبكة.",
     "transactionHash": "هاش المعاملة",
     "sendAnother": "إرسال معاملة أخرى",
     "addressBook": "دفتر العناوين",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "يرجى إدخال مبلغ صحيح وإيجابي",
-      "exceedsBalance": "المبلغ يتجاوز الرصيد المتاح"
+      "exceedsBalance": "المبلغ يتجاوز الرصيد المتاح",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,8 @@
     "sections": {
       "securityPrivacy": "الأمان والخصوصية",
       "general": "عام",
-      "language": "اللغة"
+      "language": "اللغة",
+      "preferences": "التفضيلات"
     },
     "biometrics": {
       "title": "فتح بالبيومترية",
@@ -222,7 +226,8 @@
       "errors": {
         "fillAll": "يرجى ملء جميع الحقول",
         "mismatch": "كلمات المرور الجديدة غير متطابقة",
-        "empty": "لا يمكن أن تكون كلمة المرور فارغة"
+        "empty": "لا يمكن أن تكون كلمة المرور فارغة",
+        "minLength": "يجب أن تتكون كلمة المرور من 8 أحرف على الأقل"
       }
     },
     "blockchain": {
@@ -259,6 +264,14 @@
       "revealButton": "Reveal Seed Phrase",
       "copySeed": "Copy Seed Phrase",
       "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
+    },
+    "connection": {
+      "title": "الاتصال",
+      "description": "اختر عقدة Salvium التي تزامن محفظتك. يبقيك الوضع التلقائي على عقدة رسمية سليمة؛ أضف عقدتك الخاصة فقط إذا كانت متاحة للعموم. في كلتا الحالتين، يتم توجيه الطلبات عبر خادم vault بدلاً من إرسالها مباشرة من جهازك."
+    },
+    "currency": {
+      "title": "عملة العرض",
+      "description": "اختر العملة الورقية المستخدمة لعرض قيمة رصيدك."
     }
   },
   "onboarding": {
@@ -435,5 +448,156 @@
     "initializingWallet": "جار تهيئة المحفظة...",
     "failedToCreate": "فشل إنشاء النسخة الاحتياطية",
     "failedToUnlock": "فشل فتح المحفظة"
+  },
+  "assets": {
+    "title": "الأصول",
+    "subtitle": "اعرض وأدر كل الأصول في محفظتك.",
+    "viewAll": "عرض الكل",
+    "viewAllAssets": "عرض كل الأصول",
+    "viewAssets": "عرض الأصول",
+    "create": "إنشاء",
+    "createAsset": "إنشاء أصل",
+    "createAssetTransaction": "إنشاء معاملة أصل",
+    "creating": "جارٍ الإنشاء...",
+    "yourAssets": "أصولك",
+    "searchAssets": "البحث عن أصول...",
+    "searchAssetsShort": "البحث عن أصول",
+    "searchAssetsLabel": "البحث عن الأصول",
+    "searchAssetsLong": "ابحث حسب الرمز أو الاسم أو نوع الأصل",
+    "filters": {
+      "all": "كل الأصول",
+      "metadata": "مع بيانات وصفية",
+      "plain": "أصول أساسية"
+    },
+    "empty": {
+      "noBalances": "لا توجد أرصدة أصول بعد",
+      "waitForTransfers": "أنشئ أصلًا أو انتظر تحويلات أصول واردة.",
+      "noFilterMatches": "لا توجد أصول تطابق عوامل التصفية الحالية.",
+      "noRecentActivity": "لا يوجد نشاط أصول حديث.",
+      "selectAsset": "اختر أصلًا",
+      "chooseAsset": "اختر أصلًا من القائمة لفحصه.",
+      "noTransactions": "لا توجد معاملات مسجلة للأصل المحدد."
+    },
+    "unlock": {
+      "title": "افتح قفل المحفظة لإدارة الأصول.",
+      "description": "تتطلب أرصدة الأصول والتحويلات والإنشاء محفظة غير مقفلة."
+    },
+    "activation": {
+      "scheduled": "تمت جدولة تفعيل الأصول لـ {{label}} عند الكتلة {{height}}.",
+      "blocksRemaining": "كتل متبقية",
+      "estimatedTime": "الوقت المتبقي المقدر: {{time}}"
+    },
+    "success": {
+      "submitted": "تم إرسال إنشاء الأصل",
+      "created": "تم إرسال {{assetType}} بنجاح وسيظهر هنا عندما تستقبل المحفظة رصيد الأصل أو تؤكده.",
+      "submittedHashes": "تجزئات المعاملات المرسلة"
+    },
+    "labels": {
+      "asset": "أصل",
+      "catalog": "الفهرس",
+      "listed": "مدرج",
+      "name": "الاسم",
+      "balance": "الرصيد",
+      "unlocked": "غير مقفل",
+      "unlockedBalance": "الرصيد غير المقفل",
+      "locked": "مقفل",
+      "lockedBalance": "الرصيد المقفل",
+      "standard": "المعيار",
+      "type": "النوع",
+      "assetType": "نوع الأصل",
+      "supply": "المعروض",
+      "totalSupply": "إجمالي المعروض",
+      "ownershipPercentage": "نسبة الملكية",
+      "assetId": "معرّف الأصل",
+      "created": "تاريخ الإنشاء",
+      "decimals": "الخانات العشرية",
+      "amount": "المبلغ",
+      "status": "الحالة",
+      "date": "التاريخ",
+      "txHash": "تجزئة TX",
+      "metadata": "البيانات الوصفية",
+      "media": "الوسائط",
+      "quickActions": "إجراءات سريعة",
+      "assetLinks": "روابط الأصل",
+      "recentActivity": "النشاط الأخير",
+      "transactionHistory": "سجل معاملات الأصل",
+      "assetOverview": "نظرة عامة على الأصل",
+      "premium": "مميز",
+      "unknown": "غير معروف"
+    },
+    "actions": {
+      "send": "إرسال",
+      "receive": "استلام",
+      "sendAsset": "إرسال {{ticker}}",
+      "receiveAsset": "استلام {{ticker}}",
+      "open": "فتح",
+      "openAssetUrl": "فتح رابط الأصل",
+      "viewCatalog": "عرض الفهرس",
+      "copyAssetId": "نسخ معرّف الأصل",
+      "backToAssets": "العودة إلى الأصول",
+      "dismiss": "إغلاق",
+      "retry": "إعادة المحاولة"
+    },
+    "media": {
+      "explorerImage": "صورة الأصل من المستكشف"
+    },
+    "states": {
+      "publicCatalogAsset": "أصل من الفهرس العام",
+      "inWallet": "{{amount}} {{ticker}} في المحفظة",
+      "catalogOnlyNotice": "تم تحميل هذا الأصل من فهرس SAL العام. ليس موجودًا حاليًا في هذه المحفظة، لذلك تم تعطيل الإرسال.",
+      "loadingCatalog": "جارٍ تحميل الأصول...",
+      "catalogLoadFailed": "تعذر تحميل فهرس المستكشف.",
+      "catalogEmpty": "لم يرجع المستكشف أي أصول.",
+      "catalogNoMatches": "لا توجد أصول تطابق بحثك.",
+      "showingAssets": "عرض {{start}} إلى {{end}} من أصل {{total}}",
+      "unlockedAmount": "غير مقفل: {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "غير مقفل {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "أصل أساسي",
+      "token": "رمز"
+    },
+    "createForm": {
+      "cost": "إنشاء هذا الأصل يكلف {{cost}} SAL{{suffix}}",
+      "premiumSuffix": " لأنه رمز أصل مميز.",
+      "standardSuffix": ".",
+      "assetCode": "رمز الأصل",
+      "premiumNote": "هذا رمز أصل مميز. إنشاؤه يكلف 10,000 SAL.",
+      "supply": "المعروض",
+      "advanced": "متقدم",
+      "advancedDescription": "بيانات وصفية اختيارية للرمز والحجم",
+      "displayName": "اسم العرض",
+      "displayNamePlaceholder": "أصل مثال",
+      "size": "الحجم",
+      "projectUrl": "رابط المشروع",
+      "additionalMetadata": "بيانات وصفية إضافية",
+      "additionalMetadataPlaceholder": "JSON أو ملاحظات اختيارية. سيتم دمج الحقول المنظمة أعلاه تلقائيًا."
+    },
+    "validation": {
+      "assetCodeRequired": "رمز الأصل مطلوب.",
+      "assetCodeFormat": "يجب أن يكون رمز الأصل 4 أحرف كبيرة أو أرقام بالضبط.",
+      "assetCodePrefix": "لا يمكن أن يبدأ رمز الأصل بـ 'SAL'.",
+      "assetCodeReserved": "رمز الأصل محجوز ولا يمكن استخدامه.",
+      "supplyRequired": "المعروض مطلوب.",
+      "supplyWhole": "يجب أن يكون المعروض رقمًا صحيحًا.",
+      "supplyRange": "يجب أن يكون المعروض بين 1 و {{max}}.",
+      "supplyInteger": "يجب أن يكون المعروض عددًا صحيحًا صالحًا.",
+      "decimalsRange": "يجب أن تكون الخانات العشرية عددًا صحيحًا بين 0 و {{max}}.",
+      "metadataTooLong": "البيانات الوصفية الإضافية طويلة جدًا (الحد الأقصى {{max}} حرفًا).",
+      "assetCodeExists": "رمز الأصل '{{code}}' موجود بالفعل."
+    },
+    "transactions": {
+      "pending": "معلّق",
+      "received": "تم الاستلام",
+      "sent": "تم الإرسال",
+      "awaitingConfirmation": "بانتظار التأكيد"
+    },
+    "time": {
+      "lessThanMinute": "أقل من دقيقة"
+    },
+    "errors": {
+      "loadFailed": "فشل تحميل الأصول",
+      "createFailed": "فشل إنشاء معاملة الأصل"
+    }
   }
 }

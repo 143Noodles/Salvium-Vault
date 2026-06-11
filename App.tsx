@@ -1,6 +1,11 @@
+import { debugLog } from './utils/debug';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { WalletProvider, useWallet } from './services/WalletContext';
+import {
+  WalletProvider,
+  useWallet,
+} from './services/WalletContext';
+import { CurrencyProvider } from './services/CurrencyContext';
 import { walletService } from './services/WalletService';
 import Dashboard from './components/Dashboard';
 import Onboarding from './components/Onboarding';
@@ -31,27 +36,28 @@ import { MobileHeader } from './components/MobileHeader';
 
 import { isMobileOrTablet, isDesktop } from './utils/device';
 import { useMobileScaling } from './hooks/useMobileScaling';
+import { TabView } from './utils/tabView';
 import {
   getWalletCreatedKey,
   LEGACY_WALLET_CREATED_KEY,
   normalizeWalletStorageNetwork
 } from './utils/walletStorage';
+import { isNativePlatform } from './utils/runtime';
+import { reportTaskEvent, startTaskTelemetry } from './utils/clientTelemetry';
 
 const isDesktopOnly = isDesktop;
 
-export enum TabView {
-  DASHBOARD = 'DASHBOARD',
-  SEND = 'SEND',
-  RECEIVE = 'RECEIVE',
-  HISTORY = 'HISTORY',
-  STAKING = 'STAKING',
-  ASSETS = 'ASSETS',
-  SETTINGS = 'SETTINGS'
-}
-
 type AppState = 'initializing' | 'setup' | 'loading' | 'dashboard' | 'locked';
 
-const ASSETS_UPDATE_NOTICE_KEY = 'salvium_assets_update_notice_dismissed_v1';
+// One-time dashboard announcement popup. null = no popup. Bump `version` so users who
+// dismissed an earlier notice see a new one.
+const ACTIVE_UPDATE_NOTICE: { version: string; title: string; body: string } | null = null;
+const UPDATE_NOTICE_KEY = ACTIVE_UPDATE_NOTICE
+  ? `salvium_update_notice_dismissed_${ACTIVE_UPDATE_NOTICE.version}`
+  : 'salvium_update_notice_dismissed_none';
+const VAULT_RESTORE_PENDING_KEY = 'salvium_vault_restore_pending';
+const VAULT_RESTORE_STARTED_AT_KEY = 'salvium_vault_restore_started_at';
+const isNativeApp = isNativePlatform();
 
 const AppContent: React.FC = () => {
   const { t } = useTranslation();
@@ -59,13 +65,13 @@ const AppContent: React.FC = () => {
   useMobileScaling();
 
   const [appState, setAppState] = useState<AppState>('initializing');
+  const [initTimedOut, setInitTimedOut] = useState(false);
   const [activeTab, setActiveTab] = useState<TabView>(TabView.DASHBOARD);
   const previousTabRef = useRef<TabView>(TabView.DASHBOARD);
   const [dashboardResetKey, setDashboardResetKey] = useState(0);
 
   const [navParams, setNavParams] = useState<any>(null);
 
-  // Hash to TabView mapping
   const hashToTab: Record<string, TabView> = {
     '#dashboard': TabView.DASHBOARD,
     '#send': TabView.SEND,
@@ -86,7 +92,6 @@ const AppContent: React.FC = () => {
     [TabView.SETTINGS]: '#settings',
   };
 
-  // Handle hash changes from URL
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.toLowerCase();
@@ -95,14 +100,12 @@ const AppContent: React.FC = () => {
       }
     };
 
-    // Check initial hash on mount
     handleHashChange();
 
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, [appState]);
 
-  // Update URL hash when tab changes (only when logged in)
   useEffect(() => {
     if (appState === 'dashboard' && tabToHash[activeTab]) {
       const newHash = tabToHash[activeTab];
@@ -112,7 +115,6 @@ const AppContent: React.FC = () => {
     }
   }, [activeTab, appState]);
 
-  // Update body class for header visibility
   useEffect(() => {
     if (appState === 'dashboard') {
       document.body.classList.add('wallet-logged-in');
@@ -128,7 +130,6 @@ const AppContent: React.FC = () => {
       setNavParams(null);
     }
 
-    // If clicking Dashboard while already on Dashboard, trigger overlay close
     if (tab === TabView.DASHBOARD && activeTab === TabView.DASHBOARD) {
       setDashboardResetKey(prev => prev + 1);
       return;
@@ -151,11 +152,11 @@ const AppContent: React.FC = () => {
   const [autoLockMinutes, setAutoLockMinutes] = useState(15);
   const lastActivityRef = useRef(Date.now());
 
-  // Storage persistence banner state
   const [showStorageBanner, setShowStorageBanner] = useState(false);
   const [showAssetsUpdateNotice, setShowAssetsUpdateNotice] = useState(() => {
+    if (!ACTIVE_UPDATE_NOTICE) return false;
     try {
-      return localStorage.getItem(ASSETS_UPDATE_NOTICE_KEY) !== 'true';
+      return localStorage.getItem(UPDATE_NOTICE_KEY) !== 'true';
     } catch {
       return true;
     }
@@ -184,10 +185,13 @@ const AppContent: React.FC = () => {
           setAutoLockEnabled(storedAutoLock === 'true');
         }
         if (storedMinutes !== null) {
-          setAutoLockMinutes(parseInt(storedMinutes));
+          // Reject NaN: it would make `elapsed >= NaN` always false, silently disabling auto-lock.
+          const parsedMinutes = parseInt(storedMinutes, 10);
+          if (Number.isFinite(parsedMinutes) && parsedMinutes > 0) {
+            setAutoLockMinutes(parsedMinutes);
+          }
         }
       } catch {
-        // Failed to load settings from localStorage - use defaults
       }
 
       if (!wallet.isInitialized) return;
@@ -205,15 +209,23 @@ const AppContent: React.FC = () => {
         return;
       }
 
-      if (!wallet.isWalletReady) {
-        setAppState('initializing');
+      const restoreScanSessionActive = wallet.scanSession?.type === 'restore-full-rescan' && wallet.scanSession.status === 'active';
+      if (restoreScanSessionActive) {
+        setNeedsScan(true);
+        setAppState('loading');
         return;
       }
 
       const initialScanComplete = localStorage.getItem('salvium_initial_scan_complete');
-      if (initialScanComplete === 'false') {
+      const restoreScanFinished = localStorage.getItem('salvium_restore_scan_finished') === 'true';
+      if (initialScanComplete === 'false' && !restoreScanFinished) {
         setNeedsScan(true);
         setAppState('loading');
+        return;
+      }
+
+      if (!wallet.isWalletReady) {
+        setAppState('initializing');
         return;
       }
 
@@ -223,23 +235,46 @@ const AppContent: React.FC = () => {
     if (wallet.isInitialized) {
       init();
     }
-  }, [wallet.isInitialized, wallet.isLocked, wallet.isWalletReady]);
+  }, [wallet.isInitialized, wallet.isLocked, wallet.isWalletReady, wallet.scanSession]);
+
+  useEffect(() => {
+    if (appState !== 'initializing' || wallet.isInitialized || wallet.initError) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (!wallet.isInitialized && !wallet.initError) {
+        setInitTimedOut(true);
+      }
+    }, 45000);
+    return () => clearTimeout(timer);
+  }, [appState, wallet.isInitialized, wallet.initError]);
 
   const isSynced = !wallet.syncStatus.isSyncing &&
     wallet.syncStatus.walletHeight >= wallet.syncStatus.daemonHeight &&
     wallet.syncStatus.daemonHeight > 0;
   const isConnected = wallet.syncStatus.daemonHeight > 0;
+  const [connectionGraceExpired, setConnectionGraceExpired] = useState(false);
+  useEffect(() => {
+    if (isConnected) {
+      setConnectionGraceExpired(false);
+      return;
+    }
+    const timer = setTimeout(() => setConnectionGraceExpired(true), 20000);
+    return () => clearTimeout(timer);
+  }, [isConnected]);
+  const isConnecting = !isConnected &&
+    !connectionGraceExpired &&
+    typeof navigator !== 'undefined' &&
+    navigator.onLine !== false;
 
   const lockWallet = useCallback(() => {
     wallet.lockWallet();
     setAppState('locked');
   }, [wallet]);
 
-  // Throttled activity update to prevent excessive calls from scroll/mousemove
   const lastThrottleRef = useRef(0);
   const updateActivity = useCallback(() => {
     const now = Date.now();
-    // Throttle to once per second max
     if (now - lastThrottleRef.current > 1000) {
       lastActivityRef.current = now;
       lastThrottleRef.current = now;
@@ -247,7 +282,6 @@ const AppContent: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // Use passive listeners for better scroll performance
     const passiveEvents = ['scroll', 'mousemove', 'touchstart'];
     const activeEvents = ['mousedown', 'keydown'];
 
@@ -258,19 +292,26 @@ const AppContent: React.FC = () => {
       window.addEventListener(event, updateActivity)
     );
 
-    const interval = setInterval(() => {
+    const checkAutoLock = () => {
       if (appState === 'dashboard' && autoLockEnabled) {
-        const now = Date.now();
-        const elapsedMinutes = (now - lastActivityRef.current) / 1000 / 60;
-
+        const elapsedMinutes = (Date.now() - lastActivityRef.current) / 1000 / 60;
         if (elapsedMinutes >= autoLockMinutes) {
           lockWallet();
         }
       }
-    }, 10000);
+    };
+
+    const interval = setInterval(checkAutoLock, 10000);
+
+    // Mobile browsers freeze timers while backgrounded; re-check on resume so auto-lock still fires.
+    const onVisibleAutoLock = () => {
+      if (document.visibilityState === 'visible') checkAutoLock();
+    };
+    document.addEventListener('visibilitychange', onVisibleAutoLock);
 
     return () => {
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibleAutoLock);
       passiveEvents.forEach(event =>
         window.removeEventListener(event, updateActivity)
       );
@@ -280,11 +321,15 @@ const AppContent: React.FC = () => {
     };
   }, [appState, autoLockEnabled, autoLockMinutes, lockWallet, updateActivity]);
 
-  // Capture PWA install prompt for Chromium browsers
   useEffect(() => {
+    if (isNativeApp) {
+      return;
+    }
+
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       deferredInstallPromptRef.current = e;
+      reportTaskEvent('stage', 'pwa.install_prompt', 'captured_app', 'App');
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -296,28 +341,37 @@ const AppContent: React.FC = () => {
 
   useEffect(() => {
     const checkAndRequestPersistence = async () => {
+      const task = startTaskTelemetry('storage.persistence_check', 'App');
+      if (isNativeApp) {
+        setShowStorageBanner(false);
+        task.completed('native_skip');
+        return;
+      }
+
       if (navigator.storage && navigator.storage.persist) {
-        // Check if already persisted
+        task.stage('persisted_check');
         const isPersisted = await navigator.storage.persisted();
         if (isPersisted) {
           setShowStorageBanner(false);
+          task.completed('already_persisted');
           return;
         }
 
-        // Check if user previously dismissed the banner
         const bannerDismissed = localStorage.getItem('salvium_storage_banner_dismissed');
         if (bannerDismissed) {
+          task.completed('banner_dismissed');
           return;
         }
 
-        // Check if permission was denied (Firefox)
         if (navigator.permissions) {
           try {
             const permission = await navigator.permissions.query({ name: 'persistent-storage' as PermissionName });
             if (permission.state === 'denied') {
               setStorageDenied(true);
+              reportTaskEvent('failed', 'storage.persistence_check', 'permission_denied', 'App', {
+                reason: 'permission_denied',
+              }, 'warn');
             }
-            // Listen for permission changes
             permission.onchange = () => {
               if (permission.state === 'granted') {
                 setShowStorageBanner(false);
@@ -327,48 +381,69 @@ const AppContent: React.FC = () => {
               }
             };
           } catch (e) {
-            // Permission query not supported for persistent-storage
+            reportTaskEvent('failed', 'storage.persistence_check', 'permission_query', 'App', {
+              reason: 'permission_query_failed',
+            }, 'warn', e instanceof Error ? e.message : String(e || 'permission query failed'));
           }
         }
 
-        // Try to request persistence (Chrome may auto-grant based on engagement)
+        task.stage('persist_request');
         const granted = await navigator.storage.persist();
         if (!granted) {
-          // Show banner if not granted and not on mobile (mobile forces PWA)
-          // Skip Safari - no actionable solution available
           if (!isMobileOrTablet && !isSafariBrowser) {
             setShowStorageBanner(true);
           }
+          task.failed(new Error('persistent storage not granted'), 'persist_denied');
+        } else {
+          task.completed('persist_granted');
         }
+      } else {
+        task.failed(new Error('storage persistence unsupported'), 'unsupported');
       }
     };
-    checkAndRequestPersistence();
+    checkAndRequestPersistence().catch((error) => {
+      reportTaskEvent('failed', 'storage.persistence_check', 'failed', 'App', {
+        reason: 'storage_check_failed',
+      }, 'warn', error instanceof Error ? error.message : String(error || 'storage check failed'));
+    });
   }, []);
 
   const handleRequestPersistence = async () => {
-    // On Chromium browsers, prompt for PWA install (which grants persistence)
+    const task = startTaskTelemetry('storage.persistence_request', 'App');
     if (isChromiumBrowser.current && deferredInstallPromptRef.current) {
       try {
+        task.stage('pwa_prompt');
         deferredInstallPromptRef.current.prompt();
         const { outcome } = await deferredInstallPromptRef.current.userChoice;
         if (outcome === 'accepted') {
           setShowStorageBanner(false);
+          task.completed('pwa_accepted', { result: 'accepted' });
         } else {
           setPwaInstallDismissed(true);
+          task.completed('pwa_dismissed', { result: 'dismissed' });
         }
         deferredInstallPromptRef.current = null;
-      } catch {
-        // PWA install prompt failed or was cancelled
+      } catch (error) {
+        task.failed(error, 'pwa_prompt_failed');
       }
       return;
     }
 
-    // On Firefox and other browsers, request persistence directly (shows prompt)
     if (navigator.storage && navigator.storage.persist) {
-      const granted = await navigator.storage.persist();
-      if (granted) {
-        setShowStorageBanner(false);
+      try {
+        task.stage('persist_request');
+        const granted = await navigator.storage.persist();
+        if (granted) {
+          setShowStorageBanner(false);
+          task.completed('persist_granted');
+        } else {
+          task.failed(new Error('persistent storage not granted'), 'persist_denied');
+        }
+      } catch (error) {
+        task.failed(error, 'persist_failed');
       }
+    } else {
+      task.failed(new Error('storage persistence unsupported'), 'unsupported');
     }
   };
 
@@ -380,9 +455,8 @@ const AppContent: React.FC = () => {
   const dismissAssetsUpdateNotice = () => {
     setShowAssetsUpdateNotice(false);
     try {
-      localStorage.setItem(ASSETS_UPDATE_NOTICE_KEY, 'true');
+      localStorage.setItem(UPDATE_NOTICE_KEY, 'true');
     } catch {
-      // Ignore storage failures; dismissal still applies for this session.
     }
   };
 
@@ -395,8 +469,13 @@ const AppContent: React.FC = () => {
       try {
         if ('wakeLock' in navigator) {
           wakeLock = await (navigator as any).wakeLock.request('screen');
+          reportTaskEvent('completed', 'wake_lock.request', 'screen', 'App');
         }
-      } catch (err) { /* ignore */ }
+      } catch (err) {
+        reportTaskEvent('failed', 'wake_lock.request', 'screen', 'App', {
+          reason: 'request_failed',
+        }, 'warn', err instanceof Error ? err.message : String(err || 'wake lock failed'));
+      }
     };
 
     const handleVisibilityChange = async () => {
@@ -423,10 +502,13 @@ const AppContent: React.FC = () => {
     updateActivity();
     if (mode === 'restore') {
       localStorage.setItem('salvium_initial_scan_complete', 'false');
+      localStorage.removeItem('salvium_restore_scan_finished');
       setNeedsScan(true);
       setAppState('loading');
     } else {
       localStorage.setItem('salvium_initial_scan_complete', 'true');
+      localStorage.removeItem(VAULT_RESTORE_PENDING_KEY);
+      localStorage.removeItem(VAULT_RESTORE_STARTED_AT_KEY);
       setAppState('dashboard');
     }
   };
@@ -435,6 +517,10 @@ const AppContent: React.FC = () => {
     updateActivity();
     setNeedsScan(false);
     localStorage.setItem('salvium_initial_scan_complete', 'true');
+    localStorage.removeItem('salvium_restore_scan_finished');
+    localStorage.removeItem(VAULT_RESTORE_PENDING_KEY);
+    localStorage.removeItem(VAULT_RESTORE_STARTED_AT_KEY);
+    setActiveTab(TabView.DASHBOARD);
     setAppState('dashboard');
   };
 
@@ -458,19 +544,36 @@ const AppContent: React.FC = () => {
     updateActivity();
   };
 
-  // --- Render ---
+  const presentRescanLoading = useCallback(() => {
+    setActiveTab(TabView.DASHBOARD);
+    setNeedsScan(true);
+    setAppState('loading');
+  }, []);
+
+  useEffect(() => {
+    if (!isNativeApp) {
+      return;
+    }
+
+    const handleAutoRescan = () => {
+      presentRescanLoading();
+    };
+
+    window.addEventListener('salvium:auto-rescan', handleAutoRescan);
+    return () => window.removeEventListener('salvium:auto-rescan', handleAutoRescan);
+  }, [presentRescanLoading]);
 
   if (appState === 'initializing') {
     return (
-      <div className="fixed inset-0 z-50 bg-bg-primary flex items-center justify-center h-[100dvh]">
+      <div className="fixed inset-0 z-50 bg-bg-primary flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-4 p-6 max-w-sm text-center">
-          {wallet.initError ? (
+          {(wallet.initError || initTimedOut) ? (
             <>
               <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center">
                 <span className="text-red-500 text-2xl">!</span>
               </div>
               <p className="text-red-400 font-medium">Failed to Initialize</p>
-              <p className="text-text-muted text-sm">{wallet.initError}</p>
+              <p className="text-text-muted text-sm">{wallet.initError || 'Initialization is taking longer than expected. Please check your connection and retry.'}</p>
               <p className="text-text-muted text-xs mt-2">
                 This may occur on some mobile browsers due to WASM limitations.
                 Try using a desktop browser or Chrome on Android.
@@ -512,6 +615,7 @@ const AppContent: React.FC = () => {
         onStartFullRescan={() => {
           wallet.proceedWithFullRescan();
           localStorage.setItem('salvium_initial_scan_complete', 'false');
+          localStorage.removeItem('salvium_restore_scan_finished');
           setNeedsScan(true);
           setAppState('loading');
         }}
@@ -525,7 +629,7 @@ const AppContent: React.FC = () => {
 
   if (!appState || appState === 'initializing') {
     return (
-      <div className="fixed inset-0 z-50 bg-bg-primary flex items-center justify-center h-[100dvh]">
+      <div className="fixed inset-0 z-50 bg-bg-primary flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-4 p-6 max-w-sm text-center">
           <div className="w-12 h-12 border-4 border-accent-primary border-t-transparent rounded-full animate-spin"></div>
           <p className="text-text-muted text-sm">Initializing wallet...</p>
@@ -575,11 +679,10 @@ const AppContent: React.FC = () => {
 
             <div className="pr-8">
               <div className="mb-2 text-sm font-semibold uppercase tracking-[0.18em] text-accent-primary">
-                Vault Update
+                {ACTIVE_UPDATE_NOTICE?.title}
               </div>
               <p className="text-sm leading-6 text-text-secondary md:text-base">
-                Salvium Vault has been updated to support Assets. UI is still a work in progress.
-                Many other optimizations included in this update. A one time restore from seed is recommended.
+                {ACTIVE_UPDATE_NOTICE?.body}
               </p>
               <button
                 onClick={dismissAssetsUpdateNotice}
@@ -591,7 +694,12 @@ const AppContent: React.FC = () => {
           </div>
         </div>
       )}
-      <div className="bg-bg-primary text-text-primary flex relative overflow-hidden h-full pt-[56px]">
+      <div
+        className={`
+          bg-bg-primary text-text-primary flex relative overflow-hidden h-full min-h-0
+          ${isMobileOrTablet ? 'pt-[var(--mobile-header-height)]' : 'pt-[56px]'}
+        `}
+      >
 
         {isDesktopOnly && (
           <aside className="flex flex-col w-72 fixed top-[56px] h-[calc(100vh-56px)] z-20 border-r border-border-color bg-[#0f0f1a]">
@@ -601,7 +709,7 @@ const AppContent: React.FC = () => {
               <NavItem tab={TabView.SEND} icon={Send} label={t('navigation.send')} />
               <NavItem tab={TabView.RECEIVE} icon={Download} label={t('navigation.receive')} />
               <NavItem tab={TabView.STAKING} icon={TrendingUp} label={t('navigation.staking')} />
-              <NavItem tab={TabView.ASSETS} icon={Database} label={t('navigation.assets', { defaultValue: 'Assets' })} />
+              <NavItem tab={TabView.ASSETS} icon={Database} label={t('navigation.assets')} />
               <NavItem tab={TabView.HISTORY} icon={History} label={t('navigation.history')} />
               <NavItem tab={TabView.SETTINGS} icon={Settings} label={t('navigation.settings')} />
             </nav>
@@ -623,11 +731,11 @@ const AppContent: React.FC = () => {
 
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-base font-bold text-white tracking-tight">
-                    {!isConnected ? t('network.error') : isSynced ? t('network.synced') : t('network.syncing')}
+                    {(!isConnected && !isConnecting) ? t('network.error') : isSynced ? t('network.synced') : t('network.syncing')}
                   </span>
 
                   <div className={`relative flex items-center justify-center w-6 h-6 rounded-full bg-white/5 border border-white/5 ${isSynced ? 'shadow-[0_0_10px_rgba(16,185,129,0.2)]' : ''}`}>
-                    <div className={`w-2.5 h-2.5 rounded-full ${!isConnected ? 'bg-red-500' : isSynced ? 'bg-accent-success' : 'bg-accent-warning'} ${isSynced ? 'animate-pulse' : ''}`}></div>
+                    <div className={`w-2.5 h-2.5 rounded-full ${(!isConnected && !isConnecting) ? 'bg-red-500' : isSynced ? 'bg-accent-success' : 'bg-accent-warning'} ${isSynced ? 'animate-pulse' : ''}`}></div>
                   </div>
                 </div>
 
@@ -639,8 +747,7 @@ const AppContent: React.FC = () => {
           </aside>
         )}
 
-        <main className={`flex-1 ${isDesktopOnly ? 'ml-72' : ''} min-w-0 relative z-10 w-full flex flex-col`}>
-          {/* Storage Persistence Warning Banner */}
+        <main className={`flex-1 ${isDesktopOnly ? 'ml-72' : ''} min-w-0 min-h-0 relative z-10 w-full flex flex-col`}>
           {showStorageBanner && (
             <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-3">
               <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
@@ -685,9 +792,9 @@ const AppContent: React.FC = () => {
               w-full
               px-4 md:px-8
               max-w-[1600px] mx-auto
-              overflow-y-auto custom-scrollbar
+              ${isNativeApp ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar'}
               ${isMobileOrTablet
-                ? 'pt-[calc(env(safe-area-inset-top)+16px)] pb-[calc(76px+env(safe-area-inset-bottom))] h-full'
+                ? 'pt-3 pb-[var(--mobile-page-bottom-clearance)] flex-1 min-h-0'
                 : 'pt-6 pb-6 flex-1'
               }
             `}
@@ -723,10 +830,7 @@ const AppContent: React.FC = () => {
                 autoLockEnabled={autoLockEnabled}
                 autoLockMinutes={autoLockMinutes}
                 onAutoLockChange={handleAutoLockSettingsChange}
-                onRescan={() => {
-                  setNeedsScan(true);
-                  setAppState('loading');
-                }}
+                onRescan={presentRescanLoading}
                 onNavigate={handleNavigate}
                 onReset={handleReset}
               />
@@ -741,7 +845,9 @@ const AppContent: React.FC = () => {
 const App: React.FC = () => {
   return (
     <WalletProvider>
-      <AppContent />
+      <CurrencyProvider>
+        <AppContent />
+      </CurrencyProvider>
     </WalletProvider>
   );
 };

@@ -16,6 +16,7 @@ import ptTranslation from './locales/pt/translation.json';
 import trTranslation from './locales/tr/translation.json';
 import svTranslation from './locales/sv/translation.json';
 import arTranslation from './locales/ar/translation.json';
+import idTranslation from './locales/id/translation.json';
 
 // Language configuration
 export const SUPPORTED_LANGUAGES = {
@@ -32,7 +33,8 @@ export const SUPPORTED_LANGUAGES = {
   pt: { name: 'Portuguese', nativeName: 'Português', flag: '🇧🇷' },
   tr: { name: 'Turkish', nativeName: 'Türkçe', flag: '🇹🇷' },
   sv: { name: 'Swedish', nativeName: 'Svenska', flag: '🇸🇪' },
-  ar: { name: 'Arabic', nativeName: 'العربية', flag: '🇸🇦' }
+  ar: { name: 'Arabic', nativeName: 'العربية', flag: '🇸🇦' },
+  id: { name: 'Indonesian', nativeName: 'Bahasa Indonesia', flag: '🇮🇩' }
 } as const;
 
 export type SupportedLanguage = keyof typeof SUPPORTED_LANGUAGES;
@@ -59,7 +61,8 @@ i18n
       pt: { translation: ptTranslation },
       tr: { translation: trTranslation },
       sv: { translation: svTranslation },
-      ar: { translation: arTranslation }
+      ar: { translation: arTranslation },
+      id: { translation: idTranslation }
     },
     fallbackLng: 'en-US',
     supportedLngs: Object.keys(SUPPORTED_LANGUAGES),
@@ -71,8 +74,10 @@ i18n
       order: ['localStorage', 'navigator', 'htmlTag'],
       caches: ['localStorage'],
       lookupLocalStorage: LANGUAGE_STORAGE_KEY,
-      // Convert detected 'en' to 'en-US', keep 'en-GB' as is
+      // Normalize browser language variants to the wallet's supported locale keys.
       convertDetectedLanguage: (lng: string) => {
+        const normalized = lng.toLowerCase();
+        if (normalized === 'id' || normalized.startsWith('id-')) return 'id';
         if (lng === 'en') return 'en-US';
         if (lng.startsWith('en-') && lng !== 'en-US' && lng !== 'en-GB') return 'en-GB';
         return lng;

@@ -32,7 +32,8 @@
     "history": "History",
     "settings": "Settings",
     "dashboard": "Dashboard",
-    "lockWallet": "Lock Wallet"
+    "lockWallet": "Lock Wallet",
+    "assets": "Assets"
   },
   "dashboard": {
     "balance": "Balance",
@@ -47,7 +48,8 @@
     "noActiveStakes": "No active stakes",
     "earnRewards": "Earn rewards by staking your SAL for ~30 days.",
     "createNewStake": "Create New Stake",
-    "unlocksIn": "Unlocks in {{time}} ({{blocks}} blocks)"
+    "unlocksIn": "Unlocks in {{time}} ({{blocks}} blocks)",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "Last 24 Hours",
@@ -69,7 +71,7 @@
     "sendAssets": "Send Assets",
     "creatingTransaction": "Creating Transaction...",
     "transactionSent": "Transaction Sent!",
-    "amountSent": "{{amount}} SAL has been sent to the network.",
+    "amountSent": "{{amount}} {{asset}} has been sent to the network.",
     "transactionHash": "Transaction Hash",
     "sendAnother": "Send Another Transaction",
     "addressBook": "Address Book",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "Please enter a valid positive amount",
-      "exceedsBalance": "Amount exceeds available balance"
+      "exceedsBalance": "Amount exceeds available balance",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,12 @@
     "sections": {
       "securityPrivacy": "Security & Privacy",
       "general": "General",
-      "language": "Language"
+      "language": "Language",
+      "preferences": "Preferences"
+    },
+    "currency": {
+      "title": "Display Currency",
+      "description": "Choose the fiat currency used to show your balance value."
     },
     "biometrics": {
       "title": "Unlock with Biometrics",
@@ -222,7 +230,8 @@
       "errors": {
         "fillAll": "Please fill in all fields",
         "mismatch": "New passwords do not match",
-        "empty": "Password cannot be empty"
+        "empty": "Password cannot be empty",
+        "minLength": "Password must be at least 8 characters"
       }
     },
     "blockchain": {
@@ -231,6 +240,10 @@
       "rescanHint": "Rescan wallet to find missing transactions",
       "rescan": "Rescan",
       "scanning": "Scanning..."
+    },
+    "connection": {
+      "title": "Daemon Connection",
+      "description": "Choose which Salvium node syncs your wallet. Custom nodes must be publicly reachable. All nodes are proxied to avoid CORS issues."
     },
     "language": {
       "title": "Language",
@@ -435,5 +448,156 @@
     "initializingWallet": "Initializing wallet...",
     "failedToCreate": "Failed to create backup",
     "failedToUnlock": "Failed to unlock wallet"
+  },
+  "assets": {
+    "title": "Assets",
+    "subtitle": "View and manage all assets in your wallet.",
+    "viewAll": "View All",
+    "viewAllAssets": "View All Assets",
+    "viewAssets": "View Assets",
+    "create": "Create",
+    "createAsset": "Create Asset",
+    "createAssetTransaction": "Create Asset Transaction",
+    "creating": "Creating...",
+    "yourAssets": "Your Assets",
+    "searchAssets": "Search assets...",
+    "searchAssetsShort": "Search assets",
+    "searchAssetsLabel": "Search Assets",
+    "searchAssetsLong": "Search by ticker, name, or asset type",
+    "filters": {
+      "all": "All Assets",
+      "metadata": "With Metadata",
+      "plain": "Basic Assets"
+    },
+    "empty": {
+      "noBalances": "No asset balances yet",
+      "waitForTransfers": "Create an asset or wait for incoming asset transfers.",
+      "noFilterMatches": "No assets match your current filters.",
+      "noRecentActivity": "No recent asset activity.",
+      "selectAsset": "Select an asset",
+      "chooseAsset": "Choose an asset from the list to inspect it.",
+      "noTransactions": "No transactions recorded for the selected asset."
+    },
+    "unlock": {
+      "title": "Unlock the wallet to manage assets.",
+      "description": "Asset balances, transfers, and creation require an unlocked wallet."
+    },
+    "activation": {
+      "scheduled": "Asset Activation is scheduled for {{label}} at block {{height}}.",
+      "blocksRemaining": "blocks remaining",
+      "estimatedTime": "Estimated time remaining: {{time}}"
+    },
+    "success": {
+      "submitted": "Asset creation submitted",
+      "created": "{{assetType}} was submitted successfully and will appear here once the wallet receives or confirms the asset balance.",
+      "submittedHashes": "Submitted transaction hashes"
+    },
+    "labels": {
+      "asset": "Asset",
+      "catalog": "Catalog",
+      "listed": "Listed",
+      "name": "Name",
+      "balance": "Balance",
+      "unlocked": "Unlocked",
+      "unlockedBalance": "Unlocked Balance",
+      "locked": "Locked",
+      "lockedBalance": "Locked Balance",
+      "standard": "Standard",
+      "type": "Type",
+      "assetType": "Asset Type",
+      "supply": "Supply",
+      "totalSupply": "Total Supply",
+      "ownershipPercentage": "Ownership Percentage",
+      "assetId": "Asset ID",
+      "created": "Created",
+      "decimals": "Decimals",
+      "amount": "Amount",
+      "status": "Status",
+      "date": "Date",
+      "txHash": "TX Hash",
+      "metadata": "Metadata",
+      "media": "Media",
+      "quickActions": "Quick Actions",
+      "assetLinks": "Asset Links",
+      "recentActivity": "Recent Activity",
+      "transactionHistory": "Asset Transaction History",
+      "assetOverview": "Asset Overview",
+      "premium": "Premium",
+      "unknown": "Unknown"
+    },
+    "actions": {
+      "send": "Send",
+      "receive": "Receive",
+      "sendAsset": "Send {{ticker}}",
+      "receiveAsset": "Receive {{ticker}}",
+      "open": "Open",
+      "openAssetUrl": "Open Asset URL",
+      "viewCatalog": "View Catalog",
+      "copyAssetId": "Copy Asset ID",
+      "backToAssets": "Back to Assets",
+      "dismiss": "Dismiss",
+      "retry": "Retry"
+    },
+    "media": {
+      "explorerImage": "Explorer asset image"
+    },
+    "states": {
+      "publicCatalogAsset": "Public catalog asset",
+      "inWallet": "{{amount}} {{ticker}} in wallet",
+      "catalogOnlyNotice": "This asset is loaded from the public SAL catalog. It is not currently in this wallet, so sending is disabled.",
+      "loadingCatalog": "Loading assets...",
+      "catalogLoadFailed": "The explorer catalog could not be loaded.",
+      "catalogEmpty": "No assets returned by the explorer.",
+      "catalogNoMatches": "No assets match your search.",
+      "showingAssets": "Showing {{start}} to {{end}} of {{total}} assets",
+      "unlockedAmount": "Unlocked: {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "Unlocked {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "Base Asset",
+      "token": "Token"
+    },
+    "createForm": {
+      "cost": "Creating this asset costs {{cost}} SAL{{suffix}}",
+      "premiumSuffix": " because this is a premium asset code.",
+      "standardSuffix": ".",
+      "assetCode": "Asset Code",
+      "premiumNote": "This is a premium asset code. Creating it costs 10,000 SAL.",
+      "supply": "Supply",
+      "advanced": "Advanced",
+      "advancedDescription": "Optional token metadata and size",
+      "displayName": "Display Name",
+      "displayNamePlaceholder": "Example Asset",
+      "size": "Size",
+      "projectUrl": "Project URL",
+      "additionalMetadata": "Additional Metadata",
+      "additionalMetadataPlaceholder": "Optional JSON or notes. Structured fields above are merged automatically."
+    },
+    "validation": {
+      "assetCodeRequired": "Asset Code is required.",
+      "assetCodeFormat": "Asset Code must be exactly 4 uppercase letters or digits.",
+      "assetCodePrefix": "Asset Code cannot start with 'SAL'.",
+      "assetCodeReserved": "Asset Code is reserved and cannot be used.",
+      "supplyRequired": "Supply is required.",
+      "supplyWhole": "Supply must be a whole number.",
+      "supplyRange": "Supply must be between 1 and {{max}}.",
+      "supplyInteger": "Supply must be a valid integer.",
+      "decimalsRange": "Size must be a non-negative whole number.",
+      "metadataTooLong": "Additional metadata is too long (max {{max}} characters).",
+      "assetCodeExists": "Asset Code '{{code}}' already exists."
+    },
+    "transactions": {
+      "pending": "Pending",
+      "received": "Received",
+      "sent": "Sent",
+      "awaitingConfirmation": "Awaiting confirmation"
+    },
+    "time": {
+      "lessThanMinute": "less than a minute"
+    },
+    "errors": {
+      "loadFailed": "Failed to load assets",
+      "createFailed": "Failed to create asset transaction"
+    }
   }
 }

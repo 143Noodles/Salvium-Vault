@@ -1,0 +1,603 @@
+{
+  "common": {
+    "cancel": "Batal",
+    "confirm": "Konfirmasi",
+    "back": "Kembali",
+    "next": "Lanjut",
+    "done": "Selesai",
+    "save": "Simpan",
+    "copy": "Salin",
+    "copied": "Tersalin!",
+    "loading": "Memuat...",
+    "error": "Kesalahan",
+    "success": "Berhasil",
+    "close": "Tutup",
+    "delete": "Hapus",
+    "edit": "Ubah",
+    "add": "Tambah",
+    "search": "Cari",
+    "export": "Ekspor",
+    "update": "Perbarui",
+    "verify": "Verifikasi",
+    "max": "Maks",
+    "sal": "SAL",
+    "processing": "Memproses..."
+  },
+  "navigation": {
+    "home": "Beranda",
+    "send": "Kirim",
+    "receive": "Terima",
+    "stake": "Stake",
+    "staking": "Staking",
+    "history": "Riwayat",
+    "settings": "Pengaturan",
+    "dashboard": "Dasbor",
+    "lockWallet": "Kunci Dompet",
+    "assets": "Aset"
+  },
+  "dashboard": {
+    "balance": "Saldo",
+    "unlocked": "Terbuka",
+    "primaryAddress": "Alamat Utama",
+    "recentActivity": "Aktivitas Terbaru",
+    "viewAll": "Lihat Semua",
+    "walletPerformance": "Performa Dompet",
+    "chartHidden": "Grafik Disembunyikan",
+    "activityHidden": "Aktivitas Disembunyikan",
+    "activeStakes": "Stake Aktif",
+    "noActiveStakes": "Tidak ada stake aktif",
+    "earnRewards": "Dapatkan hadiah dengan men-stake SAL Anda selama ~30 hari.",
+    "createNewStake": "Buat Stake Baru",
+    "unlocksIn": "Terbuka dalam {{time}} ({{blocks}} blok)",
+    "lockedChange": "Locked change"
+  },
+  "chart": {
+    "last24Hours": "24 Jam Terakhir",
+    "last7Days": "7 Hari Terakhir",
+    "last30Days": "30 Hari Terakhir",
+    "last12Months": "12 Bulan Terakhir",
+    "sinceMexcListing": "Sejak Listing di MEXC",
+    "noHistoryData": "Data riwayat tidak tersedia",
+    "walletValue": "Nilai Dompet"
+  },
+  "send": {
+    "title": "Kirim Aset",
+    "subtitle": "Transfer SAL ke dompet lain dengan aman.",
+    "recipientAddress": "Alamat Penerima",
+    "amount": "Jumlah",
+    "available": "Tersedia",
+    "paymentId": "ID Pembayaran (Opsional)",
+    "enterPaymentId": "Masukkan ID pembayaran",
+    "sendAssets": "Kirim Aset",
+    "creatingTransaction": "Membuat Transaksi...",
+    "transactionSent": "Transaksi Terkirim!",
+    "amountSent": "{{amount}} SAL telah dikirim ke jaringan.",
+    "transactionHash": "Hash Transaksi",
+    "sendAnother": "Kirim Transaksi Lain",
+    "addressBook": "Buku Alamat",
+    "addNewAddress": "Tambah Alamat Baru",
+    "searchContacts": "Cari kontak...",
+    "noContacts": "Kontak tidak ditemukan",
+    "loadingScanner": "Memuat pemindai...",
+    "errors": {
+      "fillRequired": "Silakan isi semua kolom yang diperlukan",
+      "exceedsBalance": "Jumlah melebihi saldo yang tersedia",
+      "insufficientFees": "Dana tidak cukup untuk menutup biaya transaksi",
+      "adjustedForFee": "Jumlah akan disesuaikan untuk menutup biaya transaksi"
+    },
+    "confirmSend": "Konfirmasi Transaksi",
+    "reviewTransaction": "Tinjau detail transaksi Anda",
+    "amountToSend": "Jumlah yang Dikirim",
+    "recipient": "Penerima",
+    "sendWarning": "Harap verifikasi alamat penerima dengan teliti. Transaksi tidak dapat dibatalkan setelah dikonfirmasi.",
+    "confirmSendButton": "Konfirmasi & Kirim"
+  },
+  "receive": {
+    "title": "Terima Aset",
+    "subtitle": "Pindai untuk mengirim SAL ke dompet ini.",
+    "primaryAddress": "Alamat Utama",
+    "copyAddress": "Salin Alamat",
+    "subaddresses": "Sub-alamat",
+    "manageSubaddresses": "Kelola Sub-alamat",
+    "addNewSubaddress": "Tambah Sub-alamat Baru",
+    "addSubaddress": "Tambah Sub-alamat",
+    "searchSubaddresses": "Cari sub-alamat...",
+    "noSubaddresses": "Sub-alamat tidak ditemukan",
+    "unlockedBalance": "Saldo Terbuka",
+    "label": "Label",
+    "labelPlaceholder": "misal: Rekening Tabungan",
+    "qrUnavailable": "Kode QR tidak tersedia. Salin alamat di bawah ini.",
+    "creating": "Membuat..."
+  },
+  "staking": {
+    "title": "Staking",
+    "subtitle": "Stake SAL Anda untuk mendapatkan hadiah selama ~30 hari.",
+    "currentlyStaked": "Saat Ini Di-stake",
+    "salStaked": "SAL Di-stake",
+    "yieldEarned": "Imbal Hasil Diperoleh",
+    "currentApy": "APY Saat Ini",
+    "createNewStake": "Buat Stake Baru",
+    "activeStakes": "Stake Aktif",
+    "stakeHistory": "Riwayat Staking",
+    "amount": "Jumlah",
+    "blockHeightUnlock": "Pembukaan Kunci Tinggi Blok",
+    "estRewards": "Estimasi Hadiah",
+    "estRewardsTooltip": "Ini hanya estimasi berdasarkan APY saat ini. Hadiah aktual dapat bervariasi seiring fluktuasi tingkat staking jaringan.",
+    "unlockDate": "Tanggal Pembukaan Kunci (~30 Hari)",
+    "stakeAssets": "Stake Aset",
+    "creatingStake": "Membuat Stake...",
+    "stakeSubmitted": "Transaksi stake telah dikirim!",
+    "noActiveStakes": "Tidak ada stake aktif",
+    "createToEarn": "Buat stake untuk mulai mendapatkan hadiah",
+    "loadingStakes": "Memuat stake...",
+    "noCompletedStakes": "Belum ada stake yang selesai",
+    "loadingHistory": "Memuat riwayat...",
+    "unlocksIn": "Terbuka dalam {{time}}",
+    "blocksRemaining": "{{blocks}} blok tersisa",
+    "tableHeaders": {
+      "staked": "Di-stake",
+      "returned": "Dikembalikan",
+      "amount": "Jumlah",
+      "rewards": "Hadiah",
+      "tx": "TX"
+    },
+    "errors": {
+      "validAmount": "Silakan masukkan jumlah positif yang valid",
+      "exceedsBalance": "Jumlah melebihi saldo yang tersedia",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
+    },
+    "confirmStake": "Konfirmasi Stake",
+    "reviewDetails": "Tinjau detail stake Anda",
+    "amountToStake": "Jumlah yang Di-stake",
+    "importantNote": "Penting",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
+    "confirmStakeButton": "Konfirmasi Stake"
+  },
+  "history": {
+    "title": "Riwayat Transaksi",
+    "transactionsFound": "{{count}} transaksi ditemukan",
+    "searchPlaceholder": "Cari hash atau jumlah...",
+    "filter": "Filter",
+    "export": "Ekspor",
+    "clearFilters": "Bersihkan Filter",
+    "noTransactions": "Belum ada transaksi",
+    "startSending": "Mulai dengan mengirim atau menerima SAL",
+    "filterOptions": {
+      "received": "Diterima",
+      "sent": "Dikirim",
+      "pending": "Tertunda",
+      "mining": "Penambangan",
+      "stake": "Stake"
+    }
+  },
+  "settings": {
+    "title": "Pengaturan",
+    "subtitle": "Konfigurasikan keamanan dompet, jaringan, dan preferensi Anda.",
+    "sections": {
+      "securityPrivacy": "Keamanan & Privasi",
+      "general": "Umum",
+      "language": "Bahasa",
+      "preferences": "Preferensi"
+    },
+    "biometrics": {
+      "title": "Buka Kunci dengan Biometrik",
+      "description": "Gunakan biometrik untuk membuka kunci dompet Anda dengan cepat.",
+      "enableTitle": "Aktifkan Buka Kunci Biometrik",
+      "enableDescription": "Masukkan kata sandi Anda untuk mengotorisasi pengaturan biometrik.",
+      "enableButton": "Aktifkan Buka Kunci Biometrik",
+      "cancelled": "Pengaturan biometrik dibatalkan",
+      "failed": "Gagal mengaktifkan biometrik",
+      "verifying": "Verifikasi..."
+    },
+    "autoLock": {
+      "title": "Kunci-Otomatis Dompet",
+      "description": "Kunci dompet secara otomatis setelah periode tidak aktif untuk melindungi dana Anda.",
+      "lockAfter": "Kunci setelah",
+      "minutes": "menit"
+    },
+    "backup": {
+      "title": "Ekspor Cadangan",
+      "description": "Buat file cadangan terenkripsi yang berisi dompet, buku alamat, dan pengaturan Anda.",
+      "export": "Ekspor",
+      "modalTitle": "Ekspor Cadangan",
+      "modalDescription": "Masukkan kata sandi dompet Anda untuk membuat file cadangan terenkripsi.",
+      "walletPassword": "Kata Sandi Dompet",
+      "enterPassword": "Masukkan kata sandi dompet Anda",
+      "warning": "File cadangan akan dienkripsi dengan kata sandi dompet Anda. Simpan dengan aman - siapa pun yang memiliki file ini dan kata sandi Anda dapat mengakses dana Anda.",
+      "exporting": "Mengekspor...",
+      "downloadBackup": "Unduh Cadangan"
+    },
+    "password": {
+      "title": "Ubah Kata Sandi Vault",
+      "description": "Perbarui kata sandi yang digunakan untuk mengenkripsi kunci privat Anda.",
+      "update": "Perbarui",
+      "modalTitle": "Ubah Kata Sandi",
+      "modalDescription": "Buat kata sandi baru yang kuat untuk vault Anda.",
+      "current": "Kata Sandi Saat Ini",
+      "currentPlaceholder": "Masukkan kata sandi saat ini",
+      "new": "Kata Sandi Baru",
+      "newPlaceholder": "Masukkan kata sandi baru",
+      "confirm": "Konfirmasi Kata Sandi Baru",
+      "confirmPlaceholder": "Konfirmasi kata sandi baru",
+      "updating": "Memperbarui...",
+      "updateButton": "Perbarui Kata Sandi",
+      "successTitle": "Kata Sandi Diubah",
+      "successDescription": "Kata sandi vault Anda telah berhasil diperbarui.",
+      "errors": {
+        "fillAll": "Silakan isi semua kolom",
+        "mismatch": "Kata sandi baru tidak cocok",
+        "empty": "Kata sandi tidak boleh kosong",
+        "minLength": "Kata sandi harus terdiri dari minimal 8 karakter"
+      }
+    },
+    "blockchain": {
+      "title": "Data Blockchain",
+      "syncedTo": "Dompet disinkronkan ke blok {{height}}",
+      "rescanHint": "Pindai ulang dompet untuk menemukan transaksi yang hilang",
+      "rescan": "Pindai Ulang",
+      "scanning": "Memindai..."
+    },
+    "language": {
+      "title": "Bahasa",
+      "description": "Pilih bahasa pilihan Anda untuk aplikasi ini.",
+      "select": "Pilih Bahasa"
+    },
+    "donate": {
+      "title": "Donasi ke Salvium Tools",
+      "description": "Bantu menjaga agar Salvium Vault tetap berjalan. Setiap donasi mendukung server dan pengembangan.",
+      "button": "Donasi Sekarang"
+    },
+    "resetWallet": {
+      "title": "Atur Ulang Dompet",
+      "description": "Hapus data dompet dan mulai baru. Pastikan Anda telah menyimpan frasa pemulihan (seed phrase) Anda.",
+      "button": "Atur Ulang"
+    },
+    "seedPhrase": {
+      "title": "Tampilkan Frasa Pemulihan (Seed Phrase)",
+      "description": "Lihat 25 kata frasa pemulihan Anda. Diperlukan untuk memulihkan dompet Anda.",
+      "reveal": "Tampilkan",
+      "modalTitle": "Tampilkan Frasa Pemulihan",
+      "modalDescription": "Masukkan kata sandi dompet Anda untuk menampilkan frasa pemulihan.",
+      "enterPassword": "Silakan masukkan kata sandi Anda",
+      "incorrectPassword": "Kata sandi salah. Silakan coba lagi.",
+      "securityWarning": "Frasa pemulihan Anda adalah kunci utama untuk dompet Anda. Siapa pun yang memiliki akses ke sana dapat mencuri dana Anda. Hanya tampilkan di lingkungan yang aman dan privat.",
+      "revealButton": "Tampilkan Frasa Pemulihan",
+      "copySeed": "Salin Frasa Pemulihan",
+      "neverShare": "Jangan pernah membagikan frasa pemulihan Anda kepada siapa pun. Dukungan Salvium tidak akan pernah memintanya. Simpan dengan aman secara offline."
+    },
+    "connection": {
+      "title": "Koneksi",
+      "description": "Pilih node Salvium mana yang menyinkronkan dompet Anda. Mode otomatis menjaga Anda pada node resmi yang sehat; tambahkan node Anda sendiri hanya jika dapat diakses publik. Bagaimanapun juga, permintaan diteruskan melalui server vault alih-alih dikirim langsung dari perangkat Anda."
+    },
+    "currency": {
+      "title": "Mata uang tampilan",
+      "description": "Pilih mata uang fiat yang digunakan untuk menampilkan nilai saldo Anda."
+    }
+  },
+  "onboarding": {
+    "hero": {
+      "title": "Privat sejak Awal.",
+      "subtitle": "Simpan, kirim, dan terima Salvium dengan aman dalam privasi penuh."
+    },
+    "createWallet": {
+      "title": "Buat Dompet",
+      "description": "Hasilkan 25 kata pemulihan baru"
+    },
+    "restoreWallet": {
+      "title": "Pemulihan Dompet",
+      "description": "Impor dari frasa pemulihan atau cadangan"
+    },
+    "securityBanner": "Kunci Anda tetap terenkripsi di perangkat ini.",
+    "recoveryPhrase": {
+      "title": "Frasa Pemulihan Anda",
+      "description": "Tulis kata-kata ini sesuai urutan. Ini adalah <1>SATU-SATUNYA</1> cara untuk memulihkan dana Anda.",
+      "generating": "Menghasilkan frasa pemulihan yang aman...",
+      "failed": "Gagal menghasilkan frasa pemulihan. Silakan coba lagi.",
+      "tryAgain": "Coba Lagi",
+      "warning": "Jangan bagikan kata-kata ini kepada siapa pun. Dukungan Salvium tidak akan pernah meminta frasa pemulihan Anda. Simpan secara offline di tempat yang aman.",
+      "iSavedIt": "Saya Sudah Menyimpannya"
+    },
+    "verifySeed": {
+      "title": "Verifikasi Frasa Pemulihan Anda",
+      "description": "Masukkan kata yang diminta untuk memastikan Anda telah menyimpan frasa pemulihan.",
+      "wordNumber": "Kata #{{number}}",
+      "enterWord": "Masukkan kata #{{number}}",
+      "verify": "Verifikasi",
+      "incorrectWords": "Kata salah. Silakan periksa frasa pemulihan Anda dan coba lagi."
+    },
+    "setPassword": {
+      "title": "Atur Kata Sandi Vault",
+      "description": "Kata sandi ini akan digunakan untuk mengenkripsi dompet Anda di perangkat ini.",
+      "password": "Kata Sandi",
+      "enterPassword": "Masukkan kata sandi yang kuat",
+      "confirmPassword": "Konfirmasi Kata Sandi",
+      "repeatPassword": "Ulangi kata sandi",
+      "finishSetup": "Selesaikan Pengaturan",
+      "creating": "Membuat...",
+      "errors": {
+        "minLength": "Kata sandi harus minimal 8 karakter",
+        "mismatch": "Kata sandi tidak cocok"
+      }
+    },
+    "restore": {
+      "title": "Pulihkan Dompet",
+      "description": "Pilih cara Anda ingin memulihkan dompet Anda.",
+      "seedPhrase": {
+        "title": "Frasa Pemulihan",
+        "description": "Masukkan 25 kata frasa pemulihan Anda"
+      },
+      "backupFile": {
+        "title": "File Cadangan",
+        "description": "Pulihkan dari file salvium.vault"
+      },
+      "enterSeed": {
+        "title": "Masukkan Frasa Pemulihan",
+        "description": "Masukkan 25 kata frasa pemulihan Anda untuk memulihkan dompet.",
+        "placeholder": "piano gitar drum biola seruling...",
+        "seedPhrase": "Frasa Pemulihan",
+        "restoreHeight": "Tinggi Pemulihan (Restore Height)",
+        "current": "Saat ini: {{height}}",
+        "heightHint": "Atur ke tinggi blok tertentu. Pindai dari 0 jika tidak yakin. Ini mungkin memakan waktu beberapa menit."
+      },
+      "uploadBackup": {
+        "title": "Unggah File Cadangan",
+        "description": "Pilih file .salvium-backup Anda untuk memulihkan dompet.",
+        "selectFile": "Klik untuk memilih file",
+        "filesOnly": "Hanya file salvium.vault",
+        "changeFile": "Klik untuk mengubah file"
+      },
+      "backupPassword": {
+        "title": "Masukkan Kata Sandi Cadangan",
+        "description": "Masukkan kata sandi yang digunakan saat membuat cadangan ini.",
+        "backupPassword": "Kata Sandi Cadangan",
+        "enterPassword": "Masukkan kata sandi cadangan",
+        "readyToDecrypt": "Siap untuk didekripsi",
+        "decrypting": "Mendekripsi..."
+      },
+      "restoring": "Memulihkan...",
+      "restoreButton": "Pulihkan Dompet"
+    }
+  },
+  "lockScreen": {
+    "title": "Dompet Dikunci",
+    "description": "Masukkan kata sandi Anda untuk mengakses dasbor.",
+    "enterPassword": "Masukkan kata sandi",
+    "pleaseEnterPassword": "Silakan masukkan kata sandi Anda",
+    "incorrectPassword": "Kata sandi salah",
+    "unlock": "Buka Kunci Dompet",
+    "unlocking": "Membuka kunci...",
+    "biometricUnlock": "Buka Kunci dengan Biometrik",
+    "biometricFailed": "Gagal membuka kunci biometrik: Kata sandi diubah?",
+    "resetWallet": "Atur Ulang Dompet (Keluar)",
+    "resetConfirmTitle": "Atur Ulang Dompet?",
+    "resetConfirmDescription": "Tindakan ini akan menghapus data dompet Anda secara permanen dari perangkat ini.",
+    "resetConfirmWarning": "Anda akan kehilangan akses ke dana Anda kecuali Anda telah menyimpan 25 kata frasa pemulihan atau mengekspor file cadangan salvium.vault.",
+    "resetConfirmButton": "Atur Ulang Dompet",
+    "resetConfirmCheckbox": "Saya mengerti bahwa saya akan kehilangan akses tanpa frasa pemulihan atau cadangan"
+  },
+  "network": {
+    "status": "Status Jaringan",
+    "synced": "Disinkronkan",
+    "syncing": "Menyinkronkan",
+    "fullySynced": "Sinkronisasi Penuh",
+    "disconnected": "Terputus",
+    "error": "Kesalahan",
+    "walletHeight": "Tinggi Dompet",
+    "daemonHeight": "Tinggi Daemon",
+    "height": "Tinggi",
+    "connectedTo": "Terhubung ke Jaringan Salvium",
+    "attemptingConnect": "Mencoba menghubungkan..."
+  },
+  "contacts": {
+    "addContact": "Tambah Kontak",
+    "editContact": "Ubah Kontak",
+    "addNewContact": "Tambah Kontak Baru",
+    "name": "Nama",
+    "namePlaceholder": "misal: John Doe",
+    "salviumAddress": "Alamat Salvium",
+    "saveChanges": "Simpan Perubahan",
+    "deleteConfirm": "Apakah Anda yakin ingin menghapus kontak ini?"
+  },
+  "transactions": {
+    "received": "Diterima",
+    "sent": "Dikirim",
+    "pending": "Tertunda",
+    "confirmed": "Dikonfirmasi",
+    "confirmations": "Konfirmasi",
+    "confirmationsCount": "{{count}} konfirmasi",
+    "noTransactions": "Belum ada transaksi",
+    "viewOnExplorer": "Lihat di Explorer",
+    "block": "Blok",
+    "date": "Tanggal",
+    "typeHash": "Jenis / Hash",
+    "amount": "Jumlah",
+    "status": "Status",
+    "broadcasting": "Menyiarkan...",
+    "blocksRemaining": "{{count}} blok",
+    "loadMore": "Muat Lebih Banyak",
+    "showing": "Menampilkan {{start}}-{{end}} dari {{total}} transaksi",
+    "page": "Halaman {{current}} dari {{total}}",
+    "types": {
+      "mining": "Penambangan",
+      "yield": "Imbal Hasil",
+      "stake": "Stake",
+      "transfer": "Transfer",
+      "transferIn": "Transfer Masuk",
+      "transferOut": "Transfer Keluar",
+      "audit": "Audit"
+    },
+    "details": "Detail Transaksi",
+    "hash": "Hash Transaksi",
+    "poweredBy": "Didukung oleh explorer salvium.tools",
+    "viewInExplorer": "Lihat di Explorer",
+    "viewFullDetails": "Lihat detail lengkap di explorer",
+    "openInExplorer": "Buka di Explorer",
+    "unconfirmed": "Belum Dikonfirmasi",
+    "fee": "Biaya",
+    "returnTransaction": "Kembalikan Transaksi",
+    "confirmReturn": "Konfirmasi Pengembalian",
+    "confirmReturnDescription": "Apakah Anda yakin ingin mengembalikan transaksi ini? Ini akan mengirim kembali dana ke pengirim asli.",
+    "unlocked": "Terbuka",
+    "locked": "Dikunci",
+    "blocksToUnlock": "blok menuju pembukaan kunci"
+  },
+  "errors": {
+    "failedToInitialize": "Gagal Menginisialisasi",
+    "wasmLimitations": "Ini dapat terjadi pada beberapa browser seluler karena keterbatasan WASM. Coba gunakan browser desktop atau Chrome di Android.",
+    "retry": "Coba Lagi",
+    "initializingWallet": "Menginisialisasi dompet...",
+    "failedToCreate": "Gagal membuat cadangan",
+    "failedToUnlock": "Gagal membuka kunci dompet"
+  },
+  "assets": {
+    "title": "Aset",
+    "subtitle": "Lihat dan kelola semua aset di dompet Anda.",
+    "viewAll": "Lihat Semua",
+    "viewAllAssets": "Lihat Semua Aset",
+    "viewAssets": "Lihat Aset",
+    "create": "Buat",
+    "createAsset": "Buat Aset",
+    "createAssetTransaction": "Buat Transaksi Aset",
+    "creating": "Membuat...",
+    "yourAssets": "Aset Anda",
+    "searchAssets": "Cari aset...",
+    "searchAssetsShort": "Cari aset",
+    "searchAssetsLabel": "Cari Aset",
+    "searchAssetsLong": "Cari berdasarkan ticker, nama, atau jenis aset",
+    "filters": {
+      "all": "Semua Aset",
+      "metadata": "Dengan Metadata",
+      "plain": "Aset Dasar"
+    },
+    "empty": {
+      "noBalances": "Belum ada saldo aset",
+      "waitForTransfers": "Buat aset atau tunggu transfer aset masuk.",
+      "noFilterMatches": "Tidak ada aset yang cocok dengan filter saat ini.",
+      "noRecentActivity": "Belum ada aktivitas aset terbaru.",
+      "selectAsset": "Pilih aset",
+      "chooseAsset": "Pilih aset dari daftar untuk diperiksa.",
+      "noTransactions": "Belum ada transaksi yang tercatat untuk aset yang dipilih."
+    },
+    "unlock": {
+      "title": "Buka kunci dompet untuk mengelola aset.",
+      "description": "Saldo aset, transfer, dan pembuatan aset memerlukan dompet yang tidak terkunci."
+    },
+    "activation": {
+      "scheduled": "Aktivasi Aset dijadwalkan untuk {{label}} pada blok {{height}}.",
+      "blocksRemaining": "blok tersisa",
+      "estimatedTime": "Perkiraan waktu tersisa: {{time}}"
+    },
+    "success": {
+      "submitted": "Pembuatan aset dikirim",
+      "created": "{{assetType}} berhasil dikirim dan akan muncul di sini setelah dompet menerima atau mengonfirmasi saldo aset.",
+      "submittedHashes": "Hash transaksi yang dikirim"
+    },
+    "labels": {
+      "asset": "Aset",
+      "catalog": "Katalog",
+      "listed": "Terdaftar",
+      "name": "Nama",
+      "balance": "Saldo",
+      "unlocked": "Tidak terkunci",
+      "unlockedBalance": "Saldo tidak terkunci",
+      "locked": "Terkunci",
+      "lockedBalance": "Saldo terkunci",
+      "standard": "Standar",
+      "type": "Jenis",
+      "assetType": "Jenis Aset",
+      "supply": "Suplai",
+      "totalSupply": "Total Suplai",
+      "ownershipPercentage": "Persentase Kepemilikan",
+      "assetId": "ID Aset",
+      "created": "Dibuat",
+      "decimals": "Desimal",
+      "amount": "Jumlah",
+      "status": "Status",
+      "date": "Tanggal",
+      "txHash": "Hash TX",
+      "metadata": "Metadata",
+      "media": "Media",
+      "quickActions": "Aksi Cepat",
+      "assetLinks": "Tautan Aset",
+      "recentActivity": "Aktivitas Terbaru",
+      "transactionHistory": "Riwayat Transaksi Aset",
+      "assetOverview": "Ringkasan Aset",
+      "premium": "Premium",
+      "unknown": "Tidak diketahui"
+    },
+    "actions": {
+      "send": "Kirim",
+      "receive": "Terima",
+      "sendAsset": "Kirim {{ticker}}",
+      "receiveAsset": "Terima {{ticker}}",
+      "open": "Buka",
+      "openAssetUrl": "Buka URL Aset",
+      "viewCatalog": "Lihat Katalog",
+      "copyAssetId": "Salin ID Aset",
+      "backToAssets": "Kembali ke Aset",
+      "dismiss": "Tutup",
+      "retry": "Coba lagi"
+    },
+    "media": {
+      "explorerImage": "Gambar aset dari explorer"
+    },
+    "states": {
+      "publicCatalogAsset": "Aset katalog publik",
+      "inWallet": "{{amount}} {{ticker}} di dompet",
+      "catalogOnlyNotice": "Aset ini dimuat dari katalog publik SAL. Aset ini belum ada di dompet ini, jadi pengiriman dinonaktifkan.",
+      "loadingCatalog": "Memuat aset...",
+      "catalogLoadFailed": "Katalog explorer tidak dapat dimuat.",
+      "catalogEmpty": "Explorer tidak mengembalikan aset apa pun.",
+      "catalogNoMatches": "Tidak ada aset yang cocok dengan pencarian Anda.",
+      "showingAssets": "Menampilkan {{start}} hingga {{end}} dari {{total}} aset",
+      "unlockedAmount": "Tidak terkunci: {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "Tidak terkunci {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "Aset Dasar",
+      "token": "Token"
+    },
+    "createForm": {
+      "cost": "Membuat aset ini membutuhkan {{cost}} SAL{{suffix}}",
+      "premiumSuffix": " karena ini adalah kode aset premium.",
+      "standardSuffix": ".",
+      "assetCode": "Kode Aset",
+      "premiumNote": "Ini adalah kode aset premium. Membuatnya membutuhkan 10.000 SAL.",
+      "supply": "Suplai",
+      "advanced": "Lanjutan",
+      "advancedDescription": "Metadata token dan ukuran opsional",
+      "displayName": "Nama Tampilan",
+      "displayNamePlaceholder": "Contoh Aset",
+      "size": "Ukuran",
+      "projectUrl": "URL Proyek",
+      "additionalMetadata": "Metadata Tambahan",
+      "additionalMetadataPlaceholder": "JSON atau catatan opsional. Kolom terstruktur di atas akan digabungkan otomatis."
+    },
+    "validation": {
+      "assetCodeRequired": "Kode Aset wajib diisi.",
+      "assetCodeFormat": "Kode Aset harus tepat 4 huruf besar atau angka.",
+      "assetCodePrefix": "Kode Aset tidak boleh diawali dengan 'SAL'.",
+      "assetCodeReserved": "Kode Aset dicadangkan dan tidak dapat digunakan.",
+      "supplyRequired": "Suplai wajib diisi.",
+      "supplyWhole": "Suplai harus berupa bilangan bulat.",
+      "supplyRange": "Suplai harus berada di antara 1 dan {{max}}.",
+      "supplyInteger": "Suplai harus berupa bilangan bulat yang valid.",
+      "decimalsRange": "Desimal harus berupa bilangan bulat antara 0 dan {{max}}.",
+      "metadataTooLong": "Metadata tambahan terlalu panjang (maks {{max}} karakter).",
+      "assetCodeExists": "Kode Aset '{{code}}' sudah ada."
+    },
+    "transactions": {
+      "pending": "Tertunda",
+      "received": "Diterima",
+      "sent": "Terkirim",
+      "awaitingConfirmation": "Menunggu konfirmasi"
+    },
+    "time": {
+      "lessThanMinute": "kurang dari satu menit"
+    },
+    "errors": {
+      "loadFailed": "Gagal memuat aset",
+      "createFailed": "Gagal membuat transaksi aset"
+    }
+  }
+}

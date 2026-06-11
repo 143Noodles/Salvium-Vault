@@ -5,6 +5,7 @@ import { Copy, ArrowUpRight, ArrowDownLeft, Shield, Key, CheckCircle2, ChevronRi
 import { useWallet } from '../services/WalletContext';
 import { isMobile } from 'react-device-detect';
 import { parseBackup, restoreFromBackup, BackupData } from '../services/BackupService';
+import { isNativePlatform } from '../utils/runtime';
 import {
   buildOnboardingUrl,
   buildVaultModeUrl,
@@ -14,6 +15,8 @@ import {
   normalizeVaultMode,
   VaultMode,
 } from '../utils/vaultNetwork';
+import NodeSelector from './NodeSelector';
+import { startTaskTelemetry } from '../utils/clientTelemetry';
 
 type OnboardingMode = 'initial' | 'create' | 'restore';
 type CreateStep = 'seed' | 'verify' | 'password';
@@ -26,6 +29,7 @@ interface OnboardingProps {
 const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const { t } = useTranslation();
   const wallet = useWallet();
+  const isNativeApp = isNativePlatform();
   const networkSwitcherDisabled = false;
   const [mode, setMode] = useState<OnboardingMode>(() => {
     if (typeof window === 'undefined') return 'initial';
@@ -37,24 +41,20 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   });
   const [switchingVaultMode, setSwitchingVaultMode] = useState<VaultMode | null>(null);
 
-  // Create Flow State
   const [createStep, setCreateStep] = useState<CreateStep>('seed');
   const [generatedSeed, setGeneratedSeed] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // Seed Verification State
   const [verifyIndices, setVerifyIndices] = useState<[number, number]>([0, 0]);
   const [verifyInput1, setVerifyInput1] = useState('');
   const [verifyInput2, setVerifyInput2] = useState('');
   const [verifyError, setVerifyError] = useState('');
 
-  // Restore Flow State
   const [restoreStep, setRestoreStep] = useState<RestoreStep>('method');
   const [restoreSeed, setRestoreSeed] = useState('');
   const [restoreHeight, setRestoreHeight] = useState('0');
-  const [hasReturnedTransfers, setHasReturnedTransfers] = useState<boolean | null>(null);
+  const [hasReturnedTransfers] = useState<boolean>(true);
 
-  // Backup Restore State
   const [backupFile, setBackupFile] = useState<File | null>(null);
   const [backupData, setBackupData] = useState<BackupData | null>(null);
   const [backupPassword, setBackupPassword] = useState('');
@@ -63,7 +63,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [isDecrypting, setIsDecrypting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Password State (Shared)
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -72,7 +71,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [loadingSelection, setLoadingSelection] = useState<'create' | 'restore' | null>(null);
   const [processingNext, setProcessingNext] = useState(false);
 
-  // Daemon Height State for Restore
   const [daemonHeight, setDaemonHeight] = useState(0);
 
   useEffect(() => {
@@ -83,7 +81,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
         const data = await response.json();
         setVaultMode(normalizeVaultMode(data?.network));
       } catch {
-        // Keep mainnet default
       }
     };
 
@@ -112,17 +109,14 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
           setDaemonHeight(data.result.height);
         }
       } catch (e) {
-        void 0 && console.error('Failed to fetch daemon height:', e);
       }
     };
 
-    // Fetch only if we are in restore mode
     if (mode === 'restore') {
       fetchHeight();
     }
   }, [mode]);
 
-  // Generate seed when entering create mode
   useEffect(() => {
     if (mode === 'create' && !generatedSeed) {
       generateNewSeed();
@@ -130,13 +124,15 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   }, [mode]);
 
   const generateNewSeed = async () => {
+    const task = startTaskTelemetry('wallet.generate_seed', 'Onboarding');
     setIsGenerating(true);
     setError('');
     try {
       const seed = await wallet.generateMnemonic();
       setGeneratedSeed(seed);
+      task.completed();
     } catch (err) {
-      void 0 && console.error('Failed to generate seed:', err);
+      task.failed(err, 'generate_failed');
       setError(t('onboarding.recoveryPhrase.failed'));
     } finally {
       setIsGenerating(false);
@@ -145,13 +141,16 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
   const copySeed = () => {
     if (generatedSeed) {
-      navigator.clipboard.writeText(generatedSeed);
+      const task = startTaskTelemetry('wallet.seed_copy', 'Onboarding');
+      navigator.clipboard.writeText(generatedSeed)
+        .then(() => task.completed())
+        .catch((error) => task.failed(error, 'clipboard_failed'));
     }
   };
 
   const startSeedVerification = () => {
     const words = generatedSeed.split(' ');
-    // SECURITY: Use crypto.getRandomValues for unpredictable word selection
+    // SECURITY: crypto.getRandomValues for unpredictable word selection.
     const randomBytes = new Uint8Array(2);
     crypto.getRandomValues(randomBytes);
     const idx1 = randomBytes[0] % words.length;
@@ -195,13 +194,14 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
     setIsLoading(true);
     setError('');
-    // Small delay to ensure UI updates with spinner before heavy WASM work starts
+    const task = startTaskTelemetry('wallet.create', 'Onboarding', {}, 'create_wallet');
     await new Promise(r => setTimeout(r, 50));
     try {
       await wallet.createWallet(generatedSeed, password);
+      task.completed();
       onComplete('create');
     } catch (err: any) {
-      void 0 && console.error('Failed to create wallet:', err);
+      task.failed(err, 'create_failed');
       setError(err.message || 'Failed to create wallet');
     } finally {
       setIsLoading(false);
@@ -220,14 +220,22 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
     setIsLoading(true);
     setError('');
-    // Small delay to ensure UI updates with spinner before heavy WASM work starts
+    const task = startTaskTelemetry('wallet.restore_seed', 'Onboarding', {
+      restorePhase2Attempt: hasReturnedTransfers === true ? 1 : 0,
+    }, 'restore_wallet');
     await new Promise(r => setTimeout(r, 50));
     try {
-      const height = parseInt(restoreHeight) || 0;
+      // Clamp restore height: a value above the chain tip would skip funding blocks and show a false 0 balance.
+      const parsedHeight = parseInt(restoreHeight, 10);
+      let height = Number.isFinite(parsedHeight) && parsedHeight > 0 ? parsedHeight : 0;
+      if (daemonHeight > 0 && height > daemonHeight) {
+        height = daemonHeight;
+      }
       await wallet.restoreWallet(restoreSeed.trim(), password, height, hasReturnedTransfers === true);
+      task.completed();
       onComplete('restore');
     } catch (err: any) {
-      void 0 && console.error('Failed to restore wallet:', err);
+      task.failed(err, 'restore_failed');
       setError(err.message || 'Failed to restore wallet');
     } finally {
       setIsLoading(false);
@@ -254,28 +262,28 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
     setIsDecrypting(true);
     setBackupError('');
+    const task = startTaskTelemetry('wallet.backup_restore', 'Onboarding', {}, 'parse_backup');
 
     try {
       const data = await parseBackup(backupFile, backupPassword);
       setBackupData(data);
 
-      // Restore the wallet data to localStorage and IndexedDB
+      task.stage('restore_backup_data');
       await restoreFromBackup(data);
 
-      // Auto-unlock the wallet with the backup password
-      // This skips the lock screen and goes directly to the dashboard
-      // Pass isVaultRestore=true to skip recovery check (vault has all data)
+      // isVaultRestore=true skips the recovery check since the vault has all data.
       try {
+        task.stage('unlock_restored_wallet');
         await wallet.unlockWallet(backupPassword, true);
         setIsDecrypting(false);
+        task.completed();
         onComplete('restore');
       } catch (unlockErr: any) {
-        void 0 && console.error('Failed to auto-unlock after restore:', unlockErr);
-        // If auto-unlock fails, fall back to page reload (shows lock screen)
+        task.failed(unlockErr, 'auto_unlock_failed');
         window.location.reload();
       }
     } catch (err: any) {
-      void 0 && console.error('Failed to decrypt backup:', err);
+      task.failed(err, 'decrypt_failed');
       setBackupError(err.message || 'Failed to decrypt backup file');
       setIsDecrypting(false);
     }
@@ -285,7 +293,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     setRestoreStep('method');
     setRestoreSeed('');
     setRestoreHeight('0');
-    setHasReturnedTransfers(false);
     setBackupFile(null);
     setBackupData(null);
     setBackupPassword('');
@@ -365,11 +372,92 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     </div>
   );
 
-  // 1. Initial Selection Screen
   if (mode === 'initial') {
+    if (isNativeApp) {
+      return (
+        <div
+          className="flex h-full min-h-0 items-start justify-center overflow-y-auto overflow-x-hidden bg-[#0f0f1a] px-3 py-4 relative mobile-scroll-page"
+          style={{ paddingTop: 'calc(var(--safe-area-top) + 0.75rem)' }}
+        >
+          <div
+            className="absolute inset-0 pointer-events-none opacity-20"
+            style={{
+              backgroundImage: 'linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px)',
+              backgroundSize: '40px 40px'
+            }}
+          ></div>
+          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-[400px] bg-accent-primary/10 blur-[120px] rounded-full pointer-events-none opacity-60"></div>
+          <div className="absolute -bottom-32 -right-32 w-[400px] h-[400px] bg-accent-secondary/5 blur-[100px] rounded-full pointer-events-none"></div>
+
+          <div className="w-full max-w-2xl flex flex-col items-center text-center z-10 animate-fade-in relative gap-4 sm:gap-6 pb-4">
+            <div className="flex flex-col items-center text-center">
+              <h1 className="text-2xl sm:text-3xl md:text-5xl font-bold text-white mb-3 tracking-tight drop-shadow-lg">
+                {t('onboarding.hero.title')}
+              </h1>
+              <p className="text-text-secondary text-xs sm:text-sm md:text-base mb-4 leading-relaxed font-medium px-2 sm:px-6 max-w-md mx-auto">
+                {t('onboarding.hero.subtitle')}
+              </p>
+
+              <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 px-0 sm:px-0">
+                <button
+                  onClick={() => { setLoadingSelection('create'); setTimeout(() => setMode('create'), 500); }}
+                  disabled={!!loadingSelection}
+                  className="group relative overflow-hidden rounded-xl sm:rounded-2xl bg-[#13131f] border border-white/10 p-4 sm:p-5 flex flex-col items-center justify-center gap-2 sm:gap-3 transition-all duration-300 hover:border-accent-primary/50 hover:bg-[#1c1c2e] hover:-translate-y-1 hover:shadow-2xl hover:shadow-accent-primary/20 disabled:opacity-70 disabled:pointer-events-none"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-br from-accent-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                  <div className="p-2.5 sm:p-3 rounded-full bg-accent-primary/10 text-accent-primary group-hover:scale-110 transition-transform duration-300 ring-1 ring-white/5 group-hover:ring-accent-primary/30 shadow-[0_0_15px_-3px_rgba(99,102,241,0.3)]">
+                    {loadingSelection === 'create' ? <Loader2 size={24} className="animate-spin" /> : <Plus size={24} strokeWidth={2} />}
+                  </div>
+                  <div className="text-center relative z-10">
+                    <h3 className="text-white font-bold text-base mb-1">{t('onboarding.createWallet.title')}</h3>
+                    <p className="text-text-muted text-xs">{t('onboarding.createWallet.description')}</p>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => { setLoadingSelection('restore'); setTimeout(() => setMode('restore'), 500); }}
+                  disabled={!!loadingSelection}
+                  className="group relative overflow-hidden rounded-xl sm:rounded-2xl bg-[#13131f] border border-white/10 p-4 sm:p-5 flex flex-col items-center justify-center gap-2 sm:gap-3 transition-all duration-300 hover:border-accent-secondary/50 hover:bg-[#1c1c2e] hover:-translate-y-1 hover:shadow-2xl hover:shadow-accent-secondary/20 disabled:opacity-70 disabled:pointer-events-none"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-br from-accent-secondary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                  <div className="p-2.5 sm:p-3 rounded-full bg-accent-secondary/10 text-accent-secondary group-hover:scale-110 transition-transform duration-300 ring-1 ring-white/5 group-hover:ring-accent-secondary/30 shadow-[0_0_15px_-3px_rgba(139,92,246,0.3)]">
+                    {loadingSelection === 'restore' ? <Loader2 size={24} className="animate-spin" /> : <Download size={24} strokeWidth={2} />}
+                  </div>
+                  <div className="text-center relative z-10">
+                    <h3 className="text-white font-bold text-base mb-1">{t('onboarding.restoreWallet.title')}</h3>
+                    <p className="text-text-muted text-xs">{t('onboarding.restoreWallet.description')}</p>
+                  </div>
+                </button>
+              </div>
+
+              <div className="mt-3 flex justify-center px-0 sm:px-0">
+                {networkSwitcher}
+              </div>
+              <div className="mt-3 w-full max-w-md mx-auto px-2">
+                <details className="group">
+                  <summary className="cursor-pointer list-none text-center text-[11px] uppercase tracking-[0.24em] text-text-muted hover:text-white py-1">
+                    Connection node
+                  </summary>
+                  <div className="mt-3">
+                    <NodeSelector compact />
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <div className="w-full flex justify-center px-0 sm:px-4">
+              <div className="rounded-xl border border-accent-primary/10 bg-accent-primary/5 backdrop-blur-sm py-2.5 sm:py-3 px-3 sm:px-5 flex items-center justify-center gap-2 w-full max-w-2xl">
+                <Shield size={14} className="text-accent-primary/70" />
+                <span className="text-text-secondary text-[11px] sm:text-xs font-medium tracking-wide leading-4">{t('onboarding.securityBanner')}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
-      <div className="flex items-center justify-center p-4 bg-[#0f0f1a] relative h-[100dvh] overflow-y-auto" style={{}}>
-        {/* Cinematic Background Effects */}
+      <div className="flex h-full min-h-0 items-center justify-center overflow-hidden bg-[#0f0f1a] p-4 relative" style={{}}>
         <div
           className="absolute inset-0 pointer-events-none opacity-20"
           style={{
@@ -378,16 +466,11 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
           }}
         ></div>
 
-        {/* Spotlights */}
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-[400px] bg-accent-primary/10 blur-[120px] rounded-full pointer-events-none opacity-60"></div>
         <div className="absolute -bottom-32 -right-32 w-[400px] h-[400px] bg-accent-secondary/5 blur-[100px] rounded-full pointer-events-none"></div>
 
-        {/* Main Content Wrapper */}
         <div className="w-full max-w-2xl flex flex-col items-center text-center z-10 animate-fade-in relative -mt-32">
 
-          {/* Logo Section Removed */}
-
-          {/* Hero Text */}
           <h1 className="text-3xl md:text-5xl font-bold text-white mb-4 tracking-tight drop-shadow-lg">
             {t('onboarding.hero.title')}
           </h1>
@@ -395,7 +478,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
             {t('onboarding.hero.subtitle')}
           </p>
 
-          {/* Action Cards */}
           <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-4 px-4 sm:px-0">
             <button
               onClick={() => { setLoadingSelection('create'); setTimeout(() => setMode('create'), 500); }}
@@ -438,7 +520,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
         </div>
 
-        {/* Security Banner Moved Here */}
         <div className="absolute bottom-[116px] left-0 w-full flex justify-center z-10 px-4">
           <div className="rounded-xl border border-accent-primary/10 bg-accent-primary/5 backdrop-blur-sm py-3 px-5 flex items-center justify-center gap-2 w-full max-w-2xl">
             <Shield size={14} className="text-accent-primary/70" />
@@ -449,16 +530,15 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     );
   }
 
-  // 2. Create Wallet Flow
   if (mode === 'create') {
     return (
-      <div className="flex items-center justify-center p-4 bg-[#0f0f1a] h-[100dvh] overflow-hidden">
-        <div className="max-w-xl w-full">
+      <div className={`flex h-full min-h-0 justify-center overflow-y-auto bg-[#0f0f1a] ${isMobile ? 'items-start mobile-scroll-page px-3 py-3' : 'items-center p-4'}`}>
+        <div className={`max-w-xl w-full ${isMobile ? 'pb-4' : ''}`}>
           {createStep === 'seed' && (
-            <Card glow className="space-y-6">
+            <Card glow className={isMobile ? '!p-3 space-y-3' : 'space-y-6'}>
               <div className="text-center">
-                <h2 className="text-xl font-bold text-white mb-2">{t('onboarding.recoveryPhrase.title')}</h2>
-                <p className="text-text-muted text-sm">
+                <h2 className={`${isMobile ? 'text-base' : 'text-xl'} font-bold text-white mb-1.5`}>{t('onboarding.recoveryPhrase.title')}</h2>
+                <p className={`text-text-muted ${isMobile ? 'text-[11px] leading-4' : 'text-sm'}`}>
                   <Trans i18nKey="onboarding.recoveryPhrase.description">
                     Write these words down in order. This is the <span className="text-red-400 font-bold">ONLY</span> way to recover your funds.
                   </Trans>
@@ -472,11 +552,11 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 </div>
               ) : generatedSeed ? (
                 isMobile ? (
-                  <div className="bg-black/40 border border-white/10 rounded-xl p-4">
-                    <div className="flex flex-wrap gap-x-3 gap-y-2 justify-center">
+                  <div className="bg-black/40 border border-white/10 rounded-xl p-2.5">
+                    <div className="grid grid-cols-3 gap-x-2 gap-y-0.5">
                       {generatedSeed.split(' ').map((word, i) => (
-                        <span key={i} className="text-white font-mono text-sm">
-                          <span className="text-text-muted/50 text-xs mr-1">{i + 1}.</span>
+                        <span key={i} className="min-w-0 text-white font-mono text-[10px] leading-4">
+                          <span className="text-text-muted/50 text-[9px] mr-0.5">{i + 1}.</span>
                           <span className="font-bold">{word}</span>
                         </span>
                       ))}
@@ -502,20 +582,20 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 </div>
               )}
 
-              <div className="bg-accent-warning/10 border border-accent-warning/20 rounded-xl p-4 flex gap-3 items-start">
-                <Shield className="text-accent-warning shrink-0 mt-0.5" size={18} />
-                <p className="text-xs text-accent-warning/90 leading-relaxed">
+              <div className={`bg-accent-warning/10 border border-accent-warning/20 rounded-xl flex gap-2.5 items-start ${isMobile ? 'p-2.5' : 'p-4'}`}>
+                <Shield className="text-accent-warning shrink-0 mt-0.5" size={isMobile ? 14 : 18} />
+                <p className={`text-accent-warning/90 ${isMobile ? 'text-[10px] leading-4' : 'text-xs leading-relaxed'}`}>
                   {t('onboarding.recoveryPhrase.warning')}
                 </p>
               </div>
 
-              <div className="flex gap-3 pt-2">
-                <Button variant="ghost" onClick={() => { setLoadingSelection(null); setMode('initial'); }} className="flex-1">{t('common.back')}</Button>
-                <Button variant="secondary" onClick={copySeed} className="flex-1" disabled={!generatedSeed}>
+              <div className={isMobile ? 'grid grid-cols-2 gap-2 pt-1' : 'flex gap-3 pt-2'}>
+                <Button variant="ghost" onClick={() => { setLoadingSelection(null); setMode('initial'); }} className={isMobile ? 'w-full h-10 !px-2 !py-0' : 'flex-1'}>{t('common.back')}</Button>
+                <Button variant="secondary" onClick={copySeed} className={isMobile ? 'w-full h-10 !px-2 !py-0' : 'flex-1'} disabled={!generatedSeed}>
                   <Copy size={16} className="mr-2" />
                   {t('common.copy')}
                 </Button>
-                <Button className="flex-[2]" onClick={startSeedVerification} disabled={!generatedSeed}>
+                <Button className={isMobile ? 'col-span-2 w-full h-10 !px-3 !py-0' : 'flex-[2]'} onClick={startSeedVerification} disabled={!generatedSeed}>
                   {t('onboarding.recoveryPhrase.iSavedIt')}
                   <ChevronRight size={16} className="ml-2" />
                 </Button>
@@ -524,16 +604,16 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
           )}
 
           {createStep === 'verify' && (
-            <Card glow className="space-y-6 max-w-md mx-auto">
+            <Card glow className={`${isMobile ? '!p-4 space-y-4' : 'space-y-6'} max-w-md mx-auto`}>
               <div className="text-center">
-                <div className="w-12 h-12 rounded-full bg-accent-primary/10 flex items-center justify-center text-accent-primary mx-auto mb-4">
-                  <Shield size={24} />
+                <div className={`${isMobile ? 'w-10 h-10 mb-3' : 'w-12 h-12 mb-4'} rounded-full bg-accent-primary/10 flex items-center justify-center text-accent-primary mx-auto`}>
+                  <Shield size={isMobile ? 20 : 24} />
                 </div>
-                <h2 className="text-xl font-bold text-white mb-2">{t('onboarding.verifySeed.title')}</h2>
-                <p className="text-text-muted text-sm">{t('onboarding.verifySeed.description')}</p>
+                <h2 className={`${isMobile ? 'text-lg' : 'text-xl'} font-bold text-white mb-2`}>{t('onboarding.verifySeed.title')}</h2>
+                <p className={`text-text-muted ${isMobile ? 'text-xs leading-5' : 'text-sm'}`}>{t('onboarding.verifySeed.description')}</p>
               </div>
 
-              <div className="space-y-4">
+              <div className={isMobile ? 'space-y-3' : 'space-y-4'}>
                 <div className="space-y-2">
                   <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">
                     {t('onboarding.verifySeed.wordNumber', { number: verifyIndices[0] + 1 })}
@@ -582,29 +662,29 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
           )}
 
           {createStep === 'password' && (
-            <Card glow className="space-y-6 max-w-md mx-auto">
+            <Card glow className={`${isMobile ? '!p-4 space-y-4' : 'space-y-6'} max-w-md mx-auto`}>
               <div className="text-center">
-                <div className="w-12 h-12 rounded-full bg-accent-primary/10 flex items-center justify-center text-accent-primary mx-auto mb-4">
-                  <Key size={24} />
+                <div className={`${isMobile ? 'w-10 h-10 mb-3' : 'w-12 h-12 mb-4'} rounded-full bg-accent-primary/10 flex items-center justify-center text-accent-primary mx-auto`}>
+                  <Key size={isMobile ? 20 : 24} />
                 </div>
-                <h2 className="text-xl font-bold text-white mb-2">{t('onboarding.setPassword.title')}</h2>
-                <p className="text-text-muted text-sm">{t('onboarding.setPassword.description')}</p>
+                <h2 className={`${isMobile ? 'text-lg' : 'text-xl'} font-bold text-white mb-2`}>{t('onboarding.setPassword.title')}</h2>
+                <p className={`text-text-muted ${isMobile ? 'text-xs leading-5' : 'text-sm'}`}>{t('onboarding.setPassword.description')}</p>
               </div>
 
-              <div className="space-y-4">
+              <div className={isMobile ? 'space-y-3' : 'space-y-4'}>
                 <div className="space-y-2">
                   <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('onboarding.setPassword.password')}</label>
                   <div className="relative">
-                    <Input
-                      type={isMobile ? 'text' : (showPassword ? 'text' : 'password')}
-                      placeholder={t('onboarding.setPassword.enterPassword')}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      disabled={isLoading}
-                      style={isMobile ? { WebkitTextSecurity: showPassword ? 'none' : 'disc' } : {}}
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                      spellCheck="false"
+	                    <Input
+	                      type={showPassword ? 'text' : 'password'}
+	                      placeholder={t('onboarding.setPassword.enterPassword')}
+	                      value={password}
+	                      onChange={(e) => setPassword(e.target.value)}
+	                      disabled={isLoading}
+	                      autoComplete="new-password"
+	                      autoCorrect="off"
+	                      autoCapitalize="none"
+	                      spellCheck="false"
                     />
                     <button
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-white"
@@ -616,16 +696,16 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('onboarding.setPassword.confirmPassword')}</label>
-                  <Input
-                    type={isMobile ? 'text' : 'password'}
-                    placeholder={t('onboarding.setPassword.repeatPassword')}
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    disabled={isLoading}
-                    style={isMobile ? { WebkitTextSecurity: 'disc' } : {}}
-                    autoCorrect="off"
-                    autoCapitalize="none"
-                    spellCheck="false"
+	                  <Input
+	                    type="password"
+	                    placeholder={t('onboarding.setPassword.repeatPassword')}
+	                    value={confirmPassword}
+	                    onChange={(e) => setConfirmPassword(e.target.value)}
+	                    disabled={isLoading}
+	                    autoComplete="new-password"
+	                    autoCorrect="off"
+	                    autoCapitalize="none"
+	                    spellCheck="false"
                   />
                 </div>
                 {error && <p className="text-red-400 text-xs">{error}</p>}
@@ -654,12 +734,10 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     );
   }
 
-  // 3. Restore Wallet Flow
   if (mode === 'restore') {
     return (
-      <div className="flex items-center justify-center p-4 bg-[#0f0f1a] h-[100dvh] overflow-y-auto">
+      <div className="flex h-full min-h-0 items-center justify-center overflow-y-auto bg-[#0f0f1a] p-4">
         <div className="max-w-md w-full">
-          {/* Method Selection */}
           {restoreStep === 'method' && (
             <Card glow className="space-y-6">
               <div className="text-center">
@@ -703,7 +781,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
             </Card>
           )}
 
-          {/* Seed Input Step */}
           {restoreStep === 'input' && (
             <Card glow className="space-y-6">
               <div className="text-center">
@@ -744,49 +821,13 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                   />
                   <p className="text-[10px] text-text-muted">{t('onboarding.restore.enterSeed.heightHint')}</p>
                 </div>
-
-                {/* Returned Transfers Selection */}
-                <div className="pt-2 space-y-2">
-                  <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">
-                    Has a transfer been returned to this wallet?
-                  </label>
-                  <div className="flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setHasReturnedTransfers(true)}
-                      className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all flex items-center justify-center gap-2 ${
-                        hasReturnedTransfers === true
-                          ? 'border-accent-primary bg-accent-primary/20 text-accent-primary'
-                          : 'border-white/20 bg-black/40 text-text-muted hover:border-white/40 hover:text-white'
-                      }`}
-                    >
-                      {hasReturnedTransfers === true && <CheckCircle2 size={16} />}
-                      <span className="font-medium">Yes</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setHasReturnedTransfers(false)}
-                      className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all flex items-center justify-center gap-2 ${
-                        hasReturnedTransfers === false
-                          ? 'border-accent-primary bg-accent-primary/20 text-accent-primary'
-                          : 'border-white/20 bg-black/40 text-text-muted hover:border-white/40 hover:text-white'
-                      }`}
-                    >
-                      {hasReturnedTransfers === false && <CheckCircle2 size={16} />}
-                      <span className="font-medium">No</span>
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-text-muted">
-                    Selecting "Yes" will double the initial scan time. Select "Yes" if unsure.
-                  </p>
-                </div>
               </div>
 
               <div className="flex gap-3 pt-2">
                 <Button variant="ghost" onClick={() => setRestoreStep('method')} className="flex-1">{t('common.back')}</Button>
                 <Button
                   className="flex-[2]"
-                  disabled={restoreSeed.trim().split(/\s+/).length < 12 || hasReturnedTransfers === null || processingNext}
+                  disabled={restoreSeed.trim().split(/\s+/).length < 12 || processingNext}
                   onClick={() => { setProcessingNext(true); setTimeout(() => { setRestoreStep('password'); setProcessingNext(false); }, 500); }}
                 >
                   {processingNext ? <Loader2 size={16} className="animate-spin" /> : <>{t('common.next')} <ChevronRight size={16} className="ml-2" /></>}
@@ -795,7 +836,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
             </Card>
           )}
 
-          {/* Seed Password Step */}
           {restoreStep === 'password' && (
             <Card glow className="space-y-6">
               <div className="text-center">
@@ -810,16 +850,16 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 <div className="space-y-2">
                   <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('onboarding.setPassword.password')}</label>
                   <div className="relative">
-                    <Input
-                      type={isMobile ? 'text' : (showPassword ? 'text' : 'password')}
-                      placeholder={t('onboarding.setPassword.enterPassword')}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      disabled={isLoading}
-                      style={isMobile ? { WebkitTextSecurity: showPassword ? 'none' : 'disc' } : {}}
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                      spellCheck="false"
+	                    <Input
+	                      type={showPassword ? 'text' : 'password'}
+	                      placeholder={t('onboarding.setPassword.enterPassword')}
+	                      value={password}
+	                      onChange={(e) => setPassword(e.target.value)}
+	                      disabled={isLoading}
+	                      autoComplete="new-password"
+	                      autoCorrect="off"
+	                      autoCapitalize="none"
+	                      spellCheck="false"
                     />
                     <button
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-white"
@@ -831,16 +871,16 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('onboarding.setPassword.confirmPassword')}</label>
-                  <Input
-                    type={isMobile ? 'text' : 'password'}
-                    placeholder={t('onboarding.setPassword.repeatPassword')}
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    disabled={isLoading}
-                    style={isMobile ? { WebkitTextSecurity: 'disc' } : {}}
-                    autoCorrect="off"
-                    autoCapitalize="none"
-                    spellCheck="false"
+	                  <Input
+	                    type="password"
+	                    placeholder={t('onboarding.setPassword.repeatPassword')}
+	                    value={confirmPassword}
+	                    onChange={(e) => setConfirmPassword(e.target.value)}
+	                    disabled={isLoading}
+	                    autoComplete="new-password"
+	                    autoCorrect="off"
+	                    autoCapitalize="none"
+	                    spellCheck="false"
                   />
                 </div>
                 {error && <p className="text-red-400 text-xs">{error}</p>}
@@ -865,7 +905,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
             </Card>
           )}
 
-          {/* Backup Upload Step */}
           {restoreStep === 'upload' && (
             <Card glow className="space-y-6">
               <div className="text-center">
@@ -928,7 +967,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
             </Card>
           )}
 
-          {/* Backup Password Step */}
           {restoreStep === 'backup-password' && (
             <Card glow className="space-y-6">
               <div className="text-center">
@@ -943,16 +981,16 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 <div className="space-y-2">
                   <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('onboarding.restore.backupPassword.backupPassword')}</label>
                   <div className="relative">
-                    <Input
-                      type={isMobile ? 'text' : (showBackupPassword ? 'text' : 'password')}
-                      placeholder={t('onboarding.restore.backupPassword.enterPassword')}
-                      value={backupPassword}
-                      onChange={(e) => setBackupPassword(e.target.value)}
-                      disabled={isDecrypting}
-                      style={isMobile ? { WebkitTextSecurity: showBackupPassword ? 'none' : 'disc' } : {}}
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                      spellCheck="false"
+	                    <Input
+	                      type={showBackupPassword ? 'text' : 'password'}
+	                      placeholder={t('onboarding.restore.backupPassword.enterPassword')}
+	                      value={backupPassword}
+	                      onChange={(e) => setBackupPassword(e.target.value)}
+	                      disabled={isDecrypting}
+	                      autoComplete="current-password"
+	                      autoCorrect="off"
+	                      autoCapitalize="none"
+	                      spellCheck="false"
                       onKeyDown={(e) => e.key === 'Enter' && handleDecryptBackup()}
                     />
                     <button

@@ -4,20 +4,28 @@ A secure, non-custodial web wallet for the [Salvium](https://salvium.io) cryptoc
 
 ## Overview
 
-Salvium Vault is a fully client-side wallet that lets you create, manage, and transact with SAL without trusting a third party with your keys. All cryptographic operations happen locally in your browser using WebAssembly compiled from Salvium's C++ codebase.
+Salvium Vault is a fully client-side wallet that lets you create, manage, and transact with SAL without trusting a third party with your keys. All cryptographic operations happen locally in your browser using WebAssembly compiled from Salvium's C++ codebase. Blockchain scanning is also done client-side using compact view-tag data, so the server never learns which transactions or outputs belong to you.
 
 **Live Site:** [https://vault.salvium.tools](https://vault.salvium.tools)
 
 ## Features
 
 - **Non-Custodial** - Your keys, your crypto. Private keys never leave your browser
-- **Create & Restore Wallets** - Generate new wallets with BIP39 seed phrases or restore existing ones
+- **Create & Restore Wallets** - Generate new wallets with 25-word recovery phrases or restore existing ones
 - **Send & Receive SAL** - Full transaction support with fee estimation
+- **Multi-Asset Support** - Hold and transact SAL alongside Salvium protocol tokens
 - **Staking** - Stake and unstake SAL directly from the wallet
 - **Transaction History** - View complete transaction history with real-time updates
+- **Wallet Performance Chart** - Exact balance history derived from the wallet ledger, valued at historical prices
+- **Fiat Currency Display** - View balances and charts in your preferred currency
+- **Sweep Support** - Consolidate all spendable outputs in one transaction
+- **Fast Restores** - Parallel client-side scanning restores wallets in minutes (benchmarked faster than the native CLI)
+- **Client-Side Scanning** - The blockchain is scanned locally using compact view-tag data; the server never learns which outputs are yours
+- **Node Selection** - Use the default hosted node, the official Salvium seed nodes, or add your own custom node (validated and proxied through the server)
 - **Biometric Unlock** - Optional Face ID / Touch ID / Windows Hello support
 - **Encrypted Backups** - Export and import encrypted wallet backups
 - **WebAssembly Powered** - Native performance for cryptographic operations
+- **Native Android App** - Available as an Android app (Capacitor) in addition to the web wallet
 - **Responsive Design** - Works on desktop and mobile browsers
 
 ## Getting Started
@@ -31,8 +39,8 @@ Salvium Vault is a fully client-side wallet that lets you create, manage, and tr
 
 ```bash
 # Clone the repository
-git clone https://github.com/salvium/salvium-vault.git
-cd salvium-vault
+git clone https://github.com/143Noodles/Salvium-Vault-Web-Wallet.git
+cd Salvium-Vault-Web-Wallet
 
 # Install dependencies
 npm install
