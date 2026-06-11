@@ -3,55 +3,77 @@ import { useTranslation } from 'react-i18next';
 import { useWallet } from '../services/WalletContext';
 import { ArrowUpRight, ArrowDownLeft, Layers, Clock, ChevronLeft, ChevronRight, Lock } from './Icons';
 import { Badge, Button } from './UIComponents';
-import { formatSAL } from '../utils/format';
+import { formatSAL, formatSAL2 } from '../utils/format';
 import { WalletTransaction } from '../services/WalletService';
 
 const ITEMS_PER_PAGE = 50;
 
-// Unlock confirmations matching Salvium protocol
-const STANDARD_UNLOCK_CONFIRMATIONS = 10;  // Regular transfers
-const MINING_UNLOCK_CONFIRMATIONS = 60;    // Mining/yield/stake returns
+// Wallet timestamps are in seconds; values below ~1e11 are seconds, else ms.
+function toTxDate(timestamp: number | undefined | null): Date {
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts) || ts <= 0) return new Date(0);
+  return new Date(ts < 1e11 ? ts * 1000 : ts);
+}
+
+const STANDARD_UNLOCK_CONFIRMATIONS = 10;
+const MINING_UNLOCK_CONFIRMATIONS = 60;
 
 interface TransactionListProps {
   onExport?: () => void;
   compact?: boolean;
-  transactions?: WalletTransaction[]; // Optional override for filtering
+  transactions?: WalletTransaction[];
   onTxClick?: (txId: string) => void;
 }
 
-// Helper to determine transaction lock status
+const getDisplayAssetType = (assetType?: string) => {
+  const normalized = String(assetType || '').trim();
+  if (!normalized) return 'SAL1';
+
+  const upper = normalized.toUpperCase();
+  if (upper === 'SAL1' || upper === 'SAL') {
+    return upper;
+  }
+
+  if (upper.startsWith('SAL')) {
+    return `sal${upper.slice(3)}`;
+  }
+
+  return normalized;
+};
+
+const getAssetBadgeClassName = (assetType?: string) => {
+  const normalized = getDisplayAssetType(assetType).toUpperCase();
+
+  if (normalized === 'SAL1' || normalized === 'SAL') {
+    return 'border border-accent-primary/25 bg-accent-primary/12 text-accent-primary';
+  }
+
+  return 'border border-accent-secondary/25 bg-accent-secondary/12 text-accent-secondary';
+};
+
 const getTxLockStatus = (tx: WalletTransaction, currentHeight: number): {
   isUnlocked: boolean;
   blocksToUnlock: number;
   confirmations: number;
 } => {
-  // Protocol outputs (mining/yield/stake) need 61 confs, regular transfers need 11
   const label = tx.tx_type_label?.toLowerCase() || '';
   const isIncomingProtocol = tx.type === 'in' && (label === 'mining' || label === 'yield' || label === 'stake');
   const requiredConfirmations = isIncomingProtocol
     ? MINING_UNLOCK_CONFIRMATIONS
     : STANDARD_UNLOCK_CONFIRMATIONS;
 
-  // If no height, tx is in mempool (pending)
   if (!tx.height || tx.height === 0) {
     return { isUnlocked: false, blocksToUnlock: requiredConfirmations, confirmations: 0 };
   }
 
-  // Calculate confirmations
   const confirmations = currentHeight > tx.height ? currentHeight - tx.height : 0;
 
-  // Check unlock_time if present (can be block height or timestamp)
-  // unlock_time > 0 and < 500000000 is a block height
-  // unlock_time >= 500000000 is a unix timestamp
+  // unlock_time < 5e8 is a block height, otherwise a unix timestamp.
   let unlockHeight = tx.height + requiredConfirmations;
 
   if (tx.unlock_time && tx.unlock_time > 0) {
     if (tx.unlock_time < 500000000) {
-      // It's a block height - use the higher of calculated or specified
       unlockHeight = Math.max(unlockHeight, tx.unlock_time);
-    } else {
-      // It's a timestamp - for display purposes, use the required confirmations
-      // Real unlock check would compare against current time
     }
   }
 
@@ -69,12 +91,15 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
   const [currentPage, setCurrentPage] = useState(1);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
-  // Calculate pagination
   const ITEMS_PER_VIEW = compact ? 10 : ITEMS_PER_PAGE;
   const totalPages = Math.ceil(transactions.length / ITEMS_PER_VIEW);
+
+  const goToPage = (page: number) => {
+    const maxPage = Math.max(1, totalPages);
+    setCurrentPage(Math.min(Math.max(1, page), maxPage));
+  };
   const startIndex = (currentPage - 1) * ITEMS_PER_VIEW;
   const endIndex = startIndex + ITEMS_PER_VIEW;
-  // In compact mode, "Load More" accumulates items from start; in full view, show only current page
   const currentTransactions = compact
     ? transactions.slice(0, currentPage * ITEMS_PER_VIEW)
     : transactions.slice(startIndex, endIndex);
@@ -113,9 +138,7 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
     return () => observer.disconnect();
   }, [compact, currentPage, totalPages]);
 
-  // Memoize helper functions
   const getIcon = useCallback((type: string, txTypeLabel?: string) => {
-    // Use tx_type_label for more specific icons
     const label = txTypeLabel?.toLowerCase() || '';
 
     if (label === 'mining' || label === 'yield') {
@@ -134,16 +157,13 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
   }, [compact]);
 
   const getTypeLabel = useCallback((type: string, txTypeLabel?: string, assetType?: string) => {
-    // Translate tx_type_label if available
     if (txTypeLabel) {
       const labelKey = txTypeLabel.toLowerCase();
       const translationKey = `transactions.types.${labelKey}`;
-      // Check if translation exists, otherwise return original label
       const translated = t(translationKey, { defaultValue: '' });
       if (translated) return translated;
-      return txTypeLabel; // Fallback to original if no translation
+      return txTypeLabel;
     }
-    // Fallback to basic type
     return type === 'in' ? t('transactions.received') : type === 'out' ? t('transactions.sent') : t('transactions.pending');
   }, [t]);
 
@@ -169,10 +189,9 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
     );
   }
 
-  // COMPACT VIEW RENDER
   if (compact) {
     return (
-      <div className="flex flex-col space-y-2 p-2">
+      <div className="flex flex-col space-y-2 p-0">
         {currentTransactions.map((tx) => (
           <div
             key={tx.txid}
@@ -180,27 +199,29 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
             className="flex items-center justify-between p-3 rounded-lg bg-black/20 hover:bg-white/5 border border-transparent hover:border-white/5 transition-all group cursor-pointer"
           >
 
-            {/* Icon + Type */}
             <div className="flex items-center gap-3">
               <div className={`p-2 rounded-lg bg-bg-primary border border-white/5 group-hover:border-accent-primary/20 transition-colors`}>
                 {getIcon(tx.type, tx.tx_type_label)}
               </div>
               <div className="flex flex-col">
-                <span className="font-bold text-sm text-text-primary">{getTypeLabel(tx.type, tx.tx_type_label, tx.asset_type)}</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-sm text-text-primary">{getTypeLabel(tx.type, tx.tx_type_label, tx.asset_type)}</span>
+                  <span className={`rounded-full px-2.5 py-1 font-sans text-[11px] font-semibold leading-none shadow-sm ${getAssetBadgeClassName(tx.asset_type)}`}>
+                    {getDisplayAssetType(tx.asset_type)}
+                  </span>
+                </div>
                 <span className="text-[10px] text-text-muted">
-                  {tx.height ? `#${tx.height}` : t('transactions.pending')} • {new Date(tx.timestamp).toLocaleDateString(i18n.language)}
+                  {tx.height ? `#${tx.height}` : t('transactions.pending')} • {toTxDate(tx.timestamp).toLocaleDateString(i18n.language)}
                 </span>
               </div>
             </div>
 
-            {/* Amount */}
             <div className="text-right">
-              <span className={`font-mono font-bold text-sm block ${tx.type === 'in' ? 'text-accent-success' : 'text-red-500'}`}>
-                {tx.type === 'in' ? '+' : '-'} {formatSAL(tx.amount)}
+              <span className={`font-mono font-bold text-sm block ${tx.tx_type_label === 'Sweep' ? 'text-white' : tx.type === 'in' ? 'text-accent-success' : 'text-red-500'}`}>
+                {tx.tx_type_label === 'Sweep' ? '\u21bb ' : tx.type === 'in' ? '+ ' : '- '}{formatSAL2(tx.display_amount ?? tx.amount)}
               </span>
               {(() => {
                 const lockStatus = getTxLockStatus(tx, currentHeight);
-                // Check for locally-created pending TX first
                 if (tx.pending) {
                   return <Badge variant="warning" className="text-[10px] px-1.5 py-0.5 h-fit ml-auto animate-pulse">{t('transactions.broadcasting')}</Badge>;
                 } else if (lockStatus.isUnlocked) {
@@ -229,24 +250,16 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
     );
   }
 
-  // COMPACT VIEW END
-
   return (
     <div className="flex flex-col h-full">
-      <div className="overflow-x-auto flex-1 h-full">
-        <table className="w-full text-left border-collapse">
+      <div className="overflow-x-auto lg:overflow-x-visible flex-1 h-full">
+        <table className="w-full table-fixed lg:table-auto text-left border-collapse">
           <thead className="sticky top-0 bg-[#161622] z-10 shadow-sm">
             <tr className="border-b border-border-color/50 text-text-muted text-xs uppercase tracking-wider">
-              {/* Mobile Logic:
-                  Explorer shows: Height, Age, Hash, Type, Fee(hide), Outputs(hide), In/Out, Size(hide)
-                  We have: Block, Date(Age), Hash, Type, Amount, Status
-                  Mobile visible: Block, Hash/Type, Amount
-                  Using lg: breakpoint (1024px) so iPads show mobile view
-               */}
-              <th className="px-4 lg:px-6 py-3 lg:py-4 font-medium w-20 lg:w-auto">{t('transactions.block')}</th>
+              <th className="px-3 lg:px-6 py-3 lg:py-4 font-medium w-[72px] lg:w-auto">{t('transactions.block')}</th>
               <th className="px-4 lg:px-6 py-3 lg:py-4 font-medium hidden lg:table-cell">{t('transactions.date')}</th>
-              <th className="px-4 lg:px-6 py-3 lg:py-4 font-medium">{t('transactions.typeHash')}</th>
-              <th className="px-4 lg:px-6 py-3 lg:py-4 font-medium text-right">{t('transactions.amount')}</th>
+              <th className="px-3 lg:px-6 py-3 lg:py-4 font-medium">{t('transactions.typeHash')}</th>
+              <th className="px-3 lg:px-6 py-3 lg:py-4 font-medium text-right w-[108px] lg:w-auto">{t('transactions.amount')}</th>
               <th className="px-4 lg:px-6 py-3 lg:py-4 font-medium text-right hidden lg:table-cell">{t('transactions.status')}</th>
             </tr>
           </thead>
@@ -257,40 +270,38 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
                 className="hover:bg-white/5 transition-colors group cursor-pointer"
                 onClick={() => onTxClick?.(tx.txid)}
               >
-                {/* Block Height */}
-                <td className="px-4 lg:px-6 py-3 lg:py-4 text-sm font-mono text-accent-primary">
+                <td className="px-3 lg:px-6 py-3 lg:py-4 text-sm font-mono text-accent-primary align-top">
                   {tx.height > 0 ? tx.height : <span className="text-accent-warning">{t('transactions.pending')}</span>}
-                  {/* Mobile date below block height */}
                   <div className="lg:hidden text-[10px] text-text-muted mt-1">
-                    {new Date(tx.timestamp).toLocaleDateString(i18n.language)}
+                    {toTxDate(tx.timestamp).toLocaleDateString(i18n.language)}
                   </div>
                 </td>
 
-                {/* Date (Desktop) */}
                 <td className="px-4 lg:px-6 py-3 lg:py-4 hidden lg:table-cell">
                   <div className="flex flex-col">
-                    <span className="text-text-primary text-sm">{new Date(tx.timestamp).toLocaleDateString(i18n.language)}</span>
-                    <span className="text-text-muted text-xs">{new Date(tx.timestamp).toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}</span>
+                    <span className="text-text-primary text-sm">{toTxDate(tx.timestamp).toLocaleDateString(i18n.language)}</span>
+                    <span className="text-text-muted text-xs">{toTxDate(tx.timestamp).toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}</span>
                   </div>
                 </td>
 
-                {/* Type & Hash */}
-                <td className="px-4 lg:px-6 py-3 lg:py-4">
-                  <div className="flex items-center gap-3">
+                <td className="px-3 lg:px-6 py-3 lg:py-4 min-w-0">
+                  <div className="flex items-center gap-2 lg:gap-3 min-w-0">
                     <div className={`p-2 rounded-lg bg-bg-primary border border-border-color group-hover:border-accent-primary/50 transition-colors hidden lg:block`}>
                       {getIcon(tx.type, tx.tx_type_label)}
                     </div>
-                    <div className="flex flex-col">
-                      {/* Mobile: Show Type Label prominently */}
-                      <span className="font-medium text-text-primary text-sm lg:text-base">
-                        {getTypeLabel(tx.type, tx.tx_type_label, tx.asset_type)}
-                      </span>
-                      {/* Hash below */}
+                    <div className="flex flex-col min-w-0">
+                      <div className="flex flex-col gap-1 lg:flex-row lg:items-center lg:gap-2">
+                        <span className="font-medium text-text-primary text-sm lg:text-base truncate">
+                          {getTypeLabel(tx.type, tx.tx_type_label, tx.asset_type)}
+                        </span>
+                        <span className={`inline-flex w-fit rounded-full px-2.5 py-1 font-sans text-[11px] font-semibold leading-none shadow-sm ${getAssetBadgeClassName(tx.asset_type)}`}>
+                          {getDisplayAssetType(tx.asset_type)}
+                        </span>
+                      </div>
                       <span
-                        className="font-mono text-xs text-text-secondary group-hover:text-accent-primary transition-colors"
+                        className="font-mono text-xs text-text-secondary group-hover:text-accent-primary transition-colors truncate"
                         title="Click to view details"
                       >
-                        {/* Shorter hash on mobile */}
                         <span className="lg:hidden">{tx.txid.slice(0, 4)}...{tx.txid.slice(-4)}</span>
                         <span className="hidden lg:inline">{tx.txid.slice(0, 8)}...{tx.txid.slice(-6)}</span>
                       </span>
@@ -298,13 +309,11 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
                   </div>
                 </td>
 
-                {/* Amount */}
-                <td className="px-4 lg:px-6 py-3 lg:py-4 text-right">
-                  <span className={`font-mono font-bold text-sm ${tx.type === 'in' ? 'text-accent-success' : 'text-red-500'
+                <td className="px-3 lg:px-6 py-3 lg:py-4 text-right align-top">
+                  <span className={`font-mono font-bold text-xs lg:text-sm ${tx.tx_type_label === 'Sweep' ? 'text-white' : tx.type === 'in' ? 'text-accent-success' : 'text-red-500'
                     }`}>
-                    {tx.type === 'in' ? '+' : '-'} {formatSAL(tx.amount)}
+                    {tx.tx_type_label === 'Sweep' ? '\u21bb ' : tx.type === 'in' ? '+ ' : '- '}{formatSAL(tx.display_amount ?? tx.amount)}
                   </span>
-                  {/* Status Badge on Mobile (below amount) */}
                   <div className="lg:hidden mt-1 flex justify-end">
                     {(() => {
                       const lockStatus = getTxLockStatus(tx, currentHeight);
@@ -314,16 +323,14 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
                       if (!lockStatus.isUnlocked) {
                         return <span className="text-[10px] text-text-muted flex items-center gap-1"><Lock size={10} />{t('transactions.blocksRemaining', { count: lockStatus.blocksToUnlock })}</span>;
                       }
-                      return null; // Don't show "Confirmed" on mobile list to save space, usually implies successful
+                      return null;
                     })()}
                   </div>
                 </td>
 
-                {/* Status (Desktop) */}
                 <td className="px-4 lg:px-6 py-3 lg:py-4 text-right hidden lg:table-cell">
                   {(() => {
                     const lockStatus = getTxLockStatus(tx, currentHeight);
-                    // Check for locally-created pending TX first
                     if (tx.pending) {
                       return <Badge variant="warning" className="animate-pulse">{t('transactions.broadcasting')}</Badge>;
                     } else if (lockStatus.isUnlocked) {
@@ -346,7 +353,6 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
         </table>
       </div>
 
-      {/* Pagination Controls */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between border-t border-border-color pt-4 mt-4 px-4 pb-4">
           <div className="text-text-muted text-sm hidden lg:block">
@@ -367,7 +373,6 @@ const TransactionList: React.FC<TransactionListProps> = ({ onExport, compact = f
               <ChevronLeft size={18} />
             </Button>
 
-            {/* Page numbers (Desktop only or simple counter mobile) */}
             <div className="hidden lg:flex items-center gap-1">
               {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                 let pageNum: number;

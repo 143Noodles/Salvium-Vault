@@ -26,8 +26,20 @@ Thumbs.db
 npm-debug.log*
 
 # Local env files
+.env
+.env.*
 .env.local
 .env*.local
 
 # Test and debug files
 *.stackdump
+# Local runtime/build state
+.data/
+data/
+.gradle/
+android/
+
+
+# Local edit backups
+*.bak-*
+**/*.bak-*

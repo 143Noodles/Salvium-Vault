@@ -5,13 +5,14 @@
  * Strategies:
  * - WASM/JS: Cache first (critical assets)
  * - API: Network first with cache fallback
- * - Static: Cache first with network update
+ * - Static: Network first for the app bundle, cache fallback for other static files
  */
 
-const CACHE_VERSION = 'salvium-vault-v2';
-const WASM_CACHE = 'salvium-wasm-v2';
-const STATIC_CACHE = 'salvium-static-v1';
-const API_CACHE = 'salvium-api-v1';
+const CACHE_VERSION = 'salvium-vault-v41';
+const WASM_CACHE = 'salvium-wasm-v27';
+const STATIC_CACHE = 'salvium-static-v38';
+const API_CACHE = 'salvium-api-v28';
+const WASM_VERSION = '5.53.36-pid-detach-20260606';
 
 // Critical assets that must be cached for offline use
 const PRECACHE_ASSETS = [
@@ -21,10 +22,11 @@ const PRECACHE_ASSETS = [
   '/vault/salvium-icon.png',
 ];
 
-// WASM assets - cached aggressively
+// Versioned WASM assets can be reused safely until WASM_VERSION changes.
 const WASM_ASSETS = [
-  '/vault/wallet/SalviumWallet.js',
-  '/vault/wallet/SalviumWallet.wasm',
+  `/api/wasm/SalviumWallet.js?v=${encodeURIComponent(WASM_VERSION)}`,
+  `/api/wasm/SalviumWallet.wasm?v=${encodeURIComponent(WASM_VERSION)}`,
+  `/api/wasm/SalviumWallet.worker.js?v=${encodeURIComponent(WASM_VERSION)}`,
 ];
 
 // Install event - precache critical assets
@@ -32,24 +34,45 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     Promise.all([
       caches.open(STATIC_CACHE).then((cache) => cache.addAll(PRECACHE_ASSETS)),
-      caches.open(WASM_CACHE).then((cache) => cache.addAll(WASM_ASSETS)),
+      caches.open(WASM_CACHE).then((cache) => cache.addAll(WASM_ASSETS).catch(() => undefined)),
     ]).then(() => self.skipWaiting())
   );
 });
 
-// Activate event - clean old caches
+async function notifyClientsOfActivatedUpdate(oldCacheCount) {
+  const windowClients = await self.clients.matchAll({
+    type: 'window',
+    includeUncontrolled: true,
+  });
+
+  await Promise.all(windowClients.map(async (client) => {
+    client.postMessage({
+      type: 'VAULT_SW_UPDATED',
+      cacheVersion: CACHE_VERSION,
+      wasmVersion: WASM_VERSION,
+      oldCacheCount,
+    });
+  }));
+}
+
+// Activate event - clean old caches and notify controlled clients.
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((key) => {
+    caches.keys()
+      .then(async (keys) => {
+        const oldKeys = keys.filter((key) => {
           return key !== CACHE_VERSION &&
                  key !== WASM_CACHE &&
                  key !== STATIC_CACHE &&
                  key !== API_CACHE;
-        }).map((key) => caches.delete(key))
-      );
-    }).then(() => self.clients.claim())
+        });
+        await Promise.all(oldKeys.map((key) => caches.delete(key)));
+        return oldKeys.length;
+      })
+      .then(async (oldCacheCount) => {
+        await self.clients.claim();
+        await notifyClientsOfActivatedUpdate(oldCacheCount);
+      })
   );
 });
 
@@ -68,9 +91,33 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // WASM files - Cache first, network fallback
+  // Never intercept server-sent events / long-lived streams.
+  // These must stay on the raw network path or the SW can break them.
+  if (
+    event.request.headers.get('accept')?.includes('text/event-stream') ||
+    url.pathname.includes('/api/wallet/block-stream') ||
+    url.pathname.includes('/api/mempool-stream')
+  ) {
+    return;
+  }
+
+  // Scanner worker and high-volume scan endpoints must stay on the raw network
+  // path. During restores these requests can be multi-megabyte and latency
+  // sensitive; caching/intercepting them in the SW can delay worker startup.
+  if (isScannerWorkerScript(url) || isLiveScanRequest(url)) {
+    return;
+  }
+
+  // App shell / navigation requests must prefer network so deployed UI updates
+  // do not get masked by a cached index.html.
+  if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('/index.html')) {
+    event.respondWith(networkFirstStatic(event.request));
+    return;
+  }
+
+  // WASM files - Network first, cache fallback
   if (url.pathname.includes('.wasm') || url.pathname.includes('SalviumWallet.js')) {
-    event.respondWith(wasmFirst(event.request));
+    event.respondWith(wasmNetworkFirst(event.request));
     return;
   }
 
@@ -80,36 +127,68 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Vite hashed bundles should always prefer the network so a newly deployed
+  // UI cannot be hidden behind an already installed service worker.
+  if (url.pathname.includes('/assets/')) {
+    event.respondWith(networkFirstStatic(event.request));
+    return;
+  }
+
   // Static assets - Cache first, update in background
   event.respondWith(staleWhileRevalidate(event.request));
 });
+
+async function networkFirstStatic(request) {
+  const cache = await caches.open(STATIC_CACHE);
+
+  try {
+    const response = await fetch(request, { cache: 'no-store' });
+    if (response.ok) {
+      try {
+        await cache.put(request, response.clone());
+      } catch {
+        // Cache storage can fail under quota/private-mode conditions. The
+        // network response is still valid and should not break the page load.
+      }
+    }
+    return response;
+  } catch (error) {
+    const cached = await cache.match(request);
+    if (cached) {
+      return cached;
+    }
+
+    return new Response('Content not available offline', { status: 503 });
+  }
+}
 
 /**
  * WASM-first strategy: Cache first, network fallback
  * Critical for offline functionality
  */
-async function wasmFirst(request) {
-  const cache = await caches.open(WASM_CACHE);
-  const cached = await cache.match(request);
+function canonicalWasmCacheKey(request) {
+  const url = new URL(request.url);
+  url.searchParams.delete('t');
+  return url.toString();
+}
 
-  if (cached) {
-    // Update cache in background
-    fetch(request).then((response) => {
-      if (response.ok) {
-        cache.put(request, response.clone());
-      }
-    }).catch(() => {});
-    return cached;
-  }
+async function wasmNetworkFirst(request) {
+  const cache = await caches.open(WASM_CACHE);
+  const cacheKey = canonicalWasmCacheKey(request);
 
   try {
     const response = await fetch(request);
     if (response.ok) {
-      cache.put(request, response.clone());
+      try {
+        await cache.put(cacheKey, response.clone());
+      } catch {
+        // Cache storage can fail under quota/private-mode conditions.
+      }
     }
     return response;
   } catch (error) {
-    // Return error response if network fails and no cache
+    const cached = await cache.match(cacheKey) || await cache.match(request);
+    if (cached) return cached;
     return new Response('WASM not available offline', { status: 503 });
   }
 }
@@ -187,11 +266,34 @@ async function staleWhileRevalidate(request) {
 function isCacheableApi(url) {
   const cacheablePatterns = [
     '/api/wallet/get_info',
-    '/api/csp-cached',
-    '/api/csp-batch',
   ];
 
   return cacheablePatterns.some(pattern => url.includes(pattern));
+}
+
+function normalizedPathname(url) {
+  return url.pathname.replace(/^\/vault(?=\/)/, '');
+}
+
+function isScannerWorkerScript(url) {
+  return normalizedPathname(url).includes('/wallet/csp-scanner.worker.js');
+}
+
+function isLiveScanRequest(url) {
+  const path = normalizedPathname(url);
+  const liveScanPaths = [
+    '/api/csp-batch',
+    '/api/csp-bundle',
+    '/api/csp-cached',
+    '/api/csp-wasm',
+    '/api/wallet/batch-sparse-txs',
+    '/api/wallet/get-spent-index.bin',
+    '/api/wallet/get-transactions-by-hash',
+    '/api/wallet/sparse-by-heights',
+    '/api/wallet/stake-return-heights',
+  ];
+
+  return liveScanPaths.some((livePath) => path.startsWith(livePath));
 }
 
 // Handle messages from main thread

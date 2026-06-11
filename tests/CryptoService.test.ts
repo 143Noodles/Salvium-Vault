@@ -77,18 +77,33 @@ describe('CryptoService', () => {
   // Encryption/Decryption Tests
   // ============================================================================
   describe('encrypt/decrypt', () => {
+    it('new encryptions use a strong KDF count and report it', async () => {
+      const { iterations } = await encrypt('x', 'pw');
+      expect(iterations).toBeGreaterThanOrEqual(600000);
+    });
+
+    it('BACKWARD COMPAT: a legacy vault (encrypted at 100k, no stored iterations) still decrypts', async () => {
+      // Simulate an existing deployed wallet: encrypt explicitly at the legacy 100k count,
+      // then decrypt the way old records do - WITHOUT passing iterations (undefined).
+      const data = 'legacy seed phrase';
+      const password = 'pw';
+      const { encrypted, iv, salt } = await encrypt(data, password, 100000);
+      const decrypted = await decrypt(encrypted, iv, salt, password); // no iterations arg
+      expect(decrypted).toBe(data);
+    });
+
     it('should encrypt and decrypt data correctly', async () => {
       const originalData = 'This is a secret mnemonic seed phrase';
       const password = 'strongPassword123';
-      
-      const { encrypted, iv, salt } = await encrypt(originalData, password);
-      
+
+      const { encrypted, iv, salt, iterations } = await encrypt(originalData, password);
+
       expect(encrypted).toBeDefined();
       expect(iv).toBeDefined();
       expect(salt).toBeDefined();
-      
-      const decrypted = await decrypt(encrypted, iv, salt, password);
-      
+
+      const decrypted = await decrypt(encrypted, iv, salt, password, iterations);
+
       expect(decrypted).toBe(originalData);
     });
 
@@ -106,8 +121,8 @@ describe('CryptoService', () => {
       expect(result1.encrypted).not.toBe(result2.encrypted);
       
       // But both should decrypt to the same plaintext
-      const decrypted1 = await decrypt(result1.encrypted, result1.iv, result1.salt, password);
-      const decrypted2 = await decrypt(result2.encrypted, result2.iv, result2.salt, password);
+      const decrypted1 = await decrypt(result1.encrypted, result1.iv, result1.salt, password, result1.iterations);
+      const decrypted2 = await decrypt(result2.encrypted, result2.iv, result2.salt, password, result2.iterations);
       
       expect(decrypted1).toBe(data);
       expect(decrypted2).toBe(data);
@@ -118,7 +133,7 @@ describe('CryptoService', () => {
       const correctPassword = 'correctPassword';
       const wrongPassword = 'wrongPassword';
       
-      const { encrypted, iv, salt } = await encrypt(data, correctPassword);
+      const { encrypted, iv, salt, iterations } = await encrypt(data, correctPassword);
       
       await expect(decrypt(encrypted, iv, salt, wrongPassword)).rejects.toThrow();
     });
@@ -127,7 +142,7 @@ describe('CryptoService', () => {
       const data = 'sensitive information';
       const password = 'password123';
       
-      const { encrypted, iv, salt } = await encrypt(data, password);
+      const { encrypted, iv, salt, iterations } = await encrypt(data, password);
       
       // Tamper with the encrypted data
       const tamperedBytes = base64ToArrayBuffer(encrypted);
@@ -141,7 +156,7 @@ describe('CryptoService', () => {
       const data = 'sensitive data';
       const password = 'testPassword';
       
-      const { encrypted, iv, salt } = await encrypt(data, password);
+      const { encrypted, iv, salt, iterations } = await encrypt(data, password);
       
       // Tamper with IV
       const tamperedIVBytes = base64ToArrayBuffer(iv);
@@ -155,8 +170,8 @@ describe('CryptoService', () => {
       const data = '';
       const password = 'password';
       
-      const { encrypted, iv, salt } = await encrypt(data, password);
-      const decrypted = await decrypt(encrypted, iv, salt, password);
+      const { encrypted, iv, salt, iterations } = await encrypt(data, password);
+      const decrypted = await decrypt(encrypted, iv, salt, password, iterations);
       
       expect(decrypted).toBe('');
     });
@@ -166,8 +181,8 @@ describe('CryptoService', () => {
       const largeData = 'x'.repeat(1024 * 1024);
       const password = 'password';
       
-      const { encrypted, iv, salt } = await encrypt(largeData, password);
-      const decrypted = await decrypt(encrypted, iv, salt, password);
+      const { encrypted, iv, salt, iterations } = await encrypt(largeData, password);
+      const decrypted = await decrypt(encrypted, iv, salt, password, iterations);
       
       expect(decrypted).toBe(largeData);
     });
@@ -176,8 +191,8 @@ describe('CryptoService', () => {
       const unicodeData = 'Привет мир 世界 🔐 émojis и символы';
       const password = 'пароль';
       
-      const { encrypted, iv, salt } = await encrypt(unicodeData, password);
-      const decrypted = await decrypt(encrypted, iv, salt, password);
+      const { encrypted, iv, salt, iterations } = await encrypt(unicodeData, password);
+      const decrypted = await decrypt(encrypted, iv, salt, password, iterations);
       
       expect(decrypted).toBe(unicodeData);
     });
@@ -187,8 +202,8 @@ describe('CryptoService', () => {
       const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon';
       const password = 'walletPassword123!';
       
-      const { encrypted, iv, salt } = await encrypt(mnemonic, password);
-      const decrypted = await decrypt(encrypted, iv, salt, password);
+      const { encrypted, iv, salt, iterations } = await encrypt(mnemonic, password);
+      const decrypted = await decrypt(encrypted, iv, salt, password, iterations);
       
       expect(decrypted).toBe(mnemonic);
     });

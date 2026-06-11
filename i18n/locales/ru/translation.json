@@ -32,7 +32,8 @@
     "history": "История",
     "settings": "Настройки",
     "dashboard": "Панель",
-    "lockWallet": "Заблокировать Кошелек"
+    "lockWallet": "Заблокировать Кошелек",
+    "assets": "Активы"
   },
   "dashboard": {
     "balance": "Баланс",
@@ -47,7 +48,8 @@
     "noActiveStakes": "Нет активных стейков",
     "earnRewards": "Зарабатывайте награды, стейкая SAL на ~30 дней.",
     "createNewStake": "Создать Новый Стейк",
-    "unlocksIn": "Разблокировка через {{time}} ({{blocks}} блоков)"
+    "unlocksIn": "Разблокировка через {{time}} ({{blocks}} блоков)",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "Последние 24 Часа",
@@ -69,7 +71,7 @@
     "sendAssets": "Отправить Активы",
     "creatingTransaction": "Создание Транзакции...",
     "transactionSent": "Транзакция Отправлена!",
-    "amountSent": "{{amount}} SAL отправлено в сеть.",
+    "amountSent": "{{amount}} {{asset}} отправлено в сеть.",
     "transactionHash": "Хэш Транзакции",
     "sendAnother": "Отправить Другую Транзакцию",
     "addressBook": "Адресная Книга",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "Пожалуйста, введите действительную положительную сумму",
-      "exceedsBalance": "Сумма превышает доступный баланс"
+      "exceedsBalance": "Сумма превышает доступный баланс",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,8 @@
     "sections": {
       "securityPrivacy": "Безопасность и Конфиденциальность",
       "general": "Общие",
-      "language": "Язык"
+      "language": "Язык",
+      "preferences": "Настройки"
     },
     "biometrics": {
       "title": "Разблокировка Биометрией",
@@ -222,7 +226,8 @@
       "errors": {
         "fillAll": "Пожалуйста, заполните все поля",
         "mismatch": "Новые пароли не совпадают",
-        "empty": "Пароль не может быть пустым"
+        "empty": "Пароль не может быть пустым",
+        "minLength": "Пароль должен содержать не менее 8 символов"
       }
     },
     "blockchain": {
@@ -259,6 +264,14 @@
       "revealButton": "Reveal Seed Phrase",
       "copySeed": "Copy Seed Phrase",
       "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
+    },
+    "connection": {
+      "title": "Подключение",
+      "description": "Выберите, какой узел Salvium синхронизирует ваш кошелёк. Автоматический режим использует исправный официальный узел; добавляйте свой только если он общедоступен. В любом случае запросы проксируются через сервер vault, а не отправляются напрямую с вашего устройства."
+    },
+    "currency": {
+      "title": "Валюта отображения",
+      "description": "Выберите фиатную валюту для отображения стоимости вашего баланса."
     }
   },
   "onboarding": {
@@ -435,5 +448,156 @@
     "initializingWallet": "Инициализация кошелька...",
     "failedToCreate": "Не удалось создать резервную копию",
     "failedToUnlock": "Не удалось разблокировать кошелек"
+  },
+  "assets": {
+    "title": "Активы",
+    "subtitle": "Просматривайте и управляйте всеми активами в кошельке.",
+    "viewAll": "Все",
+    "viewAllAssets": "Все активы",
+    "viewAssets": "Просмотр активов",
+    "create": "Создать",
+    "createAsset": "Создать актив",
+    "createAssetTransaction": "Создать транзакцию актива",
+    "creating": "Создание...",
+    "yourAssets": "Ваши активы",
+    "searchAssets": "Поиск активов...",
+    "searchAssetsShort": "Поиск активов",
+    "searchAssetsLabel": "Поиск активов",
+    "searchAssetsLong": "Поиск по тикеру, имени или типу актива",
+    "filters": {
+      "all": "Все активы",
+      "metadata": "С метаданными",
+      "plain": "Базовые активы"
+    },
+    "empty": {
+      "noBalances": "Балансов активов пока нет",
+      "waitForTransfers": "Создайте актив или дождитесь входящих переводов.",
+      "noFilterMatches": "Активы не соответствуют текущим фильтрам.",
+      "noRecentActivity": "Нет недавней активности активов.",
+      "selectAsset": "Выберите актив",
+      "chooseAsset": "Выберите актив из списка для просмотра.",
+      "noTransactions": "Для выбранного актива нет транзакций."
+    },
+    "unlock": {
+      "title": "Разблокируйте кошелек для управления активами.",
+      "description": "Балансы, переводы и создание активов требуют разблокированного кошелька."
+    },
+    "activation": {
+      "scheduled": "Активация активов запланирована на {{label}} на блоке {{height}}.",
+      "blocksRemaining": "блоков осталось",
+      "estimatedTime": "Оставшееся время: {{time}}"
+    },
+    "success": {
+      "submitted": "Создание актива отправлено",
+      "created": "{{assetType}} успешно отправлен и появится здесь, когда кошелек получит или подтвердит баланс актива.",
+      "submittedHashes": "Отправленные хэши транзакций"
+    },
+    "labels": {
+      "asset": "Актив",
+      "catalog": "Каталог",
+      "listed": "В списке",
+      "name": "Имя",
+      "balance": "Баланс",
+      "unlocked": "Разблокировано",
+      "unlockedBalance": "Разблокированный баланс",
+      "locked": "Заблокировано",
+      "lockedBalance": "Заблокированный баланс",
+      "standard": "Стандарт",
+      "type": "Тип",
+      "assetType": "Тип актива",
+      "supply": "Эмиссия",
+      "totalSupply": "Общая эмиссия",
+      "ownershipPercentage": "Доля владения",
+      "assetId": "ID актива",
+      "created": "Создано",
+      "decimals": "Десятичные",
+      "amount": "Сумма",
+      "status": "Статус",
+      "date": "Дата",
+      "txHash": "Хэш TX",
+      "metadata": "Метаданные",
+      "media": "Медиа",
+      "quickActions": "Быстрые действия",
+      "assetLinks": "Ссылки актива",
+      "recentActivity": "Недавняя активность",
+      "transactionHistory": "История транзакций актива",
+      "assetOverview": "Обзор актива",
+      "premium": "Премиум",
+      "unknown": "Неизвестно"
+    },
+    "actions": {
+      "send": "Отправить",
+      "receive": "Получить",
+      "sendAsset": "Отправить {{ticker}}",
+      "receiveAsset": "Получить {{ticker}}",
+      "open": "Открыть",
+      "openAssetUrl": "Открыть URL актива",
+      "viewCatalog": "Открыть каталог",
+      "copyAssetId": "Копировать ID актива",
+      "backToAssets": "Назад к активам",
+      "dismiss": "Скрыть",
+      "retry": "Повторить"
+    },
+    "media": {
+      "explorerImage": "Изображение актива из обозревателя"
+    },
+    "states": {
+      "publicCatalogAsset": "Актив из публичного каталога",
+      "inWallet": "{{amount}} {{ticker}} в кошельке",
+      "catalogOnlyNotice": "Этот актив загружен из публичного каталога SAL. Сейчас его нет в этом кошельке, поэтому отправка отключена.",
+      "loadingCatalog": "Загрузка активов...",
+      "catalogLoadFailed": "Не удалось загрузить каталог обозревателя.",
+      "catalogEmpty": "Обозреватель не вернул активы.",
+      "catalogNoMatches": "Активы по запросу не найдены.",
+      "showingAssets": "Показано с {{start}} по {{end}} из {{total}} активов",
+      "unlockedAmount": "Разблокировано: {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "Разблокировано {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "Базовый актив",
+      "token": "Токен"
+    },
+    "createForm": {
+      "cost": "Создание этого актива стоит {{cost}} SAL{{suffix}}",
+      "premiumSuffix": ", потому что это премиальный код актива.",
+      "standardSuffix": ".",
+      "assetCode": "Код актива",
+      "premiumNote": "Это премиальный код актива. Создание стоит 10 000 SAL.",
+      "supply": "Эмиссия",
+      "advanced": "Дополнительно",
+      "advancedDescription": "Необязательные метаданные токена и размер",
+      "displayName": "Отображаемое имя",
+      "displayNamePlaceholder": "Пример актива",
+      "size": "Размер",
+      "projectUrl": "URL проекта",
+      "additionalMetadata": "Дополнительные метаданные",
+      "additionalMetadataPlaceholder": "Необязательный JSON или заметки. Структурированные поля выше будут объединены автоматически."
+    },
+    "validation": {
+      "assetCodeRequired": "Код актива обязателен.",
+      "assetCodeFormat": "Код актива должен состоять ровно из 4 заглавных букв или цифр.",
+      "assetCodePrefix": "Код актива не может начинаться с 'SAL'.",
+      "assetCodeReserved": "Код актива зарезервирован и не может быть использован.",
+      "supplyRequired": "Эмиссия обязательна.",
+      "supplyWhole": "Эмиссия должна быть целым числом.",
+      "supplyRange": "Эмиссия должна быть от 1 до {{max}}.",
+      "supplyInteger": "Эмиссия должна быть допустимым целым числом.",
+      "decimalsRange": "Десятичные должны быть целым числом от 0 до {{max}}.",
+      "metadataTooLong": "Дополнительные метаданные слишком длинные (макс. {{max}} символов).",
+      "assetCodeExists": "Код актива '{{code}}' уже существует."
+    },
+    "transactions": {
+      "pending": "Ожидает",
+      "received": "Получено",
+      "sent": "Отправлено",
+      "awaitingConfirmation": "Ожидание подтверждения"
+    },
+    "time": {
+      "lessThanMinute": "меньше минуты"
+    },
+    "errors": {
+      "loadFailed": "Не удалось загрузить активы",
+      "createFailed": "Не удалось создать транзакцию актива"
+    }
   }
 }

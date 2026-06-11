@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, ChevronRight } from './Icons';
 import { SUPPORTED_LANGUAGES, changeLanguage, type SupportedLanguage } from '../i18n';
+import { startTaskTelemetry } from '../utils/clientTelemetry';
 
 interface LanguageSelectorProps {
    className?: string;
@@ -14,16 +15,20 @@ const LanguageSelector: React.FC<LanguageSelectorProps> = ({ className = '' }) =
    const dropdownRef = useRef<HTMLDivElement>(null);
    const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
 
-   // Get current language reactively from i18n (using full locale code like 'en-US', 'en-GB')
    const currentLangCode = (i18n.language || 'en-US') as SupportedLanguage;
    const currentLang = SUPPORTED_LANGUAGES[currentLangCode] || SUPPORTED_LANGUAGES['en-US'];
 
    const handleLanguageChange = async (lang: SupportedLanguage) => {
-      await changeLanguage(lang);
-      setIsOpen(false);
+      const task = startTaskTelemetry('ui.language_change', 'LanguageSelector');
+      try {
+         await changeLanguage(lang);
+         setIsOpen(false);
+         task.completed();
+      } catch (error) {
+         task.failed(error, 'change_failed');
+      }
    };
 
-   // Calculate dropdown position and open - done synchronously to avoid flicker
    const handleToggle = () => {
       if (!isOpen && buttonRef.current) {
          const rect = buttonRef.current.getBoundingClientRect();
@@ -37,7 +42,6 @@ const LanguageSelector: React.FC<LanguageSelectorProps> = ({ className = '' }) =
       setIsOpen(!isOpen);
    };
 
-   // Close dropdown when clicking outside
    useEffect(() => {
       const handleClickOutside = (event: MouseEvent) => {
          if (
@@ -56,7 +60,6 @@ const LanguageSelector: React.FC<LanguageSelectorProps> = ({ className = '' }) =
 
    return (
       <>
-         {/* Compact Selection Button */}
          <button
             ref={buttonRef}
             onClick={handleToggle}
@@ -70,7 +73,6 @@ const LanguageSelector: React.FC<LanguageSelectorProps> = ({ className = '' }) =
             />
          </button>
 
-         {/* Dropdown Menu - Fixed position, opens upward */}
          {isOpen && (
             <div
                ref={dropdownRef}

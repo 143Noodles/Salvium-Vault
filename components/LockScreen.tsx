@@ -4,6 +4,7 @@ import { Card, Button, Input } from './UIComponents';
 import { Lock, LogOut, Loader2, ScanFace, AlertTriangle, X, Trash2 } from './Icons';
 import { useWallet } from '../services/WalletContext';
 import { BiometricService } from '../services/BiometricService';
+import { startTaskTelemetry } from '../utils/clientTelemetry';
 
 interface LockScreenProps {
   onUnlock: () => void;
@@ -25,7 +26,6 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
       const available = await BiometricService.isAvailable();
       setIsBioAvailable(available);
 
-      // Auto-prompt if enabled
       if (available && BiometricService.isEnabled()) {
         handleBiometricUnlock();
       }
@@ -34,18 +34,23 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
   }, []);
 
   const handleBiometricUnlock = async () => {
+    const task = startTaskTelemetry('wallet.unlock_biometric', 'LockScreen', {}, 'authenticate');
     try {
       const bioPassword = await BiometricService.authenticate();
       if (bioPassword) {
         setIsLoading(true);
+        task.stage('unlock_wallet');
         const success = await wallet.unlockWallet(bioPassword);
         if (success) {
+          task.completed();
           onUnlock();
         } else {
+          task.failed(new Error('biometric unlock failed'), 'unlock_failed');
           setError(t('lockScreen.biometricFailed'));
         }
       }
-    } catch {
+    } catch (error) {
+      task.failed(error, 'authenticate_failed');
     } finally {
       setIsLoading(false);
     }
@@ -60,29 +65,23 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
 
     setIsLoading(true);
     setError('');
+    const task = startTaskTelemetry('wallet.unlock_password', 'LockScreen', {}, 'unlock_wallet');
     try {
       const success = await wallet.unlockWallet(password);
       if (success) {
+        task.completed();
         onUnlock();
       } else {
+        task.failed(new Error('incorrect password'), 'auth_failed');
         setError(t('lockScreen.incorrectPassword'));
       }
     } catch (err: any) {
+      task.failed(err, 'unlock_failed');
       setError(err.message || t('errors.failedToUnlock'));
     } finally {
       setIsLoading(false);
     }
   };
-
-  React.useEffect(() => {
-    const handleResize = () => {
-      if (document.activeElement?.tagName === 'INPUT') {
-        document.activeElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    };
-    window.visualViewport?.addEventListener('resize', handleResize);
-    return () => window.visualViewport?.removeEventListener('resize', handleResize);
-  }, []);
 
   const closeResetModal = () => {
     setShowResetModal(false);
@@ -97,19 +96,18 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
   };
 
   return (
-    <div className="fixed inset-0 top-[56px] z-[100] bg-bg-primary overflow-y-auto custom-scrollbar">
-      <div className="min-h-full flex items-center justify-center p-4">
-        {/* Background decoration */}
+    <div className="fixed inset-0 z-[100] bg-bg-primary overflow-y-auto custom-scrollbar">
+      <div className="min-h-full flex items-center justify-center p-3 sm:p-4">
         <div className="absolute inset-0 bg-hero-glow opacity-50"></div>
 
-        <Card className="w-full max-w-sm relative z-10" glow>
-          <div className="flex flex-col items-center text-center space-y-6">
-            <div className="w-16 h-16 rounded-full bg-accent-primary/10 flex items-center justify-center text-accent-primary border border-accent-primary/20">
-              <Lock size={32} />
+        <Card className="w-full max-w-sm relative z-10 !p-4 sm:!p-6" glow>
+          <div className="flex flex-col items-center text-center space-y-4 sm:space-y-6">
+            <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-accent-primary/10 flex items-center justify-center text-accent-primary border border-accent-primary/20">
+              <Lock className="w-7 h-7 sm:w-8 sm:h-8" />
             </div>
 
             <div>
-              <h2 className="text-2xl font-bold text-white mb-2">{t('lockScreen.title')}</h2>
+              <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{t('lockScreen.title')}</h2>
               <p className="text-text-muted text-sm">{t('lockScreen.description')}</p>
             </div>
 
@@ -155,7 +153,6 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
               )}
             </form>
 
-            {/* Reset Option */}
             <div className="pt-4 border-t border-white/5 w-full">
               <button
                 onClick={() => setShowResetModal(true)}
@@ -170,7 +167,6 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
         </Card>
       </div>
 
-      {/* Reset Wallet Confirmation Modal */}
       {showResetModal && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in">
           <Card className="max-w-md w-full space-y-6 relative animate-scale-up">

@@ -142,10 +142,35 @@ export function mergeTransactionLifecycle(
 ): WalletTransaction[] {
   const confirmed = mergeTransactionsByDirection(confirmedTransactions);
   const confirmedTxids = new Set(confirmed.map((tx) => tx.txid));
+  const localPendingByTxid = new Map<string, WalletTransaction>();
 
-  const mempool = mergeTransactionsByDirection(mempoolTransactions).filter(
-    (tx) => !confirmedTxids.has(tx.txid)
-  );
+  for (const tx of pendingTransactions) {
+    const existing = localPendingByTxid.get(tx.txid);
+    if (!existing || (existing.amount || 0) <= 0 || tx.timestamp > existing.timestamp) {
+      localPendingByTxid.set(tx.txid, tx);
+    }
+  }
+
+  const hydrateAmountFromLocalPending = (tx: WalletTransaction): WalletTransaction => {
+    const localPending = localPendingByTxid.get(tx.txid);
+    if (!localPending || (tx.amount || 0) > 0 || (localPending.amount || 0) <= 0) {
+      return tx;
+    }
+
+    return {
+      ...tx,
+      amount: localPending.amount,
+      asset_type: tx.asset_type || localPending.asset_type,
+      address: tx.address || localPending.address,
+      payment_id: tx.payment_id || localPending.payment_id,
+      tx_type: tx.tx_type || localPending.tx_type,
+      pending: Boolean(tx.pending || localPending.pending),
+    };
+  };
+
+  const mempool = mergeTransactionsByDirection(mempoolTransactions)
+    .map(hydrateAmountFromLocalPending)
+    .filter((tx) => !confirmedTxids.has(tx.txid));
   const hiddenTxids = new Set([
     ...confirmedTxids,
     ...mempool.map((tx) => tx.txid),

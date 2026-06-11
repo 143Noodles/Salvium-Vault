@@ -1,0 +1,9 @@
+export enum TabView {
+  DASHBOARD = 'DASHBOARD',
+  SEND = 'SEND',
+  RECEIVE = 'RECEIVE',
+  HISTORY = 'HISTORY',
+  STAKING = 'STAKING',
+  ASSETS = 'ASSETS',
+  SETTINGS = 'SETTINGS'
+}

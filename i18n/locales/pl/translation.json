@@ -32,7 +32,8 @@
     "history": "Historia",
     "settings": "Ustawienia",
     "dashboard": "Panel",
-    "lockWallet": "Zablokuj Portfel"
+    "lockWallet": "Zablokuj Portfel",
+    "assets": "Zasoby"
   },
   "dashboard": {
     "balance": "Saldo",
@@ -47,7 +48,8 @@
     "noActiveStakes": "Brak aktywnych stake'ów",
     "earnRewards": "Zarabiaj nagrody stakując SAL przez ~30 dni.",
     "createNewStake": "Utwórz Nowy Stake",
-    "unlocksIn": "Odblokowanie za {{time}} ({{blocks}} bloków)"
+    "unlocksIn": "Odblokowanie za {{time}} ({{blocks}} bloków)",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "Ostatnie 24 Godziny",
@@ -69,7 +71,7 @@
     "sendAssets": "Wyślij Aktywa",
     "creatingTransaction": "Tworzenie Transakcji...",
     "transactionSent": "Transakcja Wysłana!",
-    "amountSent": "{{amount}} SAL zostało wysłane do sieci.",
+    "amountSent": "{{amount}} {{asset}} zostało wysłane do sieci.",
     "transactionHash": "Hash Transakcji",
     "sendAnother": "Wyślij Kolejną Transakcję",
     "addressBook": "Książka Adresowa",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "Proszę wprowadzić prawidłową dodatnią kwotę",
-      "exceedsBalance": "Kwota przekracza dostępne saldo"
+      "exceedsBalance": "Kwota przekracza dostępne saldo",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,8 @@
     "sections": {
       "securityPrivacy": "Bezpieczeństwo i Prywatność",
       "general": "Ogólne",
-      "language": "Język"
+      "language": "Język",
+      "preferences": "Preferencje"
     },
     "biometrics": {
       "title": "Odblokuj Biometrią",
@@ -222,7 +226,8 @@
       "errors": {
         "fillAll": "Proszę wypełnić wszystkie pola",
         "mismatch": "Nowe hasła nie są zgodne",
-        "empty": "Hasło nie może być puste"
+        "empty": "Hasło nie może być puste",
+        "minLength": "Hasło musi mieć co najmniej 8 znaków"
       }
     },
     "blockchain": {
@@ -259,6 +264,14 @@
       "revealButton": "Reveal Seed Phrase",
       "copySeed": "Copy Seed Phrase",
       "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
+    },
+    "connection": {
+      "title": "Połączenie",
+      "description": "Wybierz, który węzeł Salvium synchronizuje Twój portfel. Tryb automatyczny utrzymuje Cię na sprawnym węźle oficjalnym; dodaj własny tylko wtedy, gdy jest publicznie dostępny. Tak czy inaczej żądania są przekazywane przez serwer vault, a nie wysyłane bezpośrednio z Twojego urządzenia."
+    },
+    "currency": {
+      "title": "Waluta wyświetlania",
+      "description": "Wybierz walutę fiducjarną, w której wyświetlana jest wartość salda."
     }
   },
   "onboarding": {
@@ -435,5 +448,156 @@
     "initializingWallet": "Inicjalizowanie portfela...",
     "failedToCreate": "Nie udało się utworzyć kopii zapasowej",
     "failedToUnlock": "Nie udało się odblokować portfela"
+  },
+  "assets": {
+    "title": "Zasoby",
+    "subtitle": "Wyświetlaj i zarządzaj wszystkimi zasobami w portfelu.",
+    "viewAll": "Pokaż wszystko",
+    "viewAllAssets": "Pokaż wszystkie zasoby",
+    "viewAssets": "Pokaż zasoby",
+    "create": "Utwórz",
+    "createAsset": "Utwórz zasób",
+    "createAssetTransaction": "Utwórz transakcję zasobu",
+    "creating": "Tworzenie...",
+    "yourAssets": "Twoje zasoby",
+    "searchAssets": "Szukaj zasobów...",
+    "searchAssetsShort": "Szukaj zasobów",
+    "searchAssetsLabel": "Szukaj zasobów",
+    "searchAssetsLong": "Szukaj po tickerze, nazwie lub typie zasobu",
+    "filters": {
+      "all": "Wszystkie zasoby",
+      "metadata": "Z metadanymi",
+      "plain": "Zasoby podstawowe"
+    },
+    "empty": {
+      "noBalances": "Brak sald zasobów",
+      "waitForTransfers": "Utwórz zasób lub poczekaj na przychodzące transfery.",
+      "noFilterMatches": "Żadne zasoby nie pasują do bieżących filtrów.",
+      "noRecentActivity": "Brak ostatniej aktywności zasobów.",
+      "selectAsset": "Wybierz zasób",
+      "chooseAsset": "Wybierz zasób z listy, aby go sprawdzić.",
+      "noTransactions": "Brak transakcji dla wybranego zasobu."
+    },
+    "unlock": {
+      "title": "Odblokuj portfel, aby zarządzać zasobami.",
+      "description": "Salda, transfery i tworzenie zasobów wymagają odblokowanego portfela."
+    },
+    "activation": {
+      "scheduled": "Aktywacja zasobów jest zaplanowana na {{label}} przy bloku {{height}}.",
+      "blocksRemaining": "bloków pozostało",
+      "estimatedTime": "Szacowany pozostały czas: {{time}}"
+    },
+    "success": {
+      "submitted": "Tworzenie zasobu wysłane",
+      "created": "{{assetType}} wysłano pomyślnie i pojawi się tutaj, gdy portfel otrzyma lub potwierdzi saldo zasobu.",
+      "submittedHashes": "Wysłane skróty transakcji"
+    },
+    "labels": {
+      "asset": "Zasób",
+      "catalog": "Katalog",
+      "listed": "Na liście",
+      "name": "Nazwa",
+      "balance": "Saldo",
+      "unlocked": "Odblokowane",
+      "unlockedBalance": "Saldo odblokowane",
+      "locked": "Zablokowane",
+      "lockedBalance": "Saldo zablokowane",
+      "standard": "Standard",
+      "type": "Typ",
+      "assetType": "Typ zasobu",
+      "supply": "Podaż",
+      "totalSupply": "Całkowita podaż",
+      "ownershipPercentage": "Procent własności",
+      "assetId": "ID zasobu",
+      "created": "Utworzono",
+      "decimals": "Miejsca dziesiętne",
+      "amount": "Kwota",
+      "status": "Status",
+      "date": "Data",
+      "txHash": "Hash TX",
+      "metadata": "Metadane",
+      "media": "Media",
+      "quickActions": "Szybkie akcje",
+      "assetLinks": "Linki zasobu",
+      "recentActivity": "Ostatnia aktywność",
+      "transactionHistory": "Historia transakcji zasobu",
+      "assetOverview": "Przegląd zasobu",
+      "premium": "Premium",
+      "unknown": "Nieznane"
+    },
+    "actions": {
+      "send": "Wyślij",
+      "receive": "Odbierz",
+      "sendAsset": "Wyślij {{ticker}}",
+      "receiveAsset": "Odbierz {{ticker}}",
+      "open": "Otwórz",
+      "openAssetUrl": "Otwórz URL zasobu",
+      "viewCatalog": "Pokaż katalog",
+      "copyAssetId": "Kopiuj ID zasobu",
+      "backToAssets": "Wróć do zasobów",
+      "dismiss": "Zamknij",
+      "retry": "Ponów"
+    },
+    "media": {
+      "explorerImage": "Obraz zasobu z eksploratora"
+    },
+    "states": {
+      "publicCatalogAsset": "Zasób z katalogu publicznego",
+      "inWallet": "{{amount}} {{ticker}} w portfelu",
+      "catalogOnlyNotice": "Ten zasób jest wczytany z publicznego katalogu SAL. Obecnie nie ma go w tym portfelu, więc wysyłanie jest wyłączone.",
+      "loadingCatalog": "Ładowanie zasobów...",
+      "catalogLoadFailed": "Nie udało się wczytać katalogu eksploratora.",
+      "catalogEmpty": "Eksplorator nie zwrócił żadnych zasobów.",
+      "catalogNoMatches": "Żadne zasoby nie pasują do wyszukiwania.",
+      "showingAssets": "Wyświetlanie od {{start}} do {{end}} z {{total}} zasobów",
+      "unlockedAmount": "Odblokowane: {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "Odblokowane {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "Zasób bazowy",
+      "token": "Token"
+    },
+    "createForm": {
+      "cost": "Utworzenie tego zasobu kosztuje {{cost}} SAL{{suffix}}",
+      "premiumSuffix": ", ponieważ jest to kod zasobu premium.",
+      "standardSuffix": ".",
+      "assetCode": "Kod zasobu",
+      "premiumNote": "To jest kod zasobu premium. Utworzenie kosztuje 10 000 SAL.",
+      "supply": "Podaż",
+      "advanced": "Zaawansowane",
+      "advancedDescription": "Opcjonalne metadane tokena i rozmiar",
+      "displayName": "Nazwa wyświetlana",
+      "displayNamePlaceholder": "Przykładowy zasób",
+      "size": "Rozmiar",
+      "projectUrl": "URL projektu",
+      "additionalMetadata": "Dodatkowe metadane",
+      "additionalMetadataPlaceholder": "Opcjonalny JSON lub notatki. Pola strukturalne powyżej zostaną scalone automatycznie."
+    },
+    "validation": {
+      "assetCodeRequired": "Kod zasobu jest wymagany.",
+      "assetCodeFormat": "Kod zasobu musi mieć dokładnie 4 wielkie litery lub cyfry.",
+      "assetCodePrefix": "Kod zasobu nie może zaczynać się od 'SAL'.",
+      "assetCodeReserved": "Kod zasobu jest zarezerwowany i nie może zostać użyty.",
+      "supplyRequired": "Podaż jest wymagana.",
+      "supplyWhole": "Podaż musi być liczbą całkowitą.",
+      "supplyRange": "Podaż musi być między 1 a {{max}}.",
+      "supplyInteger": "Podaż musi być prawidłową liczbą całkowitą.",
+      "decimalsRange": "Miejsca dziesiętne muszą być liczbą całkowitą od 0 do {{max}}.",
+      "metadataTooLong": "Dodatkowe metadane są za długie (maks. {{max}} znaków).",
+      "assetCodeExists": "Kod zasobu '{{code}}' już istnieje."
+    },
+    "transactions": {
+      "pending": "Oczekuje",
+      "received": "Odebrano",
+      "sent": "Wysłano",
+      "awaitingConfirmation": "Oczekiwanie na potwierdzenie"
+    },
+    "time": {
+      "lessThanMinute": "mniej niż minuta"
+    },
+    "errors": {
+      "loadFailed": "Nie udało się wczytać zasobów",
+      "createFailed": "Nie udało się utworzyć transakcji zasobu"
+    }
   }
 }

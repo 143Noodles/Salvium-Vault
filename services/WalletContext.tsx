@@ -1,12 +1,11 @@
-/**
- * Wallet Context
- * Centralized wallet state and actions.
- */
+import { debugLog, debugWarn } from '../utils/debug';
+// Type-only; '@/' (tsconfig paths + vite alias) keeps this resolvable from every
+// compile context that type-checks this file.
+import type { ScanUiPhase } from '@/utils/scanUiPhase';
 
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 
-// Import existing services
 import {
     walletService,
     WalletKeys,
@@ -16,30 +15,63 @@ import {
     BalanceInfo,
     SyncStatus,
     WalletStateSnapshot,
+    SentTransactionDetails,
+    SweepTransactionDetails,
+    getBaseAssetBalanceFromSnapshot,
     getDisplayAssetBalanceFromSnapshot
 } from './WalletService';
-import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache, saveReturnAddressesToCache } from './CSPScanService';
+import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache } from './CSPScanService';
 import { encrypt, decrypt } from './CryptoService';
 import { initDesktopSilentAudio } from './SilentAudio';
-import { forceCleanSlate, getCheckpoint } from './ScanJournal';
+import { forceCleanSlate, getCheckpoint, pruneCheckpointCoverageFromHeight } from './ScanJournal';
 import {
+    addActiveStakeToBalance,
     clampUnlockedBalance,
     getActiveStakeAmount,
     hasActiveStakeBalanceChanged,
     hasBalanceInfoChanged,
+    resolveDisplayBalanceLockState,
 } from '../utils/walletBalance';
-import { buildWalletHistory } from '../utils/chartHistory';
+import { buildWalletHistory, buildExactWalletHistory } from '../utils/chartHistory';
+import { hydrateReturnedStakeRewards } from '../utils/stakeRewards';
 import {
     findNewTransactionsByDirection,
     mergeTransactionLifecycle,
     mergeTransactionsByDirection
 } from '../utils/transactionMerge';
 import { shouldForceReturnedTransferScan } from '../utils/scanHints';
+import { isNativePlatform } from '../utils/runtime';
+import { reportClientEvent, reportTaskEvent } from '../utils/clientTelemetry';
+import { getSyncWatchdogDecision } from '../utils/syncWatchdog';
+import { getWalletRescanCacheKeys } from '../utils/walletRescan';
 import {
-    getWalletRescanCacheKeys,
-    prepareStoredWalletForFullRescan
-} from '../utils/walletRescan';
-import { computeIncrementalScanStartHeight } from '../utils/scanPolicy';
+    findReorgRescanHeight,
+    getStableBlockHashCheckpointHeight,
+    getShallowBlockHashCheckpointHeight,
+    selectLatestKnownBlockHash,
+} from '../utils/reorg';
+import {
+    computeIncrementalScanStartHeight,
+    coalesceScanTriggerRequest,
+    resolveIncrementalScanPlan,
+    resolveScanResumeHeight,
+    shouldSchedulePostScanFollowup,
+    shouldRunCompletedChunkGapCheck,
+    type ScanTriggerRequest,
+} from '../utils/scanPolicy';
+import {
+    computeRestoreTerminalGates,
+    createInitialScanHealth,
+    type RestoreTerminalOutcome,
+    type ScanHealth,
+} from '../utils/scanHealth';
+import {
+    beginScanLedgerJob,
+    completeScanLedgerJob,
+    createLocalWalletFingerprint,
+    getUnfinishedScanLedgerJob,
+    type ScanLedgerJob,
+} from '../utils/scanLedger';
 import {
     walletStateService,
     WalletStateHealth,
@@ -59,19 +91,46 @@ import {
     type WalletStorageNetwork
 } from '../utils/walletStorage';
 
-// Re-export WalletStateHealth for components to use
 export type { WalletStateHealth } from './WalletStateService';
 
-// ============================================================================
-// UI Performance: Non-blocking throttle helper for progress updates
-// Uses MessageChannel for true async batching (prevents UI jank)
-// ============================================================================
+async function fetchBlockHashByHeight(height: number): Promise<string | null> {
+    try {
+        const response = await fetch('/api/wallet/get_block_header_by_height', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ height })
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        return data.block_header?.hash || null;
+    } catch {
+        return null;
+    }
+}
+
+function rememberBlockHash(wallet: EncryptedWallet, height: number, hash: string): void {
+    const history = new Map<number, string>();
+    for (const entry of wallet.blockHashHistory || []) {
+        if (Number.isFinite(entry.height) && entry.hash) {
+            history.set(Math.floor(entry.height), entry.hash);
+        }
+    }
+    const normalizedHeight = Math.max(0, Math.floor(height));
+    history.set(normalizedHeight, hash);
+    wallet.lastBlockHash = hash;
+    wallet.lastBlockHashHeight = normalizedHeight;
+    wallet.blockHashHistory = Array.from(history.entries())
+        .map(([entryHeight, entryHash]) => ({ height: entryHeight, hash: entryHash }))
+        .sort((a, b) => b.height - a.height)
+        .slice(0, 32);
+}
+
 function createThrottledCallback<T>(callback: (arg: T) => void, minInterval: number): (arg: T) => void {
     let lastCall = 0;
     let pendingArg: T | null = null;
     let scheduled = false;
+    let trailingTimer: ReturnType<typeof setTimeout> | null = null;
 
-    // Use MessageChannel for non-blocking updates (better than RAF for state updates)
     const channel = new MessageChannel();
     channel.port1.onmessage = () => {
         scheduled = false;
@@ -85,29 +144,99 @@ function createThrottledCallback<T>(callback: (arg: T) => void, minInterval: num
         const now = performance.now();
         pendingArg = arg;
 
-        // Only schedule if enough time has passed and not already scheduled
-        if (now - lastCall >= minInterval && !scheduled) {
-            lastCall = now;
+        const schedule = () => {
+            if (scheduled) return;
+            if (trailingTimer) {
+                clearTimeout(trailingTimer);
+                trailingTimer = null;
+            }
+            lastCall = performance.now();
             scheduled = true;
-            // postMessage schedules a macrotask, allowing render to complete first
             channel.port2.postMessage(null);
+        };
+
+        const elapsed = now - lastCall;
+        if (elapsed >= minInterval) {
+            schedule();
+        } else if (!trailingTimer) {
+            trailingTimer = setTimeout(schedule, minInterval - elapsed);
         }
     };
 }
 
-// ============================================================================
-// IndexedDB helpers for large wallet cache (localStorage has 5-10MB limit)
-// ============================================================================
-// ============================================================================
 const IDB_NAME = 'salvium_vault_cache_v2';
 const IDB_STORE = 'wallet_cache';
 const IDB_VERSION = 1;
+const WALLET_HEALTH_WARNING_LOG_INTERVAL_MS = 15 * 60 * 1000;
+const SYNC_WATCHDOG_INTERVAL_MS = 15 * 1000;
+const SYNC_WATCHDOG_STALE_SCAN_MS = 90 * 1000;
+// Max time a responsive incremental catch-up may skip the heavy persist when nothing changed,
+// before forcing one full commit to advance the persisted resume height (bounds reload re-scan).
+const INCREMENTAL_PERSIST_THROTTLE_MS = 120 * 1000;
+const SYNC_TIP_GRACE_BLOCKS = 0;
+const SYNC_STREAM_TIP_GRACE_BLOCKS = 0;
+const TAIL_SCAN_REASONS = new Set([
+    'block-stream',
+    'post-scan-network-advance',
+    'direct-startScan',
+    'continueUnlockFlow',
+    'fallback-poll',
+    'network-online',
+    'sync-watchdog',
+    'visibility-visible',
+    // Actual catch-up reason strings (the ones above were near-misses that never matched, so
+    // these frequent catch-ups fell through to the heavy ~2700-block 'overlap' profile and froze
+    // the UI ~2.5s each). Tail scans only behind-blocks+8 (covers all new/missed blocks; reorgs
+    // are caught by hash-checkpoint detection; >500-behind still falls back to overlap). Lossless.
+    'sync-watchdog-catchup',
+    'sse-reconnect',
+    'page-lifecycle-visible',
+    'page-lifecycle-pageshow',
+    'heartbeat',
+]);
+const walletHealthWarningLastLog = new Map<string, number>();
+
+function isTailScanReason(reason?: string): boolean {
+    return !!reason && TAIL_SCAN_REASONS.has(reason);
+}
+
+function shouldShowBackgroundSyncing(behindBlocks: number, sessionType?: ScanSessionType): boolean {
+    return sessionType === 'restore-full-rescan' ||
+        Math.max(0, Math.floor(behindBlocks)) > SYNC_TIP_GRACE_BLOCKS;
+}
+
+function isRecoverableIndexedDBConnectionError(error: unknown): boolean {
+    const err = error as { name?: string; message?: string } | null;
+    const name = err?.name || '';
+    const message = String(err?.message || error || '').toLowerCase();
+
+    return (
+        name === 'InvalidStateError' ||
+        (name === 'UnknownError' && message.includes('connection')) ||
+        message.includes('database connection is closing') ||
+        message.includes('connection is closing') ||
+        message.includes('indexed database server lost')
+    );
+}
+
+function waitForIndexedDBRetry(ms = 50): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function openCacheDB(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open(IDB_NAME, IDB_VERSION);
         request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result);
+        request.onsuccess = () => {
+            const db = request.result;
+            db.onversionchange = () => {
+                try {
+                    db.close();
+                } catch {
+                }
+            };
+            resolve(db);
+        };
         request.onupgradeneeded = (event) => {
             const db = (event.target as IDBOpenDBRequest).result;
             if (!db.objectStoreNames.contains(IDB_STORE)) {
@@ -117,45 +246,95 @@ async function openCacheDB(): Promise<IDBDatabase> {
     });
 }
 
-/**
- * Save to IndexedDB with quota error handling
- * @returns Object with success flag and error type if failed
- */
+async function runCacheDBOperation<T>(
+    operation: (db: IDBDatabase) => Promise<T>,
+    retries = 1
+): Promise<T> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        const db = await openCacheDB();
+        try {
+            return await operation(db);
+        } catch (error) {
+            lastError = error;
+            if (attempt >= retries || !isRecoverableIndexedDBConnectionError(error)) {
+                throw error;
+            }
+            await waitForIndexedDBRetry();
+        } finally {
+            try {
+                db.close();
+            } catch {
+            }
+        }
+    }
+
+    throw lastError;
+}
+
 async function saveToIndexedDB(key: string, value: string): Promise<{ success: boolean; error?: 'quota' | 'unknown'; message?: string }> {
     try {
-        const db = await openCacheDB();
-        return new Promise((resolve) => {
+        const result = await runCacheDBOperation((db) => new Promise<{ success: boolean; error?: 'quota' | 'unknown'; message?: string }>((resolve, reject) => {
             const tx = db.transaction(IDB_STORE, 'readwrite');
             const store = tx.objectStore(IDB_STORE);
             const request = store.put({ key, value });
+            let operationError: DOMException | null = null;
 
-            request.onerror = (event) => {
-                const error = (event.target as IDBRequest).error;
+            const failureFromError = (error: DOMException | null) => {
                 const errorName = error?.name || '';
-
-                // Check for quota exceeded errors
                 if (errorName === 'QuotaExceededError' ||
                     errorName === 'NS_ERROR_DOM_QUOTA_REACHED' ||
                     (error?.message && error.message.includes('quota'))) {
-                    resolve({ success: false, error: 'quota', message: 'Storage quota exceeded' });
-                } else {
-                    resolve({ success: false, error: 'unknown', message: error?.message });
+                    return { success: false, error: 'quota' as const, message: 'Storage quota exceeded' };
                 }
+                return { success: false, error: 'unknown' as const, message: error?.message };
             };
 
-            request.onsuccess = () => resolve({ success: true });
+            const finish = (result: { success: boolean; error?: 'quota' | 'unknown'; message?: string }, error?: DOMException | null) => {
+                if (error && isRecoverableIndexedDBConnectionError(error)) {
+                    reject(error);
+                    return;
+                }
+                resolve(result);
+            };
+
+            request.onerror = (event) => {
+                operationError = (event.target as IDBRequest).error;
+            };
+
+            tx.oncomplete = () => {
+                finish(operationError ? failureFromError(operationError) : { success: true });
+            };
 
             tx.onerror = (event) => {
-                const error = (event.target as IDBTransaction).error;
-                if (error?.name === 'QuotaExceededError') {
-                    resolve({ success: false, error: 'quota', message: 'Storage quota exceeded' });
-                }
+                const error = (event.target as IDBTransaction).error || operationError;
+                finish(failureFromError(error), error);
             };
 
-            tx.oncomplete = () => db.close();
-        });
+            tx.onabort = (event) => {
+                const error = (event.target as IDBTransaction).error || operationError;
+                finish(failureFromError(error), error);
+            };
+        }));
+
+        if (!result.success) {
+            reportClientEvent(result.error === 'quota' ? 'storage.quota' : 'storage.indexeddb_failed', {
+                level: result.error === 'quota' ? 'error' : 'warn',
+                message: result.message || result.error || 'IndexedDB save failed',
+                context: { source: 'saveToIndexedDB', reason: result.error || 'unknown' },
+            });
+        }
+
+        return result;
     } catch (e: any) {
-        if (e?.name === 'QuotaExceededError' || e?.message?.includes('quota')) {
+        const isQuota = e?.name === 'QuotaExceededError' || e?.message?.includes('quota');
+        reportClientEvent(isQuota ? 'storage.quota' : 'storage.indexeddb_failed', {
+            level: isQuota ? 'error' : 'warn',
+            message: e?.message || 'IndexedDB open/save failed',
+            context: { source: 'saveToIndexedDB', errorName: e?.name || 'Error' },
+        });
+        if (isQuota) {
             return { success: false, error: 'quota', message: e?.message };
         }
         return { success: false, error: 'unknown', message: e?.message };
@@ -176,9 +355,6 @@ async function saveToIndexedDBIfChanged(
     return { ...result, skipped: false };
 }
 
-/**
- * Check available storage (if Storage API is available)
- */
 async function checkStorageQuota(): Promise<{ available: number; used: number; total: number } | null> {
     if ('storage' in navigator && 'estimate' in navigator.storage) {
         try {
@@ -197,33 +373,58 @@ async function checkStorageQuota(): Promise<{ available: number; used: number; t
 
 async function loadFromIndexedDB(key: string): Promise<string | null> {
     try {
-        const db = await openCacheDB();
-        return new Promise((resolve, reject) => {
+        return await runCacheDBOperation((db) => new Promise<string | null>((resolve, reject) => {
             const tx = db.transaction(IDB_STORE, 'readonly');
             const store = tx.objectStore(IDB_STORE);
             const request = store.get(key);
+            let result: string | null = null;
+
             request.onerror = () => reject(request.error);
-            request.onsuccess = () => resolve(request.result?.value || null);
-            tx.oncomplete = () => db.close();
+            request.onsuccess = () => {
+                result = request.result?.value || null;
+            };
+            tx.oncomplete = () => resolve(result);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        }));
+    } catch (e: any) {
+        reportClientEvent('storage.indexeddb_failed', {
+            level: 'warn',
+            message: e?.message || 'IndexedDB load failed',
+            context: { source: 'loadFromIndexedDB', errorName: e?.name || 'Error' },
         });
-    } catch {
         return null;
     }
 }
 
+function getMinimumExpectedCacheTransfers(
+    cachedBalance?: BalanceInfo | null,
+    cachedTransactions?: WalletTransaction[] | null
+): number {
+    const cachedAtomicBalance = Math.max(
+        cachedBalance?.balance || 0,
+        cachedBalance?.unlockedBalance || 0
+    );
+    return cachedAtomicBalance > 0 || (cachedTransactions?.length || 0) > 0 ? 1 : 0;
+}
+
 async function deleteFromIndexedDB(key: string): Promise<void> {
     try {
-        const db = await openCacheDB();
-        return new Promise((resolve, reject) => {
+        return await runCacheDBOperation((db) => new Promise<void>((resolve, reject) => {
             const tx = db.transaction(IDB_STORE, 'readwrite');
             const store = tx.objectStore(IDB_STORE);
             const request = store.delete(key);
             request.onerror = () => reject(request.error);
-            request.onsuccess = () => resolve();
-            tx.oncomplete = () => db.close();
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        }));
+    } catch (e: any) {
+        reportClientEvent('storage.indexeddb_failed', {
+            level: 'warn',
+            message: e?.message || 'IndexedDB delete failed',
+            context: { source: 'deleteFromIndexedDB', errorName: e?.name || 'Error' },
         });
-    } catch {
-        // IndexedDB delete failed
     }
 }
 function getCurrentWalletNetwork(): WalletStorageNetwork {
@@ -325,11 +526,9 @@ function hasStoredWalletForCurrentNetwork(): boolean {
     return localStorage.getItem(getCurrentWalletCreatedKey()) === 'true';
 }
 
-// Multi-Tab Locking (BroadcastChannel + localStorage fallback)
-const TAB_LOCK_TIMEOUT = 10000; // 10 seconds - if no heartbeat, lock is stale
-const TAB_HEARTBEAT_INTERVAL = 3000; // 3 seconds
+const TAB_LOCK_TIMEOUT = 10000;
+const TAB_HEARTBEAT_INTERVAL = 3000;
 
-// Generate unique tab ID using crypto.getRandomValues for security
 const randomBytes = new Uint8Array(8);
 crypto.getRandomValues(randomBytes);
 const TAB_ID = `${Date.now()}_${Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('')}`;
@@ -345,24 +544,22 @@ function isWalletLockedByAnotherTab(): boolean {
         if (!lockData) return false;
 
         const lock = JSON.parse(lockData);
-        if (lock.tabId === TAB_ID) return false; // We hold the lock
+        if (lock.tabId === TAB_ID) return false;
 
-        // Check if lock is stale (no heartbeat)
         const heartbeatData = localStorage.getItem(heartbeatKey);
         if (!heartbeatData) return false;
 
         const heartbeat = JSON.parse(heartbeatData);
-        if (heartbeat.tabId !== lock.tabId) return false; // Heartbeat from different tab
+        if (heartbeat.tabId !== lock.tabId) return false;
 
         const timeSinceHeartbeat = Date.now() - heartbeat.timestamp;
         if (timeSinceHeartbeat > TAB_LOCK_TIMEOUT) {
-            // Lock is stale, clear it
             localStorage.removeItem(lockKey);
             localStorage.removeItem(heartbeatKey);
             return false;
         }
 
-        return true; // Another tab holds a valid lock
+        return true;
     } catch (e) {
         return false;
     }
@@ -374,18 +571,15 @@ function acquireTabLock(): boolean {
             return false;
         }
 
-        // Acquire lock
         localStorage.setItem(getCurrentTabLockKey(), JSON.stringify({
             tabId: TAB_ID,
             timestamp: Date.now()
         }));
 
-        // Start heartbeat
         updateTabHeartbeat();
         if (tabLockHeartbeatTimer) clearInterval(tabLockHeartbeatTimer);
         tabLockHeartbeatTimer = setInterval(updateTabHeartbeat, TAB_HEARTBEAT_INTERVAL);
 
-        // Set up BroadcastChannel for instant notification to other tabs
         if (typeof BroadcastChannel !== 'undefined' && !broadcastChannel) {
             broadcastChannel = new BroadcastChannel('salvium_wallet_tabs');
             broadcastChannel.postMessage({ type: 'lock_acquired', tabId: TAB_ID });
@@ -393,7 +587,7 @@ function acquireTabLock(): boolean {
 
         return true;
     } catch (e) {
-        return true; // Fail open to not block user
+        return true;
     }
 }
 
@@ -421,7 +615,6 @@ function releaseTabLock(): void {
             broadcastChannel = null;
         }
     } catch (e) {
-        // Silent fail
     }
 }
 
@@ -432,12 +625,10 @@ function updateTabHeartbeat(): void {
             timestamp: Date.now()
         }));
     } catch (e) {
-        // Ignore heartbeat errors
     }
 }
 
 function onTabLockChange(callback: (lockedByOther: boolean) => void): () => void {
-    // Use BroadcastChannel if available (faster)
     if (typeof BroadcastChannel !== 'undefined') {
         const channel = new BroadcastChannel('salvium_wallet_tabs');
         channel.onmessage = (event) => {
@@ -450,7 +641,6 @@ function onTabLockChange(callback: (lockedByOther: boolean) => void): () => void
         return () => channel.close();
     }
 
-    // Fallback: poll localStorage
     const interval = setInterval(() => {
         callback(isWalletLockedByAnotherTab());
     }, 1000);
@@ -557,10 +747,9 @@ function safeReadWallet(): any | null {
     return recoverableWallet;
 }
 
-// Chunk Completion Tracking (Gap Detection)
 const CHUNK_SIZE = 1000;
 const MAX_TRACKED_CHUNKS = 500;
-const INCREMENTAL_OVERLAP_CHUNKS = 2; // Routine new-block scans only need a small safety overlap now that WASM is authoritative
+const INCREMENTAL_OVERLAP_CHUNKS = 2;
 const BALANCE_INTEGRITY_RECOVERY_CHUNKS = 2;
 
 function getChunkStart(height: number): number {
@@ -595,19 +784,11 @@ function markChunksCompleted(chunkStarts: number[]): void {
     } catch { }
 }
 
-/**
- * Interface for tracking scanned ranges at finer granularity
- * Addresses issue where partial chunk progress was lost
- */
 interface ScanRange {
     start: number;
-    end: number;  // Inclusive, actually scanned up to this height
+    end: number;
 }
 
-/**
- * Find missing chunks with finer granularity tracking
- * Uses range-based approach to detect partial chunk progress
- */
 function findMissingChunks(fromHeight: number, toHeight: number): number[] {
     try {
         const wallet = safeReadWallet();
@@ -622,7 +803,6 @@ function findMissingChunks(fromHeight: number, toHeight: number): number[] {
 
         for (let chunk = startChunk; chunk <= endChunk; chunk += CHUNK_SIZE) {
             if (!completed.has(chunk)) {
-                // Check if this chunk was partially scanned via ranges
                 const chunkEnd = chunk + CHUNK_SIZE - 1;
                 const isFullyCovered = scannedRanges.some(range =>
                     range.start <= chunk && range.end >= chunkEnd
@@ -640,10 +820,6 @@ function findMissingChunks(fromHeight: number, toHeight: number): number[] {
     }
 }
 
-/**
- * Mark a height range as scanned (finer granularity than chunks)
- * Used to track partial progress when scan is interrupted mid-chunk
- */
 function markRangeScanned(start: number, end: number): void {
     try {
         const wallet = safeReadWallet();
@@ -651,10 +827,8 @@ function markRangeScanned(start: number, end: number): void {
 
         const ranges: ScanRange[] = wallet.scannedRanges || [];
 
-        // Add new range
         ranges.push({ start, end });
 
-        // Merge overlapping/adjacent ranges to keep the list small
         ranges.sort((a, b) => a.start - b.start);
         const merged: ScanRange[] = [];
         for (const range of ranges) {
@@ -665,7 +839,6 @@ function markRangeScanned(start: number, end: number): void {
             }
         }
 
-        // Keep only recent ranges (last 50) to prevent unbounded growth
         wallet.scannedRanges = merged.slice(-50);
         safeWriteWallet(wallet);
     } catch { }
@@ -702,10 +875,6 @@ function clearCompletedChunks(): void {
     } catch { }
 }
 
-/**
- * Reconcile localStorage height with ScanJournal checkpoint on startup.
- * Detects when app was killed mid-scan and corrects localStorage height.
- */
 async function reconcileOnStartup(walletAddress: string): Promise<number | null> {
     try {
         const wallet = safeReadWallet();
@@ -713,55 +882,47 @@ async function reconcileOnStartup(walletAddress: string): Promise<number | null>
 
         const localStorageHeight = wallet.height || 0;
 
-        // No height stored, nothing to reconcile
         if (localStorageHeight === 0) return null;
 
-        // Get checkpoint from ScanJournal (IndexedDB)
         const checkpoint = await getCheckpoint(walletAddress);
 
-        // No checkpoint exists - first scan, nothing to reconcile
         if (!checkpoint) return null;
 
         const checkpointHeight = checkpoint.lastCompletedHeight || 0;
 
-        // localStorage ahead of checkpoint indicates interrupted scan
         if (localStorageHeight > checkpointHeight + CHUNK_SIZE) {
-            console.warn(
+            debugWarn(
                 `[reconcileOnStartup] localStorage height (${localStorageHeight}) is ahead of ` +
                 `ScanJournal checkpoint (${checkpointHeight}) by ${localStorageHeight - checkpointHeight} blocks. ` +
                 `Correcting localStorage to match checkpoint. Gap detection will rescan missing blocks.`
             );
 
-            // Correct localStorage height to match checkpoint
             wallet.height = checkpointHeight;
             safeWriteWallet(wallet);
 
             return checkpointHeight;
         }
 
-        // Heights are in sync (or close enough), no correction needed
         return null;
     } catch (e) {
-        // IndexedDB errors should not block wallet unlock
         console.error('[reconcileOnStartup] Error during reconciliation:', e);
         return null;
     }
 }
 
-// Types for context
 export interface Stake {
     id: string;
-    txid: string;           // Transaction ID of the stake
+    txid: string;
     amount: number;
     rewards: number;
     startBlock: number;
     unlockBlock: number;
     currentBlock: number;
     status: 'active' | 'unlocked';
-    assetType?: string;     // SAL or SAL1
-    returnBlock?: number;   // Block where yield was returned (for unlocked stakes)
-    yieldTxid?: string;     // Transaction ID of the matching yield tx
-    earnedReward?: number;  // Actual earned reward from yield tx (for unlocked stakes)
+    assetType?: string;
+    returnBlock?: number;
+    yieldTxid?: string;
+    earnedReward?: number;
 }
 
 export interface SubAddress {
@@ -781,89 +942,132 @@ export interface Contact {
 export interface WalletStats {
     balance: number;
     unlockedBalance: number;
+    lockedBalance: number;
     balanceUsd: number;
     staked: number;
     rewards: number;
     dailyChange: number;
+    isBalanceReady: boolean;
 }
+
+interface NativeBalanceTrustState {
+    trusted: boolean;
+    reason?: string;
+}
+
+function isReturnedTransferMetadataIssue(reason?: string): boolean {
+    return /return payout.*canonical spend metadata|returned[- ]?transfer|returned output/i.test(reason || '');
+}
+
+function shouldPersistCompletedScanState(trust: NativeBalanceTrustState): boolean {
+    return trust.trusted || isReturnedTransferMetadataIssue(trust.reason);
+}
+
+// True if anything affecting displayed balance/transactions changed between two wallet-state
+// snapshots. Used to skip the O(wallet-size) scan commit when a background incremental catch-up
+// found nothing (the common case) so the UI never freezes. Lossless: startScan ingests any found
+// tx into the WASM wallet BEFORE the post-scan snapshot, so any real change always trips this.
+function walletSnapshotChanged(pre: any, post: any): boolean {
+    if (!pre || !post) return true; // unknown → commit (safe)
+    // ONLY tx-structural fields — ones that change exclusively when a real tx is received/spent.
+    // DELIBERATELY EXCLUDES unlocked_balance / locked_stake / locked_coin_count: those change every
+    // block as coins unlock and stakes mature WITHOUT any new tx. Including them defeated the gate on
+    // heavy wallets (constant unlocking → never skipped → full O(wallet) commit every catch-up →
+    // multi-second UI freezes). total `balance` is stable across unlocks (only moves locked↔unlocked).
+    if (pre.transfer_count !== post.transfer_count) return true;
+    if (pre.key_image_count !== post.key_image_count) return true;
+    if (pre.pub_key_count !== post.pub_key_count) return true;
+    if (pre.salvium_tx_count !== post.salvium_tx_count) return true;
+    if ((pre.totals || {}).balance !== (post.totals || {}).balance) return true;
+    return false;
+}
+
+const BASE_ASSET_CACHED_BALANCE_VERSION = 4;
 
 export interface ChartDataPoint {
     date: string;
     value: number;
 }
 
-// Encrypted wallet storage format (matching types.ts)
 interface EncryptedWallet {
     address: string;
     encryptedSeed: string;
     iv: string;
     salt: string;
+    iterations?: number;
     pub_viewKey: string;
     pub_spendKey: string;
     network?: WalletStorageNetwork;
     createdAt: number;
     height?: number;
-    snapshotHeight?: number; // Height at which cachedOutputsHex was generated
+    snapshotHeight?: number;
     keyImagesCsv?: string;
-    // Gap detection: Track which 1000-block chunks have been fully scanned
-    // Used to detect and rescan gaps after browser tab suspension
-    completedChunks?: number[];     // Array of chunk start heights that are fully processed
-    lastScanTimestamp?: number;     // Timestamp of last successful scan (for gap detection)
-    // Cached wallet data (restored immediately on page load)
+    scanRepairRequired?: boolean;
+    scanRepairReason?: string;
+    scanRepairTimestamp?: number;
+    completedChunks?: number[];
+    lastScanTimestamp?: number;
+    scannedRanges?: ScanRange[];
     cachedBalance?: {
         balance: number;
         unlockedBalance: number;
         balanceSAL: number;
         unlockedBalanceSAL: number;
     };
+    cachedBalanceVersion?: number;
     cachedTransactions?: WalletTransaction[];
     cachedSubaddresses?: SubAddress[];
     cachedWalletHistory?: ChartDataPoint[];
-    // WASM wallet outputs (enables sending after page refresh)
     cachedOutputsHex?: string;
-    // Spent key images cache (privacy-preserving - no daemon query needed on restore)
-    // Format: { "keyImageHex": spentHeight, ... }
     cachedSpentKeyImages?: Record<string, number>;
+    lastBlockHash?: string;
+    lastBlockHashHeight?: number;
+    blockHashHistory?: Array<{ height: number; hash: string }>;
+}
+
+function getTrustedCachedBalance(
+    wallet: Pick<EncryptedWallet, 'cachedBalance' | 'cachedBalanceVersion'> | null | undefined
+): BalanceInfo | null {
+    if (!wallet?.cachedBalance) {
+        return null;
+    }
+    return Number(wallet.cachedBalanceVersion || 0) >= BASE_ASSET_CACHED_BALANCE_VERSION
+        ? wallet.cachedBalance
+        : null;
 }
 
 interface WalletContextType {
-    // Wallet State
     isInitialized: boolean;
-    initError: string | null;  // WASM init error for mobile debugging
-    restorationError: string | null;  // Wallet restoration error
+    initError: string | null;
+    restorationError: string | null;
+    initLog: string[];
     isWalletReady: boolean;
-    isLocked: boolean;  // UI lock state - wallet continues syncing in background
-    needsRecovery: boolean;  // Cache cleared, needs user choice: vault restore or full rescan
+    isLocked: boolean;
+    needsRecovery: boolean;
     address: string;
     legacyAddress: string;
     carrotAddress: string;
 
-    // Balance
     balance: BalanceInfo;
     stats: WalletStats;
 
-    // Sync
     syncStatus: SyncStatus;
+    scanHealth: ScanHealth;
     isScanning: boolean;
     scanProgress: ScanProgress | null;
     lastSuccessfulScanAt: number;
+    scanSession: ScanSessionState | null;
 
-    // Transactions
     transactions: WalletTransaction[];
 
-    // Stakes (native lifecycle state)
     stakes: Stake[];
 
-    // Subaddresses
     subaddresses: SubAddress[];
 
-    // Contacts (stored in localStorage)
     contacts: Contact[];
 
-    // Chart Data
     walletHistory: ChartDataPoint[];
 
-    // Actions
     generateMnemonic: () => Promise<string>;
     createWallet: (mnemonic: string, password: string) => Promise<WalletKeys>;
     restoreWallet: (mnemonic: string, password: string, restoreHeight: number, hasReturnedTransfers?: boolean) => Promise<WalletKeys>;
@@ -871,11 +1075,13 @@ interface WalletContextType {
     lockWallet: () => void;
     startScan: (fromHeight?: number) => Promise<void>;
     sendTransaction: (address: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string) => Promise<string>;
+    sendTransactionWithDetails: (address: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string) => Promise<SentTransactionDetails>;
+    sendTransactionWithDetailsAtomic: (address: string, amountAtomic: string, paymentId?: string, sweepAll?: boolean, assetType?: string) => Promise<SentTransactionDetails>;
     createTokenTransaction: (assetType: string, supply: string, size: number, metadata?: string, burnCostSal?: number) => Promise<string[]>;
     stakeTransaction: (amount: number, sweepAll?: boolean) => Promise<string>;
     returnTransaction: (txid: string) => Promise<string>;
     sweepAllTransaction: (address: string) => Promise<string[]>;
-    createSubaddress: (label: string) => string;
+    createSubaddress: (label: string) => Promise<string>;
     addContact: (name: string, address: string) => void;
     updateContact: (contact: Contact) => void;
     removeContact: (id: string) => void;
@@ -883,17 +1089,16 @@ interface WalletContextType {
     validateAddress: (address: string) => Promise<boolean>;
     refreshData: () => void;
     resetWallet: () => Promise<void>;
-    clearCache: () => Promise<void>;  // Clear cached balance/transactions without resetting wallet
+    clearCache: () => Promise<void>;
+    prepareManualFullRescan: () => void;
     rescanWallet: () => Promise<void>;
+    canRescanWithoutPassword: () => boolean;
     changePassword: (oldPassword: string, newPassword: string) => Promise<boolean>;
-    // Recovery actions
-    proceedWithFullRescan: () => void;  // User chose full rescan over vault restore
-    handleBackupRestored: () => Promise<void>;  // Backup file was restored, continue unlock
-    // Debug helper
+    proceedWithFullRescan: () => void;
+    handleBackupRestored: () => Promise<void>;
     getWasmStatus: () => { isReady: boolean; hasWallet: boolean };
-    // Wallet state persistence (fixes "Failed to generate key image helper" error)
-    refreshWalletState: () => Promise<{ success: boolean; error?: string }>;  // Manual refresh for stale state
-    getWalletStateHealth: () => Promise<WalletStateHealth>;  // Check if state needs refreshing
+    refreshWalletState: () => Promise<{ success: boolean; error?: string }>;
+    getWalletStateHealth: () => Promise<WalletStateHealth>;
 }
 
 const WalletContext = createContext<WalletContextType | null>(null);
@@ -909,6 +1114,84 @@ export const useWallet = () => {
 interface WalletProviderProps {
     children: ReactNode;
 }
+
+type ScanSessionType = 'background' | 'restore-full-rescan';
+type ScanSessionStatus = 'active' | 'finished' | 'failed' | 'cancelled';
+const RESTORE_SCAN_SESSION_STORAGE_KEY = 'salvium_restore_scan_session';
+const SCAN_REF_STALE_RESET_MS = 10 * 60 * 1000;
+
+interface ScanSessionState {
+    id: string;
+    type: ScanSessionType;
+    status: ScanSessionStatus;
+    source: string;
+    startedAt: number;
+    fromHeight?: number;
+    requiresReturnedTransferScan?: boolean;
+    phase?: 'phase1_main_scan' | 'phase2_returned_transfer_scan' | 'phase3_stake_returns_rebuild' | 'phase4_post_restore_validation';
+    completedAt?: number;
+    note?: string;
+    // Enum key the loading UI may render (utils/scanUiPhase); note is telemetry-only.
+    noteKey?: ScanUiPhase;
+}
+
+type ScanTerminalState = 'success' | 'failed' | 'cancelled' | 'repair_required';
+
+interface ScanExecutionResult {
+    terminalState: ScanTerminalState;
+    reason?: string;
+}
+
+interface ScanCoordinatorState {
+    activePromise?: Promise<ScanExecutionResult>;
+    activeRequest?: ScanTriggerRequest;
+    pendingRequest?: ScanTriggerRequest;
+    serial: number;
+}
+
+interface ScanCommitResult {
+    terminalState: ScanTerminalState;
+    committed: boolean;
+    coverageCursorCommitted: boolean;
+    cacheCommitted: boolean;
+    balanceTrusted: boolean;
+    reason?: string;
+}
+
+type RestoreDiagnosticContext = Record<string, string | number | boolean | null | undefined>;
+
+const getCacheSizeBucket = (value?: string | null): string => {
+    const bytes = Math.ceil((value?.length || 0) / 2);
+    if (bytes <= 0) return 'empty';
+    if (bytes < 1024 * 1024) return '<1mb';
+    if (bytes < 10 * 1024 * 1024) return '1-10mb';
+    if (bytes < 50 * 1024 * 1024) return '10-50mb';
+    return '50mb+';
+};
+
+const reportRestoreDiagnostic = (
+        type: string,
+        context: RestoreDiagnosticContext = {},
+        level: 'info' | 'warn' | 'error' = 'info',
+        message?: string
+) => {
+    reportClientEvent(type, {
+        level,
+        message,
+        context,
+    });
+};
+
+const getSendAssetShape = (assetType?: string): string => {
+    const trimmed = String(assetType || '').trim();
+    if (/^[A-Z0-9]{4}$/.test(trimmed)) return 'ticker_upper_4';
+    if (/^[a-z0-9]{4}$/.test(trimmed)) return 'ticker_lower_4';
+    if (/^sal[A-Z0-9]{4}$/.test(trimmed)) return 'sal_upper_4';
+    if (/^sal[a-z0-9]{4}$/.test(trimmed)) return 'sal_lower_4';
+    if (trimmed.toUpperCase() === 'SAL' || trimmed.toUpperCase() === 'SAL1') return 'base';
+    if (!trimmed) return 'empty';
+    return 'other';
+};
 
 function atomicToAmount(value: string | undefined): number {
     try {
@@ -930,7 +1213,6 @@ function isNativeAuditEnabled(): boolean {
             return true;
         }
     } catch {
-        // Ignore invalid URL state
     }
 
     try {
@@ -941,18 +1223,16 @@ function isNativeAuditEnabled(): boolean {
 }
 
 export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
-    // Core state
     const [isInitialized, setIsInitialized] = useState(false);
     const [initError, setInitError] = useState<string | null>(null);
     const [restorationError, setRestorationError] = useState<string | null>(null);
     const [isWalletReady, setIsWalletReady] = useState(false);
-    const [isLocked, setIsLocked] = useState(false);  // Start unlocked, only lock explicitly
-    const [needsRecovery, setNeedsRecovery] = useState(false);  // Cache cleared, needs user choice
+    const [isLocked, setIsLocked] = useState(false);
+    const [needsRecovery, setNeedsRecovery] = useState(false);
     const [address, setAddress] = useState('');
     const [legacyAddress, setLegacyAddress] = useState('');
     const [carrotAddress, setCarrotAddress] = useState('');
 
-    // Refs for recovery flow (avoid stale closures)
     const pendingPasswordRef = React.useRef<string | null>(null);
     const pendingWalletRef = React.useRef<EncryptedWallet | null>(null);
     const pendingMnemonicRef = React.useRef<string | null>(null);
@@ -962,16 +1242,20 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         balanceSAL: 0,
         unlockedBalanceSAL: 0
     });
-    // RACE CONDITION FIX: Version counter for balance updates
-    // Prevents stale balance updates from overwriting newer data
+    const [nativeBalanceTrust, setNativeBalanceTrust] = useState<NativeBalanceTrustState>({
+        trusted: false,
+        reason: 'Wallet balance not verified yet',
+    });
     const balanceVersionRef = React.useRef(0);
     const stakeRefreshVersionRef = React.useRef(0);
+    // The wallet-value chart must derive its current point from the SAME authoritative balance and
+    // price the balance card uses, or the two USD figures disagree. Captured in render, read in the
+    // history effect (which is defined earlier in the component, before those values exist).
+    const authoritativeBalanceSalRef = React.useRef(0);
+    const effectivePriceRef = React.useRef(0);
     const setBalance = useCallback((newBalance: BalanceInfo | ((prev: BalanceInfo) => BalanceInfo)) => {
         const version = ++balanceVersionRef.current;
-        // Use setTimeout instead of requestAnimationFrame
-        // RAF is paused for background tabs, causing balance updates to never fire!
         setTimeout(() => {
-            // Only apply if this is still the latest version
             if (balanceVersionRef.current === version) {
                 setBalanceInternal(newBalance);
             }
@@ -982,61 +1266,141 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         balanceRef.current = balance;
     }, [balance]);
 
-    // Sync state
-    const [syncStatus, setSyncStatus] = useState<SyncStatus>({
+    const [syncStatus, setSyncStatusRaw] = useState<SyncStatus>({
         walletHeight: 0,
         daemonHeight: 0,
         isSyncing: false,
         progress: 0
     });
+    // Monotonic daemon tip: 52 call sites write syncStatus and several carry heights
+    // captured BEFORE long async work (scan commits, mirror deltas, polls) — they race
+    // the SSE feed and made the displayed tip jump BACKWARDS. Route every write through
+    // one guard: the tip only regresses on a genuine rollback (>30 blocks: reorg/reset).
+    const setSyncStatus = React.useCallback((update: any) => {
+        setSyncStatusRaw((prev: any) => {
+            const next = typeof update === 'function' ? update(prev) : update;
+            if (
+                next && prev &&
+                Number.isFinite(next.daemonHeight) && Number.isFinite(prev.daemonHeight) &&
+                next.daemonHeight > 0 && prev.daemonHeight > next.daemonHeight &&
+                prev.daemonHeight - next.daemonHeight <= 30
+            ) {
+                return { ...next, daemonHeight: prev.daemonHeight };
+            }
+            return next;
+        });
+    }, []);
+    const syncStatusRef = React.useRef<SyncStatus>({
+        walletHeight: 0,
+        daemonHeight: 0,
+        isSyncing: false,
+        progress: 0
+    });
+    useEffect(() => {
+        syncStatusRef.current = syncStatus;
+    }, [syncStatus]);
     const [isScanning, setIsScanning] = useState(false);
     const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
+    const [scanHealth, setScanHealthState] = useState<ScanHealth>(() => createInitialScanHealth());
+    const scanHealthRef = React.useRef<ScanHealth>(createInitialScanHealth());
+    const setScanHealth = useCallback((next: ScanHealth | ((prev: ScanHealth) => ScanHealth)) => {
+        setScanHealthState(prev => {
+            const resolved = typeof next === 'function'
+                ? (next as (prev: ScanHealth) => ScanHealth)(prev)
+                : next;
+            scanHealthRef.current = resolved;
+            return resolved;
+        });
+    }, []);
+    useEffect(() => {
+        scanHealthRef.current = scanHealth;
+    }, [scanHealth]);
     const [lastSuccessfulScanAt, setLastSuccessfulScanAt] = useState(0);
     const [initLog, setInitLog] = useState<string[]>([]);
     const stakesRef = React.useRef<Stake[]>([]);
 
-    // Ref to track if wallet is currently resetting (blocks async saves)
-    // This prevents "Zombie Resurrection" where a dying process saves old state after reset
     const isResettingRef = React.useRef(false);
 
-    // Tracks whether walletHistory was restored from local cache.
-    // Used to avoid overwriting a correct cached chart with fallback-priced history during boot/unlock.
     const hydratedWalletHistoryFromCacheRef = React.useRef(false);
 
-    // Ref to track scan in progress synchronously (prevents race conditions)
     const scanInProgressRef = React.useRef(false);
     const lastScanTimeRef = React.useRef(0);
-    // RACE CONDITION FIX: Version counter for scan state transitions
-    // Incremented on each scan start, checked on completion to detect stale completions
+    const scanCoordinatorRef = React.useRef<ScanCoordinatorState>({ serial: 0 });
+    const scanFailureRetryRef = React.useRef<{ count: number; timer: ReturnType<typeof setTimeout> | null }>({ count: 0, timer: null });
     const scanVersionRef = React.useRef(0);
+    // Always-current coordinator entry point for delayed retries scheduled by
+    // finalizeRestoreTerminalState (avoids stale closures inside the useCallback).
+    const requestScanStartRef = React.useRef<((request: {
+        fromHeight?: number;
+        reason: string;
+        sessionType?: ScanSessionType;
+        sessionId?: string;
+    }) => Promise<unknown>) | null>(null);
+    // One deferred-repair retry chain per scan (2.4): holds the pending 60s retry timer.
+    const deferredRepairRetryRef = React.useRef<{ timer: ReturnType<typeof setTimeout> | null }>({ timer: null });
 
-    // Flag to track if we just restored from vault file (needs spent status sync)
     const restoredFromVaultRef = React.useRef(false);
 
-    // Flag to trigger a full rescan after current scan completes (cache recovery)
     const needsFullRescanRef = React.useRef(false);
 
-    // Ref to hold latest startScan function (avoids dependency churn in useEffects)
     const startScanRef = React.useRef<((fromHeight?: number) => Promise<void>) | undefined>(undefined);
 
-    // Page Visibility API tracking (for gap detection after browser tab suspension)
     const pageHiddenTimestampRef = React.useRef<number>(0);
     const needsGapCheckRef = React.useRef<boolean>(false);
     const lastKnownWasmHeightRef = React.useRef<number>(0);
-    const scanTargetHeightRef = React.useRef<number>(0); // Track target height of current scan to prevent duplicate SSE scans
+    const scanTargetHeightRef = React.useRef<number>(0);
+    const lastIncrementalPersistAtRef = React.useRef<number>(0);
+    const lastRefreshSnapshotKeyRef = React.useRef<string>('');
+    const lastSuccessfulScanHeightRef = React.useRef<number>(0);
+    // Cheap JS dirty-flag: set true only when a scan actually ingested a change (free signal from
+    // result.outputsFound/matchCount) or on restore/real commit. Gates the O(wallet) refreshData
+    // reload so empty catch-ups (the common case, esp. coin-unlocks on heavy wallets) do ZERO
+    // heavy work — no getTransactions/getStateSnapshot per catch-up. Starts true (first load full).
+    const walletDataDirtyRef = React.useRef<boolean>(true);
     const nativeAuditEnabledRef = React.useRef(isNativeAuditEnabled());
-    const fullRescanNeedsReturnedTransferScanRef = React.useRef(false);
     const fullWalletCacheImportedRef = React.useRef(false);
     const preferredScanStartHeightRef = React.useRef<number | undefined>(undefined);
     const lastNativeSnapshotRef = React.useRef<WalletStateSnapshot | null>(null);
+    const forceCleanRestoreScanRef = React.useRef(false);
+    const manualFullRescanModeRef = React.useRef(false);
+    const autoIntegrityRecoveryInFlightRef = React.useRef(false);
+    const returnedTransferRepairAttemptedRef = React.useRef(false);
+    const rescanWalletRef = React.useRef<(() => Promise<void>) | undefined>(undefined);
+    const unlockBootstrapInFlightRef = React.useRef(false);
+    const scanRequestsSuspendedRef = React.useRef(false);
+    const uiProgressReceivedCountRef = React.useRef(0);
+    const uiProgressRenderedCountRef = React.useRef(0);
+    const lastUiProgressReceivedAtRef = React.useRef(0);
+    const lastUiProgressRenderedAtRef = React.useRef(0);
+    const lastUiProgressReceivedBucketRef = React.useRef(-1);
+    const lastUiProgressRenderedBucketRef = React.useRef(-1);
+    const [scanSession, setScanSession] = useState<ScanSessionState | null>(null);
+    const activeScanSessionRef = React.useRef<ScanSessionState | null>(null);
 
-    // Multi-tab locking state
+    useEffect(() => {
+        try {
+            const persistedRaw = localStorage.getItem(RESTORE_SCAN_SESSION_STORAGE_KEY);
+            if (!persistedRaw || activeScanSessionRef.current) {
+                return;
+            }
+            const persisted = JSON.parse(persistedRaw) as ScanSessionState;
+            if (persisted && persisted.type === 'restore-full-rescan' && persisted.status === 'active') {
+                const session: ScanSessionState = {
+                    ...persisted,
+                    source: persisted.source || 'rehydrated-from-storage',
+                };
+                setAuthoritativeScanSession(session);
+                debugLog('[WalletContext] Rehydrated restore scan session from storage', session);
+            }
+        } catch {
+        }
+    }, []);
+
     const [isLockedByAnotherTab, setIsLockedByAnotherTab] = useState(false);
     const tabLockAcquiredRef = React.useRef(false);
 
-    // SECURITY: In-memory only seed storage (never persisted to sessionStorage/localStorage)
-    // This prevents seed exposure if attacker gains access to browser storage
     const sessionSeedRef = React.useRef<string | null>(null);
+    const sessionPasswordRef = React.useRef<string | null>(null);
 
     const refreshVaultRuntimeConfig = useCallback(async () => {
         try {
@@ -1056,17 +1420,158 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     }, []);
 
+    const setAuthoritativeScanSession = (next: ScanSessionState | null) => {
+        activeScanSessionRef.current = next && next.status === 'active' ? next : null;
+        setScanSession(next);
+        manualFullRescanModeRef.current = !!(next && next.type === 'restore-full-rescan' && next.status === 'active');
+        try {
+            if (next && next.type === 'restore-full-rescan' && next.status === 'active') {
+                localStorage.setItem(RESTORE_SCAN_SESSION_STORAGE_KEY, JSON.stringify(next));
+            } else {
+                localStorage.removeItem(RESTORE_SCAN_SESSION_STORAGE_KEY);
+            }
+        } catch {
+        }
+    };
+
+    const isRestoreScanSessionActive = () => {
+        const current = activeScanSessionRef.current;
+        return !!current && current.type === 'restore-full-rescan' && current.status === 'active';
+    };
+
+    const beginRestoreScanSession = (
+        source: string,
+        fromHeight: number = 0,
+        options?: { requiresReturnedTransferScan?: boolean }
+    ) => {
+        const current = activeScanSessionRef.current;
+        if (current && current.type === 'restore-full-rescan' && current.status === 'active') {
+            const merged: ScanSessionState = {
+                ...current,
+                source,
+                fromHeight,
+                requiresReturnedTransferScan: current.requiresReturnedTransferScan || !!options?.requiresReturnedTransferScan,
+            };
+            setAuthoritativeScanSession(merged);
+            return merged.id;
+        }
+
+        const session: ScanSessionState = {
+            id: `restore_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+            type: 'restore-full-rescan',
+            status: 'active',
+            source,
+            startedAt: Date.now(),
+            fromHeight,
+            requiresReturnedTransferScan: !!options?.requiresReturnedTransferScan,
+        };
+        setAuthoritativeScanSession(session);
+        debugLog('[WalletContext] Restore scan session started', session);
+        reportRestoreDiagnostic('restore.session_started', {
+            source,
+            fromHeight,
+            sessionType: session.type,
+            sessionActive: true,
+            pendingAgeMs: 0,
+        });
+        return session.id;
+    };
+
+    const setRestoreScanPhase = (phase: 'phase1_main_scan' | 'phase2_returned_transfer_scan' | 'phase3_stake_returns_rebuild' | 'phase4_post_restore_validation', note: string, noteKey?: ScanUiPhase) => {
+        const current = activeScanSessionRef.current;
+        if (!current || current.type !== 'restore-full-rescan' || current.status !== 'active') {
+            return;
+        }
+        if (current.phase === phase && current.note === note && current.noteKey === noteKey) {
+            return;
+        }
+        // noteKey is always (re)assigned so a stale enum key never outlives its phase.
+        const updated: ScanSessionState = { ...current, phase, note, noteKey };
+        setAuthoritativeScanSession(updated);
+        debugLog('[WalletContext] Restore scan session phase', {
+            id: updated.id,
+            phase,
+            note,
+            requiresReturnedTransferScan: updated.requiresReturnedTransferScan,
+        });
+        reportRestoreDiagnostic('restore.session_phase', {
+            source: updated.source,
+            scanSessionPhase: phase,
+            status: note,
+            fromHeight: updated.fromHeight ?? 0,
+            sessionType: updated.type,
+            sessionActive: true,
+        });
+    };
+
+const getDeviceMemoryBucket = (): string => {
+    const memory = typeof navigator !== 'undefined'
+        ? Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory || 0)
+        : 0;
+    if (!memory) return 'unknown';
+    if (memory <= 2) return '<=2gb';
+    if (memory <= 4) return '2-4gb';
+    if (memory <= 8) return '4-8gb';
+    return '8gb+';
+};
+
+    const completeRestoreScanSession = (status: Exclude<ScanSessionStatus, 'active'>, note: string) => {
+        const current = activeScanSessionRef.current;
+        if (!current || current.type !== 'restore-full-rescan') {
+            return;
+        }
+
+        const completed: ScanSessionState = {
+            ...current,
+            status,
+            completedAt: Date.now(),
+            note,
+            // The UI renders only the enum key; the free-text note (incl. raw Error.message
+            // on failures) stays telemetry/diagnostics-only.
+            noteKey: status === 'finished' ? 'complete' : status === 'failed' ? 'failed' : undefined,
+        };
+        setAuthoritativeScanSession(null);
+        setScanSession(completed);
+        debugLog('[WalletContext] Restore scan session completed', completed);
+        reportRestoreDiagnostic('restore.session_completed', {
+            source: completed.source,
+            status,
+            scanSessionPhase: completed.phase || '',
+            fromHeight: completed.fromHeight ?? 0,
+            durationMs: completed.completedAt && completed.startedAt
+                ? completed.completedAt - completed.startedAt
+                : 0,
+            sessionType: completed.type,
+            sessionActive: false,
+        }, status === 'finished' ? 'info' : 'error', note);
+    };
+
     const getAuthoritativeNativeBalance = useCallback((
-        fallbackBalance: BalanceInfo
+        _fallbackBalance: BalanceInfo
     ): { balance: BalanceInfo; snapshot: WalletStateSnapshot | null } => {
         const snapshot = walletService.getStateSnapshot();
-        const snapshotBalance =
-            (snapshot?.success ? getDisplayAssetBalanceFromSnapshot(snapshot) : null) ||
-            (walletService.hasWallet() ? walletService.getBalance() : fallbackBalance);
+        const nativeBalance = walletService.hasWallet()
+            ? walletService.getBalance()
+            : { balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 };
+
         return {
-            balance: clampUnlockedBalance(snapshotBalance),
+            balance: clampUnlockedBalance(nativeBalance),
             snapshot: snapshot?.success ? snapshot : null
         };
+    }, []);
+
+    const invalidateInFlightScanState = useCallback(() => {
+        scanVersionRef.current += 1;
+        scanInProgressRef.current = false;
+        lastScanTimeRef.current = 0;
+        preferredScanStartHeightRef.current = undefined;
+        setIsScanning(false);
+        setScanProgress(null);
+        setSyncStatus(prev => ({ ...prev, isSyncing: false }));
+        setNativeBalanceTrust({
+            trusted: false,
+            reason: 'Wallet state invalidated',
+        });
     }, []);
 
     const getPreferredHydratedBalance = useCallback((
@@ -1083,14 +1588,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             return nativeBalanceState.balance;
         }
 
-        if (!cachedBalance) {
-            return null;
-        }
-
+        void cachedBalance;
         void transactions;
         void stakes;
         void currentHeight;
-        return clampUnlockedBalance(cachedBalance);
+        return null;
     }, [getAuthoritativeNativeBalance]);
 
     const captureNativeSnapshot = useCallback((
@@ -1125,10 +1627,29 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         globalWindow.__walletStateSnapshots = [...existing.slice(-9), payload];
 
         if (nativeAuditEnabledRef.current) {
-            console.warn('[WalletContext] Native wallet snapshot', payload);
+            debugWarn('[WalletContext] Native wallet snapshot', payload);
         }
 
         return snapshot;
+    }, []);
+
+    // Worker cutover: getStakeLifecycle/getBalanceIntegrity are async engine calls now, but
+    // assessNativeSnapshotHealth must stay synchronous (it runs inside the stats useMemo on
+    // the render path). The async inputs are cached here and refreshed by the async health
+    // paths (evaluateNativeBalanceTrust / recordNativeSnapshotHealth) right before they
+    // assess, so the sync assessment sees at-worst slightly stale lifecycle/integrity data.
+    const nativeHealthExtrasRef = React.useRef<{
+        lifecycle: WalletStakeLifecycle | null;
+        balanceIntegrity: any;
+    }>({ lifecycle: null, balanceIntegrity: null });
+
+    const refreshNativeHealthExtras = useCallback(async (): Promise<void> => {
+        try {
+            const lifecycle = (await walletService.getStakeLifecycle()) as WalletStakeLifecycle | null;
+            const balanceIntegrity = (await walletService.getBalanceIntegrity?.(5)) as any;
+            nativeHealthExtrasRef.current = { lifecycle, balanceIntegrity };
+        } catch {
+        }
     }, []);
 
     const assessNativeSnapshotHealth = useCallback((
@@ -1161,9 +1682,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             expectedLockedStake > 0 &&
             snapshotLockedStake - expectedLockedStake > 10000000
         ) {
-            // Native total balance includes unconfirmed change/self-payments, while
-            // unlocked balance does not. That can make total-minus-unlocked larger
-            // than locked stake without indicating stale locked state.
             issues.push('Native snapshot locked stake exceeds total-minus-unlocked balance');
         }
 
@@ -1179,14 +1697,147 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             issues.push('Native snapshot has locked stakes but no tracked Salvium origin mappings');
         }
 
+        const lifecycle = nativeHealthExtrasRef.current.lifecycle;
+        if (lifecycle?.success && Array.isArray(lifecycle.stakes)) {
+            const activeStakePrincipal = lifecycle.stakes.reduce((sum, stake) => {
+                const assetType = String(stake.asset_type || '').toUpperCase();
+                const isBaseAsset = assetType === 'SAL' || assetType === 'SAL1';
+                const isActive = stake.status === 'active' && stake.still_locked;
+                if (!isBaseAsset || !isActive) {
+                    return sum;
+                }
+                return sum + BigInt(stake.principal || '0');
+            }, 0n);
+
+            const lockedStakeDelta =
+                activeStakePrincipal > lockedStakeAtomic
+                    ? activeStakePrincipal - lockedStakeAtomic
+                    : lockedStakeAtomic - activeStakePrincipal;
+
+            if (lockedStakeDelta > 10000000n) {
+                issues.push(
+                    `Native snapshot locked stake disagrees with native stake lifecycle ` +
+                    `(snapshot=${lockedStakeAtomic.toString()}, lifecycle=${activeStakePrincipal.toString()})`
+                );
+            }
+        }
+
+        const balanceIntegrity = nativeHealthExtrasRef.current.balanceIntegrity;
+        const integrity = balanceIntegrity?.integrity;
+        if (integrity) {
+            const duplicateTxOutputGroups = integrity.duplicateUnspentTxOutputs?.length || 0;
+            const duplicateKeyImageGroups = integrity.duplicateUnspentKeyImages?.length || 0;
+            const duplicateGlobalOutputGroups = integrity.duplicateUnspentGlobalOutputs?.length || 0;
+            const mixedSpentStateGroups = integrity.mixedSpentStateKeyImages?.length || 0;
+
+            if (duplicateTxOutputGroups > 0 || duplicateKeyImageGroups > 0) {
+                issues.push(
+                    `Native wallet contains duplicate unspent outputs ` +
+                    `(tx_output_groups=${duplicateTxOutputGroups}, ` +
+                    `key_image_groups=${duplicateKeyImageGroups}, ` +
+                    `global_output_groups=${duplicateGlobalOutputGroups}, ` +
+                    `suspect_tx_output_atomic=${integrity.suspectDuplicateTxOutputAtomic || '0'}, ` +
+                    `suspect_key_image_atomic=${integrity.suspectDuplicateKeyImageAtomic || '0'})`
+                );
+            }
+
+            // key image both spent+unspent = unrolled reorg; force clean rebuild or balance corrupts
+            if (mixedSpentStateGroups > 0) {
+                issues.push(
+                    `Native wallet has key images in mixed spent/unspent state ` +
+                    `(mixed_spent_state_groups=${mixedSpentStateGroups}) - likely an unrolled reorg`
+                );
+            }
+        }
+
         return {
             ok: issues.length === 0,
-            severity: issues.some(issue => issue.includes('greater than total'))
+            severity: issues.some(issue =>
+                issue.includes('greater than total') ||
+                issue.includes('locked stake exceeds total-minus-unlocked balance') ||
+                issue.includes('duplicate unspent outputs') ||
+                issue.includes('mixed spent/unspent state')
+            )
                 ? 'critical'
                 : 'warning',
             issues,
         };
     }, []);
+
+    const evaluateNativeBalanceTrust = useCallback(async (
+        snapshot: WalletStateSnapshot | null,
+        balanceState: BalanceInfo
+    ): Promise<NativeBalanceTrustState> => {
+        if (!walletService.hasWallet()) {
+            return { trusted: false, reason: 'Wallet not initialized' };
+        }
+
+        await refreshNativeHealthExtras();
+        const snapshotHealth = assessNativeSnapshotHealth(snapshot, balanceState);
+        if (!snapshotHealth.ok && snapshotHealth.severity === 'critical') {
+            return {
+                trusted: false,
+                reason: snapshotHealth.issues[0] || 'Native snapshot health check failed',
+            };
+        }
+
+        const nativeHealth = await walletService.checkWalletHealth() as
+            | {
+                success?: boolean;
+                healthy?: boolean;
+                error?: string;
+                issue_count?: number;
+                issues?: Array<{ message?: string }>;
+            }
+            | null;
+
+        if (nativeHealth?.success === true) {
+            if (nativeHealth.healthy === true) {
+                return { trusted: true };
+            }
+
+            // KNOWN-BENIGN allowlist: return payouts that predate the 6.0.0 origin
+            // recompute lack canonical spend metadata forever — an archaeological gap,
+            // not corruption (balances CLI-verified exact; real spent-state is guarded
+            // independently by the chain-truth reverse audit each scan). Downgrade ONLY
+            // when every reported issue matches; anything novel still blocks trust.
+            const KNOWN_BENIGN_ISSUE_PREFIXES = [
+                'Return payout has scan hint but no canonical spend metadata',
+            ];
+            const issueMessages = Array.isArray(nativeHealth.issues)
+                ? nativeHealth.issues
+                    .map(issue => (typeof issue?.message === 'string' ? issue.message : ''))
+                    .filter(Boolean)
+                : [];
+            if (
+                issueMessages.length > 0 &&
+                issueMessages.every(msg => KNOWN_BENIGN_ISSUE_PREFIXES.some(prefix => msg.startsWith(prefix)))
+            ) {
+                reportClientEvent('wallet.trust_downgraded_known_benign', {
+                    level: 'warn',
+                    message: issueMessages[0].slice(0, 140),
+                    context: { issueCount: issueMessages.length },
+                });
+                return { trusted: true };
+            }
+
+            const firstIssue = issueMessages[0];
+
+            return {
+                trusted: false,
+                reason: firstIssue || nativeHealth.error || 'Native wallet health check failed',
+            };
+        }
+
+        if (snapshotHealth.ok) {
+            return { trusted: true };
+        }
+
+        return {
+            trusted: false,
+            reason: snapshotHealth.issues[0] || 'Native snapshot health check failed',
+        };
+    }, [assessNativeSnapshotHealth, refreshNativeHealthExtras]);
 
     const recordNativeSnapshotHealth = useCallback(async (
         stage: string,
@@ -1197,6 +1848,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             return;
         }
 
+        await refreshNativeHealthExtras();
         const health = assessNativeSnapshotHealth(snapshot, balanceState);
         if (health.ok) {
             await walletStateService.updateHealth(address, 'healthy');
@@ -1204,9 +1856,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
 
         const message = `${stage}: ${health.issues.join('; ')}`;
-        console.warn('[WalletContext] Native wallet state health warning', { stage, issues: health.issues });
+        debugWarn('[WalletContext] Native wallet state health warning', { stage, issues: health.issues });
         await walletStateService.updateHealth(address, health.severity, message);
-    }, [address, assessNativeSnapshotHealth]);
+    }, [address, assessNativeSnapshotHealth, refreshNativeHealthExtras]);
 
     const scheduleNativeIntegrityRecovery = useCallback((
         stage: string,
@@ -1218,116 +1870,100 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             return false;
         }
 
-        const snapshotHeight = snapshot?.wallet_height || walletService.getSyncStatus().walletHeight || 0;
-        const recoveryStartHeight = Math.max(
-            0,
-            getChunkStart(snapshotHeight) - (BALANCE_INTEGRITY_RECOVERY_CHUNKS * CHUNK_SIZE)
-        );
+        setNativeBalanceTrust({
+            trusted: false,
+            reason: health.issues[0] || 'Native wallet state requires repair',
+        });
 
-        if (health.severity === 'critical') {
-            needsFullRescanRef.current = true;
-            preferredScanStartHeightRef.current = 0;
-        } else {
-            needsGapCheckRef.current = true;
-            preferredScanStartHeightRef.current = recoveryStartHeight;
+        if (manualFullRescanModeRef.current) {
+            const activeSession = activeScanSessionRef.current;
+            reportRestoreDiagnostic('restore.integrity_recovery_deferred', {
+                source: activeSession?.source || 'manual-full-rescan',
+                sessionType: activeSession?.type || 'restore-full-rescan',
+                sessionActive: true,
+                scanSessionPhase: activeSession?.phase || '',
+                status: stage,
+                reason: health.issues[0] || 'Native wallet state requires repair',
+            }, 'info', 'Native integrity recovery deferred during active restore scan');
+            return false;
         }
 
-        console.warn('[WalletContext] Scheduling native integrity recovery', {
+        if (health.severity !== 'critical') {
+            debugWarn('[WalletContext] Native integrity recovery not started', {
+                stage,
+                severity: health.severity,
+                issues: health.issues,
+                manualFullRescanMode: false,
+            });
+            return false;
+        }
+
+        needsFullRescanRef.current = true;
+        preferredScanStartHeightRef.current = 0;
+        needsGapCheckRef.current = false;
+        setSyncStatus(prev => ({
+            ...prev,
+            walletHeight: 0,
+            isSyncing: true,
+            scanStartHeight: 0,
+            progress: 0,
+        }));
+
+        if (address) {
+            void deleteFromIndexedDB(`wallet_cache_${address}`);
+            void walletStateService.clear(address);
+        }
+
+        debugWarn('[WalletContext] Scheduling native integrity recovery via clean seed restore path', {
             stage,
             severity: health.severity,
             issues: health.issues,
-            recoveryStartHeight,
         });
 
-        if (isWalletReady && !scanInProgressRef.current && startScanRef.current) {
+        if (unlockBootstrapInFlightRef.current) {
+            debugWarn('[WalletContext] Deferring integrity recovery until unlock bootstrap completes');
+            return true;
+        }
+
+        if (isWalletReady && !scanInProgressRef.current && !autoIntegrityRecoveryInFlightRef.current && rescanWalletRef.current) {
             setTimeout(() => {
-                if (startScanRef.current && !scanInProgressRef.current) {
-                    if (needsFullRescanRef.current) {
-                        startScanRef.current(0);
-                    } else {
-                        startScanRef.current();
-                    }
+                if (autoIntegrityRecoveryInFlightRef.current || scanInProgressRef.current || !needsFullRescanRef.current || !rescanWalletRef.current) {
+                    return;
                 }
+                if ((window as any)?.Capacitor?.isNativePlatform?.()) {
+                    window.dispatchEvent(new CustomEvent('salvium:auto-rescan'));
+                }
+                needsFullRescanRef.current = false;
+                autoIntegrityRecoveryInFlightRef.current = true;
+                void rescanWalletRef.current().finally(() => {
+                    autoIntegrityRecoveryInFlightRef.current = false;
+                });
             }, 150);
         }
 
         return true;
-    }, [assessNativeSnapshotHealth, isWalletReady]);
+    }, [address, assessNativeSnapshotHealth, isWalletReady]);
 
-    const assertWalletReadyForSpend = useCallback(async (): Promise<void> => {
-        if (!walletService.hasWallet()) {
-            throw new Error('Wallet not initialized');
-        }
-
-        if (scanInProgressRef.current) {
-            throw new Error('Wallet is still syncing. Wait for sync to finish before sending.');
-        }
-
-        let nativeBalanceState = getAuthoritativeNativeBalance(walletService.getBalance());
-        if (!nativeBalanceState.snapshot?.success) {
-            for (let attempt = 0; attempt < 6; attempt += 1) {
-                await new Promise(resolve => setTimeout(resolve, 250));
-                nativeBalanceState = getAuthoritativeNativeBalance(walletService.getBalance());
-                if (nativeBalanceState.snapshot?.success) {
-                    break;
-                }
-            }
-        }
-
-        const snapshotHealth = assessNativeSnapshotHealth(
-            nativeBalanceState.snapshot,
-            nativeBalanceState.balance
-        );
-        if (!snapshotHealth.ok) {
-            const lockedCoinsInfo = walletService.getLockedCoinsInfo();
-            const totals = nativeBalanceState.snapshot?.totals;
-            const lockedCoinsTotal = lockedCoinsInfo?.m_locked_coins_total ?? 'unknown';
-            const lockedCoinsCount = lockedCoinsInfo?.m_locked_coins_count ?? 'unknown';
-            throw new Error(
-                `Wallet state needs refresh: ${snapshotHealth.issues[0]} ` +
-                `(snapshot_balance=${totals?.balance ?? 'unknown'}, ` +
-                `snapshot_unlocked=${totals?.unlocked_balance ?? 'unknown'}, ` +
-                `snapshot_locked=${totals?.locked_stake ?? 'unknown'}, ` +
-                `display_balance=${nativeBalanceState.balance.balance}, ` +
-                `display_unlocked=${nativeBalanceState.balance.unlockedBalance}, ` +
-                `locked_coins_total=${lockedCoinsTotal}, ` +
-                `locked_coins_count=${lockedCoinsCount})`
-            );
-        }
-
-        const validation = walletService.validateOutputsForSend();
-        if (!validation.valid) {
-            throw new Error(validation.error || 'Wallet outputs need refresh before sending');
-        }
-    }, [assessNativeSnapshotHealth, getAuthoritativeNativeBalance]);
-
-    // WASM state tracking for mobile recovery
     const logInit = (msg: string) => {
-        setInitLog(prev => [...prev.slice(-19), msg].slice(-20)); // Keep last 20
+        setInitLog(prev => [...prev.slice(-19), msg].slice(-20));
     };
 
-    // Transaction state
     const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
     const transactionsRef = React.useRef<WalletTransaction[]>([]);
 
-    // Pending outgoing transactions (shown until confirmed on-chain)
     const [pendingTransactions, setPendingTransactions] = useState<WalletTransaction[]>([]);
     const pendingTransactionsRef = React.useRef<WalletTransaction[]>([]);
 
-    // Mempool transactions (real-time from SSE stream)
     const [mempoolTransactions, setMempoolTransactions] = useState<WalletTransaction[]>([]);
     const mempoolTransactionsRef = React.useRef<WalletTransaction[]>([]);
 
-    // Stakes (native lifecycle projection)
     const [stakes, setStakes] = useState<Stake[]>([]);
-    const applyStakes = useCallback((nextStakes: Stake[]) => {
+    const applyStakes = useCallback((nextStakes: Stake[], sourceTransactions: WalletTransaction[] = transactionsRef.current) => {
         const previousByTxid = new Map(stakesRef.current.map((stake) => [stake.txid, stake]));
-        const mergedStakes = nextStakes.map((stake) => {
+        const rewardHydratedStakes = hydrateReturnedStakeRewards(nextStakes, sourceTransactions);
+        const mergedStakes = rewardHydratedStakes.map((stake) => {
             const previous = previousByTxid.get(stake.txid);
 
-            // Active-stake rewards are hydrated asynchronously from yield info.
-            // Preserve the last known non-zero reward during refreshes so the UI
-            // does not flash back to zero between native-state and yield-state updates.
             if (
                 stake.status === 'active' &&
                 stake.rewards <= 0 &&
@@ -1340,14 +1976,31 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 };
             }
 
+            const returnedReward = Math.max(stake.earnedReward || 0, stake.rewards || 0);
+            const previousReturnedReward = Math.max(previous?.earnedReward || 0, previous?.rewards || 0);
+            if (
+                stake.status === 'unlocked' &&
+                returnedReward <= 0 &&
+                previous?.status === 'unlocked' &&
+                previousReturnedReward > 0
+            ) {
+                return {
+                    ...stake,
+                    returnBlock: stake.returnBlock || previous.returnBlock,
+                    yieldTxid: stake.yieldTxid || previous.yieldTxid,
+                    rewards: previousReturnedReward,
+                    earnedReward: previousReturnedReward,
+                };
+            }
+
             return stake;
         });
 
         stakesRef.current = mergedStakes;
         setStakes(mergedStakes);
     }, []);
-    const getNativeStakeState = useCallback((currentHeight: number): Stake[] => {
-        const lifecycle = walletService.getStakeLifecycle() as WalletStakeLifecycle | null;
+    const getNativeStakeState = useCallback(async (currentHeight: number): Promise<Stake[]> => {
+        const lifecycle = await walletService.getStakeLifecycle() as WalletStakeLifecycle | null;
         if (!lifecycle?.success || !Array.isArray(lifecycle.stakes)) {
             return [];
         }
@@ -1379,35 +2032,16 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             })
             .sort((a, b) => b.startBlock - a.startBlock);
     }, []);
-    const detectReturnedTransferScanNeed = useCallback((
-        candidateTransactions?: WalletTransaction[],
-        candidateStakeCount?: number
-    ): boolean => {
-        const cachedTransactions = safeReadWallet()?.cachedTransactions || [];
-        const txHistory = candidateTransactions && candidateTransactions.length > 0
-            ? candidateTransactions
-            : transactionsRef.current.length > 0
-                ? transactionsRef.current
-                : cachedTransactions;
-        const knownStakeCount = typeof candidateStakeCount === 'number'
-            ? candidateStakeCount
-            : stakesRef.current.length;
 
-        return shouldForceReturnedTransferScan(txHistory, knownStakeCount);
-    }, []);
-
-    // Subaddresses
     const [subaddresses, setSubaddresses] = useState<SubAddress[]>([]);
     const subaddressesRef = React.useRef<SubAddress[]>([]);
 
-    // Contacts (from localStorage)
     const [contacts, setContacts] = useState<Contact[]>([]);
 
-    // Chart data
     const [walletHistory, setWalletHistory] = useState<ChartDataPoint[]>([]);
+    const walletHistoryRetryTimerRef = React.useRef<number | null>(null);
     const lastWalletHistorySignatureRef = React.useRef<string>('');
 
-    // Price state (fetched from API) - initialize from cache for instant display
     const [salPrice, setSalPrice] = useState<number>(() => {
         try {
             const cached = localStorage.getItem('salvium_sal_price');
@@ -1417,7 +2051,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     });
 
-    // Price history for chart (hourly prices from MEXC via Explorer API)
     const [priceHistory, setPriceHistory] = useState<[number, number][]>([]);
 
     useEffect(() => {
@@ -1448,12 +2081,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         debugWindow.__walletHistoryDebug = walletHistory;
     }, [walletHistory, transactions, stakes, balance, syncStatus, priceHistory]);
 
-    // ================================================================
-    // Multi-Tab Locking
-    // Acquire lock on mount, release on unmount, listen for other tabs
-    // ================================================================
     useEffect(() => {
-        // Try to acquire lock
         const lockAcquired = acquireTabLock();
         tabLockAcquiredRef.current = lockAcquired;
 
@@ -1461,12 +2089,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             setIsLockedByAnotherTab(true);
         }
 
-        // Listen for lock changes from other tabs
         const unsubscribe = onTabLockChange((lockedByOther) => {
             setIsLockedByAnotherTab(lockedByOther);
         });
 
-        // Release lock on unmount
         return () => {
             unsubscribe();
             if (tabLockAcquiredRef.current) {
@@ -1475,7 +2101,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         };
     }, []);
 
-    // Also release lock when page unloads (handles tab close, refresh, navigation)
     useEffect(() => {
         const handleUnload = () => {
             if (tabLockAcquiredRef.current) {
@@ -1484,7 +2109,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         };
 
         window.addEventListener('beforeunload', handleUnload);
-        window.addEventListener('pagehide', handleUnload); // For mobile Safari
+        window.addEventListener('pagehide', handleUnload);
 
         return () => {
             window.removeEventListener('beforeunload', handleUnload);
@@ -1492,13 +2117,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         };
     }, []);
 
-    // Fetch SAL price via server proxy (bypasses CORS restrictions from MEXC/CoinGecko)
-    // CRITICAL: This fetch must NEVER block wallet initialization
-    // Uses AbortController for timeout + fallback to cached price
     useEffect(() => {
         const fetchPrice = async () => {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
 
             try {
                 const response = await fetch('/api/price', { signal: controller.signal });
@@ -1507,27 +2129,21 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 if (data.success && data.price) {
                     const price = data.price;
                     setSalPrice(price);
-                    // Only cache fresh prices, not stale/fallback ones
                     if (!data.stale) {
                         localStorage.setItem('salvium_sal_price', price.toString());
                     }
                 }
             } catch (e) {
                 clearTimeout(timeoutId);
-                // Price fetch failed - wallet continues with cached price from localStorage
-                // This is fine - USD display will use last known price or show 0
-                console.warn('[Price] Fetch failed, using cached price:', e instanceof Error ? e.message : 'Unknown error');
+                debugWarn('[Price] Fetch failed, using cached price:', e instanceof Error ? e.message : 'Unknown error');
             }
         };
 
         fetchPrice();
-        // Refresh price every 2 minutes
         const interval = setInterval(fetchPrice, 120000);
         return () => clearInterval(interval);
     }, []);
 
-    // Regenerate wallet history from authoritative tx/state once the wallet is ready.
-    // Never let restored chart cache remain the long-term source of truth when txs exist.
     useEffect(() => {
         if (!isWalletReady) return;
         if (transactions.length === 0) {
@@ -1547,11 +2163,18 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             txCount,
             oldestTimestamp === Number.MAX_SAFE_INTEGER ? 0 : oldestTimestamp,
             newestTimestamp,
-            Math.round(balance.balanceSAL * 1e8),
+            Math.round(authoritativeBalanceSalRef.current * 1e8),
             Math.round(activeStakeAmount * 1e8),
             stakes.length,
             priceHistory.length > 0 ? priceHistory[0]?.[0] || 0 : 0,
             priceHistory.length > 0 ? priceHistory[priceHistory.length - 1]?.[0] || 0 : 0,
+            priceHistory.length > 0 ? Math.round((priceHistory[priceHistory.length - 1]?.[1] || 0) * 1e8) : 0,
+            Math.round(effectivePriceRef.current * 1e8),
+            // Height bucket (30-block ≈ hourly): the exact-history series must extend as
+            // the chain advances even when txs/balance are static — a wallet whose last
+            // tx was days ago otherwise kept stale pairs and the chart bridged a flat
+            // line from there to the pinned tip.
+            Math.floor((syncStatus.walletHeight || 0) / 30),
         ].join(':');
 
         if (lastWalletHistorySignatureRef.current === signature) {
@@ -1560,37 +2183,40 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
         hydratedWalletHistoryFromCacheRef.current = false;
         lastWalletHistorySignatureRef.current = signature;
-        const totalBalance = balance.balanceSAL; // WASM balance already includes staked amount
-        generateWalletHistory(transactions, totalBalance, stakes);
-    }, [priceHistory, transactions, balance.balanceSAL, stakes, isWalletReady, syncStatus.daemonHeight, syncStatus.walletHeight]);
+        const totalBalance = authoritativeBalanceSalRef.current;
+        void generateWalletHistory(transactions, totalBalance, stakes);
+    }, [priceHistory, transactions, balance.balanceSAL, stakes, isWalletReady, syncStatus.daemonHeight, syncStatus.walletHeight, salPrice]);
 
-    // Fetch historical price data via server proxy (bypasses CORS restrictions)
-    // Uses AbortController for timeout to prevent hanging requests
     useEffect(() => {
         const fetchPriceHistory = async () => {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout (longer for history data)
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
 
             try {
-                // Fetch 7 days of hourly data via proxy (MEXC uses 60m for hourly)
                 const response = await fetch('/api/price-history?interval=60m&limit=168', { signal: controller.signal });
                 clearTimeout(timeoutId);
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
                 const result = await response.json();
                 if (result.success && Array.isArray(result.data)) {
-                    // Data is already transformed by proxy: [[timestamp, closePrice], ...]
-                    setPriceHistory(result.data);
+                    // Keep the previous array identity when the data is unchanged -- a new identity
+                    // here re-rendered the whole app (and re-ran the walletHistory effects) every
+                    // 10 minutes even with byte-identical data.
+                    setPriceHistory(prev => {
+                        if (prev.length === result.data.length &&
+                            JSON.stringify(prev) === JSON.stringify(result.data)) {
+                            return prev;
+                        }
+                        return result.data;
+                    });
                 }
             } catch (e) {
                 clearTimeout(timeoutId);
-                // Price history fetch failed - chart will work without it
-                console.warn('[PriceHistory] Fetch failed:', e instanceof Error ? e.message : 'Unknown error');
+                debugWarn('[PriceHistory] Fetch failed:', e instanceof Error ? e.message : 'Unknown error');
             }
         };
 
         fetchPriceHistory();
-        // Refresh price history every 10 minutes (API updates hourly)
         const interval = setInterval(fetchPriceHistory, 10 * 60 * 1000);
         return () => clearInterval(interval);
     }, []);
@@ -1641,24 +2267,32 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     }, []);
 
-    // Page Visibility API: Detect tab suspension + WASM state loss
-    // Also handles iOS Safari bfcache via pagehide/pageshow events
     useEffect(() => {
         const SUSPENSION_THRESHOLD_MS = 30 * 1000;
 
-        // Helper to save critical state synchronously (for bfcache)
         const saveStateSync = () => {
             if (walletService.hasWallet()) {
                 try {
                     const syncStatus = walletService.getSyncStatus();
                     lastKnownWasmHeightRef.current = syncStatus.walletHeight || 0;
-                    // Mark page hidden timestamp for bfcache
                     pageHiddenTimestampRef.current = Date.now();
+                    if (scanInProgressRef.current || cspScanService.isScanningInProgress()) {
+                        reportClientEvent('scan.page_lifecycle', {
+                            level: 'warn',
+                            context: {
+                                eventName: 'visibility-hidden',
+                                scanActive: scanInProgressRef.current,
+                                serviceScanActive: cspScanService.isScanningInProgress(),
+                                walletHeight: syncStatus.walletHeight || 0,
+                                daemonHeight: syncStatus.daemonHeight || 0,
+                                scanAgeMs: lastScanTimeRef.current ? Date.now() - lastScanTimeRef.current : 0,
+                            },
+                        });
+                    }
                 } catch { }
             }
         };
 
-        // Helper to handle WASM rehydration (bfcache restoration)
         const forceWalletRehydration = async () => {
             needsFullRescanRef.current = true;
             if (address) {
@@ -1666,13 +2300,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     const cacheKey = `wallet_cache_${address}`;
                     const cachedOutputsHex = await loadFromIndexedDB(cacheKey);
                     if (cachedOutputsHex && typeof cachedOutputsHex === 'string') {
-                        const importResult = walletService.importWalletCache(cachedOutputsHex);
+                        const importResult = await walletService.importWalletCache(cachedOutputsHex, 1);
                         if (importResult) {
                             needsFullRescanRef.current = false;
                         }
                     }
                 } catch {
-                    // Cache restore failed
                 }
             }
         };
@@ -1680,7 +2313,36 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         const handleVisibilityChange = async () => {
             if (document.hidden) {
                 saveStateSync();
+                const activeRestoreSession = activeScanSessionRef.current;
+                if (
+                    activeRestoreSession?.type === 'restore-full-rescan' &&
+                    activeRestoreSession.status === 'active' &&
+                    (scanInProgressRef.current || cspScanService.isScanningInProgress())
+                ) {
+                    // Do NOT abort the in-flight restore scan when the tab is hidden.
+                    // Aborting left the scan journal mid-flight, so the resume path
+                    // re-started the entire restore from height 0 (losing all progress).
+                    // The CSP scan runs in web workers that keep running while the tab is
+                    // backgrounded; if the browser fully freezes/discards the page the scan
+                    // halts and the visible/pageshow handlers re-request it (coalescing into
+                    // the still-running scan when alive). Letting it run can never introduce
+                    // a gap, so reliability is preserved.
+                    reportRestoreDiagnostic('restore.hidden_continue', {
+                        source: activeRestoreSession.source,
+                        sessionType: activeRestoreSession.type,
+                        sessionActive: true,
+                        scanSessionPhase: activeRestoreSession.phase || '',
+                        fromHeight: activeRestoreSession.fromHeight ?? 0,
+                        scanActive: scanInProgressRef.current,
+                        serviceScanActive: cspScanService.isScanningInProgress(),
+                    }, 'info', 'Restore continues in the background while the page is hidden');
+                }
             } else {
+                const activeRestoreSession = activeScanSessionRef.current;
+                if (manualFullRescanModeRef.current && !activeRestoreSession) {
+                    pageHiddenTimestampRef.current = 0;
+                    return;
+                }
                 const hiddenDuration = pageHiddenTimestampRef.current > 0
                     ? Date.now() - pageHiddenTimestampRef.current
                     : 0;
@@ -1705,14 +2367,32 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     await forceWalletRehydration();
                 }
 
+                if (scanInProgressRef.current || cspScanService.isScanningInProgress() || hiddenDuration > SUSPENSION_THRESHOLD_MS || wasmStateLost) {
+                    reportClientEvent('scan.page_lifecycle', {
+                        level: wasmStateLost || hiddenDuration > SUSPENSION_THRESHOLD_MS ? 'warn' : 'info',
+                        context: {
+                            eventName: 'visibility-visible',
+                            hiddenDurationMs: hiddenDuration,
+                            scanActive: scanInProgressRef.current,
+                            serviceScanActive: cspScanService.isScanningInProgress(),
+                            wasmStateLost,
+                            scanAgeMs: lastScanTimeRef.current ? Date.now() - lastScanTimeRef.current : 0,
+                            walletHeight: lastKnownWasmHeightRef.current,
+                        },
+                    });
+                }
+
                 if (hiddenDuration > SUSPENSION_THRESHOLD_MS) {
                     needsGapCheckRef.current = true;
                 }
 
-                // iOS FIX: Check for stuck scanInProgressRef before guard check
+                // (Removed: a dead "resume restore after visibility pause" block. Its gating ref
+                // restoreScanPausedForVisibilityRef was never set true anywhere, so the branch was
+                // unreachable. Idle restore sessions are rescued by the sync watchdog instead.)
+
                 if (scanInProgressRef.current) {
                     const scanAge = Date.now() - lastScanTimeRef.current;
-                    if (scanAge > 30000) {
+                    if (scanAge > SCAN_REF_STALE_RESET_MS && !cspScanService.isScanningInProgress()) {
                         scanInProgressRef.current = false;
                         setIsScanning(false);
                     }
@@ -1721,13 +2401,18 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 if ((hiddenDuration > SUSPENSION_THRESHOLD_MS || wasmStateLost) &&
                     isWalletReady && !scanInProgressRef.current && startScanRef.current) {
                     setTimeout(() => {
-                        if (startScanRef.current) {
-                            if (needsFullRescanRef.current) {
-                                startScanRef.current(0);
-                            } else {
-                                startScanRef.current();
+                        void (async () => {
+                            try {
+                                if (!startScanRef.current) return;
+                                if (needsFullRescanRef.current) {
+                                    await startScanRef.current(0);
+                                } else {
+                                    const networkHeight = await cspScanService.getNetworkHeight();
+                                    await requestAutomaticCatchupScan(networkHeight, 'page-lifecycle-visible');
+                                }
+                            } catch {
                             }
-                        }
+                        })();
                     }, 500);
                 }
 
@@ -1735,53 +2420,83 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             }
         };
 
-        // iOS Safari bfcache handling - pagehide fires when page goes into bfcache
         const handlePageHide = (event: PageTransitionEvent) => {
+            if (scanInProgressRef.current || cspScanService.isScanningInProgress()) {
+                reportClientEvent('scan.page_lifecycle', {
+                    level: 'warn',
+                    context: {
+                        eventName: 'pagehide',
+                        pagePersisted: event.persisted,
+                        scanActive: scanInProgressRef.current,
+                        serviceScanActive: cspScanService.isScanningInProgress(),
+                        scanAgeMs: lastScanTimeRef.current ? Date.now() - lastScanTimeRef.current : 0,
+                    },
+                });
+            }
             if (event.persisted) {
-                // Page is being cached in bfcache - save state synchronously
                 saveStateSync();
             }
         };
 
-        // iOS Safari bfcache handling - pageshow fires when restored from bfcache
         const handlePageShow = async (event: PageTransitionEvent) => {
             if (event.persisted) {
-                // Page restored from bfcache - WASM memory is likely corrupted
-                // Force full wallet rehydration from cache
+                reportClientEvent('scan.page_lifecycle', {
+                    level: 'warn',
+                    context: {
+                        eventName: 'pageshow',
+                        pagePersisted: event.persisted,
+                        scanActive: scanInProgressRef.current,
+                        serviceScanActive: cspScanService.isScanningInProgress(),
+                        scanAgeMs: lastScanTimeRef.current ? Date.now() - lastScanTimeRef.current : 0,
+                    },
+                });
+                const activeRestoreSession = activeScanSessionRef.current;
+                if (manualFullRescanModeRef.current && !activeRestoreSession) {
+                    return;
+                }
                 await forceWalletRehydration();
 
-                // iOS FIX: Check for stuck scanInProgressRef before guard check
                 if (scanInProgressRef.current) {
                     const scanAge = Date.now() - lastScanTimeRef.current;
-                    if (scanAge > 30000) {
+                    if (scanAge > SCAN_REF_STALE_RESET_MS && !cspScanService.isScanningInProgress()) {
                         scanInProgressRef.current = false;
                         setIsScanning(false);
                     }
                 }
 
-                // Trigger rescan if wallet is ready
                 if (isWalletReady && !scanInProgressRef.current && startScanRef.current) {
                     setTimeout(() => {
-                        if (startScanRef.current) {
-                            if (needsFullRescanRef.current) {
-                                startScanRef.current(0);
-                            } else {
-                                startScanRef.current();
+                        void (async () => {
+                            try {
+                                const activeRestoreSession = activeScanSessionRef.current;
+                                if (activeRestoreSession?.type === 'restore-full-rescan' && activeRestoreSession.status === 'active') {
+                                    await requestScanStart({
+                                        fromHeight: activeRestoreSession.fromHeight ?? 0,
+                                        reason: 'page-lifecycle-pageshow-restore-resume',
+                                        sessionType: 'restore-full-rescan',
+                                        sessionId: activeRestoreSession.id,
+                                    });
+                                    return;
+                                }
+                                if (!startScanRef.current) return;
+                                if (needsFullRescanRef.current) {
+                                    await startScanRef.current(0);
+                                } else {
+                                    const networkHeight = await cspScanService.getNetworkHeight();
+                                    await requestAutomaticCatchupScan(networkHeight, 'page-lifecycle-pageshow');
+                                }
+                            } catch {
                             }
-                        }
+                        })();
                     }, 500);
                 }
             }
         };
 
-        // Touch event handling during scan - prevents accidental navigation on mobile
-        // Uses touchstart to intercept gestures that might trigger back-swipe
         const handleTouchStart = (event: TouchEvent) => {
             if (scanInProgressRef.current) {
                 const touch = event.touches[0];
-                // Detect edge swipes (likely navigation gestures)
                 if (touch && (touch.clientX < 30 || touch.clientX > window.innerWidth - 30)) {
-                    // Add visual feedback that scan is active
                     const scanActiveElement = document.getElementById('scan-active-indicator');
                     if (scanActiveElement) {
                         scanActiveElement.style.opacity = '1';
@@ -1806,26 +2521,21 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         };
     }, [isWalletReady, address]);
 
-    // Cache wallet history to IndexedDB when it updates
     useEffect(() => {
         if (walletHistory.length > 0 && isWalletReady && address) {
             saveToIndexedDB(`wallet_history_${address}`, JSON.stringify(walletHistory));
         }
     }, [walletHistory, isWalletReady, address]);
 
-    // Start silent audio on desktop to prevent tab throttling (always on)
     useEffect(() => {
         if (isWalletReady) {
             initDesktopSilentAudio();
         }
     }, [isWalletReady]);
 
-    // Fetch real block timestamps for transactions with estimated timestamps
-    // This runs once when wallet is ready and transactions are loaded
     useEffect(() => {
         if (!isWalletReady || transactions.length === 0) return;
 
-        // Check if any transactions have estimated timestamps
         const REFERENCE_HEIGHT = 334750;
         const REFERENCE_TIMESTAMP = new Date('2025-10-13T00:00:00Z').getTime();
         const BLOCK_TIME_MS = 120 * 1000;
@@ -1849,15 +2559,18 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         });
     }, [isWalletReady, transactions.length, address]);
 
-    // Calculate stats from balance
-    // NOTE: balance.balanceSAL already includes active staked amounts (added after scan in onProgress callback)
-    // So we don't need to add them again here - just use balance.balanceSAL directly.
+    // The whole derived-balance chain below (state snapshot read, O(transactions) lock-state
+    // reduce, stats object) used to run on EVERY provider render (~4Hz during scans) -- pure waste
+    // between real changes, and a fresh `stats` identity defeated all downstream memoization.
+    // Display semantics are unchanged: it recomputes when any real input changes; a snapshot-cache
+    // invalidation without a state change surfaces at the next real change (the same accepted
+    // cosmetic lag the snapshot cache already has).
+    const { effectivePrice, stats } = React.useMemo(() => {
     const activeStakedAmount = getActiveStakeAmount(
         stakes,
         syncStatus.daemonHeight || syncStatus.walletHeight || 0
     );
 
-    // Ensure we always have a valid price for USD calculation
     const effectivePrice = salPrice > 0 ? salPrice : (() => {
         try {
             const cached = localStorage.getItem('salvium_sal_price');
@@ -1866,17 +2579,75 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             return 0;
         }
     })();
+    effectivePriceRef.current = effectivePrice;
+
+    const dashboardBalanceState = (() => {
+        const emptyBalance = clampUnlockedBalance({
+            balance: 0,
+            unlockedBalance: 0,
+            balanceSAL: 0,
+            unlockedBalanceSAL: 0,
+        });
+
+        if (!walletService.hasWallet()) {
+            return { balance: emptyBalance, isReady: false };
+        }
+
+        const snapshot = walletService.getStateSnapshot();
+        const baseSnapshotBalance = getBaseAssetBalanceFromSnapshot(snapshot);
+        const displaySnapshotBalance = baseSnapshotBalance
+            ? addActiveStakeToBalance(baseSnapshotBalance, activeStakedAmount)
+            : getDisplayAssetBalanceFromSnapshot(snapshot);
+
+        if (displaySnapshotBalance) {
+            const normalizedBalance = clampUnlockedBalance(displaySnapshotBalance);
+            if (nativeBalanceTrust.trusted) {
+                return {
+                    balance: normalizedBalance,
+                    isReady: true,
+                };
+            }
+
+            const snapshotHealth = assessNativeSnapshotHealth(snapshot, normalizedBalance);
+            if (snapshotHealth.severity !== 'critical') {
+                return {
+                    balance: normalizedBalance,
+                    isReady: true,
+                };
+            }
+        }
+
+        return {
+            balance: emptyBalance,
+            isReady: false,
+        };
+    })();
+
+    const dashboardBalance = dashboardBalanceState.balance;
+    authoritativeBalanceSalRef.current = dashboardBalance.balanceSAL;
+    const dashboardLockState = resolveDisplayBalanceLockState(
+        dashboardBalance,
+        activeStakedAmount,
+        transactions,
+        syncStatus.daemonHeight || syncStatus.walletHeight || 0
+    );
 
     const stats: WalletStats = {
-        balance: balance.balanceSAL, // Total balance (already includes active stakes from scan completion)
-        unlockedBalance: balance.unlockedBalanceSAL, // Excludes staked (they're locked)
-        balanceUsd: balance.balanceSAL * effectivePrice,
+        balance: dashboardBalance.balanceSAL,
+        unlockedBalance: dashboardLockState.unlockedBalanceSAL,
+        lockedBalance: dashboardLockState.lockedBalance,
+        balanceUsd: dashboardBalance.balanceSAL * effectivePrice,
         staked: activeStakedAmount,
         rewards: stakes.reduce((sum, s) => sum + s.rewards, 0),
-        dailyChange: 0 // Would need price history
+        dailyChange: 0,
+        isBalanceReady: dashboardBalanceState.isReady,
     };
 
-    // Load contacts from localStorage
+    return { effectivePrice, stats };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [stakes, syncStatus.daemonHeight, syncStatus.walletHeight, salPrice, transactions,
+        nativeBalanceTrust, balance, isWalletReady, assessNativeSnapshotHealth]);
+
     useEffect(() => {
         try {
             const savedContacts = localStorage.getItem('salvium_contacts');
@@ -1884,30 +2655,23 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 setContacts(JSON.parse(savedContacts));
             }
         } catch {
-            // Failed to load contacts
         }
     }, []);
 
-    // Save contacts to localStorage
     const saveContacts = useCallback((newContacts: Contact[]) => {
         setContacts(newContacts);
         localStorage.setItem('salvium_contacts', JSON.stringify(newContacts));
     }, []);
 
-    // Fetch real block timestamps for transactions that have estimated timestamps
-    // This replaces estimated timestamps (calculated from block height) with real ones from the daemon
     const fetchRealTimestamps = async (txs: WalletTransaction[]): Promise<WalletTransaction[]> => {
-        // Find transactions that likely have estimated timestamps
-        // Reference point: HF10 at block 334750 = 2025-10-13 00:00:00 UTC
         const REFERENCE_HEIGHT = 334750;
         const REFERENCE_TIMESTAMP = new Date('2025-10-13T00:00:00Z').getTime();
         const BLOCK_TIME_MS = 120 * 1000;
 
-        // A timestamp is "estimated" if it matches the formula exactly (within 1 second tolerance)
         const isEstimatedTimestamp = (tx: WalletTransaction): boolean => {
-            if (tx.height === 0) return false; // Pending tx
+            if (tx.height === 0) return false;
             const estimatedTs = REFERENCE_TIMESTAMP + ((tx.height - REFERENCE_HEIGHT) * BLOCK_TIME_MS);
-            return Math.abs(tx.timestamp - estimatedTs) < 1000; // Within 1 second
+            return Math.abs(tx.timestamp - estimatedTs) < 1000;
         };
 
         const txsNeedingTimestamps = txs.filter(isEstimatedTimestamp);
@@ -1915,7 +2679,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             return txs;
         }
 
-        // Get unique heights
         const heights = [...new Set(txsNeedingTimestamps.map(tx => tx.height))];
 
         try {
@@ -1932,10 +2695,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             const data = await response.json();
             const timestamps = data.timestamps || {};
 
-            // Update transactions with real timestamps
             const updatedTxs = txs.map(tx => {
                 if (tx.height > 0 && timestamps[tx.height]) {
-                    return { ...tx, timestamp: timestamps[tx.height] * 1000 }; // Convert seconds to ms
+                    return { ...tx, timestamp: timestamps[tx.height] * 1000 };
                 }
                 return tx;
             });
@@ -1946,13 +2708,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     };
 
-    // Refresh wallet data from WASM
-    // Only updates state if WASM has actual data to prevent overwriting cached values
-    const refreshData = useCallback(() => {
+    const refreshData = useCallback(async () => {
         if (!walletService.hasWallet()) return;
 
         try {
-            // Get addresses (always safe to update)
             const addr = walletService.getAddress();
             if (addr) setAddress(addr);
 
@@ -1962,47 +2721,104 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             const carrot = walletService.getCarrotAddress();
             if (carrot) setCarrotAddress(carrot);
 
-            // Get sync status (always update)
             const sync = walletService.getSyncStatus();
-            // SANITY CHECK: walletHeight should never exceed daemonHeight
-            // If it does (stale cache, reorg, etc.), clamp it and mark as synced
             setSyncStatus(prev => {
-                const validDaemonHeight = prev.daemonHeight > 0 ? prev.daemonHeight : sync.daemonHeight;
+                const persistedWallet = safeReadWallet();
+                const persistedWalletHeight = persistedWallet?.height || 0;
+                const validDaemonHeight = Math.max(
+                    prev.daemonHeight || 0,
+                    sync.daemonHeight || 0,
+                    persistedWallet?.snapshotHeight || 0
+                );
+                const displayWalletHeight = Math.max(
+                    prev.walletHeight || 0,
+                    sync.walletHeight || 0,
+                    persistedWalletHeight
+                );
                 const clampedWalletHeight = validDaemonHeight > 0
-                    ? Math.min(sync.walletHeight, validDaemonHeight)
-                    : sync.walletHeight;
-                return {
+                    ? Math.min(displayWalletHeight, validDaemonHeight)
+                    : displayWalletHeight;
+                const statusDecision = getSyncWatchdogDecision({
+                    isWalletReady,
+                    hasWallet: true,
+                    manualFullRescanMode: manualFullRescanModeRef.current,
+                    restoreSessionActive: isRestoreScanSessionActive(),
+                    resetInProgress: isResettingRef.current,
+                    scanRequestsSuspended: scanRequestsSuspendedRef.current,
+                    needsFullRescan: needsFullRescanRef.current,
+                    autoIntegrityRecoveryInFlight: autoIntegrityRecoveryInFlightRef.current,
+                    scanInProgress: scanInProgressRef.current || !!scanCoordinatorRef.current.activePromise,
+                    serviceScanInProgress: cspScanService.isScanningInProgress(),
+                    nativeWalletHeight: Math.max(sync.walletHeight || 0, persistedWalletHeight),
+                    uiWalletHeight: clampedWalletHeight,
+                    networkHeight: validDaemonHeight,
+                    nowMs: Date.now(),
+                    lastScanActivityAtMs: lastScanTimeRef.current || 0,
+                    staleScanMs: SYNC_WATCHDOG_STALE_SCAN_MS,
+                    tipGraceBlocks: SYNC_TIP_GRACE_BLOCKS,
+                });
+                const scanActiveForDisplay =
+                    (scanInProgressRef.current || !!scanCoordinatorRef.current.activePromise || cspScanService.isScanningInProgress()) &&
+                    !statusDecision.shouldClearStaleScanFlag;
+                const next = {
                     ...sync,
                     walletHeight: clampedWalletHeight,
                     daemonHeight: validDaemonHeight || sync.daemonHeight,
-                    // If wallet height was higher than daemon, we're synced not syncing
-                    isSyncing: clampedWalletHeight < validDaemonHeight && validDaemonHeight > 0,
-                    progress: validDaemonHeight > 0 ? Math.min(100, (clampedWalletHeight / validDaemonHeight) * 100) : 0
+                    isSyncing: scanActiveForDisplay || statusDecision.isBehind,
+                    progress: scanActiveForDisplay
+                        ? Math.min(99, prev.progress || sync.progress || 0)
+                        : statusDecision.isBehind
+                            ? (validDaemonHeight > 0 ? Math.min(99, (clampedWalletHeight / validDaemonHeight) * 100) : 0)
+                            : 100
                 };
+                // Bail out when nothing changed: returning prev keeps the state identity stable so
+                // the 30s poll doesn't force an app-wide re-render (every consumer re-renders on any
+                // provider state change). Measured: this poll alone re-rendered the whole tree 2/min.
+                const keys = Object.keys(next) as (keyof typeof next)[];
+                const unchanged = keys.length === Object.keys(prev).length &&
+                    keys.every(k => (next as unknown as Record<string, unknown>)[k] === (prev as unknown as Record<string, unknown>)[k]);
+                return unchanged ? prev : next;
             });
 
-            // CRITICAL: Unlocked balance depends on the wallet's current chain height.
-            // Advance the internal height before reading balances so matured stake returns
-            // become spendable as soon as they should.
             if (sync.daemonHeight > 0) {
-                walletService.setBlockchainHeight(sync.daemonHeight, true);
+                await walletService.setBlockchainHeight(sync.daemonHeight);
             }
 
-            // Get balance and transactions from WASM after height has been updated.
+            // Skip the O(wallet) reload (getBalance + getTransactions over all txs + merge + subs)
+            // when no scan has ingested a change since the last reload — the cheap sync-status/height
+            // update above still ran. A spend invalidates the balance snapshot (send/scan_tx), so a
+            // stale snapshot also forces the reload; otherwise only cosmetic display lags to the next tx.
+            if (!walletDataDirtyRef.current && walletService.isStateSnapshotValid() && transactionsRef.current.length > 0) {
+                // DISPLAY-TRUTH SYNC: the context balance copy is what every surface
+                // (send tab "available", balance card) renders, and historically it only
+                // updated on trusted scan commits -- a session whose commits went
+                // untrusted kept a frozen copy (e.g. unlocked=0) forever while the
+                // mirror snapshot held the correct values. Display state follows the
+                // snapshot unconditionally; trust only ever gates persistence.
+                try {
+                    const authBal = clampUnlockedBalance(getAuthoritativeNativeBalance(walletService.getBalance()).balance);
+                    setBalance(prev => (
+                        prev.balance !== authBal.balance || prev.unlockedBalance !== authBal.unlockedBalance
+                    ) ? authBal : prev);
+                } catch {}
+                return;
+            }
+            walletDataDirtyRef.current = false;
+
             const bal = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
             const newTxs = walletService.getTransactions();
 
-            // CRITICAL: Only update balance/transactions if WASM actually has data
-            // This prevents overwriting valid cached data when wallet is restored but not yet scanned
             const wasmHasData = newTxs.length > 0 || bal.balance > 0 || bal.unlockedBalance > 0;
 
             if (!wasmHasData) {
-                // WASM is empty, preserve cached data
                 return;
             }
 
-            // MERGE new transactions with existing ones (don't lose cached history)
-            // We need merged txs for stakes/history computation, so do merge inline
+            // Precomputed (async engine read) so the synchronous setTransactions updater
+            // below keeps its original shape.
+            const stakeStateHeight = sync.daemonHeight || sync.walletHeight || 0;
+            const parsedStakeState = await getNativeStakeState(stakeStateHeight);
+
             setTransactions(prevTxs => {
                 const mergedTxs = mergeTransactionsByDirection([
                     ...prevTxs,
@@ -2012,7 +2828,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     findNewTransactionsByDirection(newTxs, prevTxs).map(tx => tx.txid.slice(0, 8))
                 ));
 
-                // Remove confirmed TXs from pending list
                 const confirmedTxids = new Set(newTxs
                     .filter(tx => tx.height > 0)
                     .map(tx => tx.txid));
@@ -2023,23 +2838,19 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     return stillPending;
                 });
 
-                const currentHeight = sync.daemonHeight || sync.walletHeight || 0;
+                const currentHeight = stakeStateHeight;
                 const previousStakes = stakesRef.current;
-                const parsedStakeState = getNativeStakeState(currentHeight);
                 const parsedDisplayBalanceChanged = hasBalanceInfoChanged(
                     balanceRef.current,
                     clampUnlockedBalance(bal)
                 );
 
-                // Apply the parsed stake set immediately so the list and balance stay in sync
-                // even if yield enrichment resolves later or out of order.
-                applyStakes(parsedStakeState);
+                transactionsRef.current = mergedTxs;
+                applyStakes(parsedStakeState, mergedTxs);
                 void fetchYieldData(parsedStakeState, currentHeight).then((stakesWithRewards) => {
-                    applyStakes(stakesWithRewards);
+                    applyStakes(stakesWithRewards, mergedTxs);
                 });
 
-                // Recompute the display balance whenever the active stake total changes,
-                // even if the txids are unchanged and an existing tx was just reclassified.
                 const activeStakeTotalChanged = hasActiveStakeBalanceChanged(
                     previousStakes,
                     parsedStakeState,
@@ -2057,35 +2868,24 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 return mergedTxs;
             });
 
-            // Get subaddresses with balances from WASM
-            const subs = walletService.getSubaddresses();
+            const subs = await walletService.getSubaddresses();
 
-            // CRITICAL FIX: Merge with existing subaddresses to preserve labels
-            // WASM wallet might forget labels on reload, so we must prioritize our cached state labels
-            // Also check subaddressesRef.current because React state updates may be batched,
-            // and the ref is updated synchronously when cached subaddresses are loaded.
             setSubaddresses(prev => {
-                // Use ref as fallback if prev is empty (handles race condition during restore)
                 const labelsSource = prev.length > 0 ? prev : subaddressesRef.current;
 
                 return subs.map((sub, idx) => {
                     const index = sub.index?.minor ?? idx;
                     const wasmLabel = sub.label;
 
-                    // Check if WASM returned a default/empty label
                     const isDefaultWasmLabel = !wasmLabel || wasmLabel === `Subaddress ${index}` || wasmLabel === 'Primary Account';
 
-                    // Find existing label in state or ref
                     const existing = labelsSource.find(p => p.index === index);
 
-                    // Use existing label if WASM has default/empty label and we have a custom one
-                    // Also use existing label if wasmLabel is empty string
                     let finalLabel = wasmLabel;
                     if (isDefaultWasmLabel && existing && existing.label) {
                         finalLabel = existing.label;
                     }
 
-                    // Fallback to default if everything is empty
                     if (!finalLabel) {
                         finalLabel = (index === 0 ? 'Primary Account' : `Subaddress ${index}`);
                     }
@@ -2094,62 +2894,80 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         index,
                         label: finalLabel,
                         address: sub.address,
-                        balance: sub.unlocked_balance || 0 // Use UNLOCKED balance for display
+                        balance: sub.unlocked_balance || 0
                     };
                 });
             });
 
         } catch {
-            // Failed to refresh data
         }
     }, []);
 
-    // Generate wallet history chart data from native wallet state and historical prices.
-    // Uses hourly intervals to match MEXC price history granularity
-    // Reconstructs wallet balance forward from the earliest known wallet event.
-    const generateWalletHistory = (
+    const generateWalletHistory = async (
         txs: WalletTransaction[],
         currentBalance: number,
         historyStakes: Stake[] = stakes
     ) => {
-        // If we have a cached chart already, don't replace it with fallback-priced history.
-        // This is a common boot/unlock race on mobile where price history fetch is delayed.
         if (hydratedWalletHistoryFromCacheRef.current && transactions.length === 0 && (!priceHistory || priceHistory.length === 0)) {
             return;
         }
 
-        const fallbackPrice = salPrice > 0 ? salPrice : 0.20;
-        setWalletHistory(buildWalletHistory(txs, historyStakes, priceHistory, fallbackPrice, Date.now()));
+        const latestHistoricalPrice = priceHistory.length > 0
+            ? priceHistory[priceHistory.length - 1]?.[1] || 0
+            : 0;
+        // Use the same effective price as the balance card so the chart's current point equals the
+        // displayed USD balance; fall back to the latest historical price only if neither is set.
+        const fallbackPrice = effectivePriceRef.current > 0
+            ? effectivePriceRef.current
+            : (latestHistoricalPrice > 0 ? latestHistoricalPrice : 0.20);
+        // EXACT series from the wallet's transfer table when the binding exists;
+        // delta-replay reconstruction only as fallback for older WASM.
+        let exactPairs: Array<[number, number]> | null = null;
+        try {
+            const raw = await walletService.getEngine()?.call<string>('get_native_balance_history', [60]);
+            const parsed = raw ? JSON.parse(raw) : null;
+            if (Array.isArray(parsed) && parsed.length > 1) exactPairs = parsed;
+        } catch {}
+        // The engine answering EMPTY while cached transactions exist means the worker
+        // wallet hasn't finished importing yet — the chart generated too early. Don't
+        // let this attempt burn the signature; retry shortly so the exact series takes
+        // over as soon as the wallet is actually loaded.
+        if (!exactPairs && txs.length > 0) {
+            lastWalletHistorySignatureRef.current = '';
+            if (!walletHistoryRetryTimerRef.current) {
+                walletHistoryRetryTimerRef.current = window.setTimeout(() => {
+                    walletHistoryRetryTimerRef.current = null;
+                    void generateWalletHistory(transactionsRef.current, authoritativeBalanceSalRef.current, stakesRef.current ?? []);
+                }, 15000);
+            }
+        }
+        let chartTipHeight = 0;
+        try { chartTipHeight = await cspScanService.getNetworkHeight(); } catch {}
+        const builtHistory = exactPairs
+            ? buildExactWalletHistory(exactPairs, priceHistory, fallbackPrice, Date.now(), currentBalance, chartTipHeight)
+            : buildWalletHistory(txs, historyStakes, priceHistory, fallbackPrice, Date.now(), currentBalance);
+        setWalletHistory(builtHistory);
     };
 
-    // Generate a new mnemonic (seed phrase)
     const generateMnemonic = async (): Promise<string> => {
-        // Create a temporary wallet just to get the mnemonic
         const keys = await walletService.createWallet();
         const mnemonic = keys.mnemonic;
-        // Clear the wallet state - we just needed the mnemonic
         walletService.clearWallet();
         return mnemonic;
     };
 
-    // Create new wallet with existing mnemonic
     const createWallet = async (mnemonic: string, password: string): Promise<WalletKeys> => {
-        // Restore with the mnemonic to get full keys
         const keys = await walletService.restoreFromMnemonic(mnemonic, '', 0);
 
-        // Encrypt and store
-        const { encrypted, iv, salt } = await encrypt(keys.mnemonic, password);
+        const { encrypted, iv, salt, iterations } = await encrypt(keys.mnemonic, password);
 
-        // Allow saving again
         isResettingRef.current = false;
 
-        // Get current network height for new wallets
         let initialHeight = 0;
         try {
             const height = await cspScanService.getNetworkHeight();
             if (height > 0) initialHeight = height;
         } catch {
-            // Failed to get network height
         }
 
         const encryptedWallet: EncryptedWallet = {
@@ -2157,6 +2975,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             encryptedSeed: encrypted,
             iv,
             salt,
+            iterations,
             pub_viewKey: keys.pub_viewKey,
             pub_spendKey: keys.pub_spendKey,
             network: getCurrentWalletNetwork(),
@@ -2164,11 +2983,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             height: initialHeight
         };
 
-        safeWriteWallet(encryptedWallet);
+        // HARD FAIL if seed cannot persist: unlocked wallet w/ unsaved seed = funds unrecoverable
+        if (!safeWriteWallet(encryptedWallet)) {
+            throw new Error('Could not save your wallet to this device. Free up storage or disable private browsing, then try again. WRITE DOWN YOUR RECOVERY PHRASE before continuing.');
+        }
         markStoredWalletCreated();
 
-        // Store seed in memory only (secure - not persisted to storage)
         sessionSeedRef.current = keys.mnemonic;
+        sessionPasswordRef.current = password;
+        scanRequestsSuspendedRef.current = false;
 
         setAddress(keys.address);
         setLegacyAddress(walletService.getLegacyAddress());
@@ -2180,98 +3003,346 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         return keys;
     };
 
-    // Restore wallet from mnemonic
-    const restoreWallet = async (mnemonic: string, password: string, restoreHeight: number, hasReturnedTransfers: boolean = false): Promise<WalletKeys> => {
-        const keys = await walletService.restoreFromMnemonic(mnemonic, '', restoreHeight);
-
-        // Encrypt and store
-        const { encrypted, iv, salt } = await encrypt(mnemonic, password);
-
-        // Allow saving again
-        isResettingRef.current = false;
-
-        const encryptedWallet: EncryptedWallet = {
-            address: keys.address,
-            encryptedSeed: encrypted,
-            iv,
-            salt,
-            pub_viewKey: keys.pub_viewKey,
-            pub_spendKey: keys.pub_spendKey,
-            network: getCurrentWalletNetwork(),
-            createdAt: Date.now(),
-            height: restoreHeight
-        };
-
-        safeWriteWallet(encryptedWallet);
-        markStoredWalletCreated();
-
-        // Store flag for Phase 2b behavior during initial scan
-        // If true, Phase 2b will run synchronously to find returned transfers
+    const finalizeSeedRestore = useCallback(async (
+        walletRecord: EncryptedWallet,
+        mnemonic: string,
+        restoreHeight: number,
+        hasReturnedTransfers: boolean,
+        options?: {
+            forceFullRescan?: boolean;
+            scanSessionType?: ScanSessionType;
+            scanSessionId?: string;
+        }
+    ): Promise<void> => {
         if (hasReturnedTransfers) {
             localStorage.setItem('salvium_scan_returned_transfers', 'true');
         } else {
             localStorage.removeItem('salvium_scan_returned_transfers');
         }
 
-        // Store seed in memory only (secure - not persisted to storage)
+        if (!safeWriteWallet(walletRecord)) {
+            throw new Error('Could not save your restored wallet to this device. Free up storage or disable private browsing, then try again.');
+        }
+        markStoredWalletCreated();
+
+        const isRestoreSessionKickoff = options?.scanSessionType === 'restore-full-rescan';
+
         sessionSeedRef.current = mnemonic;
-
-        // Ensure the post-restore loading screen starts scanning from the user-selected
-        // restore height instead of whatever height the fresh WASM instance currently reports.
-        // This is critical for true full restores from 0.
         preferredScanStartHeightRef.current = restoreHeight;
+        forceCleanRestoreScanRef.current = options?.forceFullRescan === true;
+        scanRequestsSuspendedRef.current = false;
 
-        setAddress(keys.address);
+        setAddress(walletRecord.address);
         setLegacyAddress(walletService.getLegacyAddress());
         setCarrotAddress(walletService.getCarrotAddress());
-        setIsWalletReady(true);
+        setIsWalletReady(!isRestoreSessionKickoff);
         setIsLocked(false);
+        setNativeBalanceTrust({
+            trusted: false,
+            reason: 'Verifying wallet balance state',
+        });
+        setNeedsRecovery(false);
+
         refreshData();
+
+        setTimeout(() => {
+            if (
+                scanInProgressRef.current ||
+                needsFullRescanRef.current ||
+                autoIntegrityRecoveryInFlightRef.current
+            ) {
+                return;
+            }
+            // A non-zero restore height must still kick off the CSP scan. Previously, when a
+            // returned-transfer full-rescan session was active AND restoreHeight !== 0, this
+            // returned early and no scan ever started (restore stalled at 0%). Start it for the
+            // active session instead (requestScanStart validates the session id).
+            const activeRestoreForHeight =
+                (isRestoreScanSessionActive() && restoreHeight !== 0)
+                    ? activeScanSessionRef.current
+                    : null;
+            void requestScanStart({
+                fromHeight: restoreHeight,
+                reason: 'finalizeSeedRestore',
+                sessionType: activeRestoreForHeight
+                    ? 'restore-full-rescan'
+                    : (options?.scanSessionType ?? (options?.forceFullRescan ? 'restore-full-rescan' : 'background')),
+                sessionId: activeRestoreForHeight ? activeRestoreForHeight.id : options?.scanSessionId,
+            });
+        }, 500);
+    }, [refreshData]);
+
+    const restoreWalletRecordFromSeed = async (
+        mnemonic: string,
+        walletRecord: EncryptedWallet,
+        restoreHeight: number,
+        hasReturnedTransfers: boolean,
+        options?: {
+            forceFullRescan?: boolean;
+        }
+    ): Promise<WalletKeys> => {
+        const keys = await walletService.restoreFromMnemonic(mnemonic, '', restoreHeight);
+
+        const restoredWallet: EncryptedWallet = {
+            ...walletRecord,
+            address: keys.address,
+            pub_viewKey: keys.pub_viewKey,
+            pub_spendKey: keys.pub_spendKey,
+            network: getCurrentWalletNetwork(),
+            height: restoreHeight,
+        };
+
+        await finalizeSeedRestore(restoredWallet, mnemonic, restoreHeight, hasReturnedTransfers, options);
 
         return keys;
     };
 
-    // Unlock existing wallet with password
+    const prepareForAuthoritativeSeedRestore = useCallback(async () => {
+        const existingWallet = safeReadWallet();
+        const walletAddress = existingWallet?.address || address || walletService.getAddress();
+
+        try {
+            localStorage.setItem('salvium_initial_scan_complete', 'false');
+            localStorage.removeItem('salvium_restore_scan_finished');
+            localStorage.removeItem('salvium_vault_restore_pending');
+            localStorage.removeItem('salvium_vault_restore_started_at');
+            localStorage.removeItem('salvium_scan_returned_transfers');
+        } catch {
+        }
+
+        walletStateService.stop();
+
+        invalidateInFlightScanState();
+        await cspScanService.cancelScanAndWait(5000);
+        cspScanService.resetIncrementalState();
+        forceCleanRestoreScanRef.current = false;
+        preferredScanStartHeightRef.current = undefined;
+        needsGapCheckRef.current = false;
+        needsFullRescanRef.current = false;
+
+        setIsWalletReady(false);
+        setAddress('');
+        setLegacyAddress('');
+        setCarrotAddress('');
+        setNeedsRecovery(false);
+        setLastSuccessfulScanAt(0);
+        setScanHealth(createInitialScanHealth());
+        setSyncStatus({ walletHeight: 0, daemonHeight: 0, isSyncing: false, progress: 0 });
+
+        setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
+        setTransactions([]);
+        setPendingTransactions([]);
+        setMempoolTransactions([]);
+        setSubaddresses([]);
+        transactionsRef.current = [];
+        pendingTransactionsRef.current = [];
+        mempoolTransactionsRef.current = [];
+        applyStakes([]);
+        setWalletHistory([]);
+        hydratedWalletHistoryFromCacheRef.current = false;
+
+        if (walletAddress) {
+            const deletePromises = getWalletRescanCacheKeys(walletAddress).map((key) => deleteFromIndexedDB(key));
+            await Promise.allSettled([
+                ...deletePromises,
+                walletStateService.clear(walletAddress),
+                forceCleanSlate(walletAddress),
+                clearReturnAddressCache(),
+            ]);
+        }
+
+        if (walletService.hasWallet()) {
+            walletService.clearWallet();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+
+        await walletService.deleteWalletFile();
+        await walletService.init();
+    }, [address, invalidateInFlightScanState]);
+
+    const runRestoreWalletPipeline = async ({
+        mnemonic,
+        walletRecord,
+        restoreHeight,
+        hasReturnedTransfers,
+        source,
+    }: {
+        mnemonic: string;
+        walletRecord: EncryptedWallet;
+        restoreHeight: number;
+        hasReturnedTransfers: boolean;
+        source: 'restoreWallet' | 'rescanWallet';
+    }): Promise<WalletKeys> => {
+        const restoreSessionId = beginRestoreScanSession(source, restoreHeight, {
+            requiresReturnedTransferScan: hasReturnedTransfers,
+        });
+
+        debugLog('[WalletContext] Authoritative seed restore pipeline invoked', {
+            pipeline: 'authoritative-seed-restore',
+            source,
+            restoreHeight,
+            hasReturnedTransfers,
+        });
+
+        await prepareForAuthoritativeSeedRestore();
+
+        const keys = await restoreWalletRecordFromSeed(
+            mnemonic,
+            walletRecord,
+            restoreHeight,
+            hasReturnedTransfers,
+            {
+                forceFullRescan: restoreHeight === 0,
+                scanSessionType: 'restore-full-rescan',
+                scanSessionId: restoreSessionId,
+            }
+        );
+
+        if (keys.address) {
+            walletStateService.initialize(keys.address);
+        }
+
+        return keys;
+    };
+
+    const buildAuthoritativeRestoreWalletRecord = async ({
+        mnemonic,
+        password,
+        restoreHeight,
+        existingWallet,
+    }: {
+        mnemonic: string;
+        password?: string;
+        restoreHeight: number;
+        existingWallet?: EncryptedWallet;
+    }): Promise<EncryptedWallet> => {
+        let encryptedSeed = existingWallet?.encryptedSeed || '';
+        let iv = existingWallet?.iv || '';
+        let salt = existingWallet?.salt || '';
+        let iterations = existingWallet?.iterations;
+
+        if (password) {
+            const encryptedSeedMaterial = await encrypt(mnemonic, password);
+            encryptedSeed = encryptedSeedMaterial.encrypted;
+            iv = encryptedSeedMaterial.iv;
+            salt = encryptedSeedMaterial.salt;
+            iterations = encryptedSeedMaterial.iterations;
+        }
+
+        if (!encryptedSeed || !iv || !salt) {
+            throw new Error('Authoritative seed restore requires encrypted seed material');
+        }
+
+        return {
+            address: '',
+            encryptedSeed,
+            iv,
+            salt,
+            iterations,
+            pub_viewKey: '',
+            pub_spendKey: '',
+            network: getCurrentWalletNetwork(),
+            createdAt: existingWallet?.createdAt || Date.now(),
+            height: restoreHeight,
+        };
+    };
+
+    const restoreWalletFromSeedAuthoritative = async ({
+        mnemonic,
+        restoreHeight,
+        hasReturnedTransfers,
+        source,
+        password,
+        existingWallet,
+    }: {
+        mnemonic: string;
+        restoreHeight: number;
+        hasReturnedTransfers: boolean;
+        source: 'restoreWallet' | 'rescanWallet';
+        password?: string;
+        existingWallet?: EncryptedWallet;
+    }): Promise<WalletKeys> => {
+        isResettingRef.current = false;
+        const ABSOLUTE_MAX_RESTORE_HEIGHT = 10000000;
+        let safeRestoreHeight = Number.isFinite(restoreHeight) && restoreHeight > 0
+            ? Math.floor(restoreHeight)
+            : 0;
+        try {
+            const liveNetworkHeight = await cspScanService.getNetworkHeight();
+            if (liveNetworkHeight > 0 && safeRestoreHeight > liveNetworkHeight) {
+                safeRestoreHeight = liveNetworkHeight;
+            }
+        } catch {
+        }
+        if (safeRestoreHeight > ABSOLUTE_MAX_RESTORE_HEIGHT) {
+            safeRestoreHeight = ABSOLUTE_MAX_RESTORE_HEIGHT;
+        }
+        const walletRecord = await buildAuthoritativeRestoreWalletRecord({
+            mnemonic,
+            password,
+            restoreHeight: safeRestoreHeight,
+            existingWallet,
+        });
+        return runRestoreWalletPipeline({
+            mnemonic,
+            walletRecord,
+            restoreHeight: safeRestoreHeight,
+            hasReturnedTransfers,
+            source,
+        });
+    };
+
+    const restoreWallet = async (mnemonic: string, password: string, restoreHeight: number, hasReturnedTransfers: boolean = false): Promise<WalletKeys> => {
+        sessionPasswordRef.current = password;
+        return restoreWalletFromSeedAuthoritative({
+            mnemonic,
+            password,
+            restoreHeight,
+            hasReturnedTransfers,
+            source: 'restoreWallet',
+        });
+    };
+
     const unlockWallet = async (password: string, isVaultRestore: boolean = false): Promise<boolean> => {
         const wallet = safeReadWallet();
         if (!wallet) {
             throw new Error('No wallet found');
         }
 
-        // Decrypt the seed - this verifies the password is correct
-        const mnemonic = await decrypt(wallet.encryptedSeed, wallet.iv, wallet.salt, password);
+        const mnemonic = await decrypt(wallet.encryptedSeed, wallet.iv, wallet.salt, password, wallet.iterations);
 
-        // If this is a vault restore, mark it so recovery check is skipped
         if (isVaultRestore) {
             restoredFromVaultRef.current = true;
         }
 
-        // If matches, we are good
-        isResettingRef.current = false; // Allow saving again
+        isResettingRef.current = false;
+        sessionPasswordRef.current = password;
 
-        // If wallet is already ready AND WASM wallet is still alive (not killed by mobile hibernation)
-        // just unlock UI - no need to reinit
-        if (isWalletReady && walletService.isReady() && walletService.hasWallet()) {
-            // CRITICAL: Reset scan state flags here too (not just in continueUnlockFlow)
-            // This path skips continueUnlockFlow, so flags must be reset here
+        if (!isVaultRestore && isWalletReady && walletService.isReady() && walletService.hasWallet()) {
             scanInProgressRef.current = false;
             setIsScanning(false);
             setScanProgress(null);
-            setSyncStatus(prev => ({ ...prev, isSyncing: false })); // Reset UI sync indicator
+            setSyncStatus(prev => ({ ...prev, isSyncing: false }));
 
             sessionSeedRef.current = mnemonic;
             setIsLocked(false);
             setNeedsRecovery(false);
-            // Trigger a quick sync check since we skipped reinit
-            setTimeout(() => startScan(), 500);
+            setTimeout(() => {
+                if (
+                    manualFullRescanModeRef.current ||
+                    needsFullRescanRef.current ||
+                    autoIntegrityRecoveryInFlightRef.current
+                ) {
+                    return { terminalState: 'cancelled', reason: 'joined already-running scanner' };
+                }
+                startScan();
+            }, 500);
             return true;
         }
 
-        // Restore cached data IMMEDIATELY (before WASM init completes)
         if (wallet.address) {
             setAddress(wallet.address);
 
-            // Load large data from IndexedDB (with localStorage fallback for migration)
             const [idbTxs, idbHistory] = await Promise.all([
                 loadFromIndexedDB(`wallet_txs_${wallet.address}`),
                 loadFromIndexedDB(`wallet_history_${wallet.address}`)
@@ -2285,20 +3356,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 hydratedWalletHistoryFromCacheRef.current = true;
                 setWalletHistory(history);
             }
-            // walletHistory is regenerated by the authoritative reactive effect
-            // after transactions/balance/stakes hydrate into React state.
         }
-        if (wallet.cachedBalance) {
-            setBalance(clampUnlockedBalance(wallet.cachedBalance));
+        const trustedCachedBalance = getTrustedCachedBalance(wallet);
+        if (trustedCachedBalance) {
+            setBalance(clampUnlockedBalance(trustedCachedBalance));
         }
         if (wallet.cachedSubaddresses && wallet.cachedSubaddresses.length > 0) {
             setSubaddresses(wallet.cachedSubaddresses);
-            // CRITICAL FIX: Update ref immediately so refreshData() can see the labels
-            // React state updates are async, but refreshData() uses subaddressesRef.current
-            // for label preservation. Without this, the ref might be stale when refreshData runs.
             subaddressesRef.current = wallet.cachedSubaddresses;
         }
-        // Set walletHeight from cached height immediately (shows in sidebar)
         if (wallet.height && wallet.height > 0) {
             setSyncStatus(prev => ({
                 ...prev,
@@ -2306,37 +3372,56 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             }));
         }
 
-        // Load wallet cache from IndexedDB (may be 30-50MB, too big for localStorage)
-        // CRITICAL FIX: Use address-scoped key to prevent cross-wallet contamination
         const cacheKey = `wallet_cache_${wallet.address}`;
         let cachedOutputsHex = await loadFromIndexedDB(cacheKey) || '';
         if (cachedOutputsHex) {
         }
 
-        // Determine if cache is missing but wallet had data - this is the "recovery needed" scenario
-        const hadData = (wallet.cachedBalance?.balance || 0) > 0 || (wallet.cachedTransactions?.length || 0) > 0;
+        const hadData = (trustedCachedBalance?.balance || 0) > 0 || (wallet.cachedTransactions?.length || 0) > 0;
         const cacheMissing = !cachedOutputsHex || cachedOutputsHex.length === 0;
-
-        // If cache is missing but wallet had data, let user choose: restore from vault file OR full rescan
         if (cacheMissing && hadData) {
-            // Store credentials for later use when user makes their choice
+            // PERMANENT telemetry: reopening without a wallet cache forces a full rescan
+            // (minutes). Field visibility for how often real users pay this cost.
+            reportClientEvent('wallet.reopen_without_cache', {
+                level: 'warn',
+                context: { txCount: wallet.cachedTransactions?.length || 0 },
+            });
+        }
+
+        if (isVaultRestore) {
+            reportRestoreDiagnostic('restore.vault_unlock_cache_loaded', {
+                source: 'vault-backup-restore',
+                fromHeight: cacheMissing && hadData ? 0 : wallet.height || 0,
+                cachePresent: !cacheMissing,
+                cacheMissing,
+                cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
+                hadData,
+                txCount: wallet.cachedTransactions?.length || 0,
+                subaddressCount: wallet.cachedSubaddresses?.length || 0,
+            });
+        }
+
+        let vaultRestoreSessionId: string | undefined;
+        if (isVaultRestore) {
+            vaultRestoreSessionId = beginRestoreScanSession('vault-backup-restore', cacheMissing && hadData ? 0 : wallet.height || 0, {
+                requiresReturnedTransferScan: false,
+            });
+        }
+
+        if (cacheMissing && hadData) {
             pendingPasswordRef.current = password;
             pendingWalletRef.current = wallet;
             pendingMnemonicRef.current = mnemonic;
 
-            // Show the recovery options screen
-            // BUG FIX: Don't unlock here! Recovery flow will do a full rescan which needs WASM restoration first.
-            // Just proceed to continueUnlockFlow with empty cache - it will restore WASM and trigger scan.
-            cachedOutputsHex = ''; // Treat as fresh wallet
-            // Fall through to continueUnlockFlow instead of returning
+            cachedOutputsHex = '';
         }
 
-        // Continue with normal unlock flow (cache exists or wallet was empty)
-        await continueUnlockFlow(wallet, mnemonic, cachedOutputsHex, hadData);
+        await continueUnlockFlow(wallet, mnemonic, cachedOutputsHex, hadData, isVaultRestore ? {
+            scanSessionType: 'restore-full-rescan',
+            scanSessionId: vaultRestoreSessionId,
+            restoreSource: 'vault-backup-restore',
+        } : undefined);
 
-        // Check if restoration failed (error states were set in continueUnlockFlow)
-        // If WASM wallet not available, error screen will show (needs isWalletReady=true + hasWallet=false)
-        // But return false to prevent LockScreen from calling onUnlock() which might clear states
         const wasmOk = walletService.isReady() && walletService.hasWallet();
         if (!wasmOk) {
             return false;
@@ -2345,40 +3430,65 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         return true;
     };
 
-    // Continue unlock flow after user has made recovery choice or when no recovery is needed
     const continueUnlockFlow = async (
         wallet: EncryptedWallet,
         mnemonic: string,
         cachedOutputsHex: string,
-        hadData: boolean
+        hadData: boolean,
+        options?: {
+            forceCleanRestoreScan?: boolean;
+            scanSessionType?: ScanSessionType;
+            scanSessionId?: string;
+            restoreSource?: string;
+        }
     ) => {
-        scanInProgressRef.current = false;
-        setIsScanning(false);
-        setScanProgress(null);
-        setSyncStatus(prev => ({ ...prev, isSyncing: false })); // Reset UI sync indicator
+        unlockBootstrapInFlightRef.current = true;
+        try {
+        const forceCleanRestoreScan = options?.forceCleanRestoreScan === true;
+        forceCleanRestoreScanRef.current = forceCleanRestoreScan;
+        setNativeBalanceTrust({
+            trusted: false,
+            reason: 'Verifying wallet balance state',
+        });
+
+        invalidateInFlightScanState();
 
         await cspScanService.cancelScanAndWait(3000);
 
-        // Initialize WASM
         await walletService.init();
 
-        // CRITICAL: Clear any existing wallet before restoring
-        // On mobile, if WASM state persists from previous session, restoration may fail
         if (walletService.hasWallet()) {
             walletService.clearWallet();
-            await new Promise(r => setTimeout(r, 100)); // Give WASM time to clear
+            await new Promise(r => setTimeout(r, 100));
         }
 
-        // Determine restore height logic to prevent "Zombie Wallet"
-        // If cache is missing but we had data, we must rescan from 0
         let finalRestoreHeight = wallet.height || 0;
         const cacheMissing = !cachedOutputsHex || cachedOutputsHex.length === 0;
+        const trustedCachedBalance = getTrustedCachedBalance(wallet);
 
-        if (cacheMissing && hadData) {
+        if (forceCleanRestoreScan) {
+            finalRestoreHeight = 0;
+        } else if (cacheMissing && hadData) {
             finalRestoreHeight = 0;
         }
 
-        // Restore wallet with safety-checked height
+        const restoreSessionRequested = options?.scanSessionType === 'restore-full-rescan';
+        const restoreSource = options?.restoreSource || (restoreSessionRequested ? 'restore-unlock' : 'unlock');
+        if (restoreSessionRequested) {
+            reportRestoreDiagnostic('restore.unlock_bootstrap_started', {
+                source: restoreSource,
+                sessionType: options?.scanSessionType || 'background',
+                sessionActive: !!options?.scanSessionId,
+                fromHeight: finalRestoreHeight,
+                finalRestoreHeight,
+                cachePresent: !cacheMissing,
+                cacheMissing,
+                cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
+                hadData,
+                forceCleanRestoreScan,
+            });
+        }
+
         let restoreSuccess = false;
         try {
             const result = await walletService.restoreFromMnemonic(mnemonic, '', finalRestoreHeight);
@@ -2392,9 +3502,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             throw new Error(error);
         }
 
-        // CRITICAL: Wait for WASM to actually have the wallet before proceeding
         let wasmReady = false;
-        for (let i = 0; i < 30; i++) { // Increased to 3 seconds
+        for (let i = 0; i < 30; i++) {
             const ready = walletService.isReady();
             const hasW = walletService.hasWallet();
             if (ready && hasW) {
@@ -2405,16 +3514,34 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
 
         if (!wasmReady) {
+            if (restoreSessionRequested) {
+                reportRestoreDiagnostic('restore.unlock_bootstrap_failed', {
+                    source: restoreSource,
+                    sessionType: options?.scanSessionType || 'background',
+                    sessionActive: !!options?.scanSessionId,
+                    fromHeight: finalRestoreHeight,
+                    wasmReady: walletService.isReady(),
+                    hasWallet: walletService.hasWallet(),
+                    reason: 'wasm_wallet_unavailable',
+                }, 'error', 'WASM wallet not available after restoration');
+            }
             const error = 'WASM wallet not available after restoration (hasWallet=false after 3 seconds)';
             flushSync(() => {
                 setRestorationError(error);
                 setInitError(error);
-                // Set isWalletReady to true so error screen displays (needs isWalletReady && !hasWallet)
+                const errorScreenHeight = syncStatusRef.current.daemonHeight || finalRestoreHeight || 0;
+                setSyncStatus(prev => ({
+                    ...prev,
+                    walletHeight: errorScreenHeight,
+                    daemonHeight: errorScreenHeight,
+                    isSyncing: false,
+                    progress: 100,
+                }));
+                setScanProgress(null);
                 setIsWalletReady(true);
                 setIsLocked(false);
             });
-            // DO NOT throw - let error states persist and error screen show
-            return; // Exit early without continuing setup
+            return;
         }
 
         const restoredAddress = walletService.getAddress();
@@ -2432,18 +3559,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             setCarrotAddress(walletService.getCarrotAddress());
         }
 
-        // Store seed in memory only (secure - not persisted to storage)
         sessionSeedRef.current = mnemonic;
+        scanRequestsSuspendedRef.current = false;
 
-        isResettingRef.current = false; // Allow saving again
+        isResettingRef.current = false;
 
-        // ONLY set wallet ready after confirming WASM has the wallet
         setIsWalletReady(true);
         setIsLocked(false);
-        setNeedsRecovery(false);  // Clear recovery state
+        setNeedsRecovery(false);
 
-        // Load persisted wallet state from WalletStateService (IndexedDB)
-        // This restores subaddress map data that helps prevent "Failed to generate key image" errors
         let persistedSubaddressCount = 0;
         try {
             const persistedState = await walletStateService.load(wallet.address);
@@ -2451,19 +3575,24 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 persistedSubaddressCount = persistedState.subaddresses.length;
             }
         } catch {
-            // Failed to load persisted state - continue with cached data only
         }
 
         fullWalletCacheImportedRef.current = false;
 
-        // Import FULL wallet cache (enables sending without full rescan after page refresh)
-        if (cachedOutputsHex && cachedOutputsHex.length > 0) {
-            // Try new full cache import first, fall back to old outputs import
+        if (!forceCleanRestoreScan && cachedOutputsHex && cachedOutputsHex.length > 0) {
             let importSuccess = false;
             if (typeof walletService.importWalletCache === 'function') {
-                importSuccess = walletService.importWalletCache(cachedOutputsHex);
+                const minTransfers = getMinimumExpectedCacheTransfers(
+                    trustedCachedBalance,
+                    wallet.cachedTransactions || []
+                );
+                importSuccess = await walletService.importWalletCache(cachedOutputsHex, minTransfers);
                 if (importSuccess) {
                     fullWalletCacheImportedRef.current = true;
+                    // Self-heal the tx display from the just-imported wallet (authoritative). The idb tx
+                    // cache (~3214) can be empty/partial (interrupted resync) and the catch-up commit that
+                    // would setTransactions is gated off when no new tx arrives on reopen -> blank list.
+                    try { const wasmTxs = walletService.getTransactions(); if (wasmTxs && wasmTxs.length > 0) setTransactions(wasmTxs); } catch {}
                     const snapshot = captureNativeSnapshot('cache_import_complete', {
                         importedFullCache: true,
                         restoreHeight: wallet.height || 0,
@@ -2482,10 +3611,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             }
 
             if (!importSuccess) {
-                // Fallback to old import method
-                const numImported = walletService.importOutputs(cachedOutputsHex);
+                const numImported = await walletService.importOutputs(cachedOutputsHex);
                 importSuccess = numImported > 0;
                 if (importSuccess) {
+                    try { const wasmTxs = walletService.getTransactions(); if (wasmTxs && wasmTxs.length > 0) setTransactions(wasmTxs); } catch {}
                     const snapshot = captureNativeSnapshot('outputs_import_complete', {
                         importedFullCache: false,
                         importedOutputs: numImported,
@@ -2501,29 +3630,28 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         snapshot,
                         getAuthoritativeNativeBalance(walletService.getBalance()).balance
                     );
-                    // PRIVACY-PRESERVING: Restore spent status from cached data (no daemon query)
-                    // import_outputs_from_str() resets m_spent=false for all outputs
-                    // We restore from locally cached spent key images instead of querying daemon
                     if (wallet.cachedSpentKeyImages && Object.keys(wallet.cachedSpentKeyImages).length > 0) {
-                        const markedSpent = walletService.restoreSpentStatusFromCache(wallet.cachedSpentKeyImages);
+                        const markedSpent = await walletService.restoreSpentStatusFromCache(wallet.cachedSpentKeyImages);
                         if (markedSpent > 0) {
                         }
                     }
                 }
             }
 
-            // CRITICAL: Precompute subaddresses to populate subaddress map
-            // This fixes "Failed to generate key image helper" error after wallet restore
-            // The imported cache may not fully rebuild the m_subaddresses map
-            // Use the max of cached, persisted, and minimum (100) subaddress counts
             if (importSuccess) {
                 const numSubaddresses = Math.max(
                     (wallet.cachedSubaddresses?.length || 0) + 50,
                     persistedSubaddressCount + 50,
                     100
                 );
-                walletService.precomputeSubaddresses(numSubaddresses);
-                await walletService.hydrateRuntimeFullTxContext();
+                await walletService.precomputeSubaddresses(numSubaddresses);
+                // ONE deferred background hydration, well after the UI is interactive. With the
+                // v5 wallet cache the runtime txs PERSIST, so this is expensive exactly once per
+                // wallet (first load after upgrade); afterwards the candidate list is ~empty and
+                // this returns immediately. Governed (1/min) + yielded small batches inside.
+                setTimeout(() => {
+                    void walletService.hydrateRuntimeFullTxContext().catch(() => {});
+                }, 30000);
             }
         }
 
@@ -2534,15 +3662,57 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 actualNetworkHeight = fetchedHeight;
             }
         } catch {
-            // Failed to fetch network height on unlock
         }
 
         if (actualNetworkHeight > 0) {
-            walletService.setBlockchainHeight(actualNetworkHeight);
+            await walletService.setBlockchainHeight(actualNetworkHeight);
+        }
+
+        if (restoreSessionRequested) {
+            const initialScanStartHeight = forceCleanRestoreScan || (finalRestoreHeight === 0 && hadData)
+                ? 0
+                : finalRestoreHeight;
+            setRestoreScanPhase('phase1_main_scan', 'preparing wallet scan', 'preparing');
+            setSyncStatus(prev => ({
+                ...prev,
+                walletHeight: initialScanStartHeight,
+                daemonHeight: actualNetworkHeight || finalRestoreHeight || 0,
+                isSyncing: true,
+                progress: 0,
+                scanStartHeight: initialScanStartHeight,
+            }));
+            setScanProgress({
+                progress: 0,
+                phase: '1',
+                message: 'Preparing wallet restore scan...',
+                scannedBlocks: 0,
+                totalBlocks: Math.max(1, (actualNetworkHeight || finalRestoreHeight || 0) - initialScanStartHeight),
+                completedChunks: 0,
+                totalChunks: 0,
+                viewTagMatches: 0,
+                bytesReceived: 0,
+                blocksPerSecond: 0,
+                overallProgress: 0,
+                percentage: 0,
+                statusMessage: 'Preparing wallet restore scan...',
+                phaseKey: 'preparing',
+            });
+            reportRestoreDiagnostic('restore.unlock_bootstrap_ready', {
+                source: restoreSource,
+                sessionType: options?.scanSessionType || 'background',
+                sessionActive: !!options?.scanSessionId,
+                fromHeight: initialScanStartHeight,
+                finalRestoreHeight,
+                actualNetworkHeight,
+                cachePresent: !cacheMissing,
+                cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
+                wasmReady: walletService.isReady(),
+                hasWallet: walletService.hasWallet(),
+            });
         }
 
         const unlockHydratedBalance = getPreferredHydratedBalance(
-            wallet.cachedBalance,
+            trustedCachedBalance,
             wallet.cachedTransactions || [],
             [],
             actualNetworkHeight || finalRestoreHeight || 0
@@ -2552,7 +3722,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
 
         const bootHeight = actualNetworkHeight || finalRestoreHeight || 0;
-        const bootStakes = getNativeStakeState(bootHeight);
+        const bootStakes = await getNativeStakeState(bootHeight);
         applyStakes(bootStakes);
         void fetchYieldData(bootStakes, bootHeight).then((stakesWithRewards) => {
             applyStakes(stakesWithRewards);
@@ -2562,21 +3732,78 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             bootHeight,
             restoreHeight: finalRestoreHeight,
         });
+        const unlockNativeBalance = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
+        const cachedTxCount = wallet.cachedTransactions?.length || 0;
+        const nativeTransferCount = unlockSnapshot?.transfer_count || 0;
+        const severeRestoreMismatch =
+            !!unlockSnapshot &&
+            cachedTxCount >= 200 &&
+            nativeTransferCount > 0 &&
+            nativeTransferCount < Math.floor(cachedTxCount * 0.5);
+
+        if (severeRestoreMismatch) {
+            debugWarn('[WalletContext] Severe native transaction history mismatch detected', {
+                cachedTxCount,
+                nativeTransferCount,
+                restoreHeight: finalRestoreHeight,
+            });
+            needsFullRescanRef.current = true;
+            preferredScanStartHeightRef.current = 0;
+            setNativeBalanceTrust({
+                trusted: false,
+                reason: 'Native transaction history requires full repair',
+            });
+            setSyncStatus(prev => ({
+                ...prev,
+                walletHeight: 0,
+                isSyncing: true,
+                scanStartHeight: 0,
+                progress: 0,
+            }));
+        }
+
+        try {
+            const storedWallet = safeReadWallet();
+            if (storedWallet && walletService.hasWallet()) {
+                storedWallet.cachedBalance = { ...unlockNativeBalance };
+                storedWallet.cachedBalanceVersion = BASE_ASSET_CACHED_BALANCE_VERSION;
+                safeWriteWallet(storedWallet);
+            }
+        } catch {
+        }
+
+        const unlockBalanceTrust = await evaluateNativeBalanceTrust(
+            unlockSnapshot,
+            unlockNativeBalance
+        );
+        const effectiveUnlockBalanceTrust = wallet.scanRepairRequired
+            ? {
+                trusted: false,
+                reason: wallet.scanRepairReason || 'Pending scan repair from a previous session',
+            }
+            : unlockBalanceTrust;
+        if (wallet.scanRepairRequired) {
+            needsFullRescanRef.current = true;
+            try {
+                localStorage.setItem('salvium_scan_returned_transfers', 'true');
+            } catch {
+            }
+        }
+        if (!severeRestoreMismatch) {
+            setNativeBalanceTrust(effectiveUnlockBalanceTrust);
+        }
         void recordNativeSnapshotHealth(
             'unlock_bootstrap_complete',
             unlockSnapshot,
-            getAuthoritativeNativeBalance(walletService.getBalance()).balance
+            unlockNativeBalance
         );
         scheduleNativeIntegrityRecovery(
             'unlock_bootstrap_complete',
             unlockSnapshot,
-            getAuthoritativeNativeBalance(walletService.getBalance()).balance
+            unlockNativeBalance
         );
 
-        // walletHistory is regenerated by the authoritative reactive effect
-        // after transactions/balance/stakes hydrate into React state.
-
-        if (actualNetworkHeight > finalRestoreHeight) {
+        if (!restoreSessionRequested && actualNetworkHeight > finalRestoreHeight) {
             setSyncStatus(prev => ({
                 ...prev,
                 walletHeight: finalRestoreHeight,
@@ -2584,7 +3811,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 isSyncing: true,
                 progress: finalRestoreHeight > 0 ? Math.min(100, (finalRestoreHeight / actualNetworkHeight) * 100) : 0
             }));
-        } else if (actualNetworkHeight > 0) {
+        } else if (!restoreSessionRequested && actualNetworkHeight > 0) {
             setSyncStatus(prev => ({
                 ...prev,
                 walletHeight: finalRestoreHeight,
@@ -2594,11 +3821,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             }));
         }
 
-        // Reconcile localStorage height with ScanJournal checkpoint
         if (wallet.address) {
             const correctedHeight = await reconcileOnStartup(wallet.address);
             if (correctedHeight !== null) {
-                // Update sync status to reflect corrected height
                 setSyncStatus(prev => ({
                     ...prev,
                     walletHeight: correctedHeight
@@ -2607,26 +3832,63 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
 
         if (finalRestoreHeight === 0 && hadData) {
-            // Zombie Recovery: skip refreshData to preserve cached UI during rescan
         } else {
             refreshData();
         }
 
-        const preferredScanStartHeight = finalRestoreHeight === 0 && hadData ? 0 : undefined;
+        const preferredScanStartHeight =
+            forceCleanRestoreScan || (finalRestoreHeight === 0 && hadData)
+                ? 0
+                : undefined;
         preferredScanStartHeightRef.current = preferredScanStartHeight;
-        needsGapCheckRef.current = true;
+        needsGapCheckRef.current = !forceCleanRestoreScan;
+
+        if (needsFullRescanRef.current && !forceCleanRestoreScan) {
+            setTimeout(() => {
+                if (autoIntegrityRecoveryInFlightRef.current || scanInProgressRef.current || !rescanWalletRef.current) {
+                    return;
+                }
+                if ((window as any)?.Capacitor?.isNativePlatform?.()) {
+                    window.dispatchEvent(new CustomEvent('salvium:auto-rescan'));
+                }
+                needsFullRescanRef.current = false;
+                autoIntegrityRecoveryInFlightRef.current = true;
+                void rescanWalletRef.current().finally(() => {
+                    autoIntegrityRecoveryInFlightRef.current = false;
+                });
+            }, 150);
+            return;
+        }
 
         setTimeout(() => {
             if (scanInProgressRef.current) return;
-            if (preferredScanStartHeight === 0) {
-                startScan(0);
-            } else {
-                startScan();
-            }
+            const scanFromHeight = preferredScanStartHeight === 0 ? 0 : undefined;
+            const scheduledSessionType = restoreSessionRequested
+                ? 'restore-full-rescan'
+                : (scanFromHeight === 0 ? 'restore-full-rescan' : 'background');
+            reportRestoreDiagnostic('restore.scan_scheduled', {
+                source: restoreSource,
+                sessionType: scheduledSessionType,
+                sessionActive: restoreSessionRequested,
+                fromHeight: scanFromHeight ?? finalRestoreHeight,
+                finalRestoreHeight,
+                actualNetworkHeight,
+                preferredScanStartHeight: preferredScanStartHeight ?? -1,
+                cachePresent: !cacheMissing,
+                cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
+            });
+            void requestScanStart({
+                fromHeight: scanFromHeight,
+                reason: restoreSessionRequested ? `continueUnlockFlow:${restoreSource}` : 'continueUnlockFlow',
+                sessionType: scheduledSessionType,
+                sessionId: restoreSessionRequested ? options?.scanSessionId : undefined,
+            });
         }, 500);
+        } finally {
+            unlockBootstrapInFlightRef.current = false;
+        }
     };
 
-    // User chose to proceed with full rescan instead of restoring from vault backup
     const proceedWithFullRescan = async () => {
         const wallet = pendingWalletRef.current;
         const mnemonic = pendingMnemonicRef.current;
@@ -2635,21 +3897,25 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             return;
         }
 
-        // Clear pending refs
         pendingPasswordRef.current = null;
         pendingWalletRef.current = null;
         pendingMnemonicRef.current = null;
 
-        // Clear recovery state
         setNeedsRecovery(false);
 
-        // Continue with empty cache - will trigger full rescan
-        await continueUnlockFlow(wallet, mnemonic, '', true);
+        const restoreSessionId = beginRestoreScanSession('recovery-full-rescan', 0, {
+            requiresReturnedTransferScan: true,
+        });
+
+        await continueUnlockFlow(wallet, mnemonic, '', true, {
+            forceCleanRestoreScan: true,
+            scanSessionType: 'restore-full-rescan',
+            scanSessionId: restoreSessionId,
+            restoreSource: 'recovery-full-rescan',
+        });
     };
 
-    // User restored from vault backup file, continue the unlock flow
     const handleBackupRestored = async () => {
-        // Re-read wallet from localStorage (backup restore updates it)
         const wallet = safeReadWallet();
         if (!wallet) {
             return;
@@ -2661,21 +3927,19 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             return;
         }
 
-        // Load the restored cache from IndexedDB
         const cacheKey = `wallet_cache_${wallet.address}`;
         const cachedOutputsHex = await loadFromIndexedDB(cacheKey) || '';
 
-        // Update address in case backup had a different one
         if (wallet.address) {
             setAddress(wallet.address);
         }
 
-        // Restore cached UI data from the backup
         if (wallet.cachedTransactions && wallet.cachedTransactions.length > 0) {
             setTransactions(wallet.cachedTransactions);
         }
+        const trustedCachedBalance = getTrustedCachedBalance(wallet);
         const restoredHydratedBalance = getPreferredHydratedBalance(
-            wallet.cachedBalance,
+            trustedCachedBalance,
             wallet.cachedTransactions || [],
             [],
             wallet.height || 0
@@ -2689,39 +3953,56 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 walletHeight: wallet.height || 0
             }));
         }
-        // CRITICAL FIX: Restore cached subaddresses with labels from backup
-        // This was missing, causing labels to be lost on vault backup restore
         if (wallet.cachedSubaddresses && wallet.cachedSubaddresses.length > 0) {
             setSubaddresses(wallet.cachedSubaddresses);
-            // Also update the ref immediately so refreshData() can see the labels
             subaddressesRef.current = wallet.cachedSubaddresses;
         }
 
-        // Clear pending refs
         pendingPasswordRef.current = null;
         pendingWalletRef.current = null;
         pendingMnemonicRef.current = null;
 
-        // Clear recovery state
         setNeedsRecovery(false);
 
-        // Mark that we restored from vault - scan completion will sync spent status
         restoredFromVaultRef.current = true;
 
-        // Continue unlock with the restored cache
-        const hadData = (wallet.cachedBalance?.balance || 0) > 0 || (wallet.cachedTransactions?.length || 0) > 0;
-        await continueUnlockFlow(wallet, mnemonic, cachedOutputsHex, hadData);
+        const hadData = (trustedCachedBalance?.balance || 0) > 0 || (wallet.cachedTransactions?.length || 0) > 0;
+        reportRestoreDiagnostic('restore.vault_backup_loaded', {
+            source: 'vault-backup-restore',
+            fromHeight: !cachedOutputsHex && hadData ? 0 : wallet.height || 0,
+            cachePresent: !!cachedOutputsHex,
+            cacheMissing: !cachedOutputsHex,
+            cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
+            hadData,
+            txCount: wallet.cachedTransactions?.length || 0,
+            subaddressCount: wallet.cachedSubaddresses?.length || 0,
+        });
+        const restoreSessionId = beginRestoreScanSession('vault-backup-restore', !cachedOutputsHex && hadData ? 0 : wallet.height || 0, {
+            requiresReturnedTransferScan: false,
+        });
+        await continueUnlockFlow(wallet, mnemonic, cachedOutputsHex, hadData, {
+            scanSessionType: 'restore-full-rescan',
+            scanSessionId: restoreSessionId,
+            restoreSource: 'vault-backup-restore',
+        });
     };
 
-    // Lock wallet (UI only - wallet continues syncing in background)
     const lockWallet = () => {
-        sessionSeedRef.current = null; // Clear seed from memory
+        reportTaskEvent('completed', 'wallet.lock', 'lock', 'WalletContext');
+        sessionSeedRef.current = null;
+        sessionPasswordRef.current = null;
         setIsLocked(true);
-        // Don't clear wallet - let it continue syncing in background
+        setNativeBalanceTrust({
+            trusted: false,
+            reason: 'Wallet locked',
+        });
     };
 
-    // Start blockchain scan
-    const startScan = async (fromHeight?: number) => {
+    const executeScan = async (fromHeight?: number, request?: {
+        reason: string;
+        sessionType: ScanSessionType;
+        sessionId?: string;
+    }): Promise<ScanExecutionResult> => {
         if (fromHeight === undefined && preferredScanStartHeightRef.current !== undefined) {
             fromHeight = preferredScanStartHeightRef.current;
         }
@@ -2729,68 +4010,202 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             preferredScanStartHeightRef.current = undefined;
         }
 
-        // Use ref for synchronous check to prevent race conditions
-        // CRITICAL FIX: Add check for hasWallet() to prevent errors when in Locked state
-        // Reset cancellation flag in case a previous scan was cancelled
-        cspScanService.resetCancellation();
+        if (isResettingRef.current || scanRequestsSuspendedRef.current) {
+            debugLog('[WalletContext] executeScan ignored while wallet reset/rescan is in progress', {
+                reason: request?.reason,
+                fromHeight,
+                isResetting: isResettingRef.current,
+                scanRequestsSuspended: scanRequestsSuspendedRef.current,
+            });
+            if (isRestoreScanSessionActive()) {
+                // Don't strand the still-active restore session: schedule a guarded retry that
+                // no-ops if the reset/rescan replaces or completes the session in the meantime.
+                finalizeRestoreTerminalState('cancelled_retryable', {
+                    reason: 'scan requests suspended',
+                    retryRequest: {
+                        sessionType: request?.sessionType || 'background',
+                        sessionId: request?.sessionId,
+                        fromHeight,
+                    },
+                });
+            }
+            return { terminalState: 'cancelled', reason: 'scan requests suspended' };
+        }
 
-        // Prevent multiple concurrent scans - use atomic check-and-set pattern
-        // NOTE: Only check scanInProgressRef (sync), NOT isScanning (async React state)
-        // React state updates are async, causing race conditions where isScanning is stale
-        if (scanInProgressRef.current || !isWalletReady || !walletService.hasWallet()) {
-            // Check if stuck (scan marked in progress but no updates for 60s)
+        const forceCleanRestoreScan = forceCleanRestoreScanRef.current;
+        const activeRestoreSession = activeScanSessionRef.current;
+        const restoreScanSessionActive = isRestoreScanSessionActive();
+        if (restoreScanSessionActive && request?.sessionType !== 'restore-full-rescan') {
+            debugWarn('[WalletContext] Background scan rejected by active restore scan session', {
+                reason: request?.reason,
+                fromHeight,
+                activeSessionId: activeRestoreSession?.id,
+                activeSessionSource: activeRestoreSession?.source,
+            });
+            // The rejection is correct, but if the active restore session is idle/stranded this
+            // request was its only signal — schedule a retry carrying the SESSION identity so the
+            // restore is resumed instead of every request self-terminating against it.
+            finalizeRestoreTerminalState('cancelled_retryable', {
+                reason: 'background scan rejected by active restore session',
+            });
+            return { terminalState: 'cancelled', reason: 'background scan rejected by active restore session' };
+        }
+        if (restoreScanSessionActive && request?.sessionType === 'restore-full-rescan' && request?.sessionId && activeRestoreSession?.id !== request.sessionId) {
+            debugWarn('[WalletContext] Restore scan request rejected for non-owner session', {
+                reason: request.reason,
+                fromHeight,
+                activeSessionId: activeRestoreSession?.id,
+                requestSessionId: request.sessionId,
+            });
+            finalizeRestoreTerminalState('cancelled_retryable', {
+                reason: 'restore scan request rejected for non-owner session',
+            });
+            return { terminalState: 'cancelled', reason: 'restore scan request rejected for non-owner session' };
+        }
+        if (fromHeight !== 0) {
+            forceCleanRestoreScanRef.current = false;
+        }
+
+        const hasWallet = walletService.hasWallet();
+        const scanReady =
+            hasWallet &&
+            (isWalletReady || restoreScanSessionActive);
+        const serviceScanInProgress = cspScanService.isScanningInProgress();
+
+        if (serviceScanInProgress && !scanInProgressRef.current) {
+            scanInProgressRef.current = true;
+            if (!lastScanTimeRef.current) {
+                lastScanTimeRef.current = Date.now();
+            }
+            setIsScanning(true);
+        }
+
+        if (request?.reason === 'direct-startScan' && restoreScanSessionActive) {
+            debugWarn('[WalletContext] executeScan suppressed direct scan during active restore session', {
+                reason: request.reason,
+                fromHeight,
+                sessionId: request.sessionId,
+                activeSessionId: activeRestoreSession?.id,
+            });
+            finalizeRestoreTerminalState('cancelled_retryable', {
+                reason: 'direct scan suppressed during active restore session',
+            });
+            return { terminalState: 'cancelled', reason: 'direct scan suppressed during active restore session' };
+        }
+
+        if (request?.reason === 'direct-startScan' && fromHeight === 0 && !request?.sessionId) {
+            debugWarn('[WalletContext] executeScan suppressed unowned direct full rescan', {
+                reason: request.reason,
+                fromHeight,
+            });
+            if (isRestoreScanSessionActive()) {
+                finalizeRestoreTerminalState('cancelled_retryable', {
+                    reason: 'unowned direct full rescan suppressed',
+                });
+            }
+            return { terminalState: 'cancelled', reason: 'unowned direct full rescan suppressed' };
+        }
+
+        if (scanInProgressRef.current || serviceScanInProgress || !scanReady) {
             const now = Date.now();
-            if (scanInProgressRef.current && (now - lastScanTimeRef.current > 60000)) {
-                try {
-                    await cspScanService.cancelScanAndWait(5000);
-                } catch {
-                    // Failed to cancel stuck scan
-                }
+            const scanAgeMs = now - lastScanTimeRef.current;
+            const serviceStillScanning = cspScanService.isScanningInProgress();
+
+            if (scanInProgressRef.current && !serviceStillScanning && scanAgeMs > 60000) {
+                debugWarn('[WalletContext] executeScan cleared stale scan flag after scanner became idle', {
+                    reason: request?.reason,
+                    fromHeight,
+                    isWalletReady,
+                    hasWallet,
+                    scanAgeMs,
+                });
                 scanInProgressRef.current = false;
                 setIsScanning(false);
-                // Small delay to let state settle before restarting
                 await new Promise(r => setTimeout(r, 100));
             } else {
-                // RACE CONDITION FIX: Defer gap check to next scan instead of ignoring
-                // This ensures gap detection still happens when scan completes
+                const logContext = {
+                    reason: request?.reason,
+                    fromHeight,
+                    scanInProgress: scanInProgressRef.current,
+                    serviceScanInProgress: serviceStillScanning,
+                    isWalletReady,
+                    hasWallet,
+                    scanReady,
+                    preferredScanStartHeight: preferredScanStartHeightRef.current,
+                    restoreScanSessionActive,
+                    activeSessionId: activeRestoreSession?.id,
+                };
+
+                if (serviceStillScanning && scanAgeMs > SCAN_REF_STALE_RESET_MS) {
+                    reportClientEvent('scan.long_running', {
+                        level: 'warn',
+                        message: 'Scanner is still running after the long-running threshold; coalescing duplicate scan request.',
+                        context: {
+                            reason: request?.reason || 'unknown',
+                            source: 'WalletContext.executeScan',
+                            durationMs: scanAgeMs,
+                            isScanning: true,
+                        },
+                    });
+                }
+
+                if (!scanReady) {
+                    debugLog('[WalletContext] executeScan blocked before wallet was ready', logContext);
+                } else {
+                    debugLog('[WalletContext] executeScan coalesced into active scanner', logContext);
+                }
                 needsGapCheckRef.current = true;
-                return;
+                const coalescedReason = scanReady ? 'coalesced into active scanner' : 'wallet not ready for scan';
+                if (isRestoreScanSessionActive()) {
+                    // A restore session is active but this request could not run; keep the
+                    // session alive and schedule a guarded retry (it no-ops once the session
+                    // resolves or while a real scanner is still making progress).
+                    finalizeRestoreTerminalState('cancelled_retryable', {
+                        reason: coalescedReason,
+                        retryRequest: {
+                            sessionType: request?.sessionType || 'background',
+                            sessionId: request?.sessionId,
+                            fromHeight,
+                        },
+                    });
+                }
+                return { terminalState: 'cancelled', reason: coalescedReason };
             }
         }
 
-        // Set ref immediately (synchronous) to prevent duplicate calls
+        debugLog('[WalletContext] startScan begin', {
+            reason: request?.reason,
+            sessionType: request?.sessionType,
+            sessionId: request?.sessionId,
+            fromHeight,
+            forceCleanRestoreScan,
+            hasWallet,
+            scanReady,
+            isWalletReady,
+            restoreScanSessionActive,
+        });
+
+        cspScanService.resetCancellation();
+
         scanInProgressRef.current = true;
-        lastScanTimeRef.current = Date.now(); // CRITICAL: Initialize time to prevent false "stuck" detection
-        // RACE CONDITION FIX: Increment scan version before starting
-        // Used to detect stale completion events from cancelled/superseded scans
-        const currentScanVersion = ++scanVersionRef.current;
+        lastScanTimeRef.current = Date.now();
+        const previousScanVersion = scanVersionRef.current;
+        const currentScanVersion = previousScanVersion + 1;
+        scanVersionRef.current = currentScanVersion;
+        // ABRUPT-KILL robustness: remember if THIS scan was a successful initial restore/first-sync so
+        // the finally can persist the full state ONCE unconditionally (regardless of the commit-gate),
+        // guaranteeing a fresh restore is durably saved before any abrupt kill.
+        let restoreCompletedForPersist = false;
         setIsScanning(true);
         cspScanService.setRecoveryAction('continue');
 
-        if (fromHeight === 0) {
-            const phase2bAlreadyRequested = localStorage.getItem('salvium_scan_returned_transfers') === 'true';
-            if (!phase2bAlreadyRequested) {
-                const shouldPrimePhase2b =
-                    fullRescanNeedsReturnedTransferScanRef.current ||
-                    detectReturnedTransferScanNeed();
-                if (shouldPrimePhase2b) {
-                    localStorage.setItem('salvium_scan_returned_transfers', 'true');
-                }
-            }
-            fullRescanNeedsReturnedTransferScanRef.current = false;
-        }
-
-        // MOBILE FIX: Prevent accidental swipe navigation during scans
-        // Add CSS touch-action: none to body to block browser back/forward gestures
         try {
             document.body.style.touchAction = 'none';
             document.body.style.overscrollBehavior = 'none';
         } catch {
-            // Style application failed - non-critical
         }
 
         try {
-            // Retry fetching network height with exponential backoff
             let networkHeight = 0;
             let lastError: any = null;
             let forceTailReconcile = false;
@@ -2807,180 +4222,268 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             if (!networkHeight || networkHeight < 1) {
                 scanInProgressRef.current = false;
                 setIsScanning(false);
-                setSyncStatus(prev => ({ ...prev, isSyncing: false })); // Defensive reset
-                // Do NOT return immediately if we have a wallet - we should simpler try again later via poll?
-                // But for now, just let it show Error so user knows to check connection
-                return;
+                // Transient network failure: NOT a terminal failure. Keep any active restore
+                // session alive and schedule a retry carrying the original session identity
+                // (previously this returned 'failed', the coordinator retried as 'background',
+                // and the still-active restore session rejected the retry — a self-terminating
+                // loop that latched the loading screen).
+                finalizeRestoreTerminalState('cancelled_retryable', {
+                    reason: lastError?.message || 'network height unavailable',
+                    retryRequest: {
+                        sessionType: request?.sessionType || 'background',
+                        sessionId: request?.sessionId,
+                        fromHeight,
+                    },
+                });
+                return { terminalState: 'cancelled', reason: lastError?.message || 'network height unavailable' };
             }
 
-            // Optional safety mode (test deployments): force a short tail reconcile scan
-            // even when wallet height appears synced. This prevents "stuck at synced but
-            // missing newest mining blocks" after interrupted/incomplete incremental scans.
             try {
                 const networkCfg = await refreshVaultRuntimeConfig();
                 if (networkCfg) {
                     forceTailReconcile = networkCfg?.forceSingleChunkScan === true;
                 }
             } catch {
-                // Best-effort only
             }
 
-            scanTargetHeightRef.current = networkHeight; // Set target for SSE checks
+            scanTargetHeightRef.current = networkHeight;
 
             const currentSyncStatus = walletService.getSyncStatus();
 
-            // Get wallet height - use fromHeight if provided (for rescan from 0)
-            let walletHeight = fromHeight !== undefined ? fromHeight : (currentSyncStatus.walletHeight || 0);
+            let storedWalletHeight = 0;
+            let storedSnapshotHeight = 0;
+            try {
+                const encryptedWallet = safeReadWallet();
+                storedWalletHeight = encryptedWallet?.height || 0;
+                storedSnapshotHeight = encryptedWallet?.snapshotHeight || 0;
+ } catch (e) { }
 
-            // CRITICAL FIX: Update WASM with network height so it can calculate unlock status correctly
-            // MOVED: Must be done AFTER getting current walletHeight to prevent premature fast-forward
-            walletService.setBlockchainHeight(networkHeight);
+            let walletHeight = resolveScanResumeHeight({
+                fromHeight,
+                nativeWalletHeight: currentSyncStatus.walletHeight || 0,
+                storedWalletHeight,
+                snapshotHeight: storedSnapshotHeight,
+                networkHeight,
+            });
 
-            // Check localStorage for saved height only if not doing a rescan
-            // FIX: Check for <= 1 because WASM often reports 1 for empty/new wallets
-            if (fromHeight === undefined && walletHeight <= 1) {
-                try {
-                    const encryptedWallet = safeReadWallet();
-                    if (encryptedWallet?.height && encryptedWallet.height > 0) {
-                        walletHeight = encryptedWallet.height;
-                        walletService.setWalletHeight(walletHeight);
-                    }
-                } catch (e) { /* ignore */ }
+            await walletService.setBlockchainHeight(networkHeight);
+
+            if (fromHeight === undefined && walletHeight !== (currentSyncStatus.walletHeight || 0)) {
+                await walletService.setWalletHeight(walletHeight);
+                debugLog('[WalletContext] Reconciled native scan height from persisted wallet state', {
+                    nativeWalletHeight: currentSyncStatus.walletHeight || 0,
+                    storedWalletHeight,
+                    storedSnapshotHeight,
+                    resolvedWalletHeight: walletHeight,
+                    networkHeight,
+                });
             }
 
-            // REORG DETECTION: Check if blockchain has been reorganized
-            // This happens when a longer chain replaces the one we synced to
-            // Detection: Our stored block hash at height X doesn't match network's hash at X
             let reorgDetected = false;
             let reorgHeight = 0;
             try {
                 const encryptedWallet = safeReadWallet();
                 if (encryptedWallet) {
-                    const lastKnownHash = encryptedWallet.lastBlockHash;
-                    const lastKnownHeight = encryptedWallet.height || 0;
+                    const maxCheckpointHeight = getShallowBlockHashCheckpointHeight(networkHeight);
+                    const knownBlockHashes = [
+                        ...(encryptedWallet.blockHashHistory || []),
+                        ...(encryptedWallet.lastBlockHash && Number.isFinite(encryptedWallet.lastBlockHashHeight)
+                            ? [{ height: encryptedWallet.lastBlockHashHeight, hash: encryptedWallet.lastBlockHash }]
+                            : []),
+                    ];
+                    const latestCheckpoint = selectLatestKnownBlockHash(knownBlockHashes, maxCheckpointHeight);
+                    const lastKnownHash = latestCheckpoint?.hash;
+                    const lastKnownHeight = latestCheckpoint?.height || 0;
 
-                    // Only check for reorg if we have a stored hash and height
                     if (lastKnownHash && lastKnownHeight > 0 && lastKnownHeight < networkHeight) {
-                        // Fetch the current block hash at our last known height
-                        try {
-                            const response = await fetch('/api/wallet/get_block_header_by_height', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ height: lastKnownHeight })
+                        const reorgSearch = await findReorgRescanHeight({
+                            lastKnownHeight,
+                            lastKnownHash,
+                            knownBlockHashes,
+                            fetchBlockHash: fetchBlockHashByHeight,
+                        });
+
+                        if (reorgSearch.reorgDetected) {
+                            reorgDetected = true;
+                            reorgHeight = reorgSearch.rescanHeight;
+                            debugWarn(`[WalletContext] REORG DETECTED! Hash mismatch at height ${lastKnownHeight}. Rescanning from ${reorgHeight}`, {
+                                ancestorHeight: reorgSearch.ancestorHeight,
+                                usedFallback: reorgSearch.usedFallback,
                             });
-
-                            if (response.ok) {
-                                const data = await response.json();
-                                const currentHash = data.block_header?.hash;
-
-                                if (currentHash && currentHash !== lastKnownHash) {
-                                    // REORG DETECTED! Need to rescan from a safe height
-                                    reorgDetected = true;
-                                    // Find common ancestor by going back blocks
-                                    // Conservative: go back 100 blocks from last known height
-                                    reorgHeight = Math.max(0, lastKnownHeight - 100);
-                                    console.warn(`[WalletContext] REORG DETECTED! Hash mismatch at height ${lastKnownHeight}. Rescanning from ${reorgHeight}`);
-                                }
-                            }
-                        } catch {
-                            // Block header fetch failed - continue without reorg check
                         }
                     }
                 }
-            } catch (e) { /* ignore */ }
+ } catch (e) { }
 
-            // If reorg detected, force rescan from reorg height
             if (reorgDetected && reorgHeight > 0) {
                 walletHeight = reorgHeight;
-                walletService.setWalletHeight(reorgHeight);
-                // Clear completed chunks that are now invalid
+                await walletService.setWalletHeight(reorgHeight);
                 clearCompletedChunks();
+                if (address) {
+                    await pruneCheckpointCoverageFromHeight(address, reorgHeight);
+                }
+
+                try {
+                    const reorgWallet = safeReadWallet();
+                    if (reorgWallet) {
+                        if (Array.isArray(reorgWallet.cachedTransactions)) {
+                            reorgWallet.cachedTransactions = reorgWallet.cachedTransactions.filter(
+                                (t) => (t.height ?? 0) <= reorgHeight
+                            );
+                        }
+                        if (reorgWallet.cachedSpentKeyImages) {
+                            reorgWallet.cachedSpentKeyImages = Object.fromEntries(
+                                Object.entries(reorgWallet.cachedSpentKeyImages).filter(
+                                    ([, h]) => Number(h) <= reorgHeight
+                                )
+                            );
+                        }
+                        if (Array.isArray(reorgWallet.blockHashHistory)) {
+                            reorgWallet.blockHashHistory = reorgWallet.blockHashHistory.filter(
+                                (b) => (b?.height ?? 0) <= reorgHeight
+                            );
+                        }
+                        if (Number(reorgWallet.lastBlockHashHeight) > reorgHeight) {
+                            reorgWallet.lastBlockHash = undefined;
+                            reorgWallet.lastBlockHashHeight = undefined;
+                        }
+                        safeWriteWallet(reorgWallet);
+                    }
+ } catch (e) { }
+
+                transactionsRef.current = (transactionsRef.current || []).filter(
+                    (t) => (t.height ?? 0) <= reorgHeight
+                );
+                setTransactions((prev) => prev.filter((t) => (t.height ?? 0) <= reorgHeight));
+
+                reportClientEvent('scan.reorg_detected', {
+                    level: 'warn',
+                    message: 'Blockchain reorganization detected - rolling back and rebuilding wallet state.',
+                    context: {
+                        reorgHeight,
+                        networkHeight,
+                        rebuildScheduled:
+                            !!(sessionSeedRef.current && sessionPasswordRef.current && rescanWalletRef.current),
+                    },
+                });
+
+                if (walletService.canDetachFromHeight() && (await walletService.detachFromHeight(reorgHeight))) {
+                    await walletService.setWalletHeight(reorgHeight);
+                    walletHeight = reorgHeight;
+                    reportClientEvent('scan.reorg_detached', {
+                        level: 'warn',
+                        message: 'Reorg handled via native detach; rescanning affected range.',
+                        context: { reorgHeight, networkHeight },
+                    });
+                } else {
+                    setNativeBalanceTrust({
+                        trusted: false,
+                        reason: 'Chain reorganization detected - rebuilding wallet state',
+                    });
+
+                    if (
+                        sessionSeedRef.current &&
+                    sessionPasswordRef.current &&
+                    rescanWalletRef.current &&
+                    !autoIntegrityRecoveryInFlightRef.current
+                ) {
+                    autoIntegrityRecoveryInFlightRef.current = true;
+                    void rescanWalletRef.current()
+                        .catch((err) => {
+                            reportClientEvent('scan.reorg_rebuild_failed', {
+                                level: 'error',
+                                message: err instanceof Error ? err.message : String(err),
+                                context: { reorgHeight },
+                            });
+                        })
+                        .finally(() => {
+                            autoIntegrityRecoveryInFlightRef.current = false;
+                        });
+                    return {
+                        terminalState: 'cancelled',
+                        reason: 'reorg detected - clean rebuild scheduled',
+                    };
+                }
+                    needsFullRescanRef.current = true;
+                    preferredScanStartHeightRef.current = 0;
+                }
             }
 
-            // GAP CHECK: If tab was suspended and potential gaps detected, validate scan coverage
-            // needsGapCheckRef is set when tab was hidden for extended period or SSE missed events
-            if (needsGapCheckRef.current && !reorgDetected && fromHeight === undefined) {
-                // Check if there's a significant gap between cached height and network
+            if (needsGapCheckRef.current && !reorgDetected && fromHeight === undefined && !forceCleanRestoreScan) {
                 const cachedHeight = walletHeight;
                 const gapSize = networkHeight - cachedHeight;
 
-                // If gap is large (>1000 blocks), there may have been missed transactions
-                // during tab suspension - do a more thorough scan from further back
-                if (gapSize > 1000) {
-                    // Go back 100 blocks from last known height to ensure no gaps
-                    const safeHeight = Math.max(0, cachedHeight - 100);
+                const REORG_SAFETY_MIN_OVERLAP = 100;
+                const REORG_SAFETY_MAX_OVERLAP = 720;
+                if (gapSize > 200) {
+                    const overlap = Math.min(
+                        REORG_SAFETY_MAX_OVERLAP,
+                        Math.max(REORG_SAFETY_MIN_OVERLAP, Math.ceil(gapSize * 0.1))
+                    );
+                    const safeHeight = Math.max(0, cachedHeight - overlap);
                     walletHeight = safeHeight;
-                    walletService.setWalletHeight(safeHeight);
-                    console.log(`[WalletContext] Gap check: Rescanning from ${safeHeight} (gap of ${gapSize} blocks detected)`);
+                    await walletService.setWalletHeight(safeHeight);
+                    debugLog(`[WalletContext] Gap check: Rescanning from ${safeHeight} (gap of ${gapSize} blocks, overlap ${overlap})`);
                 }
-                // Reset the gap check flag - we've handled it
                 needsGapCheckRef.current = false;
             }
 
-            // Load cached key images (always load for faster Phase 3)
-            // CRITICAL FIX v5.47: Validate that cached key images belong to THIS wallet
-            // Previously, key images from a different wallet could contaminate scans
             let cachedKeyImagesCsv = '';
             try {
                 const encryptedWallet = safeReadWallet();
-                // ONLY use cached key images if they belong to the current wallet address
-                // Skip if reorg detected - key images from orphaned blocks may be invalid
                 if (!reorgDetected && encryptedWallet?.address === address && encryptedWallet.keyImagesCsv) {
                     cachedKeyImagesCsv = encryptedWallet.keyImagesCsv;
                 }
-            } catch (e) { /* ignore */ }
+ } catch (e) { }
 
-            // Track last saved height to avoid excessive localStorage writes
             let lastSavedHeight = walletHeight;
-            const SAVE_INTERVAL_BLOCKS = 1000; // Save every 1000 blocks
+            const SAVE_INTERVAL_BLOCKS = 1000;
 
-            // FIX: Define total for progress calculation (fixes ReferenceError)
             const totalBlocksToScan = Math.max(1, networkHeight - walletHeight);
 
-            // Set a flag before scanning - if browser crashes, this will persist
+            const isIncremental = fromHeight === undefined && walletHeight > 0 && !forceCleanRestoreScan;
 
-            // DETECT INCREMENTAL SCAN (Optimization)
-            // If fromHeight is undefined (auto-scan) and we have a non-zero current height, it's incremental.
-            // Incremental scans use smaller batches and yields to keep UI smooth.
-            const isIncremental = fromHeight === undefined && walletHeight > 0;
-
-            // Align incremental scans to chunk boundary and intentionally overlap history.
-            // This catches occasional missed incoming tx detection from prior incremental runs.
-            let scanStartHeight = walletHeight;
-            if (isIncremental) {
-                scanStartHeight = computeIncrementalScanStartHeight(
+            const incrementalScanPlan = isIncremental
+                ? resolveIncrementalScanPlan({
                     walletHeight,
-                    CHUNK_SIZE,
-                    INCREMENTAL_OVERLAP_CHUNKS
-                );
-            }
+                    networkHeight,
+                    chunkSize: CHUNK_SIZE,
+                    overlapChunks: INCREMENTAL_OVERLAP_CHUNKS,
+                    preferTail:
+                        isTailScanReason(request?.reason) &&
+                        !restoredFromVaultRef.current &&
+                        !forceCleanRestoreScan,
+                })
+                : {
+                    startHeight: walletHeight,
+                    profile: 'overlap' as const,
+                    behindBlocks: Math.max(0, networkHeight - walletHeight),
+                };
+            let scanProfile = incrementalScanPlan.profile;
+            const tailScanStartHeight = incrementalScanPlan.profile === 'tail'
+                ? incrementalScanPlan.startHeight
+                : walletHeight;
+            let scanStartHeight = incrementalScanPlan.startHeight;
+            const visibleScanBehindBlocks = Math.max(0, networkHeight - walletHeight);
+            const shouldShowSyncingStatus = shouldShowBackgroundSyncing(
+                visibleScanBehindBlocks,
+                request?.sessionType
+            );
 
-            // Set scanStartHeight for smooth progress calculation in LoadingScreen
             setSyncStatus(prev => ({
                 ...prev,
                 daemonHeight: networkHeight,
-                isSyncing: true,
+                isSyncing: shouldShowSyncingStatus,
                 scanStartHeight: scanStartHeight,
-                progress: 0 // Reset progress at scan start
+                progress: shouldShowSyncingStatus ? 0 : 100
             }));
 
-            // ================================================================
-            // GAP DETECTION: Check for missing chunks after browser suspension
-            // If we detect gaps (chunks that weren't marked as completed), we
-            // need to scan from the earliest missing chunk to ensure no txs are missed.
-            // ================================================================
             let adjustedScanStartHeight = scanStartHeight;
 
             if (isIncremental && fromHeight === undefined) {
                 const { hasGap, timeSinceLastScan, hasCompletedChunks } = checkForScanGap();
 
-                // Only run gap detection if:
-                // 1. We have a valid lastScanTimestamp (timeSinceLastScan > 0 means lastScanTimestamp was set)
-                // 2. We have at least some completedChunks (meaning a scan finished before)
-                // This prevents gap detection from interfering with:
-                // - Fresh restores (lastScanTimestamp = 0)
-                // - Interrupted restores (completedChunks = [])
-                if (timeSinceLastScan > 0 && hasCompletedChunks) {
+                if (shouldRunCompletedChunkGapCheck({ scanProfile, timeSinceLastScan, hasCompletedChunks })) {
                     if (hasGap) {
                         const safetyBuffer = 2 * CHUNK_SIZE;
                         const checkFromHeight = Math.max(0, walletHeight - safetyBuffer);
@@ -2993,7 +4496,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             adjustedScanStartHeight = Math.max(0, getChunkStart(walletHeight) - safetyBuffer);
                         }
                     } else {
-                        // Recent scan - check for partially processed chunks
                         const recentCheckRange = 5 * CHUNK_SIZE;
                         const checkFromHeight = Math.max(0, walletHeight - recentCheckRange);
                         const missingChunks = findMissingChunks(checkFromHeight, walletHeight);
@@ -3006,111 +4508,364 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 }
             }
 
-            // Use adjusted start height if gap detection found issues
             const finalScanStartHeight = Math.min(adjustedScanStartHeight, scanStartHeight);
+            if (finalScanStartHeight < scanStartHeight) {
+                scanProfile = 'overlap';
+            }
 
-            // v5.51.0: Throttled progress updates to prevent UI jank during scans
-            // Updates React state at most once per 150ms, using requestAnimationFrame
+            const isRestoreSession = request?.sessionType === 'restore-full-rescan';
+            if (isRestoreSession) {
+                restoreProgressFloorRef.current = 0;
+            }
             const throttledProgressUpdate = createThrottledCallback((progress: ScanProgress) => {
-                const currentScannedHeight = Math.min(networkHeight, finalScanStartHeight + Math.floor(progress.scannedBlocks));
+                const renderStartedAt = performance.now();
+                const currentScannedHeight = Math.min(networkHeight, actualStartHeight + Math.floor(progress.scannedBlocks));
                 let calculatedPercentage = progress.percentage ?? Math.min(100, Math.max(0, (progress.scannedBlocks / totalBlocksToScan) * 100));
                 if (calculatedPercentage > 100) calculatedPercentage = 100;
+                if (isRestoreSession) {
+                    // Scan phases own 0-94 (terminal phases report 95-99 afterwards) and the bar
+                    // is monotonic across the whole restore.
+                    calculatedPercentage = Math.min(94, calculatedPercentage);
+                    calculatedPercentage = Math.max(calculatedPercentage, restoreProgressFloorRef.current);
+                    restoreProgressFloorRef.current = calculatedPercentage;
+                    progress = {
+                        ...progress,
+                        percentage: calculatedPercentage,
+                        overallProgress: calculatedPercentage / 100,
+                    };
+                }
 
                 setScanProgress(progress);
                 setSyncStatus(prev => ({
                     ...prev,
-                    // For incremental scans, don't show height going backwards during chunk-aligned rescans
-                    // For full rescans (actualStartHeight === 0), show actual progress from the beginning
                     walletHeight: actualStartHeight > 0 ? Math.max(prev.walletHeight, currentScannedHeight) : currentScannedHeight,
                     progress: calculatedPercentage
                 }));
-            }, 150); // Update UI at most every 150ms
+                uiProgressRenderedCountRef.current += 1;
+                const now = Date.now();
+                const uiProgressBucket = Math.floor(calculatedPercentage / 5) * 5;
+                if (
+                    uiProgressBucket !== lastUiProgressRenderedBucketRef.current ||
+                    now - lastUiProgressRenderedAtRef.current > 30000
+                ) {
+                    reportClientEvent('scan.ui_progress_rendered', {
+                        level: 'info',
+                        context: {
+                            phase: progress.phase || '',
+                            uiProgressBucket,
+                            percentage: calculatedPercentage,
+                            blocksScanned: progress.scannedBlocks || 0,
+                            completedChunks: progress.completedChunks || 0,
+                            totalChunks: progress.totalChunks || 0,
+                            uiProgressReceivedCount: uiProgressReceivedCountRef.current,
+                            uiProgressRenderedCount: uiProgressRenderedCountRef.current,
+                            uiRenderDelayMs: Math.round(performance.now() - renderStartedAt),
+                            walletHeight: currentScannedHeight,
+                            daemonHeight: networkHeight,
+                        },
+                    });
+                    lastUiProgressRenderedBucketRef.current = uiProgressBucket;
+                    lastUiProgressRenderedAtRef.current = now;
+                }
+            }, 250);
 
-            // v5.50.0: CONSERVATIVE RECOVERY CHECK
-            // Before starting scan, validate that previous scan state is safe to continue from.
-            // If ANY issues detected (interrupted chunks, too many gaps, stale state), force full rescan.
-            // This is CRITICAL for preventing wrong balances after interruptions.
-            // EXCEPTION: Skip recovery check if we just restored from vault file - vault has all data,
-            // we only need incremental scan for new blocks since the backup was created.
             let actualStartHeight = finalScanStartHeight;
             let recoveryAction: 'continue' | 'full_rescan' | 'rescan_gaps' = 'continue';
-            if (fromHeight === undefined && address && !restoredFromVaultRef.current) {
+
+            if (fromHeight === undefined && address && !restoredFromVaultRef.current && !forceCleanRestoreScan) {
                 try {
                     const recoveryCheck = await cspScanService.resumeScanSafely(address, networkHeight);
                     recoveryAction = recoveryCheck.action;
                     cspScanService.setRecoveryAction(recoveryCheck.action);
 
                     if (recoveryCheck.needsFullRescan) {
-                        console.warn(`[WalletContext] Recovery check forcing full rescan: ${recoveryCheck.reason}`);
+                        debugWarn(`[WalletContext] Recovery check forcing full rescan: ${recoveryCheck.reason}`);
                         actualStartHeight = 0;
-                        // Clear local wallet height to start fresh
-                        walletService.setWalletHeight(0);
-                        // Clear any cached data that might be stale
+                        await walletService.setWalletHeight(0);
                         clearCompletedChunks();
+                        cspScanService.setResumeRuns(null);
                     } else if (recoveryCheck.action === 'rescan_gaps' && recoveryCheck.gaps.length > 0) {
-                        // Have gaps to fill - start from earliest gap
                         const earliestGap = Math.min(...recoveryCheck.gaps);
-                        console.log(`[WalletContext] Recovery check found ${recoveryCheck.gaps.length} gaps - starting from ${earliestGap}`);
+                        debugLog(`[WalletContext] Recovery check found ${recoveryCheck.gaps.length} gaps - rescanning exactly those (from ${earliestGap})`);
                         actualStartHeight = earliestGap;
+                        // Scan ONLY the gap chunks (precise) rather than earliestGap→tip. The
+                        // contiguous [earliestGap, networkHeight] remains the fallback range
+                        // for progress/spent-index; Phase 1 block scan is restricted to gaps.
+                        cspScanService.setResumeRuns(recoveryCheck.gaps);
                     }
-                    // else: continue with finalScanStartHeight (safe to resume)
                 } catch (e) {
-                    // Error in recovery check - be conservative and force full rescan
                     console.error('[WalletContext] Recovery check failed - forcing full rescan:', e);
                     recoveryAction = 'full_rescan';
                     cspScanService.setRecoveryAction('full_rescan');
                     actualStartHeight = 0;
-                    walletService.setWalletHeight(0);
+                    await walletService.setWalletHeight(0);
                     clearCompletedChunks();
+                    cspScanService.setResumeRuns(null);
                 }
             } else if (fromHeight !== undefined) {
-                // Explicit fromHeight provided - use it
                 cspScanService.setRecoveryAction(fromHeight === 0 ? 'full_rescan' : 'continue');
                 actualStartHeight = fromHeight;
             }
 
-            // Skip scan only after recovery/gap adjustments have finalized the true start height.
+            if (
+                scanProfile === 'tail' &&
+                (
+                    recoveryAction !== 'continue' ||
+                    actualStartHeight < tailScanStartHeight ||
+                    reorgDetected
+                )
+            ) {
+                scanProfile = 'overlap';
+            }
+
+            let stakeReturnRepairPending = false;
+            try {
+                stakeReturnRepairPending = await cspScanService.hasPendingStakeReturnRepair(networkHeight);
+            } catch {
+                stakeReturnRepairPending = false;
+            }
+
+            if (scanProfile === 'tail' && stakeReturnRepairPending) {
+                scanProfile = 'overlap';
+                actualStartHeight = Math.min(
+                    actualStartHeight,
+                    computeIncrementalScanStartHeight(
+                        walletHeight,
+                        CHUNK_SIZE,
+                        INCREMENTAL_OVERLAP_CHUNKS
+                    )
+                );
+            }
+
             if (actualStartHeight >= networkHeight && fromHeight === undefined && forceTailReconcile) {
-                // In test safe mode, always rescan recent history to reconcile missed coinbase TXs.
                 const TAIL_RECONCILE_BLOCKS = 250;
+                scanProfile = 'overlap';
                 actualStartHeight = Math.max(0, networkHeight - TAIL_RECONCILE_BLOCKS);
+            }
+
+            if (actualStartHeight >= networkHeight && stakeReturnRepairPending) {
+                scanProfile = 'overlap';
+                actualStartHeight = Math.max(0, networkHeight - 1);
+                debugLog('[WalletContext] Pending stake return repair detected; running tail reconciliation scan', {
+                    actualStartHeight,
+                    networkHeight,
+                });
+            }
+
+            let returnedTransferRepairPending = false;
+            try {
+                returnedTransferRepairPending =
+                    localStorage.getItem('salvium_scan_returned_transfers') === 'true';
+            } catch {
+                returnedTransferRepairPending = false;
+            }
+            if (actualStartHeight >= networkHeight && returnedTransferRepairPending) {
+                scanProfile = 'overlap';
+                actualStartHeight = Math.max(0, networkHeight - 1);
+                debugLog('[WalletContext] Pending returned-transfer repair detected; running tail reconciliation scan', {
+                    actualStartHeight,
+                    networkHeight,
+                });
             }
 
             if (actualStartHeight >= networkHeight) {
                 scanInProgressRef.current = false;
                 setIsScanning(false);
-                setSyncStatus(prev => ({ ...prev, isSyncing: false, progress: 100 }));
-                setLastSuccessfulScanAt(Date.now());
-                return;
+                const ownsRestoreSession = request?.sessionType === 'restore-full-rescan' && !!request.sessionId;
+                if (ownsRestoreSession) {
+                    // reportRestoreTerminalProgress sets isSyncing:true (it serves the mid-restore
+                    // phases); finalizeRestoreTerminalState below asserts the terminal state
+                    // (isSyncing:false, progress:100) -- a warm-cache restore finishes with no
+                    // catch-up scan behind it to flip it otherwise.
+                    reportRestoreTerminalProgress(networkHeight, actualStartHeight, 99, 'Restore complete', 'complete');
+                    setIsWalletReady(true);
+                    setIsLocked(false);
+                    reportRestoreDiagnostic('restore.scan_skipped_current', {
+                        source: activeRestoreSession?.source || request?.reason || 'restore-scan',
+                        sessionType: request?.sessionType,
+                        sessionActive: true,
+                        fromHeight: actualStartHeight,
+                        walletHeight: networkHeight,
+                        daemonHeight: networkHeight,
+                        progress: 100,
+                    });
+                }
+                finalizeRestoreTerminalState('success', {
+                    networkHeight,
+                    actualStartHeight,
+                    isRestoreSession: ownsRestoreSession,
+                    sessionNote: 'wallet already at network height',
+                });
+                return { terminalState: 'success', reason: 'wallet already at network height' };
             }
 
-            // FIX: Recalculate isIncremental based on actual start height after recovery check.
-            // If recovery forced actualStartHeight=0, we're doing a full rescan and should use
-            // full-scan settings (more workers, larger batches, no UI yields). Without this fix,
-            // a forced full rescan would run with incremental settings and take 5-10x longer.
             const effectiveIsIncremental =
                 isIncremental &&
                 actualStartHeight > 0 &&
                 recoveryAction === 'continue';
 
+            reportClientEvent('scan.environment', {
+                level: 'info',
+                context: {
+                    scanWindowStart: actualStartHeight,
+                    scanWindowEnd: networkHeight,
+                    scanRangeBlocks: Math.max(0, networkHeight - actualStartHeight),
+                    scanMode: effectiveIsIncremental ? 'incremental' : 'full',
+                    scanProfile,
+                    behindBlocks: incrementalScanPlan.behindBlocks,
+                    hardwareConcurrency: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 0 : 0,
+                    deviceMemoryBucket: getDeviceMemoryBucket(),
+                    wakeLockSupported: typeof navigator !== 'undefined' && 'wakeLock' in navigator,
+                    serviceWorkerControlled: typeof navigator !== 'undefined' && !!navigator.serviceWorker?.controller,
+                    scanActive: scanInProgressRef.current,
+                    serviceScanActive: cspScanService.isScanningInProgress(),
+                    visibility: typeof document !== 'undefined' ? document.visibilityState : '',
+                    online: typeof navigator !== 'undefined' ? navigator.onLine : true,
+                },
+            });
+
+            if (request?.sessionType === 'restore-full-rescan') {
+                const restoreTotalBlocks = Math.max(1, networkHeight - actualStartHeight);
+                setRestoreScanPhase('phase1_main_scan', 'main blockchain scan running', 'scanning_blocks');
+                setSyncStatus(prev => ({
+                    ...prev,
+                    walletHeight: actualStartHeight,
+                    daemonHeight: networkHeight,
+                    isSyncing: true,
+                    progress: 0,
+                    scanStartHeight: actualStartHeight,
+                }));
+                setScanProgress({
+                    progress: 0,
+                    phase: '1',
+                    message: 'Scanning blockchain...',
+                    scannedBlocks: 0,
+                    totalBlocks: restoreTotalBlocks,
+                    completedChunks: 0,
+                    totalChunks: 0,
+                    viewTagMatches: 0,
+                    bytesReceived: 0,
+                    blocksPerSecond: 0,
+                    overallProgress: 0,
+                    percentage: 0,
+                    transactionsFound: 0,
+                    statusMessage: 'Scanning blockchain...',
+                    phaseKey: 'scanning_blocks',
+                });
+                reportRestoreDiagnostic('restore.scan_started', {
+                    source: activeRestoreSession?.source || request.reason || 'restore-scan',
+                    sessionType: request.sessionType,
+                    sessionActive: !!request.sessionId,
+                    fromHeight: actualStartHeight,
+                    walletHeight,
+                    daemonHeight: networkHeight,
+                    scanStartHeight: finalScanStartHeight,
+                    forceCleanRestoreScan,
+                });
+            }
+
+            let forceReturnedTransferScan = false;
+            try {
+                const scanHintTransactions = mergeTransactionsByDirection([
+                    ...transactionsRef.current,
+                    ...walletService.getTransactions(),
+                ]);
+                const knownStakeCount = Math.max(
+                    stakesRef.current.length,
+                    (await getNativeStakeState(networkHeight)).length
+                );
+                const broadReturnScanHint = shouldForceReturnedTransferScan(
+                    scanHintTransactions,
+                    knownStakeCount
+                );
+                const isFullRepairScan = actualStartHeight === 0 || request?.sessionType === 'restore-full-rescan';
+                forceReturnedTransferScan = broadReturnScanHint && isFullRepairScan;
+
+                if (forceReturnedTransferScan) {
+                    debugLog('[WalletContext] Stake/return history detected; forcing returned-transfer scan');
+                } else if (stakeReturnRepairPending) {
+                    debugLog('[WalletContext] Stake return repair pending; using targeted repair pass');
+                }
+            } catch {
+                forceReturnedTransferScan = false;
+            }
+
+            if (isResettingRef.current || scanRequestsSuspendedRef.current) {
+                debugLog('[WalletContext] executeScan aborted before scanner start because wallet reset/rescan began', {
+                    reason: request?.reason,
+                    fromHeight: actualStartHeight,
+                    sessionType: request?.sessionType,
+                    sessionId: request?.sessionId,
+                });
+                if (isRestoreScanSessionActive()) {
+                    finalizeRestoreTerminalState('cancelled_retryable', {
+                        reason: 'wallet reset or rescan took ownership before scanner start',
+                        retryRequest: {
+                            sessionType: request?.sessionType || 'background',
+                            sessionId: request?.sessionId,
+                            fromHeight,
+                        },
+                    });
+                }
+                return { terminalState: 'cancelled', reason: 'wallet reset or rescan took ownership before scanner start' };
+            }
+
+            if (!walletService.hasWallet()) {
+                throw new Error('Wallet became unavailable before scan start');
+            }
+
             const result = await cspScanService.startScan(
                 actualStartHeight,
                 networkHeight,
                 (progress) => {
+                    if (scanVersionRef.current !== currentScanVersion) {
+                        return;
+                    }
                     try {
-                        // Update lastScanTimeRef to prevent "stuck scan" detection
-                        // Without this, scans > 60s would be incorrectly cancelled
+                        uiProgressReceivedCountRef.current += 1;
+                        const now = Date.now();
+                        const progressPercentage = progress.percentage ?? Math.min(100, Math.max(0, (progress.scannedBlocks / totalBlocksToScan) * 100));
+                        const uiProgressBucket = Math.floor(progressPercentage / 5) * 5;
+                        if (
+                            uiProgressBucket !== lastUiProgressReceivedBucketRef.current ||
+                            now - lastUiProgressReceivedAtRef.current > 30000
+                        ) {
+                            reportClientEvent('scan.ui_progress_received', {
+                                level: 'info',
+                                context: {
+                                    phase: progress.phase || '',
+                                    uiProgressBucket,
+                                    percentage: progressPercentage,
+                                    blocksScanned: progress.scannedBlocks || 0,
+                                    completedChunks: progress.completedChunks || 0,
+                                    totalChunks: progress.totalChunks || 0,
+                                    uiProgressReceivedCount: uiProgressReceivedCountRef.current,
+                                    uiProgressRenderedCount: uiProgressRenderedCountRef.current,
+                                    walletHeight: Math.min(networkHeight, actualStartHeight + Math.floor(progress.scannedBlocks || 0)),
+                                    daemonHeight: networkHeight,
+                                },
+                            });
+                            lastUiProgressReceivedBucketRef.current = uiProgressBucket;
+                            lastUiProgressReceivedAtRef.current = now;
+                        }
                         lastScanTimeRef.current = Date.now();
 
-                        // Throttled UI update (non-blocking)
+                        if (request?.sessionType === 'restore-full-rescan') {
+                            const progressPhase = String(progress.phase || '');
+                            if (progressPhase === '2b') {
+                                setRestoreScanPhase('phase2_returned_transfer_scan', 'returned-transfer scan running', 'returned_scan');
+                            } else if (progressPhase === '2' || progressPhase === '2b-start') {
+                                setRestoreScanPhase('phase3_stake_returns_rebuild', 'processing matched transactions', 'processing_tx');
+                            } else if (progressPhase === '3' || progressPhase.startsWith('3')) {
+                                setRestoreScanPhase('phase3_stake_returns_rebuild', 'checking spent outputs and stake returns', 'checking_spent');
+                            }
+                        }
+
                         throttledProgressUpdate(progress);
 
-                        // Calculate height for localStorage save check (not throttled)
                         const currentScannedHeight = Math.min(networkHeight, actualStartHeight + Math.floor(progress.scannedBlocks));
-                        // Update lastKnownWasmHeightRef so fallback logic is accurate during scan
                         lastKnownWasmHeightRef.current = currentScannedHeight;
 
-                        // Save height incrementally every 1000 blocks (for crash recovery)
                         if (currentScannedHeight - lastSavedHeight >= SAVE_INTERVAL_BLOCKS) {
                             try {
                                 const encryptedWallet = safeReadWallet();
@@ -3119,66 +4874,223 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                                     safeWriteWallet(encryptedWallet);
                                     lastSavedHeight = currentScannedHeight;
                                 }
-                            } catch (e) { /* ignore */ }
+ } catch (e) { }
                         }
                     } catch {
-                        // Error in scan progress callback
                     }
                 },
                 undefined,
                 cachedKeyImagesCsv,
                 effectiveIsIncremental,
-                // Background Phase 2b completion callback - refresh balance if RETURN txs found
-                (phase2bResult) => {
+                async (phase2bResult) => {
+                    debugLog('[WalletContext] Returned-transfer pass completed', phase2bResult);
                     if (phase2bResult.outputsFound > 0) {
                         try {
-                            walletService.setBlockchainHeight(networkHeight, true);
-                            // Get updated balance from wallet
+                            await walletService.setBlockchainHeight(networkHeight, true);
                             const updatedBalance = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
                             if (updatedBalance) {
-                                const nextStakes = getNativeStakeState(networkHeight);
+                                const nextStakes = await getNativeStakeState(networkHeight);
                                 applyStakes(nextStakes);
                                 void fetchYieldData(nextStakes, networkHeight).then((stakesWithRewards) => {
                                     applyStakes(stakesWithRewards);
                                 });
                                 setBalance(clampUnlockedBalance(updatedBalance));
-                                // Also update localStorage cache
                                 const encryptedWallet = safeReadWallet();
                                 if (encryptedWallet) {
                                     encryptedWallet.cachedBalance = updatedBalance;
+                                    encryptedWallet.cachedBalanceVersion = BASE_ASSET_CACHED_BALANCE_VERSION;
                                     safeWriteWallet(encryptedWallet);
                                 }
                             }
                         } catch {
-                            // Failed to refresh balance after Phase 2b
                         }
                     } else if (phase2bResult.needsRescan) {
-                        // KNOWN LIMITATION: WASM duplicate detection skipped return outputs because Phase 2 already
-                        // processed those transactions. Return addresses are now cached in IndexedDB.
-                        // In this case, a full rescan from 0 would be needed to properly count return outputs,
-                        // but this is rare and doesn't affect balance accuracy (return outputs just enable
-                        // proper transaction labeling on subsequent scans).
+                        needsFullRescanRef.current = true;
+                        reportClientEvent('scan.phase2b_followup_rescan_scheduled', {
+                            level: 'warn',
+                            context: {
+                                sessionType: request?.sessionType || 'background',
+                                scanWindowStart: actualStartHeight,
+                                scanWindowEnd: networkHeight,
+                            },
+                        });
+                        setTimeout(() => {
+                            void requestScanStart({
+                                fromHeight: 0,
+                                reason: 'phase2b-needs-rescan',
+                                sessionType: 'restore-full-rescan',
+                                sessionId: request?.sessionId,
+                            });
+                        }, 500);
                     }
-                }
+                },
+                forceReturnedTransferScan
             );
 
             if (!result.success) {
-                throw new Error(result.error || 'CSP scan did not complete successfully');
+                const resultError = result.error || 'CSP scan did not complete successfully';
+                if (resultError.includes('Scan already in progress')) {
+                    if (scanVersionRef.current === currentScanVersion) {
+                        scanVersionRef.current = previousScanVersion;
+                    }
+                    scanInProgressRef.current = cspScanService.isScanningInProgress();
+                    setIsScanning(scanInProgressRef.current);
+                    debugLog('[WalletContext] CSP scan request joined an already-running scan', {
+                        reason: request?.reason,
+                        fromHeight: actualStartHeight,
+                        networkHeight,
+                    });
+                    needsGapCheckRef.current = true;
+                    return { terminalState: 'cancelled', reason: 'joined already-running scanner' };
+                }
+                throw new Error(resultError);
             }
 
-            setLastSuccessfulScanAt(Date.now());
+            const shouldRunStakeReturnRepairPass = scanProfile !== 'tail';
+            const stakeReturnRepairResult = shouldRunStakeReturnRepairPass
+                ? await cspScanService.repairMissingStakeReturns(
+                    networkHeight,
+                    (progress) => {
+                        if (scanVersionRef.current !== currentScanVersion) {
+                            return;
+                        }
+                        lastScanTimeRef.current = Date.now();
+                        throttledProgressUpdate({
+                            ...progress,
+                            message: progress.message || 'Repairing stake returns...',
+                            statusMessage: progress.statusMessage || 'Repairing stake returns...',
+                            phaseKey: progress.phaseKey ?? 'repairing_returns',
+                        });
+                    }
+                )
+                : {
+                    success: true,
+                    outputsFound: 0,
+                    attemptedStakeHeights: [],
+                    attemptedReturnHeights: [],
+                    failedHeights: [],
+                };
 
-            // Update wallet height to final scanned height
-            walletService.setWalletHeight(networkHeight);
+            if (!shouldRunStakeReturnRepairPass) {
+                reportClientEvent('scan.tail_repair_pass_skipped', {
+                    level: 'info',
+                    context: {
+                        reason: request?.reason || '',
+                        scanWindowStart: actualStartHeight,
+                        scanWindowEnd: networkHeight,
+                        scanRangeBlocks: Math.max(0, networkHeight - actualStartHeight),
+                    },
+                });
+            }
 
-            setSyncStatus(prev => ({
-                ...prev,
-                walletHeight: networkHeight,
-                isSyncing: false,
-                progress: 100
-            }));
+            if (!stakeReturnRepairResult.success && stakeReturnRepairResult.failedHeights.length > 0) {
+                debugWarn('[WalletContext] Stake return repair incomplete', stakeReturnRepairResult);
+                const failedPreview = stakeReturnRepairResult.failedHeights.slice(0, 10).join(', ');
+                throw new Error(
+                    `Stake return repair incomplete: ${stakeReturnRepairResult.failedHeights.length} return height(s) failed${failedPreview ? ` (${failedPreview})` : ''}`
+                );
+            }
 
-            // Save final state (height + key images + cached data for next session)
+            if (stakeReturnRepairResult.outputsFound > 0) {
+                result.outputsFound = (result.outputsFound || 0) + stakeReturnRepairResult.outputsFound;
+                result.phase3Ran = true;
+                result.phase3Succeeded = result.phase3Succeeded !== false;
+                debugLog('[WalletContext] Stake return repair completed', stakeReturnRepairResult);
+            }
+
+            if (request?.sessionType === 'restore-full-rescan' && actualStartHeight === 0) {
+                const expectedFullRescanBlocks = Math.max(0, networkHeight - actualStartHeight);
+                const actualBlocksScanned = result.blocksScanned || 0;
+                debugLog('[WalletContext] Restore full-rescan proof', {
+                    actualStartHeight,
+                    networkHeight,
+                    expectedFullRescanBlocks,
+                    actualBlocksScanned,
+                    phase2bRan: result.phase2bRan === true,
+                    phase3Ran: result.phase3Ran === true,
+                    outputsFound: result.outputsFound || 0,
+                    matchCount: result.matchCount || 0,
+                });
+                if (expectedFullRescanBlocks > 0 && actualBlocksScanned < Math.max(1, expectedFullRescanBlocks - 10)) {
+                    throw new Error(
+                        `Restore full rescan incomplete: scanned ${actualBlocksScanned} of ${expectedFullRescanBlocks} requested blocks`
+                    );
+                }
+            }
+
+            if (request?.sessionType === 'restore-full-rescan' && result.phase2bRan) {
+                setRestoreScanPhase('phase2_returned_transfer_scan', result.phase2bSucceeded
+                    ? 'returned-transfer scan completed'
+                    : 'returned-transfer scan failed');
+            }
+            if (request?.sessionType === 'restore-full-rescan' && result.phase3Ran) {
+                setRestoreScanPhase('phase3_stake_returns_rebuild', result.phase3Succeeded
+                    ? 'main return/stake scan completed'
+                    : 'main return/stake scan failed');
+            }
+
+            if (scanVersionRef.current !== currentScanVersion) {
+                return { terminalState: 'cancelled', reason: 'stale scan version' };
+            }
+
+            let scanCommitResult: ScanCommitResult = {
+                terminalState: 'failed',
+                committed: false,
+                coverageCursorCommitted: false,
+                cacheCommitted: false,
+                balanceTrusted: false,
+                reason: 'commit-not-started',
+            };
+            reportClientEvent('scan.commit_started', {
+                level: 'info',
+                context: {
+                    reason: request?.reason || 'unknown',
+                    sessionType: request?.sessionType || 'background',
+                    scanProfile,
+                    scanWindowStart: actualStartHeight,
+                    scanWindowEnd: networkHeight,
+                    scanRangeBlocks: Math.max(0, networkHeight - actualStartHeight),
+                    blocksScanned: result.blocksScanned || 0,
+                    matchCount: result.matchCount || 0,
+                    outputsFound: result.outputsFound || 0,
+                    phase2bRan: result.phase2bRan === true,
+                    phase2bSucceeded: result.phase2bSucceeded === true,
+                    phase3Ran: result.phase3Ran === true,
+                    phase3Succeeded: result.phase3Succeeded === true,
+                    walletHeight: networkHeight,
+                    daemonHeight: networkHeight,
+                },
+            });
+            if (request?.sessionType === 'restore-full-rescan') {
+                reportRestoreTerminalProgress(networkHeight, actualStartHeight, 95, 'Saving restored wallet state...', 'saving');
+                reportRestoreDiagnostic('restore.scan_core_complete', {
+                    source: activeRestoreSession?.source || request.reason || 'restore-scan',
+                    sessionType: request.sessionType,
+                    sessionActive: !!request.sessionId,
+                    fromHeight: actualStartHeight,
+                    walletHeight: networkHeight,
+                    daemonHeight: networkHeight,
+                    blocksScanned: result.blocksScanned || 0,
+                    outputsFound: result.outputsFound || 0,
+                    matchCount: result.matchCount || 0,
+                });
+            }
+
+            // Skip the heavy O(wallet) commit when the scan changed nothing. A real change is a new
+            // owned output (outputsFound) OR a newly-marked spend (spendsFound) — both must persist
+            // before the wallet height advances, or a spend-only catch-up would be lost on reload and
+            // overstate the balance. matchCount is excluded (view-tag false positives ~1/256).
+            const incrementalStateChanged = (result.outputsFound || 0) > 0 || (result.spendsFound || 0) > 0;
+            const isBackgroundCatchup = request?.sessionType === 'background';
+            // Persist only on real state changes (or non-background scans). NO periodic foreground
+            // export: exportWalletCache is a single ~400-570ms WASM serialize that would freeze the
+            // UI. Instead the small unpersisted tail is re-scanned on reload (fast, chunked), and
+            // every real tx still commits+persists. This keeps the UI freeze-free during use.
+            const doFullCommit = incrementalStateChanged || !isBackgroundCatchup;
+            if (doFullCommit) {
+                lastIncrementalPersistAtRef.current = Date.now();
+                walletDataDirtyRef.current = true; // a real change was ingested → refreshData should reload
+                walletService.invalidateStateSnapshot(); // recompute the O(wallet) balance snapshot only now
             try {
                 const encryptedWallet = safeReadWallet();
                 if (encryptedWallet) {
@@ -3187,14 +5099,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         encryptedWallet.keyImagesCsv = result.keyImagesCsv;
                     }
 
-                    // CRITICAL: Save snapshotHeight to matching current network height
-                    // This ensures next restore uses EXACTLY this height if outputs are imported
                     encryptedWallet.snapshotHeight = networkHeight;
 
-                    // Merge new transactions with cached ones (incremental scans only return NEW txs)
                     const newTxs = walletService.getTransactions();
 
-                    // Load cached txs from IndexedDB (fallback to localStorage during migration)
                     let cachedTxs: WalletTransaction[] = [];
                     let idbTxsRaw: string | null = null;
                     let idbHistoryRaw: string | null = null;
@@ -3223,28 +5131,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     ]);
                     const stakeSourceTxs = mergedTxs;
 
-                    // Balance handling - complex due to WASM state not persisting across page reloads
-                    // CRITICAL FIX: Ensure WASM knows the network height BEFORE querying balance
-                    // Without this, WASM treats all outputs as locked (returns unlockedBalance=0)
-                    // and reports unlockedBalance as balance (since it thinks nothing is locked)
-                    // Pass true to advance wallet's internal height (scan is complete)
-                    walletService.setBlockchainHeight(networkHeight, true);
+                    await walletService.setBlockchainHeight(networkHeight, true);
                     const nativeBalanceState = getAuthoritativeNativeBalance(walletService.getBalance());
                     const currentBalance = nativeBalanceState.balance;
 
                     let finalBalance = currentBalance;
 
-                    // 4. Handle "Ghost Transactions" - transactions that disappear during reorgs
-
-                    // Determine if this was an incremental scan (not a full rescan from block 0)
-                    // CRITICAL: Use actualStartHeight after recovery adjustments.
-                    // finalScanStartHeight can be stale when recovery forces a full rescan.
                     const isIncrementalScan = actualStartHeight > 0;
 
-                    // Detect WASM state divergence (tab suspension recovery)
-                    // If this trips, schedule a full rescan, but keep native balance as the
-                    // only source of truth for the current session.
-                    const cachedBalance = encryptedWallet.cachedBalance;
+                    const cachedBalance = getTrustedCachedBalance(encryptedWallet);
                     const newlyFoundTxs = findNewTransactionsByDirection(newTxs, existingTxs);
                     const hasNewTxs = newlyFoundTxs.length > 0;
                     const scanFoundOutputsButFilterEmpty = (result.outputsFound || 0) > 0 && !hasNewTxs;
@@ -3254,13 +5149,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
                     if (wasmLostState) {
                         needsFullRescanRef.current = true;
-                        console.warn('[WalletContext] WASM state loss detected with outputs found - scheduling full rescan');
+                        debugWarn('[WalletContext] WASM state loss detected with outputs found - scheduling full rescan');
                     }
 
                     if (isIncrementalScan && cachedTxs.length > 0 && !cachedBalance) {
-                        // Incremental scan without cached balance means the persistent cache is
-                        // incomplete. Schedule a full rescan, but keep native state authoritative
-                        // for the current render instead of reconstructing balances in React.
                         try {
                             const wallet = safeReadWallet();
                             if (wallet) {
@@ -3268,7 +5160,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                                 safeWriteWallet(wallet);
                             }
                         } catch {
-                            // Failed to reset height for recovery
                         }
 
                         needsFullRescanRef.current = true;
@@ -3276,37 +5167,33 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
                     finalBalance = currentBalance;
 
-                    // MEMPOOL DOUBLE-COUNT FIX: Subtract mempool-scanned incoming amounts
-                    // When scan_tx is called for mempool transactions, WASM adds those outputs to its state.
-                    // But those same outputs are also scanned from the blockchain, causing double-counting.
-                    // Solution: subtract mempool amounts from balance (they'll be added back when confirmed).
-
-                    // RACE CONDITION FIX: Clean up mempoolTransactionsRef IMMEDIATELY when we detect
-                    // confirmed TXs, before using it for balance calculation. The useEffect cleanup
-                    // runs too late (after this callback completes), causing stale mempool TXs to be
-                    // incorrectly subtracted even after they've confirmed.
                     const confirmedTxids = new Set(mergedTxs.filter(tx => tx.height > 0).map(tx => tx.txid));
                     const currentMempoolTxs = mempoolTransactionsRef.current;
                     const cleanedMempoolTxs = currentMempoolTxs.filter(tx => !confirmedTxids.has(tx.txid));
 
-                    // Update ref immediately so subsequent code uses clean data
                     if (cleanedMempoolTxs.length < currentMempoolTxs.length) {
                         mempoolTransactionsRef.current = cleanedMempoolTxs;
-                        // Also update React state to keep them in sync
                         setMempoolTransactions(cleanedMempoolTxs);
                     }
 
                     finalBalance = clampUnlockedBalance(finalBalance);
 
                     const currentHeight = networkHeight;
-                    const stakesWithRewards = getNativeStakeState(currentHeight);
-                    void fetchYieldData(stakesWithRewards, currentHeight).then((enrichedStakes) => {
-                        applyStakes(enrichedStakes);
-                    });
+                    const nativeStakeState = await getNativeStakeState(currentHeight);
+                    if (request?.sessionType === 'restore-full-rescan') {
+                        setRestoreScanPhase('phase3_stake_returns_rebuild', 'rebuilding wallet stake/returns state', 'stake_returns');
+                    }
+                    transactionsRef.current = stakeSourceTxs;
+                    applyStakes(nativeStakeState, stakeSourceTxs);
+                    const stakesWithRewards = await fetchYieldData(nativeStakeState, currentHeight);
+                    applyStakes(stakesWithRewards, stakeSourceTxs);
+                    if (request?.sessionType === 'restore-full-rescan') {
+                        setRestoreScanPhase('phase3_stake_returns_rebuild', 'wallet stake/returns state rebuilt');
+                    }
                     finalBalance = clampUnlockedBalance(finalBalance);
 
                     setBalance(finalBalance);
-                    const snapshot = captureNativeSnapshot('scan_complete', {
+                    let snapshot = captureNativeSnapshot('scan_complete', {
                         networkHeight,
                         fullWalletCacheImported: fullWalletCacheImportedRef.current,
                         nativeSnapshotBalance: nativeBalanceState.snapshot?.totals,
@@ -3315,23 +5202,187 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             unlockedBalance: finalBalance.unlockedBalance,
                         },
                     });
+                    let scanCompleteBalanceTrust = await evaluateNativeBalanceTrust(
+                        snapshot,
+                        finalBalance
+                    );
+                    if (
+                        !scanCompleteBalanceTrust.trusted &&
+                        isReturnedTransferMetadataIssue(scanCompleteBalanceTrust.reason)
+                    ) {
+                        returnedTransferRepairAttemptedRef.current = true;
+                        debugWarn('[WalletContext] Hydrating returned-transfer metadata after untrusted native balance', {
+                            reason: scanCompleteBalanceTrust.reason || 'unknown',
+                            walletHeight: networkHeight,
+                        });
+                        // NON-BLOCKING: hydration on a heavy wallet can take minutes (it runs in
+                        // the wallet worker, so the UI is fine, but awaiting it HERE held the scan
+                        // coordinator's activePromise and stalled catch-up scans — observed as
+                        // "stuck N blocks behind". The scan completes with the current trust flag;
+                        // when hydration lands, balance + trust refresh out-of-band and the next
+                        // scan/persist sees the repaired state. One retry after 60s (guarded so
+                        // there is a single retry chain per scan); a second failure is reported
+                        // and given up on — the loading-screen escape hatch / repair machinery
+                        // owns recovery from there.
+                        if (deferredRepairRetryRef.current.timer) {
+                            clearTimeout(deferredRepairRetryRef.current.timer);
+                            deferredRepairRetryRef.current.timer = null;
+                        }
+                        const runDeferredRepair = async (attempt: number): Promise<void> => {
+                            let deferredRepairFailureReason = '';
+                            try {
+                                const hydrationResult = await walletService.hydrateRuntimeFullTxContext();
+                                const refreshedBalance = clampUnlockedBalance(
+                                    getAuthoritativeNativeBalance(walletService.getBalance()).balance
+                                );
+                                setBalance(refreshedBalance);
+                                const refreshedSnapshot = captureNativeSnapshot('scan_complete_return_metadata_hydrated', {
+                                    networkHeight,
+                                    runtimeTxRequested: hydrationResult.requested,
+                                    runtimeTxHydrated: hydrationResult.hydrated,
+                                    finalBalance: {
+                                        balance: refreshedBalance.balance,
+                                        unlockedBalance: refreshedBalance.unlockedBalance,
+                                    },
+                                });
+                                const refreshedTrust = await evaluateNativeBalanceTrust(refreshedSnapshot, refreshedBalance);
+                                setNativeBalanceTrust(refreshedTrust);
+                                debugWarn('[WalletContext] Returned-transfer metadata hydration completed', {
+                                    trusted: refreshedTrust.trusted,
+                                    reason: refreshedTrust.reason || '',
+                                    requested: hydrationResult.requested,
+                                    hydrated: hydrationResult.hydrated,
+                                    attempt,
+                                });
+                                if (refreshedTrust.trusted) {
+                                    // Complete the deferred commit: the scan committed as
+                                    // repair-required because trust was pending this repair;
+                                    // upgrade commit state now (through the single terminal
+                                    // writer) or the loading screen waits on a verification
+                                    // that will never arrive.
+                                    finalizeRestoreTerminalState('success', {
+                                        networkHeight,
+                                        isRestoreSession: false,
+                                        sessionNote: 'deferred repair committed',
+                                    });
+                                    try {
+                                        const repairedWallet = safeReadWallet();
+                                        if (repairedWallet?.scanRepairRequired) {
+                                            delete repairedWallet.scanRepairRequired;
+                                            delete repairedWallet.scanRepairReason;
+                                            delete repairedWallet.scanRepairTimestamp;
+                                            safeWriteWallet(repairedWallet);
+                                        }
+                                    } catch {}
+                                    void persistFullStateNowRef.current?.();
+                                    reportClientEvent('scan.deferred_repair_committed', {
+                                        level: 'info',
+                                        context: {
+                                            walletHeight: networkHeight,
+                                            requested: hydrationResult.requested,
+                                            hydrated: hydrationResult.hydrated,
+                                            attempt,
+                                        },
+                                    });
+                                    return;
+                                }
+                                deferredRepairFailureReason = refreshedTrust.reason || 'native balance still untrusted';
+                            } catch (deferredRepairError) {
+                                deferredRepairFailureReason = deferredRepairError instanceof Error
+                                    ? deferredRepairError.message
+                                    : String(deferredRepairError || 'returned-transfer hydration failed');
+                            }
+                            if (attempt === 1) {
+                                deferredRepairRetryRef.current.timer = setTimeout(() => {
+                                    deferredRepairRetryRef.current.timer = null;
+                                    void runDeferredRepair(2);
+                                }, 60000);
+                            } else {
+                                reportClientEvent('scan.deferred_repair_gave_up', {
+                                    level: 'warn',
+                                    message: deferredRepairFailureReason,
+                                    context: {
+                                        walletHeight: networkHeight,
+                                        attempts: attempt,
+                                        reason: deferredRepairFailureReason,
+                                    },
+                                });
+                            }
+                        };
+                        void runDeferredRepair(1);
+                    }
+                    setNativeBalanceTrust(scanCompleteBalanceTrust);
                     void recordNativeSnapshotHealth('scan_complete', snapshot, finalBalance);
                     scheduleNativeIntegrityRecovery('scan_complete', snapshot, finalBalance);
+                    const shouldPersistScanState = shouldPersistCompletedScanState(scanCompleteBalanceTrust);
+                    scanCommitResult.balanceTrusted = scanCompleteBalanceTrust.trusted;
+                    if (!shouldPersistScanState) {
+                        const untrustedReason = scanCompleteBalanceTrust.reason || 'unknown';
+                        // PERMANENT telemetry: a silent persistence skip condemns the wallet to a
+                        // full rescan on every reopen — that must be visible in the field.
+                        reportClientEvent('wallet.persist_skipped_untrusted', {
+                            level: 'warn',
+                            message: untrustedReason.slice(0, 160),
+                        });
+                        debugWarn('[WalletContext] Skipping wallet state persistence because native balance is untrusted', {
+                            reason: untrustedReason,
+                        });
+                        encryptedWallet.scanRepairRequired = true;
+                        encryptedWallet.scanRepairReason = untrustedReason;
+                        encryptedWallet.scanRepairTimestamp = Date.now();
+                        delete encryptedWallet.cachedBalance;
+                        delete (encryptedWallet as any).cachedBalanceVersion;
+                        delete encryptedWallet.cachedTransactions;
+                        reportClientEvent('scan.repair_required', {
+                            level: 'warn',
+                            message: untrustedReason,
+                            context: {
+                                reason: request?.reason || 'unknown',
+                                sessionType: request?.sessionType || 'background',
+                                scanWindowStart: actualStartHeight,
+                                scanWindowEnd: networkHeight,
+                                walletHeight: networkHeight,
+                                daemonHeight: networkHeight,
+                            },
+                        });
+                    } else if (!scanCompleteBalanceTrust.trusted) {
+                        const untrustedReason = scanCompleteBalanceTrust.reason || 'unknown';
+                        debugWarn('[WalletContext] Persisting wallet state after returned-transfer metadata warning', {
+                            reason: untrustedReason,
+                            walletHeight: networkHeight,
+                            // Hydration repair now runs out-of-band (non-blocking); its counts
+                            // are reported by the completion log/telemetry instead.
+                            runtimeTxRequested: -1,
+                            runtimeTxHydrated: -1,
+                        });
+                        try {
+                            localStorage.removeItem('salvium_scan_returned_transfers');
+                        } catch {
+                        }
+                        delete encryptedWallet.scanRepairRequired;
+                        delete encryptedWallet.scanRepairReason;
+                        delete encryptedWallet.scanRepairTimestamp;
+                    } else {
+                        returnedTransferRepairAttemptedRef.current = false;
+                        try {
+                            localStorage.removeItem('salvium_scan_returned_transfers');
+                        } catch {
+                        }
+                        delete encryptedWallet.scanRepairRequired;
+                        delete encryptedWallet.scanRepairReason;
+                        delete encryptedWallet.scanRepairTimestamp;
+                    }
 
-                    // Cache the same authoritative balance that the UI renders so refreshes
-                    // do not fall back to a liquid-only total before native state hydrates.
-                    encryptedWallet.cachedBalance = { ...finalBalance };
-                    (encryptedWallet as any).cachedBalanceVersion = 3; // v3 = native wallet balance source of truth
-                    encryptedWallet.cachedTransactions = mergedTxs;
-                    setTransactions(mergedTxs); // CRITICAL: Update UI with newly found transactions
-                    applyStakes(stakesWithRewards); // Also update UI state immediately
+                    if (shouldPersistScanState) {
+                        encryptedWallet.cachedBalance = { ...finalBalance };
+                        encryptedWallet.cachedBalanceVersion = BASE_ASSET_CACHED_BALANCE_VERSION;
+                        encryptedWallet.cachedTransactions = mergedTxs;
+                    }
+                    setTransactions(mergedTxs);
+                    applyStakes(stakesWithRewards, stakeSourceTxs);
 
-                    // Compute subaddresses fresh from walletService (with balances)
-                    const currentSubs = walletService.getSubaddresses();
+                    const currentSubs = await walletService.getSubaddresses();
 
-                    // CRITICAL FIX: Merge with existing cached labels before saving to localStorage
-                    // Check BOTH localStorage cache AND current React state for labels
-                    // React state has the most recent labels (e.g., from newly created subaddresses)
                     const oldCachedSubs = encryptedWallet.cachedSubaddresses || [];
 
                     encryptedWallet.cachedSubaddresses = currentSubs.map((sub, idx) => {
@@ -3339,15 +5390,11 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         const wasmLabel = sub.label;
                         const isDefaultWasmLabel = !wasmLabel || wasmLabel === `Subaddress ${index}` || wasmLabel === 'Primary Account';
 
-                        // Check React state first (most recent, includes newly created subaddresses)
-                        // Use ref to avoid stale closure issues in async callbacks
                         const fromState = subaddressesRef.current.find(s => s.index === index);
-                        // Then check localStorage cache
                         const fromCache = oldCachedSubs.find(s => s.index === index);
 
                         let finalLabel = wasmLabel;
                         if (isDefaultWasmLabel) {
-                            // Prefer React state label, then localStorage cache label
                             if (fromState?.label && fromState.label !== `Subaddress ${index}`) {
                                 finalLabel = fromState.label;
                             } else if (fromCache?.label) {
@@ -3363,41 +5410,49 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             index,
                             label: finalLabel,
                             address: sub.address,
-                            balance: sub.unlocked_balance || 0 // Use UNLOCKED balance for display
+                            balance: sub.unlocked_balance || 0
                         };
                     });
                     setSubaddresses(encryptedWallet.cachedSubaddresses);
 
-                    // Export FULL wallet cache for persistence (enables sending after page refresh)
-                    const cacheExport = walletService.exportWalletCache();
                     let walletCacheHex = '';
-                    if (cacheExport && cacheExport.cache_hex) {
-                        walletCacheHex = cacheExport.cache_hex;
-                    } else {
-                        // Fallback: try old exportOutputs method
-                        const outputsExport = walletService.exportOutputs();
-                        if (outputsExport && outputsExport.outputs_hex) {
-                            walletCacheHex = outputsExport.outputs_hex;
+                    if (shouldPersistScanState) {
+                        const cacheExport = await walletService.exportWalletCache();
+                        if (cacheExport && cacheExport.cache_hex) {
+                            walletCacheHex = cacheExport.cache_hex;
+                        } else {
+                            const outputsExport = await walletService.exportOutputs();
+                            if (outputsExport && outputsExport.outputs_hex) {
+                                walletCacheHex = outputsExport.outputs_hex;
+                            }
                         }
                     }
 
-                    // PRIVACY-PRESERVING: Cache spent key images locally
-                    const spentKeyImages = walletService.getSpentKeyImages();
+                    const spentKeyImages = await walletService.getSpentKeyImages();
                     const spentCount = Object.keys(spentKeyImages).length;
                     if (spentCount > 0) {
                         encryptedWallet.cachedSpentKeyImages = spentKeyImages;
                     }
 
-                    // Store large wallet cache in IndexedDB
-                    // Don't put cachedOutputsHex in localStorage - it will exceed quota
                     delete encryptedWallet.cachedOutputsHex;
 
-                    // Mark chunks as completed (gap detection)
-                    // We track two types of chunks:
-                    // 1. Chunks in scan range WITHOUT viewtag matches - Phase 1 confirmed nothing there
-                    // 2. Chunks WITH matches that were ACTUALLY processed by Phase 2
+                    const checkpointHeight = getStableBlockHashCheckpointHeight(networkHeight);
+                    const finalBlockHash = checkpointHeight > 0
+                        ? await fetchBlockHashByHeight(checkpointHeight)
+                        : null;
+                    if (finalBlockHash) {
+                        rememberBlockHash(encryptedWallet, checkpointHeight, finalBlockHash);
+                    }
+                    const shallowCheckpointHeight = getShallowBlockHashCheckpointHeight(networkHeight);
+                    if (shallowCheckpointHeight > checkpointHeight) {
+                        const shallowBlockHash = await fetchBlockHashByHeight(shallowCheckpointHeight);
+                        if (shallowBlockHash) {
+                            rememberBlockHash(encryptedWallet, shallowCheckpointHeight, shallowBlockHash);
+                        }
+                    }
+
                     const chunksInRange = new Set<number>();
-                    for (let chunk = getChunkStart(finalScanStartHeight); chunk <= getChunkStart(networkHeight); chunk += CHUNK_SIZE) {
+                    for (let chunk = getChunkStart(actualStartHeight); chunk <= getChunkStart(networkHeight); chunk += CHUNK_SIZE) {
                         chunksInRange.add(chunk);
                     }
 
@@ -3407,13 +5462,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     const confirmedChunks: number[] = [];
                     for (const chunk of chunksInRange) {
                         if (matchedChunkSet.has(chunk)) {
-                            // This chunk had viewtag matches - only mark complete if Phase 2 processed it
                             if (processedChunkSet.has(chunk)) {
                                 confirmedChunks.push(chunk);
                             }
-                            // If not in processedChunks, Phase 2 failed for this chunk - DON'T mark as complete
                         } else {
-                            // No viewtag matches - Phase 1 confirmed nothing for us, safe to mark complete
                             confirmedChunks.push(chunk);
                         }
                     }
@@ -3424,31 +5476,76 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             ...confirmedChunks
                         ])
                     ].sort((a, b) => b - a).slice(0, MAX_TRACKED_CHUNKS);
+                    markRangeScanned(actualStartHeight, Math.max(actualStartHeight, networkHeight - 1));
+                    try {
+                        const walletWithScannedRange = safeReadWallet();
+                        if (walletWithScannedRange?.scannedRanges) {
+                            encryptedWallet.scannedRanges = walletWithScannedRange.scannedRanges;
+                        }
+                    } catch {
+                    }
                     encryptedWallet.lastScanTimestamp = Date.now();
 
                     if (isResettingRef.current || !walletService.isReady() || !walletService.hasWallet()) {
-                        return;
+                        if (isResettingRef.current) {
+                            // Reset owns the session and the remaining gates.
+                            finalizeRestoreTerminalState('cancelled_reset', {
+                                reason: 'wallet reset during commit',
+                            });
+                        } else {
+                            // Worker crash / wallet teardown mid-commit: keep the session alive and
+                            // schedule a retry instead of stranding a restore one persist short of
+                            // terminal (the sync watchdog is the backstop if the retry cannot run).
+                            finalizeRestoreTerminalState('cancelled_retryable', {
+                                reason: 'wallet worker unavailable during commit',
+                                retryRequest: {
+                                    sessionType: request?.sessionType || 'background',
+                                    sessionId: request?.sessionId,
+                                    fromHeight,
+                                },
+                            });
+                        }
+                        return { terminalState: 'cancelled', reason: 'wallet reset or unavailable during commit' };
                     }
 
-                    // Move large data to IndexedDB to avoid localStorage quota
                     const largeData = {
                         cachedTransactions: encryptedWallet.cachedTransactions,
                         cachedWalletHistory: encryptedWallet.cachedWalletHistory,
                         cachedSpentKeyImages: encryptedWallet.cachedSpentKeyImages
                     };
 
-                    // Remove large data from localStorage copy
                     const walletForStorage = { ...encryptedWallet };
                     delete walletForStorage.cachedTransactions;
                     delete walletForStorage.cachedWalletHistory;
                     delete walletForStorage.cachedSpentKeyImages;
 
-                    safeWriteWallet(walletForStorage);
-
-                    // Save large data to IndexedDB
-                    // iOS FIX: Use Promise.all for parallel writes to avoid exceeding
-                    // iOS Safari's 10-second transaction timeout
-                    if (address) {
+                    if (address && shouldPersistScanState) {
+                        reportClientEvent('scan.persistence_started', {
+                            level: 'info',
+                            context: {
+                                reason: request?.reason || 'unknown',
+                                sessionType: request?.sessionType || 'background',
+                                walletHeight: networkHeight,
+                                daemonHeight: networkHeight,
+                                cachePresent: !!walletCacheHex,
+                                cacheSizeBucket: getCacheSizeBucket(walletCacheHex),
+                                txCount: largeData.cachedTransactions?.length || 0,
+                                subaddressCount: encryptedWallet.cachedSubaddresses?.length || 0,
+                            },
+                        });
+                        if (request?.sessionType === 'restore-full-rescan') {
+                            reportRestoreDiagnostic('restore.persistence_started', {
+                                source: activeRestoreSession?.source || request.reason || 'restore-scan',
+                                sessionType: request.sessionType,
+                                sessionActive: !!request.sessionId,
+                                walletHeight: networkHeight,
+                                daemonHeight: networkHeight,
+                                cachePresent: !!walletCacheHex,
+                                cacheSizeBucket: getCacheSizeBucket(walletCacheHex),
+                                txCount: largeData.cachedTransactions?.length || 0,
+                                subaddressCount: encryptedWallet.cachedSubaddresses?.length || 0,
+                            });
+                        }
                         const savePromises: Promise<unknown>[] = [];
                         const nextTransactionsJson = largeData.cachedTransactions?.length
                             ? JSON.stringify(largeData.cachedTransactions)
@@ -3473,14 +5570,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             savePromises.push(saveToIndexedDBIfChanged(`wallet_keyimages_${address}`, nextKeyImagesJson, idbKeyImagesRaw));
                         }
 
-                        // Execute all saves in parallel (iOS Safari timeout fix)
-                        await Promise.all(savePromises);
+                        const saveResults = await Promise.all(savePromises);
+                        const failedSave = saveResults.find((result: any) => result && result.success === false) as any;
+                        if (failedSave) {
+                            throw new Error(`Failed to persist wallet cache data: ${failedSave.message || failedSave.error || 'unknown IndexedDB error'}`);
+                        }
 
-                        // Save to WalletStateService (fixes "Failed to generate key image" error)
-                        // This ensures subaddress map and output data are persisted for long sessions
                         if (walletCacheHex) {
                             try {
-                                const wasmSubaddresses = walletService.getSubaddresses();
+                                const wasmSubaddresses = await walletService.getSubaddresses();
                                 const subaddressMap: SubaddressMapEntry[] = wasmSubaddresses.map((sub, idx) => ({
                                     index: sub.index?.minor ?? idx,
                                     label: sub.label || '',
@@ -3496,104 +5594,778 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                                     walletService.getWasmVersion()
                                 );
                             } catch (e) {
-                                // Non-fatal - original IndexedDB save already succeeded
+                                if (request?.sessionType === 'restore-full-rescan') {
+                                    const stateSaveError = e instanceof Error ? e.message : String(e || 'unknown WalletStateService error');
+                                    reportRestoreDiagnostic('restore.wallet_state_save_failed', {
+                                        source: activeRestoreSession?.source || request.reason || 'restore-scan',
+                                        sessionType: request.sessionType,
+                                        sessionActive: !!request.sessionId,
+                                        walletHeight: networkHeight,
+                                        daemonHeight: networkHeight,
+                                        cachePresent: !!walletCacheHex,
+                                        reason: stateSaveError,
+                                    }, 'warn', stateSaveError);
+                                }
                             }
                         }
+                        if (request?.sessionType === 'restore-full-rescan') {
+                            reportRestoreDiagnostic('restore.persistence_completed', {
+                                source: activeRestoreSession?.source || request.reason || 'restore-scan',
+                                sessionType: request.sessionType,
+                                sessionActive: !!request.sessionId,
+                                walletHeight: networkHeight,
+                                daemonHeight: networkHeight,
+                                cachePresent: !!walletCacheHex,
+                                cacheSizeBucket: getCacheSizeBucket(walletCacheHex),
+                                persistenceSaved: true,
+                            });
+                        }
+                        reportClientEvent('scan.persistence_completed', {
+                            level: 'info',
+                            context: {
+                                reason: request?.reason || 'unknown',
+                                sessionType: request?.sessionType || 'background',
+                                walletHeight: networkHeight,
+                                daemonHeight: networkHeight,
+                                cachePresent: !!walletCacheHex,
+                                cacheSizeBucket: getCacheSizeBucket(walletCacheHex),
+                            },
+                        });
                     }
+
+                    safeWriteWallet(walletForStorage);
+                    scanCommitResult = {
+                        terminalState: shouldPersistScanState ? 'success' : 'repair_required',
+                        committed: shouldPersistScanState,
+                        coverageCursorCommitted: true,
+                        cacheCommitted: shouldPersistScanState,
+                        balanceTrusted: scanCompleteBalanceTrust.trusted,
+                        reason: shouldPersistScanState ? undefined : scanCompleteBalanceTrust.reason || 'native-balance-untrusted',
+                    };
+                    reportClientEvent(
+                        shouldPersistScanState ? 'scan.commit_completed' : 'scan.coverage_cursor_persisted',
+                        {
+                            level: shouldPersistScanState ? 'info' : 'warn',
+                            message: scanCommitResult.reason,
+                            context: {
+                                reason: request?.reason || 'unknown',
+                                sessionType: request?.sessionType || 'background',
+                                terminalState: scanCommitResult.terminalState,
+                                committed: scanCommitResult.committed,
+                                coverageCursorCommitted: scanCommitResult.coverageCursorCommitted,
+                                cacheCommitted: scanCommitResult.cacheCommitted,
+                                balanceTrusted: scanCommitResult.balanceTrusted,
+                                walletHeight: networkHeight,
+                                daemonHeight: networkHeight,
+                            },
+                        }
+                    );
                 }
             } catch (e) {
-                // Failed to save wallet state
+                const persistenceError = e instanceof Error ? e.message : String(e || 'unknown persistence error');
+                scanCommitResult = {
+                    terminalState: 'failed',
+                    committed: false,
+                    coverageCursorCommitted: false,
+                    cacheCommitted: false,
+                    balanceTrusted: false,
+                    reason: persistenceError,
+                };
+                reportClientEvent('scan.persistence_failed', {
+                    level: 'error',
+                    message: persistenceError,
+                    context: {
+                        reason: request?.reason || 'unknown',
+                        sessionType: request?.sessionType || 'background',
+                        walletHeight: networkHeight,
+                        daemonHeight: networkHeight,
+                        persistenceSaved: false,
+                    },
+                });
+                if (request?.sessionType === 'restore-full-rescan') {
+                    reportRestoreDiagnostic('restore.persistence_failed', {
+                        source: activeRestoreSession?.source || request.reason || 'restore-scan',
+                        sessionType: request.sessionType,
+                        sessionActive: !!request.sessionId,
+                        walletHeight: networkHeight,
+                        daemonHeight: networkHeight,
+                        reason: persistenceError,
+                        persistenceSaved: false,
+                    }, 'error', persistenceError);
+                }
+            }
+            } else {
+                // Nothing changed on this background catch-up — skip the heavy commit and advance the
+                // synced height (the unchanged cache stays valid; reload re-scans the empty tail).
+                // Preserve prior trust: a no-op must not upgrade an already repair-required wallet.
+                scanCommitResult = {
+                    terminalState: 'success',
+                    committed: true,
+                    coverageCursorCommitted: true,
+                    cacheCommitted: true,
+                    balanceTrusted: !scanHealthRef.current.repairRequired,
+                    reason: 'incremental no-op (no wallet state change)',
+                };
+                reportClientEvent('scan.incremental_noop_skip', {
+                    level: 'info',
+                    context: {
+                        reason: request?.reason || 'unknown',
+                        walletHeight: networkHeight,
+                        blocksScanned: result.blocksScanned || 0,
+                        sinceLastFullCommitMs: Date.now() - lastIncrementalPersistAtRef.current,
+                    },
+                });
             }
 
-            // Sync spent status with server's key image index (privacy-preserving)
-            // Only needed after vault file restore - catches spends that happened AFTER backup
+            if (scanCommitResult.coverageCursorCommitted) {
+                const commitTrusted =
+                    scanCommitResult.terminalState === 'success' &&
+                    scanCommitResult.committed &&
+                    scanCommitResult.cacheCommitted &&
+                    scanCommitResult.balanceTrusted;
+                // Owned restore sessions defer the SINGLE terminal write to the post-validation
+                // site below (the restore is not terminal until phase-4 validation completes);
+                // everything else terminates here through finalizeRestoreTerminalState.
+                const ownsRestoreSession = request?.sessionType === 'restore-full-rescan' && !!request.sessionId;
+                if (commitTrusted) {
+                    await walletService.setWalletHeight(networkHeight);
+                    if (request?.sessionType === 'restore-full-rescan') {
+                        restoreCompletedForPersist = true;
+                    }
+                    if (!ownsRestoreSession) {
+                        finalizeRestoreTerminalState('success', {
+                            networkHeight,
+                            isRestoreSession: false,
+                            sessionNote: 'scan committed',
+                        });
+                    }
+                } else if (!ownsRestoreSession) {
+                    // Background repair-required commit: the repair scheduling machinery
+                    // (scheduleNativeIntegrityRecovery) was already invoked above; do NOT latch
+                    // isSyncing:true/95 with no recovery path.
+                    finalizeRestoreTerminalState('repair_required', {
+                        networkHeight,
+                        currentHeight: syncStatusRef.current.walletHeight || walletService.getSyncStatus().walletHeight || 0,
+                        isRestoreSession: false,
+                        reason: scanCommitResult.reason || 'scan repair required',
+                    });
+                }
+                reportClientEvent('scan.wallet_context_completed', {
+                    level: scanCommitResult.terminalState === 'repair_required' ? 'warn' : 'info',
+                    message: scanCommitResult.reason,
+                    context: {
+                        reason: request?.reason || 'unknown',
+                        sessionType: request?.sessionType || 'background',
+                        terminalState: scanCommitResult.terminalState,
+                        scanProfile,
+                        scanWindowStart: actualStartHeight,
+                        scanWindowEnd: networkHeight,
+                        scanRangeBlocks: Math.max(0, networkHeight - actualStartHeight),
+                        blocksScanned: result.blocksScanned || 0,
+                        matchCount: result.matchCount || 0,
+                        outputsFound: result.outputsFound || 0,
+                        phase2bRan: result.phase2bRan === true,
+                        phase2bSucceeded: result.phase2bSucceeded === true,
+                        phase3Ran: result.phase3Ran === true,
+                        phase3Succeeded: result.phase3Succeeded === true,
+                        committed: scanCommitResult.committed,
+                        coverageCursorCommitted: scanCommitResult.coverageCursorCommitted,
+                        cacheCommitted: scanCommitResult.cacheCommitted,
+                        balanceTrusted: scanCommitResult.balanceTrusted,
+                        walletHeight: networkHeight,
+                        daemonHeight: networkHeight,
+                    },
+                });
+            } else {
+                setSyncStatus(prev => ({
+                    ...prev,
+                    daemonHeight: networkHeight,
+                    isSyncing: false,
+                    progress: Math.min(prev.progress || 0, 99),
+                }));
+                throw new Error(`Scan commit failed: ${scanCommitResult.reason || 'persistence failed'}`);
+            }
+
             if (restoredFromVaultRef.current) {
-                restoredFromVaultRef.current = false; // Reset flag
+                restoredFromVaultRef.current = false;
+                if (request?.sessionType === 'restore-full-rescan') {
+                    reportRestoreDiagnostic('restore.spent_status_sync_started', {
+                        source: activeRestoreSession?.source || request.reason || 'vault-backup-restore',
+                        sessionType: request.sessionType,
+                        sessionActive: !!request.sessionId,
+                        walletHeight: networkHeight,
+                        daemonHeight: networkHeight,
+                    });
+                }
                 try {
-                    const syncedCount = await walletService.syncSpentStatusWithServer();
+                    const spentSync = await walletService.syncSpentStatusWithServer();
+                    const syncedCount = spentSync.spentCount;
                     if (syncedCount > 0 && address) {
-                        const spentKeyImages = walletService.getSpentKeyImages();
+                        const spentKeyImages = await walletService.getSpentKeyImages();
                         await saveToIndexedDB(`wallet_keyimages_${address}`, JSON.stringify(spentKeyImages));
                     }
+                    if (!spentSync.complete) {
+                        setNativeBalanceTrust({
+                            trusted: false,
+                            reason: 'Spent-status sync incomplete - balance may be overstated until re-synced',
+                        });
+                        needsGapCheckRef.current = true;
+                        reportClientEvent('scan.spent_sync_incomplete', {
+                            level: 'warn',
+                            message: 'Post-restore spent-status sync was incomplete; balance left untrusted.',
+                            context: { syncedCount },
+                        });
+                    }
+                    if (request?.sessionType === 'restore-full-rescan') {
+                        reportRestoreDiagnostic('restore.spent_status_sync_completed', {
+                            source: activeRestoreSession?.source || request.reason || 'vault-backup-restore',
+                            sessionType: request.sessionType,
+                            sessionActive: !!request.sessionId,
+                            outputsFound: syncedCount || 0,
+                            walletHeight: networkHeight,
+                            daemonHeight: networkHeight,
+                        });
+                    }
                 } catch (e) {
-                    // Non-fatal
+                    if (request?.sessionType === 'restore-full-rescan') {
+                        const spentSyncError = e instanceof Error ? e.message : String(e || 'unknown spent-status error');
+                        reportRestoreDiagnostic('restore.spent_status_sync_failed', {
+                            source: activeRestoreSession?.source || request.reason || 'vault-backup-restore',
+                            sessionType: request.sessionType,
+                            sessionActive: !!request.sessionId,
+                            reason: spentSyncError,
+                            walletHeight: networkHeight,
+                            daemonHeight: networkHeight,
+                        }, 'warn', spentSyncError);
+                    }
                 }
             }
 
             refreshData();
 
-            // Clear crash tracking - scan completed successfully
+            if (request?.sessionType === 'restore-full-rescan' && request.sessionId) {
+                setRestoreScanPhase('phase4_post_restore_validation', 'validating returned-output reconstruction', 'validating');
+                reportRestoreTerminalProgress(networkHeight, actualStartHeight, 96, 'Validating restore...', 'validating');
+                let restoreValidation = await validateRestorePipelineState(networkHeight);
 
-            // Re-check: Did more blocks arrive while we were scanning?
-            // This prevents the 3-block delay when blocks arrive during a scan
-            // SKIP on full restore (fromHeight === 0 or fresh scan from 0) - let normal polling catch new blocks
-            // This prevents an immediate second scan that could trigger recovery logic incorrectly
-            if (fromHeight !== 0 && finalScanStartHeight > 0) {
+                if (!restoreValidation.valid && (restoreValidation.unresolvedReturnedOutputs || restoreValidation.missingRuntimeTxContext)) {
+                    const requirePhase2bCompletion = restoreValidation.unresolvedReturnedOutputs === true;
+                    setRestoreScanPhase('phase2_returned_transfer_scan', 'returned-transfer reconstruction running', 'returned_scan');
+                    try {
+                        localStorage.setItem('salvium_scan_returned_transfers', 'true');
+                    } catch {
+                    }
+
+                    setSyncStatus(prev => ({
+                        ...prev,
+                        walletHeight: actualStartHeight,
+                        daemonHeight: networkHeight,
+                        isSyncing: true,
+                        progress: 56,
+                        scanStartHeight: actualStartHeight,
+                    }));
+                    const runRestorePhase2Scan = async () => cspScanService.startScan(
+                        actualStartHeight,
+                        networkHeight,
+                        (progress) => {
+                            reportRestorePhase2Progress(networkHeight, actualStartHeight, progress);
+                        },
+                        undefined,
+                        result.keyImagesCsv,
+                        false,
+                        undefined,
+                        true
+                    );
+
+                    const reportRestorePhase2Result = (attempt: number, phase2Result: Awaited<ReturnType<typeof runRestorePhase2Scan>>) => {
+                        reportRestoreDiagnostic('restore.phase2_result', {
+                            source: activeRestoreSession?.source || request.reason || 'restore-scan',
+                            sessionType: request.sessionType,
+                            sessionActive: !!request.sessionId,
+                            restorePhase2Attempt: attempt,
+                            status: phase2Result.success ? 'success' : 'failed',
+                            phase2bRan: phase2Result.phase2bRan === true,
+                            phase2bSucceeded: phase2Result.phase2bSucceeded === true,
+                            phase2bNeedsRescan: phase2Result.phase2bNeedsRescan === true,
+                            phase2bFailure: phase2Result.phase2bFailure || '',
+                            phase2bError: phase2Result.phase2bError || phase2Result.error || '',
+                            outputsFound: phase2Result.outputsFound || 0,
+                            matchCount: phase2Result.matchCount || 0,
+                            blocksScanned: phase2Result.blocksScanned || 0,
+                            walletHeight: networkHeight,
+                            daemonHeight: networkHeight,
+                            reason: phase2Result.phase2bError || phase2Result.phase2bFailure || phase2Result.error || '',
+                        }, phase2Result.success && phase2Result.phase2bSucceeded ? 'info' : 'warn', phase2Result.phase2bError || phase2Result.error);
+                    };
+
+                    let phase2NeedsRescanAfterFollowup = false;
+                    let phase2NeedsRescanAfterFollowupReason = '';
+                    let phase2Result = await runRestorePhase2Scan();
+                    reportRestorePhase2Result(1, phase2Result);
+
+                    if (!phase2Result.success) {
+                        throw new Error(phase2Result.error || 'Returned-transfer reconstruction scan failed');
+                    }
+                    if (phase2Result.phase2bNeedsRescan) {
+                        setRestoreScanPhase('phase1_main_scan', 'follow-up full rescan for returned-transfer reconstruction', 'scanning_blocks');
+                        try {
+                            localStorage.setItem('salvium_scan_returned_transfers', 'true');
+                        } catch {
+                        }
+                        phase2Result = await runRestorePhase2Scan();
+                        reportRestorePhase2Result(2, phase2Result);
+                        if (!phase2Result.success) {
+                            throw new Error(phase2Result.error || 'Returned-transfer follow-up rescan failed');
+                        }
+                        if (phase2Result.phase2bNeedsRescan) {
+                            phase2NeedsRescanAfterFollowup = true;
+                            phase2NeedsRescanAfterFollowupReason = phase2Result.phase2bFailure || 'unknown reason';
+                            reportRestoreDiagnostic('restore.phase2_followup_needs_validation', {
+                                source: activeRestoreSession?.source || request.reason || 'restore-scan',
+                                sessionType: request.sessionType,
+                                sessionActive: !!request.sessionId,
+                                walletHeight: networkHeight,
+                                daemonHeight: networkHeight,
+                                phase2bFailure: phase2NeedsRescanAfterFollowupReason,
+                                phase2bNeedsRescan: true,
+                            }, 'warn', phase2NeedsRescanAfterFollowupReason);
+                        }
+                    }
+                    if (requirePhase2bCompletion && (!phase2Result.phase2bRan || !phase2Result.phase2bSucceeded)) {
+                        throw new Error(`Returned-transfer reconstruction did not complete (${phase2Result.phase2bFailure || phase2Result.phase2bError || 'unknown reason'})`);
+                    }
+                    if (!requirePhase2bCompletion && phase2Result.phase2bRan && !phase2Result.phase2bSucceeded && !phase2Result.phase2bNeedsRescan) {
+                        throw new Error(`Runtime transaction-context repair scan did not complete (${phase2Result.phase2bFailure || phase2Result.phase2bError || 'unknown reason'})`);
+                    }
+
+                    setRestoreScanPhase('phase2_returned_transfer_scan', 'returned-transfer scan completed');
+                    await rebuildRestoreDerivedState(networkHeight);
+                    reportRestoreTerminalProgress(networkHeight, actualStartHeight, 98, 'Finalizing restore...', 'finalizing');
+                    setRestoreScanPhase('phase4_post_restore_validation', 'validating returned-output reconstruction after phase 2', 'validating');
+                    restoreValidation = await validateRestorePipelineState(networkHeight);
+                    const phase2bReturnedTransferRepairPending =
+                        phase2NeedsRescanAfterFollowup &&
+                        phase2NeedsRescanAfterFollowupReason === 'potential-matches-without-outputs';
+                    const returnedOutputRepairOnly = !restoreValidation.valid &&
+                        (restoreValidation.unresolvedReturnedOutputs === true ||
+                         restoreValidation.missingRuntimeTxContext === true ||
+                         phase2bReturnedTransferRepairPending);
+                    if (phase2NeedsRescanAfterFollowup && !restoreValidation.valid && !returnedOutputRepairOnly) {
+                        throw new Error(`Returned-transfer reconstruction still needs rescan after follow-up (${phase2NeedsRescanAfterFollowupReason})`);
+                    }
+                    if (phase2NeedsRescanAfterFollowup && restoreValidation.valid) {
+                        reportRestoreDiagnostic('restore.phase2_followup_validated_clean', {
+                            source: activeRestoreSession?.source || request.reason || 'restore-scan',
+                            sessionType: request.sessionType,
+                            sessionActive: !!request.sessionId,
+                            walletHeight: networkHeight,
+                            daemonHeight: networkHeight,
+                            phase2bFailure: phase2NeedsRescanAfterFollowupReason,
+                            validationValid: true,
+                        });
+                    }
+                }
+
+                const finalReturnedOutputRepairOnly = !restoreValidation.valid &&
+                    (restoreValidation.unresolvedReturnedOutputs === true ||
+                     restoreValidation.missingRuntimeTxContext === true ||
+                     (phase2NeedsRescanAfterFollowup &&
+                      phase2NeedsRescanAfterFollowupReason === 'potential-matches-without-outputs'));
+                if (!restoreValidation.valid && !finalReturnedOutputRepairOnly) {
+                    throw new Error(restoreValidation.error || 'Restore pipeline validation failed');
+                }
+                if (finalReturnedOutputRepairOnly) {
+                    try {
+                        const repairWallet = safeReadWallet();
+                        if (repairWallet) {
+                            repairWallet.scanRepairRequired = true;
+                            repairWallet.scanRepairReason =
+                                `returned-transfer reconstruction incomplete (${restoreValidation.error || 'unresolved-returned-outputs'})`;
+                            (repairWallet as any).scanRepairTimestamp = Date.now();
+                            safeWriteWallet(repairWallet);
+                        }
+ } catch { }
+                    setNativeBalanceTrust({
+                        trusted: false,
+                        reason: 'Returned-transfer outputs are still being reconstructed',
+                    });
+                    needsGapCheckRef.current = true;
+                    returnedTransferRepairAttemptedRef.current = false;
+                    try {
+                        localStorage.setItem('salvium_scan_returned_transfers', 'true');
+ } catch { }
+                    reportRestoreDiagnostic('restore.completed_with_returned_transfer_repair_pending', {
+                        source: activeRestoreSession?.source || request?.reason || 'restore-scan',
+                        sessionType: request?.sessionType || 'restore-full-rescan',
+                        sessionActive: !!request?.sessionId,
+                        walletHeight: networkHeight,
+                        daemonHeight: networkHeight,
+                        unresolvedReturnedOutputCount: restoreValidation.unresolvedReturnedOutputCount || 0,
+                        missingRuntimeTxContextCount: restoreValidation.missingRuntimeTxContextCount || 0,
+                        reason: restoreValidation.error || '',
+                    }, 'warn', 'Wallet opened; returned-transfer reconstruction will continue in the background.');
+                }
+
+                reportRestoreTerminalProgress(networkHeight, actualStartHeight, 99, 'Restore complete', 'complete');
+                setIsWalletReady(true);
+                setIsLocked(false);
+                // SINGLE terminal write for the whole restore (deferred from the commit site):
+                // a trusted commit + clean validation terminates as success; an untrusted commit
+                // or repair-only validation residue terminates as repair_required — the wallet IS
+                // usable, the session still finishes and the restore-finished flag is still set;
+                // the deferred-repair upgrade (or the loading-screen escape hatch) owns trust.
+                const restoreRepairPending =
+                    scanCommitResult.terminalState === 'repair_required' ||
+                    !scanCommitResult.balanceTrusted ||
+                    finalReturnedOutputRepairOnly;
+                finalizeRestoreTerminalState(restoreRepairPending ? 'repair_required' : 'success', {
+                    networkHeight,
+                    currentHeight: networkHeight,
+                    isRestoreSession: true,
+                    reason: restoreRepairPending
+                        ? (scanCommitResult.reason || restoreValidation.error || 'restore completed with repair pending')
+                        : undefined,
+                    sessionNote: 'Restore complete',
+                });
+            }
+
+            if (
+                scanCommitResult.terminalState !== 'repair_required' &&
+                fromHeight !== 0 &&
+                finalScanStartHeight > 0 &&
+                !forceCleanRestoreScan
+            ) {
                 const latestHeight = await cspScanService.getNetworkHeight();
-                if (latestHeight > networkHeight) {
-                    // Schedule immediate rescan (after finally block clears scanInProgressRef)
-                    setTimeout(() => startScan(), 100);
+                if (shouldSchedulePostScanFollowup({
+                    scannedToHeight: networkHeight,
+                    latestHeight,
+                    tipGraceBlocks: SYNC_STREAM_TIP_GRACE_BLOCKS,
+                })) {
+                    setTimeout(() => {
+                        void requestScanStart({
+                            reason: 'post-scan-network-advance',
+                            sessionType: 'background',
+                        });
+                    }, 100);
+                } else if (latestHeight > networkHeight) {
+                    reportClientEvent('scan.post_scan_followup_skipped_tip_grace', {
+                        level: 'info',
+                        context: {
+                            walletHeight: networkHeight,
+                            daemonHeight: latestHeight,
+                            behindBlocks: latestHeight - networkHeight,
+                            tipGraceBlocks: SYNC_STREAM_TIP_GRACE_BLOCKS,
+                        },
+                    });
                 }
             }
 
+            return {
+                terminalState: scanCommitResult.terminalState,
+                reason: scanCommitResult.reason,
+            };
+
         } catch (e) {
-            // Scan failed - reset syncing state
-            setSyncStatus(prev => ({ ...prev, isSyncing: false }));
+            const errorMessage = e instanceof Error ? e.message : String(e || '');
+            // (Removed: the stoppedByVisibilityPause classification. Its gating ref
+            // restoreVisibilityPauseScanVersionRef was never written with a live scan version,
+            // so the branch was unreachable dead code.)
+            const stoppedByWalletReset =
+                isResettingRef.current ||
+                scanRequestsSuspendedRef.current ||
+                errorMessage.includes('Scan cancelled or wallet deleted');
+
+            if (stoppedByWalletReset) {
+                debugLog('[WalletContext] Scan stopped because wallet reset/rescan took ownership', {
+                    reason: request?.reason,
+                    fromHeight,
+                    sessionType: request?.sessionType,
+                    errorMessage,
+                });
+                finalizeRestoreTerminalState('cancelled_reset', {
+                    reason: 'wallet reset or rescan took ownership',
+                });
+                return { terminalState: 'cancelled', reason: 'wallet reset or rescan took ownership' };
+            }
+
             console.error('[WalletContext] Scan failed:', e);
+
+            finalizeRestoreTerminalState('failed', {
+                networkHeight: syncStatusRef.current.daemonHeight || syncStatusRef.current.walletHeight || 0,
+                currentHeight: syncStatusRef.current.walletHeight || 0,
+                isRestoreSession: request?.sessionType === 'restore-full-rescan' && !!request.sessionId,
+                reason: errorMessage || 'scan failed',
+                sessionNote: 'restore scan failed',
+            });
+            return {
+                terminalState: 'failed',
+                reason: errorMessage || 'scan failed',
+            };
         } finally {
-            // RACE CONDITION FIX: Only update state if this is still the current scan
-            // This prevents stale scan completions from corrupting state
             if (scanVersionRef.current === currentScanVersion) {
                 scanInProgressRef.current = false;
                 setIsScanning(false);
                 setScanProgress(null);
-                // Ensure isSyncing is always reset in finally block
-                setSyncStatus(prev => ({ ...prev, isSyncing: false }));
+                forceCleanRestoreScanRef.current = false;
+                // ABRUPT-KILL robustness: after a successful initial restore/first-sync, persist the
+                // full state ONCE unconditionally so a fresh restore is durably saved (output cache +
+                // resume-height + spends) before any abrupt OS kill / crash. The scan flags are now
+                // cleared so persistFullStateNow's scan guard passes; defer a tick so React commits.
+                if (restoreCompletedForPersist) {
+                    restoreCompletedForPersist = false;
+                    setTimeout(() => { void persistFullStateNowRef.current?.(); }, 0);
+                }
+                if (
+                    !isRestoreScanSessionActive() &&
+                    !needsFullRescanRef.current &&
+                    scanHealthRef.current.terminalState !== 'repair_required'
+                ) {
+                    setSyncStatus(prev => ({ ...prev, isSyncing: false }));
+                }
 
-                // MOBILE FIX: Restore touch gestures after scan completes
                 try {
                     document.body.style.touchAction = '';
                     document.body.style.overscrollBehavior = '';
                 } catch {
-                    // Style restoration failed - non-critical
                 }
 
-                // AUTO-RECOVERY: If cache was missing, trigger full rescan from block 0
                 if (needsFullRescanRef.current) {
                     needsFullRescanRef.current = false;
-                    setTimeout(() => startScan(0), 500);
+                    setTimeout(() => {
+                        if (autoIntegrityRecoveryInFlightRef.current || scanInProgressRef.current || !rescanWalletRef.current) {
+                            return;
+                        }
+                        if ((window as any)?.Capacitor?.isNativePlatform?.()) {
+                            window.dispatchEvent(new CustomEvent('salvium:auto-rescan'));
+                        }
+                        autoIntegrityRecoveryInFlightRef.current = true;
+                        void rescanWalletRef.current().finally(() => {
+                            autoIntegrityRecoveryInFlightRef.current = false;
+                        });
+                    }, 500);
+                }
+            } else {
+                if (
+                    !cspScanService.isScanningInProgress() &&
+                    !scanCoordinatorRef.current.activePromise
+                ) {
+                    scanInProgressRef.current = false;
+                    setIsScanning(false);
                 }
             }
         }
     };
 
-    // Send transaction
     const sendTransaction = async (toAddress: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string): Promise<string> => {
-        await assertWalletReadyForSpend();
+        const startedAt = performance.now();
         const normalizedAssetType = assetType?.trim() || 'SAL1';
-        const txHash = await walletService.sendTransaction(toAddress, amount, 1, paymentId, sweepAll, normalizedAssetType);
+        reportClientEvent('asset.send_context_started', {
+            level: 'info',
+            context: {
+                tokenShape: getSendAssetShape(normalizedAssetType),
+                sendKind: 'standard',
+                sweepAll: Boolean(sweepAll),
+                hasPaymentId: Boolean(paymentId),
+                sendStage: 'context_ready_check',
+            },
+        });
+        await assertWalletReadyForSpend();
+        let txHash = '';
+        try {
+            reportClientEvent('asset.send_service_call_started', {
+                level: 'info',
+                context: {
+                    tokenShape: getSendAssetShape(normalizedAssetType),
+                    sendKind: 'standard',
+                    sweepAll: Boolean(sweepAll),
+                    hasPaymentId: Boolean(paymentId),
+                    sendStage: 'wallet_service',
+                },
+            });
+            txHash = await walletService.sendTransaction(toAddress, amount, 1, paymentId, sweepAll, normalizedAssetType);
+            reportClientEvent('asset.send_context_completed', {
+                level: 'info',
+                context: {
+                    tokenShape: getSendAssetShape(normalizedAssetType),
+                    sendKind: 'standard',
+                    durationMs: Math.round(performance.now() - startedAt),
+                    sendStage: 'context_completed',
+                },
+            });
+        } catch (error: any) {
+            reportClientEvent('asset.send_context_failed', {
+                level: 'warn',
+                message: error?.message || 'send_context_failed',
+                context: {
+                    tokenShape: getSendAssetShape(normalizedAssetType),
+                    sendKind: 'standard',
+                    durationMs: Math.round(performance.now() - startedAt),
+                    sendStage: 'context_failed',
+                    reason: error?.message || 'send_context_failed',
+                },
+            });
+            throw error;
+        }
 
-        // Add to pending transactions for immediate UI feedback
         const pendingTx: WalletTransaction = {
             txid: txHash,
             type: 'out',
             amount: amount,
-            fee: 0, // Fee will be updated when confirmed
+            fee: 0,
             timestamp: Date.now(),
-            height: 0, // Not yet in a block
+            height: 0,
             confirmations: 0,
             address: toAddress,
             payment_id: paymentId || '',
             asset_type: normalizedAssetType,
             tx_type: 0,
             tx_type_label: 'Transfer',
-            pending: true // Mark as pending
+            pending: true
         };
 
         setPendingTransactions(prev => [pendingTx, ...prev]);
 
+        // invalidateStateSnapshot is a no-op since the worker cutover; mark the wallet data
+        // dirty explicitly so refreshData's skip-gate reloads the just-spent balance.
+        walletDataDirtyRef.current = true;
         refreshData();
         return txHash;
+    };
+
+    const sendTransactionWithDetails = async (toAddress: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string): Promise<SentTransactionDetails> => {
+        const startedAt = performance.now();
+        await assertWalletReadyForSpend();
+        const normalizedAssetType = assetType?.trim() || 'SAL1';
+        reportClientEvent('asset.send_context_started', {
+            level: 'info',
+            context: {
+                tokenShape: getSendAssetShape(normalizedAssetType),
+                sendKind: 'details',
+                sweepAll: Boolean(sweepAll),
+                hasPaymentId: Boolean(paymentId),
+                requireTxKey: true,
+                sendStage: 'wallet_service',
+            },
+        });
+        let details: SentTransactionDetails;
+        try {
+            details = await walletService.sendTransactionWithDetails(toAddress, amount, 1, paymentId, sweepAll, normalizedAssetType);
+            reportClientEvent('asset.send_context_completed', {
+                level: 'info',
+                context: {
+                    tokenShape: getSendAssetShape(normalizedAssetType),
+                    sendKind: 'details',
+                    durationMs: Math.round(performance.now() - startedAt),
+                    sendStage: 'context_completed',
+                },
+            });
+        } catch (error: any) {
+            reportClientEvent('asset.send_context_failed', {
+                level: 'warn',
+                message: error?.message || 'send_context_failed',
+                context: {
+                    tokenShape: getSendAssetShape(normalizedAssetType),
+                    sendKind: 'details',
+                    durationMs: Math.round(performance.now() - startedAt),
+                    sendStage: 'context_failed',
+                    reason: error?.message || 'send_context_failed',
+                },
+            });
+            throw error;
+        }
+
+        const pendingTx: WalletTransaction = {
+            txid: details.txHash,
+            type: 'out',
+            amount: amount,
+            fee: 0,
+            timestamp: Date.now(),
+            height: 0,
+            confirmations: 0,
+            address: toAddress,
+            payment_id: paymentId || '',
+            asset_type: normalizedAssetType,
+            tx_type: 0,
+            tx_type_label: 'Transfer',
+            pending: true
+        };
+
+        setPendingTransactions(prev => [pendingTx, ...prev]);
+
+        // invalidateStateSnapshot is a no-op since the worker cutover; mark the wallet data
+        // dirty explicitly so refreshData's skip-gate reloads the just-spent balance.
+        walletDataDirtyRef.current = true;
+        refreshData();
+        return details;
+    };
+
+    const sendTransactionWithDetailsAtomic = async (toAddress: string, amountAtomic: string, paymentId?: string, sweepAll?: boolean, assetType?: string): Promise<SentTransactionDetails> => {
+        const startedAt = performance.now();
+        await assertWalletReadyForSpend();
+        const normalizedAssetType = assetType?.trim() || 'SAL1';
+        reportClientEvent('asset.send_context_started', {
+            level: 'info',
+            context: {
+                tokenShape: getSendAssetShape(normalizedAssetType),
+                sendKind: 'atomic',
+                sweepAll: Boolean(sweepAll),
+                hasPaymentId: Boolean(paymentId),
+                requireTxKey: true,
+                sendStage: 'wallet_service',
+            },
+        });
+        let details: SentTransactionDetails;
+        try {
+            details = await walletService.sendTransactionWithDetailsAtomic(toAddress, amountAtomic, 1, paymentId, sweepAll, normalizedAssetType);
+            reportClientEvent('asset.send_context_completed', {
+                level: 'info',
+                context: {
+                    tokenShape: getSendAssetShape(normalizedAssetType),
+                    sendKind: 'atomic',
+                    durationMs: Math.round(performance.now() - startedAt),
+                    sendStage: 'context_completed',
+                },
+            });
+        } catch (error: any) {
+            reportClientEvent('asset.send_context_failed', {
+                level: 'warn',
+                message: error?.message || 'send_context_failed',
+                context: {
+                    tokenShape: getSendAssetShape(normalizedAssetType),
+                    sendKind: 'atomic',
+                    durationMs: Math.round(performance.now() - startedAt),
+                    sendStage: 'context_failed',
+                    reason: error?.message || 'send_context_failed',
+                },
+            });
+            throw error;
+        }
+        const atomic = BigInt(details.amountAtomic || amountAtomic);
+        const amount = Number(atomic / 100000000n) + Number(atomic % 100000000n) / 100000000;
+
+        const pendingTx: WalletTransaction = {
+            txid: details.txHash,
+            type: 'out',
+            amount,
+            fee: 0,
+            timestamp: Date.now(),
+            height: 0,
+            confirmations: 0,
+            address: toAddress,
+            payment_id: paymentId || '',
+            asset_type: normalizedAssetType,
+            tx_type: 0,
+            tx_type_label: 'Transfer',
+            pending: true
+        };
+
+        setPendingTransactions(prev => [pendingTx, ...prev]);
+
+        // invalidateStateSnapshot is a no-op since the worker cutover; mark the wallet data
+        // dirty explicitly so refreshData's skip-gate reloads the just-spent balance.
+        walletDataDirtyRef.current = true;
+        refreshData();
+        return details;
     };
 
     const createTokenTransaction = async (
@@ -3604,7 +6376,38 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         burnCostSal: number = 1000
     ): Promise<string[]> => {
         const normalizedAssetType = `sal${assetType.trim().toUpperCase()}`.toLowerCase();
-        const txHashes = await walletService.createTokenTransaction(assetType, supply, size, metadata);
+        reportClientEvent('asset.create_token_ui_started', {
+            level: 'info',
+            context: {
+                tokenShape: /^[A-Z0-9]{4}$/.test(assetType.trim())
+                    ? 'ticker_upper_4'
+                    : /^[a-z0-9]{4}$/.test(assetType.trim())
+                        ? 'ticker_lower_4'
+                        : 'other',
+                hasMetadata: metadata.length > 0,
+                metadataSizeBucket: metadata.length === 0 ? 'empty' : metadata.length <= 64 ? '1-64' : metadata.length <= 256 ? '65-256' : metadata.length <= 1024 ? '257-1024' : 'gt-1024',
+                supplySizeBucket: supply.replace(/\D/g, '').length <= 6 ? 'digits-1-6' : supply.replace(/\D/g, '').length <= 12 ? 'digits-7-12' : supply.replace(/\D/g, '').length <= 18 ? 'digits-13-18' : 'digits-gt-18',
+                tokenSize: size,
+            }
+        });
+        let txHashes: string[];
+        try {
+            txHashes = await walletService.createTokenTransaction(assetType, supply, size, metadata);
+        } catch (error: any) {
+            reportClientEvent('asset.create_token_ui_failed', {
+                level: 'warn',
+                message: error?.message || String(error),
+                context: {
+                    tokenShape: /^[A-Z0-9]{4}$/.test(assetType.trim())
+                        ? 'ticker_upper_4'
+                        : /^[a-z0-9]{4}$/.test(assetType.trim())
+                            ? 'ticker_lower_4'
+                            : 'other',
+                    reason: error?.message || String(error),
+                }
+            });
+            throw error;
+        }
 
         for (const txHash of txHashes) {
             const pendingTx: WalletTransaction = {
@@ -3625,101 +6428,112 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             setPendingTransactions(prev => [pendingTx, ...prev]);
         }
 
+        reportClientEvent('asset.create_token_ui_completed', {
+            level: 'info',
+            context: {
+                tokenShape: normalizedAssetType.length >= 7 ? 'sal_lower_4' : 'other',
+                txCreatedCount: txHashes.length,
+                createdTokenPendingCount: txHashes.length,
+                status: 'success',
+            }
+        });
+        // See the send wrappers: mark dirty so refreshData reloads post-spend state.
+        walletDataDirtyRef.current = true;
         refreshData();
         return txHashes;
     };
 
-    // Stake transaction
     const stakeTransaction = async (amount: number, sweepAll: boolean = false): Promise<string> => {
         await assertWalletReadyForSpend();
         const txHash = await walletService.stakeTransaction(amount, 1, sweepAll);
 
-        // Add to pending transactions for immediate UI feedback
         const pendingTx: WalletTransaction = {
             txid: txHash,
             type: 'out',
             amount: amount,
-            fee: 0, // Fee will be updated when confirmed
+            fee: 0,
             timestamp: Date.now(),
-            height: 0, // Not yet in a block
+            height: 0,
             confirmations: 0,
-            address: '', // Stake goes to own wallet
+            address: '',
             payment_id: '',
             asset_type: 'SAL1',
-            tx_type: 6, // STAKE tx type
+            tx_type: 6,
             tx_type_label: 'Stake',
-            pending: true // Mark as pending
+            pending: true
         };
 
         setPendingTransactions(prev => [pendingTx, ...prev]);
 
+        // invalidateStateSnapshot is a no-op since the worker cutover; mark the wallet data
+        // dirty explicitly so refreshData's skip-gate reloads the just-spent balance.
+        walletDataDirtyRef.current = true;
         refreshData();
         return txHash;
     };
 
-    // Return transaction - sends funds back to original sender
     const returnTransaction = async (txid: string): Promise<string> => {
         await assertWalletReadyForSpend();
         const txHash = await walletService.returnTransaction(txid);
 
-        // Add to pending transactions for immediate UI feedback
         const pendingTx: WalletTransaction = {
             txid: txHash,
             type: 'out',
-            amount: 0, // Amount will be determined by the original transaction
-            fee: 0, // Fee will be updated when confirmed
+            amount: 0,
+            fee: 0,
             timestamp: Date.now(),
-            height: 0, // Not yet in a block
+            height: 0,
             confirmations: 0,
-            address: '', // Return goes back to sender
+            address: '',
             payment_id: '',
             asset_type: 'SAL1',
-            tx_type: 7, // RETURN tx type
+            tx_type: 7,
             tx_type_label: 'Return',
-            pending: true // Mark as pending
+            pending: true
         };
 
         setPendingTransactions(prev => [pendingTx, ...prev]);
 
+        // invalidateStateSnapshot is a no-op since the worker cutover; mark the wallet data
+        // dirty explicitly so refreshData's skip-gate reloads the just-spent balance.
+        walletDataDirtyRef.current = true;
         refreshData();
         return txHash;
     };
 
-    // Sweep all - sends ALL unlocked funds to a destination
     const sweepAllTransaction = async (toAddress: string): Promise<string[]> => {
         await assertWalletReadyForSpend();
-        const txHashes = await walletService.sweepAllTransaction(toAddress);
+        const sweepDetails: SweepTransactionDetails[] = await walletService.sweepAllTransactionWithDetails(toAddress);
+        const txHashes = sweepDetails.map((tx) => tx.txHash);
 
-        // Add pending transactions for each sweep tx
-        for (const txHash of txHashes) {
+        for (const tx of sweepDetails) {
             const pendingTx: WalletTransaction = {
-                txid: txHash,
+                txid: tx.txHash,
                 type: 'out',
-                amount: 0, // Will be updated when confirmed
+                amount: tx.amount,
                 fee: 0,
                 timestamp: Date.now(),
                 height: 0,
                 confirmations: 0,
                 address: toAddress,
                 payment_id: '',
-                asset_type: 'SAL1',
-                tx_type: 0, // TRANSFER
+                asset_type: tx.assetType || 'SAL1',
+                tx_type: 0,
                 tx_type_label: 'Sweep',
                 pending: true
             };
             setPendingTransactions(prev => [pendingTx, ...prev]);
         }
 
+        // See the send wrappers: mark dirty so refreshData reloads post-spend state.
+        walletDataDirtyRef.current = true;
         refreshData();
         return txHashes;
     };
 
-    // Create subaddress
-    const createSubaddress = (label: string): string => {
-        const addr = walletService.createSubaddress(label);
+    const createSubaddress = async (label: string): Promise<string> => {
+        const addr = await walletService.createSubaddress(label);
 
-        // Optimistically update subaddresses state immediately for instant UI feedback
-        // This avoids waiting for the 30-second polling cycle to refresh
         setSubaddresses(prev => {
             const newIndex = prev.length > 0 ? Math.max(...prev.map(s => s.index)) + 1 : 1;
             return [...prev, {
@@ -3730,12 +6544,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             }];
         });
 
-        // Also do a full refresh to sync any other state
         refreshData();
         return addr;
     };
 
-    // Add contact
     const addContact = (name: string, contactAddress: string) => {
         const newContact: Contact = {
             id: `c - ${Date.now()} `,
@@ -3745,34 +6557,35 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         saveContacts([...contacts, newContact]);
     };
 
-    // Update contact
     const updateContact = (contact: Contact) => {
         saveContacts(contacts.map(c => c.id === contact.id ? contact : c));
     };
 
-    // Remove contact
     const removeContact = (id: string) => {
         saveContacts(contacts.filter(c => c.id !== id));
     };
 
-    // Estimate fee
     const estimateFee = async (toAddress: string, amount: number): Promise<number> => {
         return walletService.estimateFee(toAddress, amount);
     };
 
-    // Validate address
     const validateAddress = async (addr: string): Promise<boolean> => {
         return walletService.validateAddress(addr);
     };
 
-    // Reset wallet completely
-    const resetWallet = async () => {
+    const performWalletReset = useCallback(async ({
+        preserveSeedInMemory = false,
+    }: {
+        preserveSeedInMemory?: boolean;
+    } = {}) => {
         isResettingRef.current = true;
+        scanRequestsSuspendedRef.current = true;
 
-        // Stop wallet state persistence service
+        try {
+
         walletStateService.stop();
 
-        // Cancel scan first to prevent "deleted object" errors
+        invalidateInFlightScanState();
         await cspScanService.cancelScanAndWait(5000);
         cspScanService.resetIncrementalState();
         scanInProgressRef.current = false;
@@ -3780,13 +6593,23 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         setScanProgress(null);
 
         clearStoredWalletData();
+        localStorage.removeItem(RESTORE_SCAN_SESSION_STORAGE_KEY);
+        localStorage.removeItem('salvium_restore_scan_finished');
+        localStorage.removeItem('salvium_vault_restore_pending');
+        localStorage.removeItem('salvium_vault_restore_started_at');
+        localStorage.removeItem('salvium_scan_returned_transfers');
+        localStorage.removeItem('salvium_initial_scan_complete');
+        activeScanSessionRef.current = null;
+        setScanSession(null);
 
-        sessionSeedRef.current = null; // Clear seed from memory
+        if (!preserveSeedInMemory) {
+            sessionSeedRef.current = null;
+            sessionPasswordRef.current = null;
+        }
 
         const currentAddress = address || walletService.getAddress();
         if (currentAddress) {
             await deleteFromIndexedDB(`wallet_cache_${currentAddress}`);
-            // Also clear wallet state persistence data
             await walletStateService.clear(currentAddress);
         }
 
@@ -3795,6 +6618,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         setAddress('');
         setLegacyAddress('');
         setCarrotAddress('');
+        setNativeBalanceTrust({
+            trusted: false,
+            reason: 'Wallet reset',
+        });
         setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
         setTransactions([]);
         applyStakes([]);
@@ -3806,21 +6633,17 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
         walletService.clearWallet();
 
-        isResettingRef.current = false;
-
         try {
             const DB_DELETE_REQUEST = indexedDB.deleteDatabase(IDB_NAME);
             await new Promise<void>((resolve) => {
                 DB_DELETE_REQUEST.onsuccess = () => resolve();
                 DB_DELETE_REQUEST.onerror = () => resolve();
             });
-        } catch (e) { /* ignore */ }
+ } catch (e) { }
 
-        // Also clear the return address cache (separate IndexedDB)
-        // This ensures Phase 2b (return TX scan) runs on fresh restores
         try {
             await clearReturnAddressCache();
-        } catch (e) { /* ignore */ }
+ } catch (e) { }
 
         walletService.clearWallet();
         await walletService.deleteWalletFile();
@@ -3839,181 +6662,504 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         setSyncStatus({ walletHeight: 0, daemonHeight: 0, isSyncing: false, progress: 0 });
         setIsScanning(false);
         setScanProgress(null);
+        // Reset hygiene (mirrors prepareForAuthoritativeSeedRestore): a reset must also clear the
+        // commit-verification gates, or a stale committed scanHealth/lastSuccessfulScanAt could
+        // satisfy a later restore's completion check before it actually commits.
+        setScanHealth(createInitialScanHealth());
+        setLastSuccessfulScanAt(0);
+
+        } finally {
+            isResettingRef.current = false;
+            scanRequestsSuspendedRef.current = false;
+        }
+    }, [address, applyStakes, clearStoredWalletData, invalidateInFlightScanState]);
+
+    const resetWallet = async () => {
+        await performWalletReset();
     };
 
-    // Clear cached balance/transactions without resetting the wallet (for rescan)
     const clearCache = async () => {
-        fullRescanNeedsReturnedTransferScanRef.current = detectReturnedTransferScanNeed();
-
-        // Clear in-memory state
         setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
         setTransactions([]);
         applyStakes([]);
         setWalletHistory([]);
         hydratedWalletHistoryFromCacheRef.current = false;
 
-        // Clear cached data from localStorage wallet object
         try {
             const wallet = safeReadWallet();
             if (wallet) {
-                // Clear cached data but preserve wallet credentials and key images
                 delete wallet.cachedBalance;
                 delete wallet.cachedTransactions;
                 delete wallet.cachedSubaddresses;
                 delete wallet.cachedWalletHistory;
                 delete wallet.cachedOutputsHex;
-                wallet.height = 0; // Reset scan height
+                wallet.height = 0;
                 delete wallet.snapshotHeight;
-                // Clear chunk tracking for full rescan
                 wallet.completedChunks = [];
                 wallet.lastScanTimestamp = 0;
                 safeWriteWallet(wallet);
             }
         } catch {
-            // Failed to clear localStorage cache
         }
 
-        // Clear IndexedDB cache for this wallet
         if (address) {
             try {
                 await deleteFromIndexedDB(`wallet_cache_${address}`);
             } catch {
-                // Failed to clear IndexedDB cache
             }
         }
     };
 
-    const rescanWallet = async () => {
-        const storedWallet = safeReadWallet();
-        if (!storedWallet) {
-            throw new Error('No wallet found');
-        }
+    const prepareManualFullRescan = useCallback(() => {
+        invalidateInFlightScanState();
+        setSyncStatus(prev => ({
+            ...prev,
+            walletHeight: 0,
+            isSyncing: true,
+            scanStartHeight: 0,
+            progress: 0,
+        }));
+    }, [invalidateInFlightScanState]);
 
+    // True when a rescan can run without re-prompting: the decrypted seed and
+    // password are already in memory (i.e. the wallet is fully unlocked this session).
+    const canRescanWithoutPassword = () => !!(sessionSeedRef.current && sessionPasswordRef.current);
+
+    const rescanWallet = async () => {
         const mnemonic = sessionSeedRef.current;
         if (!mnemonic) {
             throw new Error('Wallet must be unlocked before rescanning');
         }
 
-        const walletAddress = storedWallet.address || address || walletService.getAddress();
-        const preservedSubaddressCount = Math.max(
-            storedWallet.cachedSubaddresses?.length || 0,
-            subaddressesRef.current.length
-        );
-        const currentWallet = walletService.getWallet();
-        const currentReturnAddressesCsv = typeof currentWallet?.get_return_addresses_csv === 'function'
-            ? (currentWallet.get_return_addresses_csv() || '')
-            : '';
-        const hasKnownReturnAddresses = currentReturnAddressesCsv.length >= 64;
-        const cleanedWallet = prepareStoredWalletForFullRescan(storedWallet);
-
-        fullRescanNeedsReturnedTransferScanRef.current =
-            hasKnownReturnAddresses ||
-            detectReturnedTransferScanNeed(
-                transactionsRef.current,
-                stakesRef.current.length
-            );
-
-        walletStateService.stop();
-
-        await cspScanService.cancelScanAndWait(5000);
-        cspScanService.resetIncrementalState();
-        scanInProgressRef.current = false;
-        setIsScanning(false);
-        setScanProgress(null);
-        setNeedsRecovery(false);
-        setLastSuccessfulScanAt(0);
-        setSyncStatus({ walletHeight: 0, daemonHeight: 0, isSyncing: false, progress: 0 });
-
-        setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
-        setTransactions([]);
-        setPendingTransactions([]);
-        setMempoolTransactions([]);
-        transactionsRef.current = [];
-        pendingTransactionsRef.current = [];
-        mempoolTransactionsRef.current = [];
-        applyStakes([]);
-        setWalletHistory([]);
-        hydratedWalletHistoryFromCacheRef.current = false;
-
-        try {
-            localStorage.removeItem('salvium_scan_returned_transfers');
-        } catch {
-            // Failed to clear returned transfer scan flag
+        const password = sessionPasswordRef.current;
+        if (!password) {
+            throw new Error('Wallet password is unavailable for automatic restore');
         }
 
-        if (walletAddress) {
-            const deletePromises = getWalletRescanCacheKeys(walletAddress)
-                .map((key) => deleteFromIndexedDB(key));
-            await Promise.allSettled([
-                ...deletePromises,
-                walletStateService.clear(walletAddress),
-                forceCleanSlate(walletAddress),
-            ]);
+        const rescanNonce = `auto_restore_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        debugLog('[WalletContext] Starting in-memory auto-restore rescan', {
+            nonce: rescanNonce,
+            restoreHeight: 0,
+            hasReturnedTransfers: true,
+        });
 
-            if (hasKnownReturnAddresses) {
-                try {
-                    await saveReturnAddressesToCache(walletAddress, currentReturnAddressesCsv);
-                } catch {
-                    // Failed to preserve return address cache for same-wallet rescan
-                }
-            }
-        }
-
-        safeWriteWallet(cleanedWallet);
-
-        if (walletService.hasWallet()) {
-            walletService.clearWallet();
-            await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-
-        await walletService.deleteWalletFile();
-        await continueUnlockFlow(cleanedWallet, mnemonic, '', true);
-
-        if (walletAddress) {
-            walletStateService.initialize(walletAddress);
-        }
-
-        if (preservedSubaddressCount > 0) {
-            walletService.precomputeSubaddresses(Math.max(preservedSubaddressCount + 50, 100));
-        }
+        await performWalletReset({ preserveSeedInMemory: true });
+        sessionSeedRef.current = mnemonic;
+        sessionPasswordRef.current = password;
+        debugLog('[WalletContext] resetWallet() completed for in-memory auto-restore rescan', {
+            nonce: rescanNonce,
+        });
+        await restoreWalletFromSeedAuthoritative({
+            mnemonic,
+            password,
+            restoreHeight: 0,
+            hasReturnedTransfers: true,
+            source: 'rescanWallet',
+        });
     };
 
-    // Change Password
+    const requestScanStart = async ({
+        fromHeight,
+        reason,
+        sessionType = 'background',
+        sessionId,
+    }: {
+        fromHeight?: number;
+        reason: string;
+        sessionType?: ScanSessionType;
+        sessionId?: string;
+    }) => {
+        if (isResettingRef.current || scanRequestsSuspendedRef.current) {
+            debugLog('[WalletContext] requestScanStart ignored while wallet reset/rescan is in progress', {
+                reason,
+                fromHeight,
+                sessionType,
+                sessionId,
+                isResetting: isResettingRef.current,
+                scanRequestsSuspended: scanRequestsSuspendedRef.current,
+            });
+            return;
+        }
+
+        const incomingRequest: ScanTriggerRequest = {
+            fromHeight,
+            reason,
+            sessionType,
+            sessionId,
+        };
+        const coordinator = scanCoordinatorRef.current;
+        if (coordinator.activePromise) {
+            coordinator.pendingRequest = coalesceScanTriggerRequest(
+                coordinator.pendingRequest,
+                incomingRequest
+            );
+            reportClientEvent('scan.coordinator_coalesced', {
+                level: 'info',
+                context: {
+                    activeReason: coordinator.activeRequest?.reason || '',
+                    incomingReason: reason,
+                    pendingReason: coordinator.pendingRequest.reason,
+                    pendingFromHeight: coordinator.pendingRequest.fromHeight ?? -1,
+                    pendingSessionType: coordinator.pendingRequest.sessionType,
+                    scanActive: scanInProgressRef.current,
+                    serviceScanActive: cspScanService.isScanningInProgress(),
+                },
+            });
+            return coordinator.activePromise;
+        }
+
+        const serial = coordinator.serial + 1;
+        coordinator.serial = serial;
+        coordinator.activeRequest = incomingRequest;
+        const walletFingerprint = createLocalWalletFingerprint(address || walletService.getAddress() || 'uninitialized');
+        const expiredLedgerJob = getUnfinishedScanLedgerJob(walletFingerprint);
+        const ledgerJob: ScanLedgerJob = beginScanLedgerJob({
+            walletFingerprint,
+            reason,
+            source: reason,
+            sessionType,
+            sessionId,
+            fromHeight,
+            targetHeight: syncStatusRef.current.daemonHeight || undefined,
+        });
+        if (expiredLedgerJob) {
+            reportClientEvent('scan.ledger_recoverable_job_observed', {
+                level: 'warn',
+                message: 'Previous scan job had an expired lease and is recoverable.',
+                context: {
+                    previousReason: expiredLedgerJob.reason,
+                    previousSessionType: expiredLedgerJob.sessionType,
+                    previousFromHeight: expiredLedgerJob.fromHeight ?? -1,
+                    currentReason: reason,
+                    currentSessionType: sessionType,
+                },
+            });
+            // The new job below supersedes the dead one (same wallet, scans to tip). Without this,
+            // an expired job from a crashed session sat in localStorage forever and re-reported on
+            // EVERY scan request (observed: a permanent reconcile-nag loop on a live session).
+            completeScanLedgerJob({
+                jobId: expiredLedgerJob.jobId,
+                terminalState: 'failed',
+                terminalReason: 'abandoned: lease expired; superseded by a new scan job',
+            });
+        }
+        coordinator.activePromise = (async () => {
+            reportClientEvent('scan.coordinator_started', {
+                level: 'info',
+                context: {
+                    reason,
+                    fromHeight: fromHeight ?? -1,
+                    sessionType,
+                    serial,
+                },
+            });
+            let outcomeTerminalState: string = 'failed';
+            try {
+                const scanResult = await executeScan(fromHeight, {
+                    reason,
+                    sessionType,
+                    sessionId,
+                });
+                outcomeTerminalState = scanResult.terminalState;
+                const terminalLevel = scanResult.terminalState === 'success'
+                    ? 'info'
+                    : scanResult.terminalState === 'repair_required'
+                        ? 'warn'
+                        : scanResult.terminalState === 'cancelled'
+                            ? 'warn'
+                            : 'error';
+                reportClientEvent('scan.coordinator_terminal', {
+                    level: terminalLevel,
+                    message: scanResult.reason,
+                    context: {
+                        reason,
+                        fromHeight: fromHeight ?? -1,
+                        sessionType,
+                        serial,
+                        terminalState: scanResult.terminalState,
+                        reasonDetail: scanResult.reason || '',
+                    },
+                });
+                completeScanLedgerJob({
+                    jobId: ledgerJob.jobId,
+                    terminalState: scanResult.terminalState,
+                    terminalReason: scanResult.reason,
+                });
+                return scanResult;
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error || 'scan failed');
+                reportClientEvent('scan.coordinator_terminal', {
+                    level: 'error',
+                    message,
+                    context: {
+                        reason,
+                        fromHeight: fromHeight ?? -1,
+                        sessionType,
+                        serial,
+                        terminalState: 'failed',
+                        reasonDetail: message,
+                    },
+                });
+                completeScanLedgerJob({
+                    jobId: ledgerJob.jobId,
+                    terminalState: 'failed',
+                    terminalReason: message,
+                });
+                return {
+                    terminalState: 'failed',
+                    reason: message,
+                };
+            } finally {
+                if (scanCoordinatorRef.current.serial === serial) {
+                    const nextRequest = scanCoordinatorRef.current.pendingRequest;
+                    scanCoordinatorRef.current.activePromise = undefined;
+                    scanCoordinatorRef.current.activeRequest = undefined;
+                    scanCoordinatorRef.current.pendingRequest = undefined;
+
+                    if (outcomeTerminalState === 'success') {
+                        scanFailureRetryRef.current.count = 0;
+                        if (scanFailureRetryRef.current.timer) {
+                            clearTimeout(scanFailureRetryRef.current.timer);
+                            scanFailureRetryRef.current.timer = null;
+                        }
+                    }
+
+                    if (
+                        nextRequest &&
+                        !isResettingRef.current &&
+                        !scanRequestsSuspendedRef.current
+                    ) {
+                        setTimeout(() => {
+                            void requestScanStart(nextRequest);
+                        }, 0);
+                    } else if (
+                        (outcomeTerminalState === 'failed' || outcomeTerminalState === 'repair_required') &&
+                        !isResettingRef.current &&
+                        !scanRequestsSuspendedRef.current &&
+                        !scanFailureRetryRef.current.timer
+                    ) {
+                        const attempt = scanFailureRetryRef.current.count;
+                        if (attempt < 8) {
+                            const delay = Math.min(60000, 2000 * Math.pow(2, attempt));
+                            scanFailureRetryRef.current.count = attempt + 1;
+                            scanFailureRetryRef.current.timer = setTimeout(() => {
+                                scanFailureRetryRef.current.timer = null;
+                                if (
+                                    isResettingRef.current ||
+                                    scanRequestsSuspendedRef.current ||
+                                    !walletService.hasWallet()
+                                ) {
+                                    return;
+                                }
+                                reportClientEvent('scan.failure_backoff_retry', {
+                                    level: 'warn',
+                                    message: `Retrying scan after failure (attempt ${attempt + 1}).`,
+                                    context: { reason, attempt: attempt + 1, delayMs: delay, sessionType },
+                                });
+                                // Re-issue the FAILED request (sessionType + sessionId + fromHeight),
+                                // not a hardcoded 'background' request: an active restore session
+                                // rejects background retries, so failed restores self-terminated.
+                                void requestScanStart({
+                                    fromHeight,
+                                    reason: 'scan-failure-retry',
+                                    sessionType,
+                                    sessionId,
+                                });
+                            }, delay);
+                        }
+                    }
+                }
+            }
+        })();
+
+        return coordinator.activePromise;
+    };
+
+    const startScan = async (fromHeight?: number) => {
+        const restoreActive = isRestoreScanSessionActive();
+        return requestScanStart({
+            fromHeight,
+            reason: 'direct-startScan',
+            sessionType: (fromHeight === 0 || forceCleanRestoreScanRef.current || restoreActive)
+                ? 'restore-full-rescan'
+                : 'background',
+            sessionId: restoreActive ? activeScanSessionRef.current?.id : undefined,
+        });
+    };
+
+    const getAutomaticCatchupDecision = (
+        networkHeight: number,
+        serviceScanInProgress = cspScanService.isScanningInProgress(),
+        walletReady = isWalletReady,
+        tipGraceBlocks = SYNC_TIP_GRACE_BLOCKS
+    ) => {
+        const hasWallet = walletService.hasWallet();
+        const nativeSyncStatus = hasWallet
+            ? walletService.getSyncStatus()
+            : { walletHeight: 0, daemonHeight: 0, isSyncing: false, progress: 0 };
+
+        return getSyncWatchdogDecision({
+            isWalletReady: walletReady,
+            hasWallet,
+            manualFullRescanMode: manualFullRescanModeRef.current,
+            restoreSessionActive: isRestoreScanSessionActive(),
+            resetInProgress: isResettingRef.current,
+            scanRequestsSuspended: scanRequestsSuspendedRef.current,
+            needsFullRescan: needsFullRescanRef.current,
+            autoIntegrityRecoveryInFlight: autoIntegrityRecoveryInFlightRef.current,
+            scanInProgress: scanInProgressRef.current || !!scanCoordinatorRef.current.activePromise,
+            serviceScanInProgress,
+            nativeWalletHeight: nativeSyncStatus.walletHeight || 0,
+            uiWalletHeight: syncStatusRef.current.walletHeight || 0,
+            networkHeight,
+            nowMs: Date.now(),
+            lastScanActivityAtMs: lastScanTimeRef.current || 0,
+            staleScanMs: SYNC_WATCHDOG_STALE_SCAN_MS,
+            tipGraceBlocks,
+        });
+    };
+
+    const setAutomaticCatchupStatus = (networkHeight: number, decision: ReturnType<typeof getSyncWatchdogDecision>) => {
+        setSyncStatus(prev => ({
+            ...prev,
+            walletHeight: Math.max(prev.walletHeight || 0, decision.displayWalletHeight),
+            daemonHeight: networkHeight,
+            isSyncing: decision.isBehind,
+            progress: decision.isBehind
+                ? Math.min(99, prev.progress || 0)
+                : 100,
+        }));
+    };
+
+    // WOUND DETECTOR: a wallet whose ledger claims tip coverage never scans, and a
+    // wallet that never scans never reaches the spent pass -- where every self-heal
+    // mechanism (chain-truth audit, reconciler stamps) lives. If the wallet shows the
+    // wound signature (balance > 0 with unlocked == 0 after settling, or outstanding
+    // optimistic spent flags), force a real scan over the recent window regardless of
+    // ledger coverage so the heal machinery actually executes.
+    const woundScanFiredRef = React.useRef(0);
+    React.useEffect(() => {
+        if (!isWalletReady || isLocked) return;
+        const timer = window.setTimeout(async () => {
+            try {
+                if (Date.now() - woundScanFiredRef.current < 10 * 60 * 1000) return;
+                const bal = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
+                let optimistic = 0;
+                try {
+                    const csv = await walletService.getEngine()?.call<string>('get_optimistic_spent_key_images_csv');
+                    optimistic = csv ? String(csv).split(',').filter(Boolean).length : 0;
+                } catch {}
+                const wounded = (bal.balance > 0.000001 && bal.unlockedBalance === 0) || optimistic > 0;
+                if (!wounded) return;
+                woundScanFiredRef.current = Date.now();
+                reportClientEvent('scan.wound_heal_forced', {
+                    level: 'warn',
+                    context: { balance: bal.balance, unlocked: bal.unlockedBalance, optimistic },
+                });
+                let tip = 0;
+                try { tip = await cspScanService.getNetworkHeight(); } catch {}
+                void requestScanStart({
+                    reason: 'wound-heal',
+                    sessionType: 'background',
+                    ...(tip > 720 ? { fromHeight: tip - 720 } : {}),
+                });
+            } catch {}
+        }, 45000);
+        return () => window.clearTimeout(timer);
+    }, [isWalletReady, isLocked]);
+
+    const requestAutomaticCatchupScan = async (
+        networkHeight: number,
+        reason: string,
+        requireNewTarget = false,
+        walletReady = isWalletReady,
+        tipGraceBlocks = SYNC_TIP_GRACE_BLOCKS
+    ) => {
+        if (networkHeight > 0 && walletService.hasWallet()) {
+            await walletService.setBlockchainHeight(networkHeight);
+        }
+
+        const serviceScanInProgress = cspScanService.isScanningInProgress();
+        const decision = getAutomaticCatchupDecision(networkHeight, serviceScanInProgress, walletReady, tipGraceBlocks);
+        const displayDecision = tipGraceBlocks === SYNC_STREAM_TIP_GRACE_BLOCKS
+            ? getAutomaticCatchupDecision(networkHeight, serviceScanInProgress, walletReady, SYNC_TIP_GRACE_BLOCKS)
+            : decision;
+        setAutomaticCatchupStatus(networkHeight, displayDecision);
+
+        if (
+            decision.shouldStartScan &&
+            // RESPONSIVENESS: skip redundant auto catch-ups for a height already SUCCESSFULLY
+            // scanned (they re-scan + re-ingest the tail chunk = a UI freeze, for nothing). Only
+            // set on success, so failed scans still retry; reorg/gap recovery uses a fromHeight
+            // rescan that bypasses this. New blocks advance networkHeight → not skipped. Lossless.
+            networkHeight > lastSuccessfulScanHeightRef.current &&
+            (!requireNewTarget || networkHeight > scanTargetHeightRef.current)
+        ) {
+            needsGapCheckRef.current = true;
+            await requestScanStart({
+                reason,
+                sessionType: 'background',
+            });
+        } else if (
+            decision.isBehind &&
+            serviceScanInProgress &&
+            tipGraceBlocks === SYNC_STREAM_TIP_GRACE_BLOCKS
+        ) {
+            reportClientEvent('scan.stream_catchup_coalesced', {
+                level: 'info',
+                context: {
+                    reason,
+                    walletHeight: decision.displayWalletHeight,
+                    daemonHeight: networkHeight,
+                    behindBlocks: decision.behindBlocks,
+                    scanTargetHeight: scanTargetHeightRef.current,
+                },
+            });
+        }
+
+        return decision;
+    };
+
+    rescanWalletRef.current = rescanWallet;
+
     const changePassword = async (oldPassword: string, newPassword: string): Promise<boolean> => {
         const wallet = safeReadWallet();
         if (!wallet) throw new Error('No wallet found');
 
         let mnemonic = '';
         try {
-            mnemonic = await decrypt(wallet.encryptedSeed, wallet.iv, wallet.salt, oldPassword);
+            mnemonic = await decrypt(wallet.encryptedSeed, wallet.iv, wallet.salt, oldPassword, wallet.iterations);
         } catch (e) {
             throw new Error('Incorrect current password');
         }
 
         if (!mnemonic) throw new Error('Failed to decrypt wallet');
 
-        const { encrypted, iv, salt } = await encrypt(mnemonic, newPassword);
+        const { encrypted, iv, salt, iterations } = await encrypt(mnemonic, newPassword);
 
         const updatedWallet: EncryptedWallet = {
             ...wallet,
             encryptedSeed: encrypted,
             iv,
-            salt
+            salt,
+            iterations
         };
 
-        safeWriteWallet(updatedWallet);
+        if (!safeWriteWallet(updatedWallet)) {
+            throw new Error('Could not save the re-encrypted wallet to this device. Your password was NOT changed.');
+        }
+        sessionPasswordRef.current = newPassword;
 
         try {
             const { BiometricService } = await import('./BiometricService');
             if (BiometricService.isEnabled()) {
                 BiometricService.disable();
             }
-        } catch (e) { /* ignore */ }
+ } catch (e) { }
 
         return true;
     };
 
-    // Initialize on mount
     useEffect(() => {
         const init = async () => {
             try {
@@ -4027,7 +7173,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                 if (sessionSeed && !walletService.hasWallet()) {
                     let restoreHeight = 0;
                     let cachedAddress = '';
-                    let cachedBalance = null;
+                    let cachedBalance: BalanceInfo | null = null;
                     let cachedTxs: WalletTransaction[] = [];
                     let cachedSubaddrsData: SubAddress[] = [];
                     let cachedHistoryData: ChartDataPoint[] = [];
@@ -4038,7 +7184,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         if (encryptedWallet) {
                             const addr = encryptedWallet.address;
 
-                            // Load large data from IndexedDB
                             const [idbCache, idbTxs, idbHistory, idbKeyImages] = await Promise.all([
                                 loadFromIndexedDB(`wallet_cache_${addr}`),
                                 loadFromIndexedDB(`wallet_txs_${addr}`),
@@ -4051,7 +7196,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             if (idbHistory) cachedHistoryData = JSON.parse(idbHistory);
                             if (idbKeyImages) cachedSpentKeyImages = JSON.parse(idbKeyImages);
 
-                            // Fallback to localStorage if IndexedDB empty (migration)
                             if (!cachedTxs.length && encryptedWallet.cachedTransactions?.length) {
                                 cachedTxs = encryptedWallet.cachedTransactions;
                             }
@@ -4068,16 +7212,17 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                                 restoreHeight = encryptedWallet.height || 0;
                             }
 
-                            const hadData = (encryptedWallet.cachedBalance?.balance || 0) > 0 || cachedTxs.length > 0;
+                            const trustedCachedBalance = getTrustedCachedBalance(encryptedWallet);
+                            const hadData = (trustedCachedBalance?.balance || 0) > 0 || cachedTxs.length > 0;
                             if ((!cachedOutputsHex || cachedOutputsHex.length === 0) && hadData) {
                                 restoreHeight = 0;
                             }
 
                             cachedAddress = addr || '';
-                            cachedBalance = encryptedWallet.cachedBalance;
+                            cachedBalance = trustedCachedBalance;
                             cachedSubaddrsData = encryptedWallet.cachedSubaddresses || [];
                         }
-                    } catch (e) { /* ignore */ }
+ } catch (e) { }
 
                     if (cachedAddress) setAddress(cachedAddress);
                     if (cachedTxs.length > 0) setTransactions(cachedTxs);
@@ -4092,18 +7237,14 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     }
                     if (cachedSubaddrsData.length > 0) {
                         setSubaddresses(cachedSubaddrsData);
-                        // CRITICAL FIX: Update ref immediately so refreshData() can see the labels
                         subaddressesRef.current = cachedSubaddrsData;
                     }
                     if (cachedHistoryData.length > 0 && cachedTxs.length === 0) {
                         hydratedWalletHistoryFromCacheRef.current = true;
                         setWalletHistory(cachedHistoryData);
                     }
-                    // walletHistory is regenerated by the authoritative reactive effect
-                    // after transactions/balance/stakes hydrate into React state.
                     if (restoreHeight > 0) setSyncStatus(prev => ({ ...prev, walletHeight: restoreHeight }));
 
-                    // Try to restore, catch any errors
                     try {
                         await walletService.restoreFromMnemonic(sessionSeed, '', restoreHeight);
                     } catch (restoreError: any) {
@@ -4117,7 +7258,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         return;
                     }
 
-                    // CRITICAL: Wait for WASM to confirm wallet exists before proceeding
                     let wasmReady = false;
                     for (let i = 0; i < 30; i++) {
                         const ready = walletService.isReady();
@@ -4134,26 +7274,26 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         flushSync(() => {
                             setRestorationError(error);
                             setInitError(error);
-                            setIsWalletReady(true); // Set to true so error screen shows
+                            setIsWalletReady(true);
                             setIsLocked(false);
                         });
-                        return; // Don't continue with cache import or scan start
+                        return;
                     }
 
                     if (cachedOutputsHex) {
                         let importSuccess = false;
                         try {
                             if (typeof walletService.importWalletCache === 'function') {
-                                importSuccess = walletService.importWalletCache(cachedOutputsHex);
+                                const minTransfers = getMinimumExpectedCacheTransfers(cachedBalance, cachedTxs);
+                                importSuccess = await walletService.importWalletCache(cachedOutputsHex, minTransfers);
                             }
                             if (!importSuccess) {
-                                const numImported = walletService.importOutputs(cachedOutputsHex);
+                                const numImported = await walletService.importOutputs(cachedOutputsHex);
                                 if (numImported > 0 && Object.keys(cachedSpentKeyImages).length > 0) {
-                                    walletService.restoreSpentStatusFromCache(cachedSpentKeyImages);
+                                    await walletService.restoreSpentStatusFromCache(cachedSpentKeyImages);
                                 }
                             }
                         } catch {
-                            // Cache import failed
                         }
                     }
 
@@ -4164,13 +7304,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             actualNetworkHeight = fetchedHeight;
                         }
                     } catch {
-                        // Failed to fetch network height during session restore
                     }
 
                     if (actualNetworkHeight > 0) {
-                        walletService.setBlockchainHeight(actualNetworkHeight);
+                        await walletService.setBlockchainHeight(actualNetworkHeight);
                     } else if (restoreHeight > 0) {
-                        walletService.setBlockchainHeight(restoreHeight);
+                        await walletService.setBlockchainHeight(restoreHeight);
+                    }
+                    if (restoreHeight > 0) {
+                        await walletService.setWalletHeight(restoreHeight);
                     }
 
                     const bootHeight = actualNetworkHeight || restoreHeight || 0;
@@ -4184,22 +7326,46 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         setBalance(bootBalance);
                     }
 
-                    const bootStakes = getNativeStakeState(bootHeight);
+                    const bootStakes = await getNativeStakeState(bootHeight);
                     applyStakes(bootStakes);
                     void fetchYieldData(bootStakes, bootHeight).then((stakesWithRewards) => {
                         applyStakes(stakesWithRewards);
                     });
 
-                    // walletHistory is regenerated by the authoritative reactive effect
-                    // after transactions/balance/stakes hydrate into React state.
+                    const activeRestoreSession = activeScanSessionRef.current;
+                    const restoreSessionActive =
+                        !!activeRestoreSession &&
+                        activeRestoreSession.type === 'restore-full-rescan' &&
+                        activeRestoreSession.status === 'active';
+                    const bootSyncDecision = getSyncWatchdogDecision({
+                        isWalletReady: true,
+                        hasWallet: walletService.hasWallet(),
+                        manualFullRescanMode: manualFullRescanModeRef.current,
+                        restoreSessionActive,
+                        resetInProgress: isResettingRef.current,
+                        scanRequestsSuspended: scanRequestsSuspendedRef.current,
+                        needsFullRescan: needsFullRescanRef.current,
+                        autoIntegrityRecoveryInFlight: autoIntegrityRecoveryInFlightRef.current,
+                        scanInProgress: scanInProgressRef.current || !!scanCoordinatorRef.current.activePromise,
+                        serviceScanInProgress: cspScanService.isScanningInProgress(),
+                        nativeWalletHeight: restoreHeight,
+                        uiWalletHeight: syncStatusRef.current.walletHeight || restoreHeight,
+                        networkHeight: actualNetworkHeight,
+                        nowMs: Date.now(),
+                        lastScanActivityAtMs: lastScanTimeRef.current || 0,
+                        staleScanMs: SYNC_WATCHDOG_STALE_SCAN_MS,
+                        tipGraceBlocks: SYNC_TIP_GRACE_BLOCKS,
+                    });
 
                     if (actualNetworkHeight > restoreHeight) {
                         setSyncStatus(prev => ({
                             ...prev,
                             walletHeight: restoreHeight,
                             daemonHeight: actualNetworkHeight,
-                            isSyncing: true,
-                            progress: restoreHeight > 0 ? Math.min(100, (restoreHeight / actualNetworkHeight) * 100) : 0
+                            isSyncing: restoreSessionActive || bootSyncDecision.isBehind,
+                            progress: bootSyncDecision.isBehind
+                                ? (restoreHeight > 0 ? Math.min(99, (restoreHeight / actualNetworkHeight) * 100) : 0)
+                                : 100
                         }));
                     } else if (actualNetworkHeight > 0) {
                         setSyncStatus(prev => ({
@@ -4216,7 +7382,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                         }));
                     }
 
-                    setIsWalletReady(true);
+                    setIsWalletReady(!restoreSessionActive);
                     setIsLocked(false);
 
                     const sessionRestoreSnapshot = captureNativeSnapshot('session_restore_complete', {
@@ -4241,11 +7407,47 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     }
 
                     setTimeout(() => {
-                        if (restoreHeight === 0 && hadDataForInit) {
-                            startScan(0);
-                        } else {
-                            startScan();
-                        }
+                        void (async () => {
+                            try {
+                                if (
+                                    needsFullRescanRef.current ||
+                                    autoIntegrityRecoveryInFlightRef.current
+                                ) {
+                                    return;
+                                }
+
+                                if (restoreSessionActive && activeRestoreSession?.id) {
+                                    const restoreFromHeight = restoreHeight === 0
+                                        ? 0
+                                        : (restoreHeight > 0 ? restoreHeight : undefined);
+                                    void requestScanStart({
+                                        fromHeight: restoreFromHeight,
+                                        reason: 'session-restore-init',
+                                        sessionType: 'restore-full-rescan',
+                                        sessionId: activeRestoreSession.id,
+                                    });
+                                    return;
+                                }
+
+                                if (manualFullRescanModeRef.current) {
+                                    return;
+                                }
+
+                                if (restoreHeight === 0 && hadDataForInit) {
+                                    await startScan(0);
+                                } else if ((actualNetworkHeight || restoreHeight) <= 0) {
+                                    await startScan();
+                                } else {
+                                    await requestAutomaticCatchupScan(
+                                        actualNetworkHeight || restoreHeight,
+                                        'session-init',
+                                        false,
+                                        true
+                                    );
+                                }
+                            } catch {
+                            }
+                        })();
                     }, 500);
                 } else if (walletService.hasWallet()) {
                     setIsWalletReady(true);
@@ -4258,7 +7460,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                             const encrypted = safeReadWallet();
                             if (encrypted?.address) setAddress(encrypted.address);
                             if (encrypted?.height) setSyncStatus(prev => ({ ...prev, walletHeight: encrypted.height || 0 }));
-                        } catch (e) { /* ignore */ }
+ } catch (e) { }
                         setIsWalletReady(true);
                         setIsLocked(true);
                     }
@@ -4270,91 +7472,42 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         init();
     }, [refreshData]);
 
-    /* DISABLED: Watchdog was causing issues
-    // WATCHDOG: Monitor if WASM wallet disappears after initialization
-    // This can happen on mobile when browser kills WASM memory but keeps JS state
-    useEffect(() => {
-        if (!isWalletReady) return;
-        
-        const checkWasmHealth = async () => {
-            const hasW = walletService.hasWallet();
-            void 0 && console.log(`[WalletContext Watchdog] isWalletReady=${isWalletReady}, hasWallet=${hasW}, isLocked=${isLocked}`);
-            
-            if (!hasW && !isLocked) {
-                // WASM wallet disappeared - mobile browser killed it
-                // Check if we're in a reload loop
-                const reloadCount = parseInt(sessionStorage.getItem('wasm_reload_count') || '0');
-                void 0 && console.error(`[WalletContext Watchdog] ⚠️ WASM killed by browser (reload count: ${reloadCount})`);
-                
-                if (reloadCount >= 2) {
-                    // Too many reloads - give up and show permanent error
-                    const error = 'WASM repeatedly killed by mobile browser. This device may not support the wallet. Please try a desktop browser or different device.';
-                    void 0 && console.error(`[WalletContext Watchdog] ❌ ${error}`);
-                    sessionStorage.removeItem('wasm_reload_count');
-                    flushSync(() => {
-                        setRestorationError(error);
-                        setInitError(error);
-                    });
-                } else {
-                    // Try reloading (increment counter)
-                    sessionStorage.setItem('wasm_reload_count', String(reloadCount + 1));
-                    const error = `WASM killed by browser - reloading page (attempt ${reloadCount + 1}/2)...`;
-                    flushSync(() => {
-                        setRestorationError(error);
-                        setInitError(error);
-                    });
-                    
-                    setTimeout(() => {
-                        void 0 && console.log('[WalletContext Watchdog] 🔄 Auto-reloading page...');
-                        window.location.reload();
-                    }, 2000);
-                }
-            } else if (hasW && !isLocked) {
-                // WASM is healthy - clear reload counter
-                const reloadCount = sessionStorage.getItem('wasm_reload_count');
-                if (reloadCount) {
-                    void 0 && console.log('[WalletContext Watchdog] ✅ WASM stable, clearing reload counter');
-                    sessionStorage.removeItem('wasm_reload_count');
-                }
-            }
-        };
-        
-        // Check immediately and every 2 seconds
-        checkWasmHealth();
-        const interval = setInterval(checkWasmHealth, 2000);
-        return () => clearInterval(interval);
-    }, [isWalletReady, isLocked]);
-    */
-
-    // Real-time block stream subscription (SSE)
     useEffect(() => {
         if (!isWalletReady || !walletService.hasWallet()) return;
 
-        const unsubscribeBlock = walletService.onNewBlock((fromHeight, toHeight) => {
-            setSyncStatus(prev => ({ ...prev, daemonHeight: toHeight, isSyncing: true }));
-            walletService.setBlockchainHeight(toHeight);
-            if (!scanInProgressRef.current) {
-                startScan();
+        const unsubscribeBlock = walletService.onNewBlock((_fromHeight, toHeight) => {
+            if (manualFullRescanModeRef.current) return;
+            // Paint the tip IMMEDIATELY from the feed -- the displayed daemon height must
+            // never wait for a scan to commit (it used to, making the tip clump forward
+            // and flap backward as stale writers landed). The monotonic guard on
+            // setSyncStatus keeps racing writers from regressing it.
+            if (Number.isFinite(toHeight) && toHeight > 0) {
+                setSyncStatus(prev => ({ ...prev, daemonHeight: toHeight }));
             }
+            void requestAutomaticCatchupScan(
+                toHeight,
+                'block-stream',
+                false,
+                isWalletReady,
+                SYNC_STREAM_TIP_GRACE_BLOCKS
+            );
         });
 
-        // SSE reconnection handler - triggers gap check when stream reconnects
-        // This catches blocks that may have been missed during disconnect
         const unsubscribeReconnect = walletService.onSSEReconnect(async () => {
-            // Only trigger scan if network height actually increased
+            if (manualFullRescanModeRef.current) return;
             try {
                 const currentNetworkHeight = await cspScanService.getNetworkHeight();
-                const walletHeight = walletService.getSyncStatus().walletHeight || 0;
 
-                // CRITICAL: Only trigger a scan if the network height is GREATER than the wallet's current scan target.
-                if (currentNetworkHeight > 0 && currentNetworkHeight > walletHeight && currentNetworkHeight > scanTargetHeightRef.current) {
-                    needsGapCheckRef.current = true;
-                    if (!scanInProgressRef.current && startScanRef.current) {
-                        startScanRef.current();
-                    }
+                if (currentNetworkHeight > 0) {
+                    await requestAutomaticCatchupScan(
+                        currentNetworkHeight,
+                        'sse-reconnect',
+                        true,
+                        isWalletReady,
+                        SYNC_STREAM_TIP_GRACE_BLOCKS
+                    );
                 }
             } catch {
-                // Failed to check network height on reconnect
             }
         });
 
@@ -4364,68 +7517,270 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         };
     }, [isWalletReady]);
 
-    // Keep startScanRef updated (avoids dependency churn in mempool effect)
     useEffect(() => {
         startScanRef.current = startScan;
+        requestScanStartRef.current = requestScanStart;
     });
 
-    // Keep refs in sync for event handlers
+    // Latch-proof rescue (2.2a): the watchdog must ALSO run while a restore session is active
+    // even if the wallet is not ready yet — seed restores have isWalletReady=false, which is
+    // exactly when a stranded session needs rescue.
+    const restoreSessionActiveForWatchdog =
+        scanSession?.type === 'restore-full-rescan' && scanSession.status === 'active';
+
+    useEffect(() => {
+        if (!isWalletReady && !restoreSessionActiveForWatchdog) return;
+
+        let cancelled = false;
+        let tickInProgress = false;
+        let lastKickAt = 0;
+
+        const runSyncWatchdog = async () => {
+            if (tickInProgress || cancelled) return;
+            tickInProgress = true;
+            try {
+                const hasWallet = walletService.hasWallet();
+                const serviceScanInProgress = cspScanService.isScanningInProgress();
+                const networkHeight = hasWallet ? await cspScanService.getNetworkHeight() : 0;
+                const activeRestoreSession = activeScanSessionRef.current?.type === 'restore-full-rescan'
+                    && activeScanSessionRef.current.status === 'active'
+                    ? activeScanSessionRef.current
+                    : null;
+                const restoreSessionScannerIdle = !!activeRestoreSession &&
+                    !scanInProgressRef.current &&
+                    !serviceScanInProgress &&
+                    !scanCoordinatorRef.current.activePromise;
+
+                if (networkHeight > 0 && hasWallet) {
+                    await walletService.setBlockchainHeight(networkHeight);
+                }
+
+                const nativeSyncStatus = hasWallet
+                    ? walletService.getSyncStatus()
+                    : { walletHeight: 0, daemonHeight: 0, isSyncing: false, progress: 0 };
+                const now = Date.now();
+                const decision = getSyncWatchdogDecision({
+                    isWalletReady,
+                    hasWallet,
+                    manualFullRescanMode: manualFullRescanModeRef.current,
+                    restoreSessionActive: !!activeRestoreSession,
+                    resetInProgress: isResettingRef.current,
+                    scanRequestsSuspended: scanRequestsSuspendedRef.current,
+                    needsFullRescan: needsFullRescanRef.current,
+                    autoIntegrityRecoveryInFlight: autoIntegrityRecoveryInFlightRef.current,
+                    scanInProgress: scanInProgressRef.current || !!scanCoordinatorRef.current.activePromise,
+                    serviceScanInProgress,
+                    nativeWalletHeight: nativeSyncStatus.walletHeight || 0,
+                    uiWalletHeight: syncStatusRef.current.walletHeight || 0,
+                    networkHeight,
+                    nowMs: now,
+                    lastScanActivityAtMs: lastScanTimeRef.current || 0,
+                    staleScanMs: SYNC_WATCHDOG_STALE_SCAN_MS,
+                    tipGraceBlocks: SYNC_TIP_GRACE_BLOCKS,
+                });
+
+                // Rescue eligibility for a stranded restore session: the decision is 'blocked'
+                // during every restore session (!isWalletReady on seed restores; the session also
+                // forces manual-full-rescan mode), so the resume path below could never run. A
+                // session whose scanner is fully idle for the stale-scan window gets rescued even
+                // when blocked — but never during reset/suspend/bootstrap/integrity-recovery.
+                const restoreRescueEligible =
+                    restoreSessionScannerIdle &&
+                    hasWallet &&
+                    !isResettingRef.current &&
+                    !scanRequestsSuspendedRef.current &&
+                    !needsFullRescanRef.current &&
+                    !autoIntegrityRecoveryInFlightRef.current &&
+                    !unlockBootstrapInFlightRef.current &&
+                    now - Math.max(lastScanTimeRef.current || 0, activeRestoreSession?.startedAt || 0) >= SYNC_WATCHDOG_STALE_SCAN_MS;
+
+                if (decision.blocked && !restoreRescueEligible) return;
+
+                if (!decision.blocked) {
+                if (decision.shouldClearStaleScanFlag) {
+                    reportClientEvent('scan.stale_ui_flag_observed', {
+                        level: 'warn',
+                        message: 'Cleared stale scan flag while scanner was idle.',
+                        context: {
+                            source: 'sync-watchdog',
+                            walletHeight: nativeSyncStatus.walletHeight || 0,
+                            daemonHeight: networkHeight,
+                            behindBlocks: decision.behindBlocks,
+                            withinTipGrace: decision.withinTipGrace,
+                            scanAgeMs: now - (lastScanTimeRef.current || now),
+                        },
+                    });
+                    scanInProgressRef.current = false;
+                    setIsScanning(false);
+                }
+
+                const scanStillActive = (scanInProgressRef.current || serviceScanInProgress)
+                    && !decision.shouldClearStaleScanFlag;
+
+                if (scanStillActive) {
+                    setSyncStatus(prev => ({
+                        ...prev,
+                        daemonHeight: networkHeight,
+                        isSyncing: decision.isBehind,
+                    }));
+                } else {
+                    setSyncStatus(prev => ({
+                        ...prev,
+                        walletHeight: Math.max(prev.walletHeight || 0, decision.displayWalletHeight),
+                        daemonHeight: networkHeight,
+                        isSyncing: decision.isBehind,
+                    progress: decision.isBehind
+                        ? Math.min(99, nativeSyncStatus.progress || prev.progress || 0)
+                        : 100,
+                }));
+                }
+                }
+
+                // Re-issue the restore even when NOT behind: a session left active after the
+                // wallet reached the tip is rescued by executeScan's already-at-tip early exit,
+                // which finalizes the terminal state and closes the session.
+                const resumeRestoreSession =
+                    restoreRescueEligible && !!activeRestoreSession;
+                const shouldKick = resumeRestoreSession || decision.shouldStartScan;
+                if (
+                    shouldKick &&
+                    now - lastKickAt >= SYNC_WATCHDOG_INTERVAL_MS
+                ) {
+                    lastKickAt = now;
+                    reportClientEvent('scan.watchdog_reconcile_needed', {
+                        level: 'warn',
+                        message: resumeRestoreSession
+                            ? 'Restore session idle - watchdog re-issuing restore scan.'
+                            : 'Wallet behind with no active scanner - watchdog starting catch-up scan.',
+                        context: {
+                            source: resumeRestoreSession ? 'restore-session-watchdog' : 'sync-watchdog',
+                            walletHeight: nativeSyncStatus.walletHeight || 0,
+                            daemonHeight: networkHeight,
+                            behindBlocks: decision.behindBlocks,
+                            withinTipGrace: decision.withinTipGrace,
+                            scanActive: scanInProgressRef.current,
+                            serviceScanActive: serviceScanInProgress,
+                            sessionType: activeRestoreSession?.type || 'background',
+                            sessionActive: !!activeRestoreSession,
+                        },
+                    });
+
+                    if (resumeRestoreSession && activeRestoreSession) {
+                        void requestScanStart({
+                            // Behind: resume from the session's authoritative start height.
+                            // At tip: pass undefined so executeScan's incremental plan reaches the
+                            // already-at-tip early exit and finalizes/closes the latched session
+                            // instead of re-running a full restore scan.
+                            fromHeight: decision.isBehind ? activeRestoreSession.fromHeight : undefined,
+                            reason: 'watchdog-restore-resume',
+                            sessionType: 'restore-full-rescan',
+                            sessionId: activeRestoreSession.id,
+                        });
+                    } else {
+                        void requestAutomaticCatchupScan(networkHeight, 'sync-watchdog-catchup');
+                    }
+                }
+            } catch {
+            } finally {
+                tickInProgress = false;
+            }
+        };
+
+        void runSyncWatchdog();
+        const interval = window.setInterval(runSyncWatchdog, SYNC_WATCHDOG_INTERVAL_MS);
+        return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+        };
+    }, [isWalletReady, restoreSessionActiveForWatchdog]);
+
     useEffect(() => { transactionsRef.current = transactions; }, [transactions]);
     useEffect(() => { pendingTransactionsRef.current = pendingTransactions; }, [pendingTransactions]);
     useEffect(() => { mempoolTransactionsRef.current = mempoolTransactions; }, [mempoolTransactions]);
     useEffect(() => { stakesRef.current = stakes; }, [stakes]);
     useEffect(() => { subaddressesRef.current = subaddresses; }, [subaddresses]);
+    useEffect(() => {
+        if (transactions.length === 0 || stakesRef.current.length === 0) {
+            return;
+        }
 
-    // Real-time mempool stream subscription (SSE)
-    // Detects incoming transactions instantly for instant UI updates
+        const hydratedStakes = hydrateReturnedStakeRewards(stakesRef.current, transactions);
+        if (hydratedStakes !== stakesRef.current) {
+            applyStakes(hydratedStakes, transactions);
+        }
+    }, [transactions, applyStakes]);
+
     useEffect(() => {
         if (!isWalletReady || !walletService.hasWallet()) return;
 
+        // mempool_add work (WASM scan_tx + tx-info parse, both synchronous, per NETWORK tx) used to
+        // run directly inside the SSE handler -- constant main-thread load on a busy mempool. Queue
+        // the events and drain one per idle slice instead; display-only, so the small delay is fine.
+        let disposed = false;
+        const addQueue: any[] = [];
+        let pumping = false;
+        const runIdle = (cb: () => void) => {
+            const ric = (window as any).requestIdleCallback;
+            if (typeof ric === 'function') ric(cb, { timeout: 3000 });
+            else setTimeout(cb, 50);
+        };
+        const processMempoolAdd = async (event: any) => {
+            const scanChanged = await walletService.scanTransaction(event.tx_blob);
+            if (scanChanged) {
+                // invalidateStateSnapshot is a no-op since the worker cutover; flag the change
+                // so refreshData's skip-gate reloads balance/transactions.
+                walletDataDirtyRef.current = true;
+            }
+
+            const txInfo = await walletService.getMempoolTxInfo(event.tx_blob);
+
+            const isPendingTx = pendingTransactionsRef.current.some(ptx => ptx.txid === event.tx_hash);
+
+            if (!isPendingTx && (txInfo.error || !txInfo.amount || txInfo.amount <= 0)) {
+                return;
+            }
+
+            const mempoolTx: WalletTransaction = {
+                txid: event.tx_hash,
+                amount: txInfo.amount ? txInfo.amount / 100000000 : 0,
+                timestamp: event.receive_time ? event.receive_time * 1000 : Date.now(),
+                height: 0,
+                type: isPendingTx ? 'out' : (txInfo.is_incoming ? 'in' : 'out'),
+                tx_type: 0,
+                tx_type_label: isPendingTx ? 'Broadcasting' : (txInfo.is_incoming ? 'Receiving' : 'Sending'),
+                pending: true,
+                fee: txInfo.fee !== undefined ? txInfo.fee / 100000000 : ((event.fee || 0) / 100000000),
+                confirmations: 0,
+                asset_type: txInfo.asset_type || 'SAL'
+            };
+
+            setMempoolTransactions(prev => {
+                if (prev.find(t => t.txid === event.tx_hash)) return prev;
+                return [mempoolTx, ...prev];
+            });
+        };
+        const pump = () => {
+            if (disposed) { pumping = false; return; }
+            const next = addQueue.shift();
+            if (!next) { pumping = false; return; }
+            // processMempoolAdd is async now (worker scan_tx + tx-info); chain the next pump
+            // off its completion so events still drain one at a time.
+            void processMempoolAdd(next)
+                .catch(() => {})
+                .finally(() => { runIdle(pump); });
+        };
+
         const handleMempoolEvent = (event: any) => {
+            if (manualFullRescanModeRef.current) {
+                return;
+            }
             if (event.type === 'mempool_add') {
-                // Check if we have the transaction blob
                 if (!event.tx_blob) {
                     return;
                 }
-
-                // Scan the transaction - tells WASM to check if any outputs belong to us
-                // NOTE: Return value just means parsing succeeded, NOT that it's ours!
-                walletService.scanTransaction(event.tx_blob);
-
-                // Fetch details from WASM - THIS is the authoritative check
-                // If amount > 0, WASM found outputs belonging to this wallet
-                const txInfo = walletService.getMempoolTxInfo(event.tx_blob);
-
-                // Check if this is our pending TX (outgoing TXs have amount=0)
-                const isPendingTx = pendingTransactionsRef.current.some(ptx => ptx.txid === event.tx_hash);
-
-                // Filter: must have outputs for us OR be our pending TX
-                if (!isPendingTx && (txInfo.error || !txInfo.amount || txInfo.amount <= 0)) {
-                    return;
-                }
-
-                // Create a temporary transaction object
-                const mempoolTx: WalletTransaction = {
-                    txid: event.tx_hash,
-                    amount: txInfo.amount ? txInfo.amount / 100000000 : 0,
-                    timestamp: event.receive_time ? event.receive_time * 1000 : Date.now(),
-                    height: 0, // Unconfirmed
-                    type: isPendingTx ? 'out' : (txInfo.is_incoming ? 'in' : 'out'),
-                    tx_type: 0,
-                    tx_type_label: isPendingTx ? 'Broadcasting' : (txInfo.is_incoming ? 'Receiving' : 'Sending'),
-                    pending: true,
-                    fee: txInfo.fee !== undefined ? txInfo.fee / 100000000 : ((event.fee || 0) / 100000000),
-                    confirmations: 0,
-                    asset_type: txInfo.asset_type || 'SAL'
-                };
-
-                // Update state - use functional update to avoid stale state
-                setMempoolTransactions(prev => {
-                    if (prev.find(t => t.txid === event.tx_hash)) return prev;
-                    return [mempoolTx, ...prev];
-                });
+                addQueue.push(event);
+                if (!pumping) { pumping = true; runIdle(pump); }
             } else if (event.type === 'mempool_remove') {
-                // TX confirmed - mark as "Confirming" until scan picks it up
                 const isPendingTx = pendingTransactionsRef.current.some(ptx => ptx.txid === event.tx_hash);
                 const isTrackedMempool = mempoolTransactionsRef.current.some(mtx => mtx.txid === event.tx_hash);
 
@@ -4445,7 +7800,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
                     ));
                 }
 
-                // Trigger scan to pick up confirmed TX
                 if (isTrackedMempool || isPendingTx) {
                     setTimeout(() => {
                         if (!scanInProgressRef.current) {
@@ -4463,56 +7817,42 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         const unsubscribe = walletService.onMempoolTx(handleMempoolEvent);
 
         return () => {
+            disposed = true;
             unsubscribe();
         };
     }, [isWalletReady]);
 
-    // Reconnect streams and scan when page becomes visible
     useEffect(() => {
         const handleVisibilityChange = async () => {
             if (!document.hidden && isWalletReady) {
-                // MOBILE FIX: Wait for stream reconnection before triggering scan
-                // This ensures we don't try to scan with stale/disconnected streams
+                if (manualFullRescanModeRef.current) {
+                    return;
+                }
                 try {
-                    // Await stream reconnections (with timeout fallback)
                     const reconnectPromise = Promise.all([
                         walletService.reconnectMempoolStream(),
                         walletService.reconnectBlockStream()
                     ]);
 
-                    // Wait for reconnection with 3 second timeout (slow mobile networks)
                     await Promise.race([
                         reconnectPromise,
                         new Promise(resolve => setTimeout(resolve, 3000))
                     ]);
 
-                    // Small additional delay for stream stabilization
                     await new Promise(resolve => setTimeout(resolve, 200));
 
-                    // Now check if we need to scan
                     const networkHeight = await cspScanService.getNetworkHeight();
-                    const syncStatus = walletService.getSyncStatus();
-                    const walletHeight = syncStatus.walletHeight || 0;
 
-                    // iOS FIX: Check for stuck scanInProgressRef before guard check
-                    // If marked as scanning but no progress for 30+ seconds, reset it
                     if (scanInProgressRef.current) {
                         const scanAge = Date.now() - lastScanTimeRef.current;
-                        if (scanAge > 30000) {
+                        if (scanAge > SCAN_REF_STALE_RESET_MS && !cspScanService.isScanningInProgress()) {
                             scanInProgressRef.current = false;
                             setIsScanning(false);
                         }
                     }
 
-                    // If we're behind, trigger a scan
-                    if (networkHeight > walletHeight && !scanInProgressRef.current) {
-                        startScanRef.current?.();
-                    }
+                    await requestAutomaticCatchupScan(networkHeight, 'visibility-visible');
                 } catch {
-                    // Fallback: still try to scan even if reconnection fails
-                    setTimeout(() => {
-                        if (!scanInProgressRef.current) startScanRef.current?.();
-                    }, 1000);
                 }
             }
         };
@@ -4521,14 +7861,20 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
     }, [isWalletReady]);
 
-    // Reconnect streams when network comes back online (mobile WiFi/cellular switch)
     useEffect(() => {
         const handleOnline = async () => {
             if (!isWalletReady) return;
+            if (manualFullRescanModeRef.current) return;
             walletService.reconnectMempoolStream();
             walletService.reconnectBlockStream();
             setTimeout(() => {
-                if (!scanInProgressRef.current) startScanRef.current?.();
+                void (async () => {
+                    try {
+                        const networkHeight = await cspScanService.getNetworkHeight();
+                        await requestAutomaticCatchupScan(networkHeight, 'network-online');
+                    } catch {
+                    }
+                })();
             }, 500);
         };
 
@@ -4536,35 +7882,56 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         return () => window.removeEventListener('online', handleOnline);
     }, [isWalletReady]);
 
-    // Fallback polling
     useEffect(() => {
         if (!isWalletReady || isScanning || !walletService.hasWallet()) return;
         const checkSync = async () => {
             try {
+                if (manualFullRescanModeRef.current) {
+                    return;
+                }
                 const networkHeight = await cspScanService.getNetworkHeight();
                 if (networkHeight > 0) {
-                    // FIX: Always tell WASM the network height so it can calculate unlocked_balance correctly
-                    // (e.g. waiting for confirmations without new blocks to scan)
-                    walletService.setBlockchainHeight(networkHeight);
-
-                    const syncStatus = walletService.getSyncStatus();
-                    const walletHeight = syncStatus.walletHeight || 0;
-                    setSyncStatus(prev => ({ ...prev, daemonHeight: networkHeight, isSyncing: walletHeight < networkHeight }));
-                    if (walletHeight < networkHeight && !scanInProgressRef.current) {
-                        startScan();
-                    }
+                    await requestAutomaticCatchupScan(networkHeight, 'fallback-poll');
                 }
                 refreshData();
-            } catch (e) { /* ignore */ }
+ } catch (e) { }
         };
         checkSync();
         const interval = setInterval(checkSync, 30000);
         return () => clearInterval(interval);
     }, [isWalletReady, isScanning, refreshData]);
 
-    // Deduplicate transactions: Confirmed > Mempool > Pending
-    // This ensures that when a transaction moves from Pending -> Mempool -> Confirmed,
-    // we only show the most "mature" version of it, avoiding duplicates and stale "Broadcasting" badges.
+    // Background scanning on desktop: setInterval is throttled to ~1/min in hidden tabs, so the
+    // checkSync poll above stalls when backgrounded. A Web Worker's timer is NOT throttled, so a
+    // tiny inline heartbeat worker reliably triggers catch-ups while hidden (the CSP scan workers,
+    // fetches and SSE keep running backgrounded; only main-thread timers are throttled). The
+    // coalesce in requestAutomaticCatchupScan dedupes when there is no new block, so this is cheap.
+    const heartbeatCatchupRef = React.useRef(requestAutomaticCatchupScan);
+    heartbeatCatchupRef.current = requestAutomaticCatchupScan;
+    useEffect(() => {
+        if (!isWalletReady || typeof Worker === 'undefined' || !walletService.hasWallet()) return;
+        let hbWorker: Worker | null = null;
+        let hbUrl = '';
+        try {
+            const hbSrc = "let i=null;onmessage=function(e){if(e.data==='start'){if(i)return;i=setInterval(function(){postMessage(0)},12000)}else{if(i){clearInterval(i);i=null}}};";
+            const blob = new Blob([hbSrc], { type: 'application/javascript' });
+            hbUrl = URL.createObjectURL(blob);
+            hbWorker = new Worker(hbUrl);
+            hbWorker.onmessage = async () => {
+                try {
+                    if (manualFullRescanModeRef.current) return;
+                    if (scanInProgressRef.current || cspScanService.isScanningInProgress()) return;
+                    const networkHeight = await cspScanService.getNetworkHeight();
+                    if (networkHeight > 0) await heartbeatCatchupRef.current?.(networkHeight, 'heartbeat');
+                } catch {}
+            };
+            hbWorker.postMessage('start');
+        } catch {}
+        return () => {
+            try { hbWorker?.postMessage('stop'); hbWorker?.terminate(); if (hbUrl) URL.revokeObjectURL(hbUrl); } catch {}
+        };
+    }, [isWalletReady]);
+
     const allTransactions = React.useMemo(() => {
         return mergeTransactionLifecycle(
             transactions,
@@ -4573,8 +7940,6 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         );
     }, [transactions, mempoolTransactions, pendingTransactions]);
 
-    // Clean up mempool transactions once they appear in confirmed transactions
-    // This prevents memory buildup and ensures the mempool list stays lean
     useEffect(() => {
         if (mempoolTransactions.length === 0 || transactions.length === 0) return;
 
@@ -4586,49 +7951,44 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     }, [transactions, mempoolTransactions]);
 
-    // ============================================================================
-    // WALLET STATE PERSISTENCE - Fixes "Failed to generate key image helper" error
-    // ============================================================================
-
-    /**
-     * Refresh wallet state (manual recovery for stale WASM state)
-     * Call this when "Failed to generate key image" errors occur
-     * This rebuilds the subaddress map and re-exports wallet state
-     */
-    const refreshWalletState = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    // opts.preExport: reuse an export the caller already made (the export is a ~400-900ms O(wallet)
+    // WASM serialize -- doing it twice per persist was the measured 3.9s periodic freeze).
+    // opts.light: skip the send-readiness recomputes (precompute/rebuild/validate, also O(wallet));
+    // they are not needed for persistence-only callers. Persisted bytes are IDENTICAL either way.
+    const refreshWalletState = useCallback(async (
+        opts?: { preExport?: { cache_hex: string } | null; light?: boolean }
+    ): Promise<{ success: boolean; error?: string }> => {
         if (!walletService.hasWallet() || !address) {
             return { success: false, error: 'Wallet not initialized' };
         }
 
         try {
-            // Step 1: Precompute/rebuild subaddress map (fixes ownership verification)
-            const numSubaddresses = Math.max(subaddresses.length + 50, 100);
-            walletService.precomputeSubaddresses(numSubaddresses);
+            if (!opts?.light) {
+                const numSubaddresses = Math.max(subaddresses.length + 50, 100);
+                await walletService.precomputeSubaddresses(numSubaddresses);
 
-            // Step 2: Rebuild subaddress map if available
-            walletService.rebuildSubaddressMap(numSubaddresses);
+                await walletService.rebuildSubaddressMap(numSubaddresses);
 
-            // Step 3: Validate outputs
-            const validation = walletService.validateOutputsForSend();
-            if (!validation.valid && validation.error) {
-                console.warn('[WalletContext] Output validation failed:', validation.error);
+                const validation = await walletService.validateOutputsForSend();
+                if (!validation.valid && validation.error) {
+                    debugWarn('[WalletContext] Output validation failed:', validation.error);
+                }
             }
 
-            // Step 4: Export and save fresh state to IndexedDB
-            const cacheExport = walletService.exportWalletCache();
+            const cacheExport = (opts?.preExport && opts.preExport.cache_hex)
+                ? opts.preExport
+                : await walletService.exportWalletCache();
             if (!cacheExport || !cacheExport.cache_hex) {
                 return { success: false, error: 'Failed to export wallet cache' };
             }
 
-            // Get subaddress data for persistence
-            const wasmSubaddresses = walletService.getSubaddresses();
+            const wasmSubaddresses = await walletService.getSubaddresses();
             const subaddressMap: SubaddressMapEntry[] = wasmSubaddresses.map((sub, idx) => ({
                 index: sub.index?.minor ?? idx,
                 label: sub.label || '',
                 address: sub.address,
             }));
 
-            // Save to IndexedDB
             const result = await walletStateService.save(
                 address,
                 cacheExport.cache_hex,
@@ -4653,10 +8013,468 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }
     }, [address, subaddresses.length, syncStatus.walletHeight]);
 
-    /**
-     * Get wallet state health information
-     * Returns recommendations if state needs refreshing
-     */
+    // LIVE-CRITICAL (abrupt-kill robustness): a single reusable "persist the full wallet state NOW"
+    // routine. A full exportWalletCache captures outputs + synced height + spends, so writing it
+    // (a) to the idb output cache `wallet_cache_<addr>` (the store the reopen boot reads
+    // cachedOutputsHex from) AND (b) via refreshWalletState (walletStateService: resume-height +
+    // spends) makes reopen resume at the tip with txs intact and NO rescan. Persisting MORE often is
+    // strictly safer (lossless); callers keep the ~400-570ms export off the critical path (hidden /
+    // idle). lastPersistedWalletHeightRef tracks the last durably-saved height so the periodic saver
+    // only runs when the chain actually advanced.
+    const lastPersistedWalletHeightRef = React.useRef<number>(0);
+    const persistFullStateNow = useCallback(async (): Promise<boolean> => {
+        const persistBlocked = (stage: string) => {
+            reportClientEvent('wallet.persist_blocked', { level: 'warn', message: stage });
+            return false;
+        };
+        if (!walletService.hasWallet() || !address) return persistBlocked('no-wallet');
+        if (scanInProgressRef.current) return persistBlocked('scanInProgressRef');
+        if (cspScanService.isScanningInProgress()) return persistBlocked('cspScanningInProgress');
+        let exported: { cache_hex: string } | null = null;
+        try {
+            exported = await walletService.exportWalletCache();
+            if (!exported || !exported.cache_hex) return persistBlocked('export-empty');
+            if (exported && exported.cache_hex) {
+                await saveToIndexedDB(`wallet_cache_${address}`, exported.cache_hex);
+                reportClientEvent('wallet.cache_persisted', {
+                    level: 'info',
+                    context: { cacheSize: exported.cache_hex.length },
+                });
+            }
+        } catch {}
+        // Reuse the export above (was a second full O(wallet) serialize) and skip the send-readiness
+        // recomputes -- this is a persistence-only path. Measured: 3.9s -> ~1 export per persist.
+        const r = await refreshWalletState({ preExport: exported, light: true });
+        try { lastPersistedWalletHeightRef.current = walletService.getSyncStatus().walletHeight || syncStatusRef.current.walletHeight || lastPersistedWalletHeightRef.current; } catch {}
+        return r.success;
+    }, [isWalletReady, address, refreshWalletState]);
+    const persistFullStateNowRef = React.useRef(persistFullStateNow);
+    persistFullStateNowRef.current = persistFullStateNow;
+
+    // Persist when the tab goes hidden (clean background / close). Runs while hidden => no freeze.
+    useEffect(() => {
+        const onVisibilityPersist = () => {
+            if (document.hidden) void persistFullStateNowRef.current?.();
+        };
+        document.addEventListener('visibilitychange', onVisibilityPersist);
+        return () => document.removeEventListener('visibilitychange', onVisibilityPersist);
+    }, []);
+
+    // ABRUPT-KILL robustness: a throttled periodic idle save. visibilitychange->hidden only fires on
+    // a CLEAN background/close -- a mobile OS kill / crash / force-stop fires NOTHING, so without this
+    // the only durable state is the last per-receive commit and reopen rescans from a low height with
+    // an empty tx list. This runs a full export every ~PERSIST_INTERVAL_MS IF the wallet height
+    // advanced since the last persist, on idle (requestIdleCallback, else short setTimeout) so the
+    // ~400-570ms serialize never janks the foreground. Skipped while scanning (that scan persists).
+    useEffect(() => {
+        if (!isWalletReady || !walletService.hasWallet()) return;
+        const PERSIST_INTERVAL_MS = 180000; // ~3 min
+        const runIdle = (cb: () => void) => {
+            const ric = (window as any).requestIdleCallback;
+            if (typeof ric === "function") ric(cb, { timeout: 5000 });
+            else setTimeout(cb, 1500);
+        };
+        const tick = () => {
+            if (scanInProgressRef.current || cspScanService.isScanningInProgress()) return;
+            let h = 0;
+            try { h = walletService.getSyncStatus().walletHeight || syncStatusRef.current.walletHeight || 0; } catch {}
+            if (h <= lastPersistedWalletHeightRef.current) return; // chain hasn't advanced -> nothing new
+            runIdle(() => { void persistFullStateNowRef.current?.(); });
+        };
+        const interval = setInterval(tick, PERSIST_INTERVAL_MS);
+        return () => clearInterval(interval);
+    }, [isWalletReady]);
+
+    const reportRestorePhase2Progress = useCallback((networkHeight: number, actualStartHeight: number, progress: ScanProgress) => {
+        const normalized = typeof progress.overallProgress === 'number'
+            ? progress.overallProgress
+            : typeof progress.progress === 'number'
+                ? progress.progress
+                : 0;
+        const phaseProgress = Math.max(0, Math.min(1, normalized));
+        const displayProgress = 56 + Math.round(phaseProgress * 39);
+        const scannedBlocks = typeof progress.scannedBlocks === 'number' ? progress.scannedBlocks : 0;
+        const walletHeight = Math.min(networkHeight, actualStartHeight + Math.floor(scannedBlocks));
+        setSyncStatus(prev => ({
+            ...prev,
+            walletHeight,
+            daemonHeight: networkHeight,
+            isSyncing: true,
+            progress: Math.min(99, displayProgress),
+            scanStartHeight: actualStartHeight,
+        }));
+        setScanProgress({
+            ...progress,
+            overallProgress: phaseProgress,
+            percentage: Math.min(99, displayProgress),
+            statusMessage: progress.statusMessage || 'Reconstructing returned outputs...',
+            // This wrapper only serves the restore phase-2 (returned-transfer) scan.
+            phaseKey: progress.phaseKey ?? 'returned_scan',
+        });
+    }, []);
+
+    // Monotonic restore progress: the bar must never move backwards. Scan-driven phases own
+    // 0-94; the terminal phases (saving/validating/finalizing) own 95-99. The floor resets when
+    // a restore session begins.
+    const restoreProgressFloorRef = React.useRef(0);
+    const reportRestoreTerminalProgress = useCallback((
+        networkHeight: number,
+        actualStartHeight: number,
+        percentage: number,
+        statusMessage: string,
+        // Only the WalletContext terminal paths may emit 'complete'; mid-phase callers
+        // pass 'saving'/'validating'/'finalizing'.
+        phaseKey: ScanUiPhase
+    ) => {
+        let boundedPercentage = Math.max(0, Math.min(99, percentage));
+        // Never regress (e.g. the scan reaching 99 followed by 'Validating' hard-set to 96).
+        boundedPercentage = Math.max(boundedPercentage, restoreProgressFloorRef.current);
+        restoreProgressFloorRef.current = boundedPercentage;
+        setSyncStatus(prev => ({
+            ...prev,
+            walletHeight: networkHeight,
+            daemonHeight: networkHeight,
+            isSyncing: true,
+            progress: boundedPercentage,
+            scanStartHeight: actualStartHeight,
+        }));
+        setScanProgress({
+            progress: boundedPercentage / 100,
+            phase: '4',
+            message: statusMessage,
+            scannedBlocks: Math.max(0, networkHeight - actualStartHeight),
+            totalBlocks: Math.max(1, networkHeight - actualStartHeight),
+            completedChunks: 0,
+            totalChunks: 0,
+            viewTagMatches: 0,
+            bytesReceived: 0,
+            blocksPerSecond: 0,
+            overallProgress: boundedPercentage / 100,
+            percentage: boundedPercentage,
+            statusMessage,
+            phaseKey,
+        });
+    }, []);
+
+    // --- 2.1 Single terminal writer -------------------------------------------------------------
+    // The ONLY writer of the coupled completion gates at scan/restore terminal time:
+    // syncStatus (terminal values), scanHealth, lastSuccessfulScanAt, the restore scan session
+    // (complete/fail/keep-active), and the 'salvium_restore_scan_finished' localStorage flag.
+    // The pure outcome→gate mapping lives in utils/scanHealth.ts (computeRestoreTerminalGates)
+    // so it is unit-testable; this callback only applies it and schedules retries.
+    const finalizeRestoreTerminalState = useCallback((
+        outcome: RestoreTerminalOutcome,
+        ctx: {
+            networkHeight?: number;
+            actualStartHeight?: number;
+            currentHeight?: number;
+            reason?: string;
+            sessionNote?: string;
+            /** Whether the terminating request owns an active restore session (defaults to live check). */
+            isRestoreSession?: boolean;
+            /** Original request identity for cancelled_retryable retries (used when no restore session is active). */
+            retryRequest?: { sessionType: ScanSessionType; sessionId?: string; fromHeight?: number };
+        } = {}
+    ) => {
+        const isRestoreSession = ctx.isRestoreSession ?? isRestoreScanSessionActive();
+        // PERMANENT: which terminal every restore takes — invisible until now.
+        reportClientEvent('wallet.restore_finalized', {
+            level: outcome === 'success' ? 'info' : 'warn',
+            message: outcome,
+            context: { reason: (ctx.reason || '').slice(0, 120) },
+        });
+        if (outcome === 'success' || outcome === 'repair_required') {
+            // Persist the wallet cache once a restore succeeds. persistFullStateNow
+            // declines while ANY scan runs (post-restore validation scans linger), so
+            // INSIST: retry every 15s until the write lands (max 10 minutes).
+            let persistAttempts = 0;
+            const insist = async () => {
+                persistAttempts += 1;
+                const ok = await (persistFullStateNowRef.current?.() ?? Promise.resolve(false));
+                if (!ok && persistAttempts < 40) {
+                    window.setTimeout(() => { void insist(); }, 15000);
+                } else if (!ok) {
+                    reportClientEvent('wallet.restore_persist_gave_up', { level: 'error' });
+                }
+            };
+            window.setTimeout(() => { void insist(); }, 2000);
+        }
+        const gates = computeRestoreTerminalGates(outcome, {
+            networkHeight: ctx.networkHeight,
+            currentHeight: ctx.currentHeight,
+            isRestoreSession,
+            previousScanHealth: scanHealthRef.current,
+            reason: ctx.reason,
+        });
+
+        if (gates.scanHealth) {
+            setScanHealth(gates.scanHealth);
+        }
+        if (gates.syncStatusPatch) {
+            const syncStatusPatch = gates.syncStatusPatch;
+            setSyncStatus(prev => ({ ...prev, ...syncStatusPatch }));
+        }
+        if (gates.clearScanProgress) {
+            setScanProgress(null);
+        }
+        if (gates.lastSuccessfulScanAt !== null) {
+            setLastSuccessfulScanAt(gates.lastSuccessfulScanAt);
+            if ((ctx.networkHeight || 0) > 0) {
+                lastSuccessfulScanHeightRef.current = ctx.networkHeight as number;
+            }
+        }
+        if (gates.localStorageFlag) {
+            try {
+                localStorage.setItem('salvium_restore_scan_finished', 'true');
+            } catch {
+            }
+        }
+
+        if (outcome === 'failed' && ctx.reason) {
+            // Raw failure detail goes to diagnostics only; the session note shown by the UI
+            // stays short (ctx.sessionNote).
+            reportRestoreDiagnostic('restore.scan_terminal_failed', {
+                reason: ctx.reason,
+                sessionActive: isRestoreSession,
+                walletHeight: ctx.currentHeight ?? 0,
+                daemonHeight: ctx.networkHeight ?? 0,
+            }, 'error', ctx.reason);
+        }
+
+        if (gates.sessionAction === 'finish') {
+            completeRestoreScanSession('finished', ctx.sessionNote || 'Restore complete');
+        } else if (gates.sessionAction === 'fail') {
+            completeRestoreScanSession('failed', ctx.sessionNote || 'restore scan failed');
+        } else if (gates.sessionAction === 'keep_active') {
+            // cancelled_retryable: the session stays active; schedule ONE backoff retry through
+            // the coordinator carrying the ORIGINAL session identity. An active restore session
+            // takes precedence over the caller's request identity so rejected/foreign requests
+            // still rescue the stranded session instead of self-terminating against it.
+            const activeSession = activeScanSessionRef.current;
+            const sessionOwnedRetry =
+                !!activeSession && activeSession.type === 'restore-full-rescan' && activeSession.status === 'active';
+            const retryTarget = sessionOwnedRetry && activeSession
+                ? {
+                    sessionType: 'restore-full-rescan' as ScanSessionType,
+                    sessionId: activeSession.id,
+                    fromHeight: activeSession.fromHeight,
+                }
+                : (ctx.retryRequest || { sessionType: 'background' as ScanSessionType, sessionId: undefined, fromHeight: undefined });
+
+            if (!scanFailureRetryRef.current.timer) {
+                const attempt = scanFailureRetryRef.current.count;
+                if (attempt < 8) {
+                    const delay = Math.min(60000, 2000 * Math.pow(2, attempt));
+                    scanFailureRetryRef.current.count = attempt + 1;
+                    reportClientEvent('restore.retry_scheduled', {
+                        level: 'warn',
+                        message: ctx.reason || 'scan ended retryably; retry scheduled',
+                        context: {
+                            attempt: attempt + 1,
+                            delayMs: delay,
+                            sessionType: retryTarget.sessionType,
+                            sessionActive: !!sessionOwnedRetry,
+                            reason: ctx.reason || '',
+                        },
+                    });
+                    scanFailureRetryRef.current.timer = setTimeout(() => {
+                        scanFailureRetryRef.current.timer = null;
+                        if (
+                            isResettingRef.current ||
+                            scanRequestsSuspendedRef.current ||
+                            !walletService.hasWallet()
+                        ) {
+                            return;
+                        }
+                        if (retryTarget.sessionType === 'restore-full-rescan') {
+                            const current = activeScanSessionRef.current;
+                            if (
+                                !current ||
+                                current.type !== 'restore-full-rescan' ||
+                                current.status !== 'active' ||
+                                current.id !== retryTarget.sessionId
+                            ) {
+                                // The session resolved or was replaced while the retry was
+                                // pending — never start an unowned restore scan.
+                                return;
+                            }
+                        }
+                        void requestScanStartRef.current?.({
+                            fromHeight: retryTarget.fromHeight,
+                            reason: 'restore-retryable-retry',
+                            sessionType: retryTarget.sessionType,
+                            sessionId: retryTarget.sessionId,
+                        });
+                    }, delay);
+                }
+            }
+        }
+    }, [setScanHealth]);
+
+    const validateRestorePipelineState = useCallback(async (networkHeight: number) => {
+        await walletService.hydrateRuntimeFullTxContext();
+        let validation = await walletService.validateOutputsForSend();
+        debugLog('[WalletContext] Restore post-validation', {
+            valid: validation.valid,
+            needsRefresh: validation.needsRefresh,
+            unresolvedReturnedOutputs: validation.unresolvedReturnedOutputs === true,
+            missingRuntimeTxContext: validation.missingRuntimeTxContext === true,
+            error: validation.error,
+        });
+        reportRestoreDiagnostic('restore.post_validation', {
+            status: validation.valid ? 'valid' : 'invalid',
+            validationValid: validation.valid !== false,
+            needsRefresh: validation.needsRefresh === true,
+            unresolvedReturnedOutputs: validation.unresolvedReturnedOutputs === true,
+            missingRuntimeTxContext: validation.missingRuntimeTxContext === true,
+            failureCount: validation.failureCount || 0,
+            unresolvedReturnedOutputCount: validation.unresolvedReturnedOutputCount || 0,
+            missingRuntimeTxContextCount: validation.missingRuntimeTxContextCount || 0,
+            runtimeTxCandidates: validation.runtimeTxCandidates || 0,
+            runtimeTxRequested: validation.runtimeTxRequested || 0,
+            runtimeTxHydrated: validation.runtimeTxHydrated || 0,
+            runtimeTxError: validation.runtimeTxError || '',
+            walletHeight: networkHeight,
+            daemonHeight: networkHeight,
+            reason: validation.error || '',
+        }, validation.valid ? 'info' : 'warn', validation.error);
+
+        if (!validation.valid && validation.needsRefresh) {
+            const refreshResult = await refreshWalletState();
+            if (refreshResult.success) {
+                await walletService.hydrateRuntimeFullTxContext();
+                validation = await walletService.validateOutputsForSend();
+                debugLog('[WalletContext] Restore post-validation after refresh', {
+                    valid: validation.valid,
+                    needsRefresh: validation.needsRefresh,
+                    unresolvedReturnedOutputs: validation.unresolvedReturnedOutputs === true,
+                    missingRuntimeTxContext: validation.missingRuntimeTxContext === true,
+                    error: validation.error,
+                });
+                reportRestoreDiagnostic('restore.post_validation_after_refresh', {
+                    status: validation.valid ? 'valid' : 'invalid',
+                    validationValid: validation.valid !== false,
+                    needsRefresh: validation.needsRefresh === true,
+                    unresolvedReturnedOutputs: validation.unresolvedReturnedOutputs === true,
+                    missingRuntimeTxContext: validation.missingRuntimeTxContext === true,
+                    failureCount: validation.failureCount || 0,
+                    unresolvedReturnedOutputCount: validation.unresolvedReturnedOutputCount || 0,
+                    missingRuntimeTxContextCount: validation.missingRuntimeTxContextCount || 0,
+                    runtimeTxCandidates: validation.runtimeTxCandidates || 0,
+                    runtimeTxRequested: validation.runtimeTxRequested || 0,
+                    runtimeTxHydrated: validation.runtimeTxHydrated || 0,
+                    runtimeTxError: validation.runtimeTxError || '',
+                    walletHeight: networkHeight,
+                    daemonHeight: networkHeight,
+                    reason: validation.error || '',
+                }, validation.valid ? 'info' : 'warn', validation.error);
+            }
+        }
+
+        return validation;
+    }, [refreshWalletState]);
+
+    const rebuildRestoreDerivedState = useCallback(async (networkHeight: number) => {
+        setRestoreScanPhase('phase3_stake_returns_rebuild', 'rebuilding wallet stake/returns state', 'stake_returns');
+        const nativeStakeState = await getNativeStakeState(networkHeight);
+        applyStakes(nativeStakeState);
+        const stakesWithRewards = await fetchYieldData(nativeStakeState, networkHeight);
+        applyStakes(stakesWithRewards);
+        const rebuiltBalance = clampUnlockedBalance(getAuthoritativeNativeBalance(walletService.getBalance()).balance);
+        setBalance(rebuiltBalance);
+        try {
+            const storedWallet = safeReadWallet();
+            if (storedWallet) {
+                storedWallet.cachedBalance = { ...rebuiltBalance };
+                storedWallet.cachedBalanceVersion = BASE_ASSET_CACHED_BALANCE_VERSION;
+                safeWriteWallet(storedWallet);
+            }
+        } catch {
+        }
+        setRestoreScanPhase('phase3_stake_returns_rebuild', 'wallet stake/returns state rebuilt');
+        return rebuiltBalance;
+    }, [getAuthoritativeNativeBalance]);
+
+    const assertWalletReadyForSpend = useCallback(async (): Promise<void> => {
+        if (!walletService.hasWallet()) {
+            throw new Error('Wallet not initialized');
+        }
+
+        if (scanInProgressRef.current) {
+            // Self-heal a latched flag: the scan finally only clears it when the scan
+            // version still matches (a coalesced request that never ran its own cleanup
+            // leaves it true forever). Block sends only when scanning is GENUINELY active.
+            const genuinelyScanning =
+                cspScanService.isScanningInProgress() ||
+                Boolean(scanCoordinatorRef.current.activePromise);
+            if (!genuinelyScanning) {
+                scanInProgressRef.current = false;
+                setIsScanning(false);
+                reportClientEvent('send.stale_scan_flag_self_healed', {
+                    level: 'warn',
+                    context: { source: 'assertWalletReadyForSpend' },
+                });
+            } else {
+                throw new Error('Wallet is still syncing. Wait for sync to finish before sending.');
+            }
+        }
+
+        let nativeBalanceState = getAuthoritativeNativeBalance(walletService.getBalance());
+        if (!nativeBalanceState.snapshot?.success) {
+            for (let attempt = 0; attempt < 6; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, 250));
+                nativeBalanceState = getAuthoritativeNativeBalance(walletService.getBalance());
+                if (nativeBalanceState.snapshot?.success) {
+                    break;
+                }
+            }
+        }
+
+        await refreshNativeHealthExtras();
+        const snapshotHealth = assessNativeSnapshotHealth(
+            nativeBalanceState.snapshot,
+            nativeBalanceState.balance
+        );
+        if (!snapshotHealth.ok) {
+            const lockedCoinsInfo = await walletService.getLockedCoinsInfo();
+            const totals = nativeBalanceState.snapshot?.totals;
+            const lockedCoinsTotal = lockedCoinsInfo?.m_locked_coins_total ?? 'unknown';
+            const lockedCoinsCount = lockedCoinsInfo?.m_locked_coins_count ?? 'unknown';
+            throw new Error(
+                `Wallet state needs refresh: ${snapshotHealth.issues[0]} ` +
+                `(snapshot_balance=${totals?.balance ?? 'unknown'}, ` +
+                `snapshot_unlocked=${totals?.unlocked_balance ?? 'unknown'}, ` +
+                `snapshot_locked=${totals?.locked_stake ?? 'unknown'}, ` +
+                `display_balance=${nativeBalanceState.balance.balance}, ` +
+                `display_unlocked=${nativeBalanceState.balance.unlockedBalance}, ` +
+                `locked_coins_total=${lockedCoinsTotal}, ` +
+                `locked_coins_count=${lockedCoinsCount})`
+            );
+        }
+
+        await walletService.hydrateRuntimeFullTxContext();
+
+        let validation = await walletService.validateOutputsForSend();
+        if (!validation.valid && validation.needsRefresh) {
+            debugWarn('[WalletContext] Auto-refreshing wallet state before send', validation.error);
+            const refreshResult = await refreshWalletState();
+            if (refreshResult.success) {
+                await walletService.hydrateRuntimeFullTxContext();
+                validation = await walletService.validateOutputsForSend();
+            } else {
+                throw new Error(
+                    validation.error ||
+                    refreshResult.error ||
+                    'Wallet outputs need refresh before sending'
+                );
+            }
+        }
+
+        if (!validation.valid) {
+            throw new Error(validation.error || 'Wallet outputs need refresh before sending');
+        }
+    }, [assessNativeSnapshotHealth, refreshNativeHealthExtras, getAuthoritativeNativeBalance, refreshWalletState]);
+
     const getWalletStateHealth = useCallback(async (): Promise<WalletStateHealth> => {
         if (!address) {
             return {
@@ -4671,18 +8489,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         return walletStateService.checkHealth(address);
     }, [address]);
 
-    // Handle periodic state sync requests from WalletStateService
     useEffect(() => {
         const handleSyncRequest = async (event: Event) => {
             const customEvent = event as CustomEvent<{ walletAddress: string; immediate?: boolean }>;
             const { walletAddress, immediate } = customEvent.detail;
 
-            // Only sync if this is our wallet and we're not in a critical operation
             if (walletAddress !== address || scanInProgressRef.current || isResettingRef.current) {
                 return;
             }
 
-            // Perform the state save
             await refreshWalletState();
         };
 
@@ -4692,51 +8507,62 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
             if (walletAddress !== address) return;
 
-            // Log health warning (UI can listen for this too via a state update if needed)
             if (!health.isHealthy) {
-                console.warn('[WalletContext] Wallet state health warning:', health.recommendations);
+                const missingPersistedStateOnly = health.recommendations.every((recommendation) =>
+                    /No persisted state found/i.test(recommendation)
+                );
+                if (isRestoreScanSessionActive() || (scanInProgressRef.current && missingPersistedStateOnly)) {
+                    reportRestoreDiagnostic('restore.wallet_state_pending', {
+                        source: 'WalletStateService',
+                        reason: missingPersistedStateOnly ? 'missing_persisted_state' : 'restore_in_progress',
+                        sessionActive: isRestoreScanSessionActive(),
+                        isScanning: scanInProgressRef.current,
+                    });
+                    return;
+                }
+                const warningKey = `${walletAddress}:${health.recommendations.join('|')}`;
+                const now = Date.now();
+                const lastLoggedAt = walletHealthWarningLastLog.get(warningKey) || 0;
+                if (now - lastLoggedAt >= WALLET_HEALTH_WARNING_LOG_INTERVAL_MS) {
+                    walletHealthWarningLastLog.set(warningKey, now);
+                    debugWarn('[WalletContext] Wallet state health warning:', health.recommendations);
+                }
             }
+        };
+
+        // Worker crash: the in-memory wallet is gone (secrets only cross at unlock), so the
+        // safe reaction is to lock — unlock re-spawns the worker and reopens incrementally
+        // from the persisted cache. lockWallet is pure local state (safe with a dead engine).
+        const handleWorkerCrash = () => {
+            try { lockWallet(); } catch {}
         };
 
         window.addEventListener('walletStateSyncRequest', handleSyncRequest);
         window.addEventListener('walletStateHealthWarning', handleHealthWarning);
+        window.addEventListener('walletWorkerCrashed', handleWorkerCrash);
 
         return () => {
             window.removeEventListener('walletStateSyncRequest', handleSyncRequest);
             window.removeEventListener('walletStateHealthWarning', handleHealthWarning);
+            window.removeEventListener('walletWorkerCrashed', handleWorkerCrash);
         };
     }, [address, refreshWalletState]);
 
-    // Initialize wallet state service when wallet is unlocked
     useEffect(() => {
-        if (isWalletReady && address && !isLocked) {
+        const restoreSessionActive = scanSession?.type === 'restore-full-rescan' && scanSession.status === 'active';
+        if (isWalletReady && address && !isLocked && !isScanning && !restoreSessionActive) {
             walletStateService.initialize(address);
-        } else if (isLocked || !isWalletReady) {
+        } else if (isLocked || !isWalletReady || restoreSessionActive) {
             walletStateService.stop();
         }
-    }, [isWalletReady, address, isLocked]);
+    }, [isWalletReady, address, isLocked, isScanning, scanSession?.type, scanSession?.status]);
 
-    const value: WalletContextType = {
-        isInitialized,
-        initError,
-        restorationError,
-        isWalletReady,
-        isLocked,
-        needsRecovery,
-        address,
-        legacyAddress,
-        carrotAddress,
-        balance,
-        stats,
-        syncStatus,
-        isScanning,
-        scanProgress,
-        lastSuccessfulScanAt,
-        transactions: allTransactions,
-        stakes,
-        subaddresses,
-        contacts,
-        walletHistory,
+    // Stable function identities (the "useEvent" pattern): each wrapper delegates to the LATEST
+    // implementation through a ref, so it can never capture stale state, while its own identity
+    // never changes. This lets `value` below be memoized -- previously the value object (and its
+    // ~30 closures) was rebuilt on every provider render, so ANY state tick re-rendered every
+    // context consumer (measured: ~175 components per commit on a heavy wallet).
+    const fnsImpl = {
         generateMnemonic,
         createWallet,
         restoreWallet,
@@ -4744,6 +8570,8 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         lockWallet,
         startScan,
         sendTransaction,
+        sendTransactionWithDetails,
+        sendTransactionWithDetailsAtomic,
         createTokenTransaction,
         stakeTransaction,
         returnTransaction,
@@ -4757,18 +8585,96 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         refreshData,
         resetWallet,
         clearCache,
+        prepareManualFullRescan,
         rescanWallet,
+        canRescanWithoutPassword,
         changePassword,
         proceedWithFullRescan,
         handleBackupRestored,
-        getWasmStatus: () => ({
-            isReady: walletService.isReady(),
-            hasWallet: walletService.hasWallet()
-        }),
-        // Wallet state persistence (fixes "Failed to generate key image helper" error)
         refreshWalletState,
-        getWalletStateHealth
+        getWalletStateHealth,
     };
+    type FnsImpl = typeof fnsImpl;
+    const fnsRef = React.useRef<FnsImpl>(fnsImpl);
+    fnsRef.current = fnsImpl;
+    const stableFns = React.useMemo(() => {
+        const wrap = <K extends keyof FnsImpl>(k: K): FnsImpl[K] =>
+            (((...args: unknown[]) =>
+                (fnsRef.current[k] as (...a: unknown[]) => unknown)(...args)) as unknown) as FnsImpl[K];
+        return {
+            generateMnemonic: wrap('generateMnemonic'),
+            createWallet: wrap('createWallet'),
+            restoreWallet: wrap('restoreWallet'),
+            unlockWallet: wrap('unlockWallet'),
+            lockWallet: wrap('lockWallet'),
+            startScan: wrap('startScan'),
+            sendTransaction: wrap('sendTransaction'),
+            sendTransactionWithDetails: wrap('sendTransactionWithDetails'),
+            sendTransactionWithDetailsAtomic: wrap('sendTransactionWithDetailsAtomic'),
+            createTokenTransaction: wrap('createTokenTransaction'),
+            stakeTransaction: wrap('stakeTransaction'),
+            returnTransaction: wrap('returnTransaction'),
+            sweepAllTransaction: wrap('sweepAllTransaction'),
+            createSubaddress: wrap('createSubaddress'),
+            addContact: wrap('addContact'),
+            updateContact: wrap('updateContact'),
+            removeContact: wrap('removeContact'),
+            estimateFee: wrap('estimateFee'),
+            validateAddress: wrap('validateAddress'),
+            refreshData: wrap('refreshData'),
+            resetWallet: wrap('resetWallet'),
+            clearCache: wrap('clearCache'),
+            prepareManualFullRescan: wrap('prepareManualFullRescan'),
+            rescanWallet: wrap('rescanWallet'),
+            canRescanWithoutPassword: wrap('canRescanWithoutPassword'),
+            changePassword: wrap('changePassword'),
+            proceedWithFullRescan: wrap('proceedWithFullRescan'),
+            handleBackupRestored: wrap('handleBackupRestored'),
+            refreshWalletState: wrap('refreshWalletState'),
+            getWalletStateHealth: wrap('getWalletStateHealth'),
+            getWasmStatus: () => ({
+                isReady: walletService.isReady(),
+                hasWallet: walletService.hasWallet()
+            }),
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const value: WalletContextType = React.useMemo(() => ({
+        isInitialized,
+        initError,
+        restorationError,
+        initLog,
+        isWalletReady,
+        isLocked,
+        needsRecovery,
+        address,
+        legacyAddress,
+        carrotAddress,
+        balance,
+        stats,
+        syncStatus,
+        scanHealth,
+        isScanning,
+        scanProgress,
+        lastSuccessfulScanAt,
+        scanSession,
+        transactions: allTransactions,
+        stakes,
+        subaddresses,
+        contacts,
+        walletHistory,
+        ...stableFns,
+        // Pre-existing type looseness (see the equivalent error at the scanScheduler assignment):
+        // the declared context type says Promise<void>, the implementation returns
+        // ScanExecutionResult. Single-member cast so every other key stays strictly checked.
+        startScan: stableFns.startScan as unknown as WalletContextType['startScan'],
+    }), [
+        isInitialized, initError, restorationError, initLog, isWalletReady, isLocked,
+        needsRecovery, address, legacyAddress, carrotAddress, balance, stats, syncStatus,
+        scanHealth, isScanning, scanProgress, lastSuccessfulScanAt, scanSession,
+        allTransactions, stakes, subaddresses, contacts, walletHistory, stableFns,
+    ]);
 
     return (
         <WalletContext.Provider value={value}>

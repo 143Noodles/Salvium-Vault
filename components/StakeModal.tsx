@@ -11,7 +11,7 @@ interface StakeModalProps {
 
 const StakeModal: React.FC<StakeModalProps> = ({ isOpen, onClose, balance }) => {
   const [amount, setAmount] = useState('');
-  const [duration, setDuration] = useState('30'); // days
+  const [duration, setDuration] = useState('30');
 
   if (!isOpen) return null;
 
@@ -20,7 +20,7 @@ const StakeModal: React.FC<StakeModalProps> = ({ isOpen, onClose, balance }) => 
   const estimatedReturns = (numericAmount * (estimatedApy / 100) * (parseInt(duration) / 365)).toFixed(2);
 
   const handleMax = () => {
-    setAmount((balance - 10).toString()); // Leave some for gas
+    setAmount((balance - 10).toString());
   };
 
   return (
@@ -44,7 +44,6 @@ const StakeModal: React.FC<StakeModalProps> = ({ isOpen, onClose, balance }) => 
         </div>
 
         <div className="space-y-6">
-          {/* Amount Input */}
           <div className="space-y-2">
              <div className="flex justify-between text-xs font-medium">
                <span className="text-text-secondary uppercase tracking-wider">Stake Amount</span>
@@ -68,7 +67,6 @@ const StakeModal: React.FC<StakeModalProps> = ({ isOpen, onClose, balance }) => 
              </div>
           </div>
 
-          {/* Duration Selector */}
           <div className="space-y-2">
              <span className="text-xs text-text-secondary uppercase tracking-wider font-medium">Lock Duration</span>
              <div className="grid grid-cols-3 gap-2">
@@ -88,7 +86,6 @@ const StakeModal: React.FC<StakeModalProps> = ({ isOpen, onClose, balance }) => 
              </div>
           </div>
 
-          {/* Summary Card */}
           <div className="bg-bg-secondary/50 rounded-xl p-4 border border-border-color/50 space-y-3">
              <div className="flex justify-between items-center text-sm">
                 <span className="text-text-muted">APY Rate</span>

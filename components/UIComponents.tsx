@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { isMobile, isTablet, isIPad13 } from 'react-device-detect';
 import { X } from './Icons';
 
-// Device detection helpers for responsive layouts (matching other components)
 const isTabletDevice = isTablet || isIPad13;
 const isMobileOrTablet = isMobile || isTabletDevice;
 
@@ -158,7 +157,6 @@ interface OverlayProps {
 }
 
 export const Overlay: React.FC<OverlayProps> = ({ isOpen, onClose, title, children, className = '', mobileTopOffset = 96 }) => {
-  // Use fixed offset - customizable for mobile/tablet, 0 for desktop
   const topOffset = isMobileOrTablet ? mobileTopOffset : 0;
 
   if (!isOpen) return null;
@@ -168,18 +166,15 @@ export const Overlay: React.FC<OverlayProps> = ({ isOpen, onClose, title, childr
       className="fixed z-[100] flex items-end lg:items-center justify-center lg:p-4"
       style={{ top: topOffset, left: 0, right: 0, bottom: 0 }}
     >
-      {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/80 backdrop-blur-sm transition-opacity animate-fade-in"
         onClick={onClose}
         style={{ touchAction: 'none' }}
       ></div>
 
-      {/* Content */}
       <div className={`relative w-full lg:max-w-lg bg-[#131320] lg:rounded-2xl rounded-t-2xl border-t lg:border border-white/10 shadow-2xl flex flex-col lg:h-auto lg:max-h-[80vh] animate-slide-up ${className}`}
-        style={{ height: '100%', marginBottom: 'env(safe-area-inset-bottom)' }}
+        style={{ height: '100%', marginBottom: 'calc(var(--safe-area-bottom) + var(--mobile-nav-bottom-pad))' }}
       >
-        {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-white/5 bg-white/5 shrink-0 rounded-t-2xl">
           <h3 className="text-lg font-bold text-white">{title}</h3>
           <button
@@ -190,7 +185,6 @@ export const Overlay: React.FC<OverlayProps> = ({ isOpen, onClose, title, childr
           </button>
         </div>
 
-        {/* Scrollable Body */}
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
           {children}
         </div>
@@ -210,10 +204,8 @@ export const TruncatedAddress: React.FC<TruncatedAddressProps> = ({ address, cla
   const [displayText, setDisplayText] = useState(address);
   const [charWidth, setCharWidth] = useState(0);
 
-  // Measure character width on mount using a hidden span
   useLayoutEffect(() => {
     if (measureRef.current) {
-      // Measure with a sample of characters to get average width
       measureRef.current.textContent = 'abcdefghijklmnopqrstuvwxyz0123456789';
       const width = measureRef.current.getBoundingClientRect().width / 36;
       setCharWidth(width);
@@ -227,13 +219,11 @@ export const TruncatedAddress: React.FC<TruncatedAddressProps> = ({ address, cla
       const wrapper = wrapperRef.current;
       if (!wrapper) return;
 
-      // Get available width from our own wrapper (which respects flex constraints)
       const containerWidth = wrapper.getBoundingClientRect().width;
-      const ellipsisWidth = charWidth * 3; // "..." is 3 chars
-      const safetyMargin = 4; // A few pixels buffer
+      const ellipsisWidth = charWidth * 3;
+      const safetyMargin = 4;
       const availableWidth = containerWidth - ellipsisWidth - safetyMargin;
 
-      // Calculate how many characters can fit
       const maxChars = Math.floor(availableWidth / charWidth);
 
       if (!address) {
@@ -241,30 +231,23 @@ export const TruncatedAddress: React.FC<TruncatedAddressProps> = ({ address, cla
         return;
       }
 
-      // If the full address fits, show it all
       if (address.length * charWidth <= containerWidth) {
         setDisplayText(address);
         return;
       }
 
-      // Calculate how many characters to show on each side
-      // We need at least 4 chars on each side to be useful
       const minSideChars = 4;
       if (maxChars < minSideChars * 2) {
-        // Not enough space, show minimal truncation
         setDisplayText(`${address.slice(0, minSideChars)}...${address.slice(-minSideChars)}`);
         return;
       }
 
-      // Split available characters between start and end (evenly)
       const sideChars = Math.floor(maxChars / 2);
       setDisplayText(`${address.slice(0, sideChars)}...${address.slice(-sideChars)}`);
     };
 
-    // Initial update
     updateDisplay();
 
-    // Set up ResizeObserver to update on our wrapper resize
     const resizeObserver = new ResizeObserver(() => {
       updateDisplay();
     });
@@ -275,9 +258,7 @@ export const TruncatedAddress: React.FC<TruncatedAddressProps> = ({ address, cla
   }, [address, charWidth]);
 
   return (
-    // Wrapper div that properly constrains width in flex layouts
     <div ref={wrapperRef} className="flex-1 min-w-0 overflow-hidden">
-      {/* Hidden span to measure character width */}
       <span
         ref={measureRef}
         className={`font-mono text-sm absolute opacity-0 pointer-events-none whitespace-nowrap ${className}`}

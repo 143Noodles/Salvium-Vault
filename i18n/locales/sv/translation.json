@@ -32,7 +32,8 @@
     "history": "Historik",
     "settings": "Inställningar",
     "dashboard": "Översikt",
-    "lockWallet": "Lås Plånbok"
+    "lockWallet": "Lås Plånbok",
+    "assets": "Tillgångar"
   },
   "dashboard": {
     "balance": "Saldo",
@@ -47,7 +48,8 @@
     "noActiveStakes": "Inga aktiva stakes",
     "earnRewards": "Tjäna belöningar genom att staka dina SAL i ~30 dagar.",
     "createNewStake": "Skapa Ny Stake",
-    "unlocksIn": "Låses upp om {{time}} ({{blocks}} block)"
+    "unlocksIn": "Låses upp om {{time}} ({{blocks}} block)",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "Senaste 24 Timmarna",
@@ -69,7 +71,7 @@
     "sendAssets": "Skicka Tillgångar",
     "creatingTransaction": "Skapar Transaktion...",
     "transactionSent": "Transaktion Skickad!",
-    "amountSent": "{{amount}} SAL har skickats till nätverket.",
+    "amountSent": "{{amount}} {{asset}} har skickats till nätverket.",
     "transactionHash": "Transaktions-Hash",
     "sendAnother": "Skicka En Annan Transaktion",
     "addressBook": "Adressbok",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "Vänligen ange ett giltigt positivt belopp",
-      "exceedsBalance": "Beloppet överskrider tillgängligt saldo"
+      "exceedsBalance": "Beloppet överskrider tillgängligt saldo",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,8 @@
     "sections": {
       "securityPrivacy": "Säkerhet & Integritet",
       "general": "Allmänt",
-      "language": "Språk"
+      "language": "Språk",
+      "preferences": "Inställningar"
     },
     "biometrics": {
       "title": "Lås Upp med Biometri",
@@ -222,7 +226,8 @@
       "errors": {
         "fillAll": "Vänligen fyll i alla fält",
         "mismatch": "Nya lösenord matchar inte",
-        "empty": "Lösenord kan inte vara tomt"
+        "empty": "Lösenord kan inte vara tomt",
+        "minLength": "Lösenordet måste vara minst 8 tecken"
       }
     },
     "blockchain": {
@@ -259,6 +264,14 @@
       "revealButton": "Reveal Seed Phrase",
       "copySeed": "Copy Seed Phrase",
       "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
+    },
+    "connection": {
+      "title": "Anslutning",
+      "description": "Välj vilken Salvium-nod som synkroniserar din plånbok. Automatiskt håller dig på en fungerande officiell nod; lägg bara till en egen om den är offentligt nåbar. Oavsett vilket skickas förfrågningar via vault-servern i stället för direkt från din enhet."
+    },
+    "currency": {
+      "title": "Visningsvaluta",
+      "description": "Välj den fiatvaluta som används för att visa ditt saldovärde."
     }
   },
   "onboarding": {
@@ -435,5 +448,156 @@
     "initializingWallet": "Initialiserar plånbok...",
     "failedToCreate": "Kunde inte skapa säkerhetskopia",
     "failedToUnlock": "Kunde inte låsa upp plånbok"
+  },
+  "assets": {
+    "title": "Tillgångar",
+    "subtitle": "Visa och hantera alla tillgångar i din plånbok.",
+    "viewAll": "Visa alla",
+    "viewAllAssets": "Visa alla tillgångar",
+    "viewAssets": "Visa tillgångar",
+    "create": "Skapa",
+    "createAsset": "Skapa tillgång",
+    "createAssetTransaction": "Skapa tillgångstransaktion",
+    "creating": "Skapar...",
+    "yourAssets": "Dina tillgångar",
+    "searchAssets": "Sök tillgångar...",
+    "searchAssetsShort": "Sök tillgångar",
+    "searchAssetsLabel": "Sök tillgångar",
+    "searchAssetsLong": "Sök efter ticker, namn eller tillgångstyp",
+    "filters": {
+      "all": "Alla tillgångar",
+      "metadata": "Med metadata",
+      "plain": "Grundtillgångar"
+    },
+    "empty": {
+      "noBalances": "Inga tillgångssaldon ännu",
+      "waitForTransfers": "Skapa en tillgång eller vänta på inkommande tillgångsöverföringar.",
+      "noFilterMatches": "Inga tillgångar matchar dina aktuella filter.",
+      "noRecentActivity": "Ingen ny tillgångsaktivitet.",
+      "selectAsset": "Välj en tillgång",
+      "chooseAsset": "Välj en tillgång från listan för att granska den.",
+      "noTransactions": "Inga transaktioner registrerade för den valda tillgången."
+    },
+    "unlock": {
+      "title": "Lås upp plånboken för att hantera tillgångar.",
+      "description": "Tillgångssaldon, överföringar och skapande kräver en upplåst plånbok."
+    },
+    "activation": {
+      "scheduled": "Tillgångsaktivering är schemalagd för {{label}} vid block {{height}}.",
+      "blocksRemaining": "block kvar",
+      "estimatedTime": "Beräknad återstående tid: {{time}}"
+    },
+    "success": {
+      "submitted": "Tillgångsskapande skickat",
+      "created": "{{assetType}} skickades och visas här när plånboken tar emot eller bekräftar tillgångssaldot.",
+      "submittedHashes": "Skickade transaktionshashar"
+    },
+    "labels": {
+      "asset": "Tillgång",
+      "catalog": "Katalog",
+      "listed": "Listade",
+      "name": "Namn",
+      "balance": "Saldo",
+      "unlocked": "Upplåst",
+      "unlockedBalance": "Upplåst saldo",
+      "locked": "Låst",
+      "lockedBalance": "Låst saldo",
+      "standard": "Standard",
+      "type": "Typ",
+      "assetType": "Tillgångstyp",
+      "supply": "Utbud",
+      "totalSupply": "Totalt utbud",
+      "ownershipPercentage": "Ägarandel",
+      "assetId": "Tillgångs-ID",
+      "created": "Skapad",
+      "decimals": "Decimaler",
+      "amount": "Belopp",
+      "status": "Status",
+      "date": "Datum",
+      "txHash": "TX-hash",
+      "metadata": "Metadata",
+      "media": "Media",
+      "quickActions": "Snabbåtgärder",
+      "assetLinks": "Tillgångslänkar",
+      "recentActivity": "Senaste aktivitet",
+      "transactionHistory": "Tillgångens transaktionshistorik",
+      "assetOverview": "Tillgångsöversikt",
+      "premium": "Premium",
+      "unknown": "Okänd"
+    },
+    "actions": {
+      "send": "Skicka",
+      "receive": "Ta emot",
+      "sendAsset": "Skicka {{ticker}}",
+      "receiveAsset": "Ta emot {{ticker}}",
+      "open": "Öppna",
+      "openAssetUrl": "Öppna tillgångs-URL",
+      "viewCatalog": "Visa katalog",
+      "copyAssetId": "Kopiera tillgångs-ID",
+      "backToAssets": "Tillbaka till tillgångar",
+      "dismiss": "Stäng",
+      "retry": "Försök igen"
+    },
+    "media": {
+      "explorerImage": "Tillgångsbild från utforskaren"
+    },
+    "states": {
+      "publicCatalogAsset": "Tillgång från offentlig katalog",
+      "inWallet": "{{amount}} {{ticker}} i plånboken",
+      "catalogOnlyNotice": "Den här tillgången läses in från den offentliga SAL-katalogen. Den finns inte i den här plånboken just nu, så sändning är inaktiverad.",
+      "loadingCatalog": "Läser in tillgångar...",
+      "catalogLoadFailed": "Utforskarens katalog kunde inte läsas in.",
+      "catalogEmpty": "Utforskaren returnerade inga tillgångar.",
+      "catalogNoMatches": "Inga tillgångar matchar din sökning.",
+      "showingAssets": "Visar {{start}} till {{end}} av {{total}} tillgångar",
+      "unlockedAmount": "Upplåst: {{amount}} {{ticker}}",
+      "unlockedAmountCompact": "Upplåst {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "Bastillgång",
+      "token": "Token"
+    },
+    "createForm": {
+      "cost": "Att skapa denna tillgång kostar {{cost}} SAL{{suffix}}",
+      "premiumSuffix": " eftersom detta är en premium-tillgångskod.",
+      "standardSuffix": ".",
+      "assetCode": "Tillgångskod",
+      "premiumNote": "Detta är en premium-tillgångskod. Det kostar 10 000 SAL att skapa den.",
+      "supply": "Utbud",
+      "advanced": "Avancerat",
+      "advancedDescription": "Valfri tokenmetadata och storlek",
+      "displayName": "Visningsnamn",
+      "displayNamePlaceholder": "Exempeltillgång",
+      "size": "Storlek",
+      "projectUrl": "Projekt-URL",
+      "additionalMetadata": "Ytterligare metadata",
+      "additionalMetadataPlaceholder": "Valfri JSON eller anteckningar. Strukturerade fält ovan sammanfogas automatiskt."
+    },
+    "validation": {
+      "assetCodeRequired": "Tillgångskod krävs.",
+      "assetCodeFormat": "Tillgångskoden måste bestå av exakt 4 versaler eller siffror.",
+      "assetCodePrefix": "Tillgångskoden får inte börja med 'SAL'.",
+      "assetCodeReserved": "Tillgångskoden är reserverad och kan inte användas.",
+      "supplyRequired": "Utbud krävs.",
+      "supplyWhole": "Utbudet måste vara ett heltal.",
+      "supplyRange": "Utbudet måste vara mellan 1 och {{max}}.",
+      "supplyInteger": "Utbudet måste vara ett giltigt heltal.",
+      "decimalsRange": "Decimaler måste vara ett heltal mellan 0 och {{max}}.",
+      "metadataTooLong": "Ytterligare metadata är för lång (max {{max}} tecken).",
+      "assetCodeExists": "Tillgångskoden '{{code}}' finns redan."
+    },
+    "transactions": {
+      "pending": "Väntar",
+      "received": "Mottagen",
+      "sent": "Skickad",
+      "awaitingConfirmation": "Väntar på bekräftelse"
+    },
+    "time": {
+      "lessThanMinute": "mindre än en minut"
+    },
+    "errors": {
+      "loadFailed": "Kunde inte läsa in tillgångar",
+      "createFailed": "Kunde inte skapa tillgångstransaktion"
+    }
   }
 }

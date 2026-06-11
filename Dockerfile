@@ -23,6 +23,14 @@ RUN npm run build
 FROM node:20-alpine
 
 WORKDIR /app
+ENV SALVIUM_DATA_DIR=/app/data \
+    PORT=3000 \
+    SALVIUM_DEPLOYMENT_CHANNEL=vault-live \
+    SALVIUM_NETWORK=mainnet \
+    SALVIUM_DEFAULT_BROWSER_NETWORK=mainnet \
+    SALVIUM_WASM_BASENAME=SalviumWallet \
+    SALVIUM_RPC_URL=http://salvium:19081 \
+    SALVIUM_MAINNET_VAULT_URL=http://salvium-vault:3000
 
 # Production deps only in runtime image
 COPY package*.json ./
@@ -30,14 +38,16 @@ RUN npm ci --only=production
 
 # Copy server and artifacts from builder
 COPY server.cjs ./
+COPY server-csp-worker.cjs ./
 COPY wallet/ ./wallet/
 COPY assets/ ./assets/
+COPY utils/ ./utils/
 COPY --from=build /app/dist ./dist
 
 EXPOSE 3000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/debug/health || exit 1
+HEALTHCHECK --interval=30s --timeout=15s --start-period=180s --retries=5 \
+CMD sh -c 'wget -q -T 10 -O /dev/null "http://127.0.0.1:${PORT:-3000}/vault/api/debug/health" || exit 1'
 
 CMD ["node", "server.cjs"]

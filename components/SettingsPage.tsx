@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { isMobile, isTablet, isIPad13 } from 'react-device-detect';
 
-// Device detection helpers for responsive layouts
 const isTabletDevice = isTablet || isIPad13;
-const isMobileOrTablet = isMobile || isTabletDevice; // Tablets use mobile layouts
-import { Card, Button, Input, Badge } from './UIComponents';
-import { Settings, Lock, Shield, Monitor, Bell, Network, Database, RefreshCw, Loader2, Download, Eye, EyeOff, X, ScanFace, Heart, ExternalLink, CheckCircle2, Globe, Key, Trash2, AlertTriangle, FileText, Copy, Check } from './Icons';
+const isMobileOrTablet = isMobile || isTabletDevice;
+import { Card, Button, Input, Badge, Overlay } from './UIComponents';
+import { Settings, Lock, Shield, Monitor, Bell, Network, Database, RefreshCw, Loader2, Download, Eye, EyeOff, X, ScanFace, Heart, ExternalLink, CheckCircle2, Globe, Key, Trash2, AlertTriangle, FileText, Copy, Check, DollarSign } from './Icons';
 import LanguageSelector from './LanguageSelector';
+import CurrencySelector from './CurrencySelector';
 import { useTranslation } from 'react-i18next';
 import { useWallet } from '../services/WalletContext';
+import NodeSelector from './NodeSelector';
 import { downloadBackup } from '../services/BackupService';
 import { BiometricService } from '../services/BiometricService';
 import { decrypt } from '../services/CryptoService';
@@ -18,6 +19,7 @@ import {
    LEGACY_WALLET_STORAGE_KEY,
    normalizeWalletStorageNetwork
 } from '../utils/walletStorage';
+import { startTaskTelemetry } from '../utils/clientTelemetry';
 
 interface SettingsPageProps {
    autoLockEnabled: boolean;
@@ -28,10 +30,103 @@ interface SettingsPageProps {
    onReset?: () => void;
 }
 
-// Need to import TabView enum or redefine for type safety if not exported easily
-// Assuming it's passed down or we use string 'SEND' if enum isn't available in this file scope without import loop
-// For now, let's use 'SEND' string cast as any to match App.tsx signature or import
-import { TabView } from '../App';
+import { TabView } from '../utils/tabView';
+
+const redactIdentifier = (value: unknown): string => {
+   const text = String(value || '');
+   if (!text) return '';
+   if (text.length <= 16) return '[redacted]';
+   return `${text.slice(0, 8)}...${text.slice(-6)}`;
+};
+
+const redactLongIdentifiersInText = (value: unknown): string =>
+   String(value || '').replace(/\b[A-Za-z0-9]{32,}\b/g, (match) => redactIdentifier(match));
+
+const redactSensitiveText = (value: unknown): string =>
+   redactLongIdentifiersInText(value)
+      .replace(
+         /\b(seed|mnemonic|password|private[_ -]?key|spend[_ -]?key|view[_ -]?key)\s*[:=]\s*\S+/gi,
+         '$1=[redacted]'
+      )
+      .replace(
+         /\b(snapshot_balance|snapshot_unlocked|snapshot_locked|display_balance|display_unlocked|balance|unlockedBalance|lockedBalance|amount|principal|reward|stake|atomic|txid|output_key|address|payment_id|paymentId)\s*[:=]\s*-?[\w.]+/gi,
+         '$1=[redacted]'
+      )
+      .replace(/\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*SAL1?\b/gi, '[amount redacted]');
+
+const getBrowserSummary = (): { browser: string; os: string; mobile: boolean; tablet: boolean } => {
+   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+   const platform = typeof navigator !== 'undefined' ? navigator.platform : 'Unknown';
+   const browser =
+      /Edg\//.test(ua) ? 'Edge' :
+         /Firefox\//.test(ua) ? 'Firefox' :
+            /Chrome\//.test(ua) ? 'Chrome' :
+               /Safari\//.test(ua) ? 'Safari' :
+                  'Unknown';
+   const androidVersion = ua.match(/Android\s+([0-9]+)/i)?.[1];
+   const os = androidVersion ? `Android ${androidVersion}` : (platform || 'Unknown');
+
+   return {
+      browser,
+      os,
+      mobile: isMobile,
+      tablet: isTabletDevice,
+   };
+};
+
+const isNonZeroAtomic = (value: unknown): boolean => {
+   try {
+      return BigInt(String(value || '0')) !== 0n;
+   } catch {
+      return Number(value || 0) !== 0;
+   }
+};
+
+const compactAtomicTotals = (totals: any) => totals && typeof totals === 'object'
+   ? {
+      balance_nonzero: isNonZeroAtomic(totals.balance),
+      unlocked_nonzero: isNonZeroAtomic(totals.unlocked_balance),
+      locked_stake_nonzero: isNonZeroAtomic(totals.locked_stake),
+   }
+   : null;
+
+const compactSyncStatus = (status: any) => status && typeof status === 'object'
+   ? (() => {
+      const daemonHeight = Number.isFinite(status.daemonHeight)
+         ? status.daemonHeight
+         : Number.isFinite(status.networkHeight)
+            ? status.networkHeight
+            : undefined;
+
+      return {
+      isSyncing: status.isSyncing === true,
+      status: typeof status.status === 'string' ? status.status : undefined,
+      walletHeight: Number.isFinite(status.walletHeight) ? status.walletHeight : undefined,
+      daemonHeight,
+      progress: typeof status.progress === 'number'
+         ? Math.round(status.progress * 100) / 100
+         : undefined,
+      phase: typeof status.phase === 'string'
+         ? status.phase
+         : typeof status.currentPhase === 'string'
+            ? status.currentPhase
+            : undefined,
+      error: status.error ? redactSensitiveText(status.error) : undefined,
+      };
+   })()
+   : null;
+
+const getStorageDiagnostics = async () => {
+   const storageApi = typeof navigator !== 'undefined' ? navigator.storage : undefined;
+   const estimate = storageApi?.estimate ? await storageApi.estimate().catch(() => null) : null;
+   const persisted = storageApi?.persisted ? await storageApi.persisted().catch(() => null) : null;
+
+   return {
+      persisted,
+      quotaMB: typeof estimate?.quota === 'number' ? Math.round(estimate.quota / 1024 / 1024) : null,
+      usageMB: typeof estimate?.usage === 'number' ? Math.round(estimate.usage / 1024 / 1024) : null,
+   };
+};
 
 const SettingsPage: React.FC<SettingsPageProps> = ({
    autoLockEnabled,
@@ -45,14 +140,12 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
    const wallet = useWallet();
    const [isRescanning, setIsRescanning] = useState(false);
 
-   // Backup modal state
    const [showBackupModal, setShowBackupModal] = useState(false);
    const [backupPassword, setBackupPassword] = useState('');
    const [showBackupPassword, setShowBackupPassword] = useState(false);
    const [backupError, setBackupError] = useState('');
    const [isExporting, setIsExporting] = useState(false);
 
-   // Biometric State
    const [isBioAvailable, setIsBioAvailable] = useState(false);
    const [isBioEnabled, setIsBioEnabled] = useState(false);
    const [showBioModal, setShowBioModal] = useState(false);
@@ -61,7 +154,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
    const [bioError, setBioError] = useState('');
    const [isBioProcessing, setIsBioProcessing] = useState(false);
 
-   // Change Password State
    const [showPasswordModal, setShowPasswordModal] = useState(false);
    const [currentPassword, setCurrentPassword] = useState('');
    const [newPassword, setNewPassword] = useState('');
@@ -72,21 +164,29 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
    const [passwordError, setPasswordError] = useState('');
    const [isChangingPassword, setIsChangingPassword] = useState(false);
    const [showPasswordSuccess, setShowPasswordSuccess] = useState(false);
+   const [showDebugOverlay, setShowDebugOverlay] = useState(false);
+   const [showDebugPrivacyNotice, setShowDebugPrivacyNotice] = useState(false);
+   const [debugPayload, setDebugPayload] = useState('');
+   const [isDebugLoading, setIsDebugLoading] = useState(false);
+   const [debugCopied, setDebugCopied] = useState(false);
+   const showMobileDebug = isMobileOrTablet;
 
-   // Reset Wallet State
    const [showResetModal, setShowResetModal] = useState(false);
    const [resetConfirmed, setResetConfirmed] = useState(false);
 
-   // Show Seed Phrase State
    const [showSeedModal, setShowSeedModal] = useState(false);
    const [seedPassword, setSeedPassword] = useState('');
    const [showSeedPassword, setShowSeedPassword] = useState(false);
    const [seedError, setSeedError] = useState('');
    const [isVerifyingSeed, setIsVerifyingSeed] = useState(false);
+   const [showRescanPasswordModal, setShowRescanPasswordModal] = useState(false);
+   const [rescanPassword, setRescanPassword] = useState('');
+   const [showRescanPw, setShowRescanPw] = useState(false);
+   const [rescanPwError, setRescanPwError] = useState('');
+   const [isUnlockingForRescan, setIsUnlockingForRescan] = useState(false);
    const [revealedSeed, setRevealedSeed] = useState('');
    const [seedCopied, setSeedCopied] = useState(false);
 
-   // Check availability
    React.useEffect(() => {
       BiometricService.isAvailable().then(setIsBioAvailable);
       setIsBioEnabled(BiometricService.isEnabled());
@@ -94,8 +194,10 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
    const handleToggleBio = () => {
       if (isBioEnabled) {
+         const task = startTaskTelemetry('biometric.disable', 'SettingsPage');
          BiometricService.disable();
          setIsBioEnabled(false);
+         task.completed();
       } else {
          setShowBioModal(true);
          setBioError('');
@@ -105,26 +207,26 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
    const handleEnableBio = async () => {
       if (!bioPassword) return;
+      const task = startTaskTelemetry('biometric.enable', 'SettingsPage', {}, 'verify_password');
       setIsBioProcessing(true);
       setBioError('');
       try {
-         // Verify password first
          const isValid = await wallet.unlockWallet(bioPassword);
          if (!isValid) throw new Error('Incorrect password');
 
-         // Enable Biometrics
+         task.stage('enable_biometrics');
          await BiometricService.enable(bioPassword);
          setIsBioEnabled(true);
          setShowBioModal(false);
          setBioPassword('');
+         task.completed();
       } catch (e: any) {
-         void 0 && console.error(e);
+         task.failed(e, e.name === 'NotAllowedError' ? 'permission' : 'failed');
          if (e.name === 'NotAllowedError') {
             setBioError(t('settings.biometrics.cancelled'));
          } else {
             setBioError(e.message || t('settings.biometrics.failed'));
          }
-         // If enable failed (e.g. user cancelled face id), ensure we stay disabled
          BiometricService.disable();
          setIsBioEnabled(false);
       } finally {
@@ -143,17 +245,53 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
       onAutoLockChange(!autoLockEnabled, autoLockMinutes);
    };
 
-   const handleRescan = async () => {
-      if (isRescanning || wallet.isScanning) return;
-
+   const runRescan = async () => {
+      const task = startTaskTelemetry('wallet.manual_rescan', 'SettingsPage', {}, 'prepare');
       setIsRescanning(true);
       try {
-         await wallet.rescanWallet();
+         wallet.prepareManualFullRescan();
          if (onRescan) onRescan();
+         task.stage('scan_started');
+         await wallet.rescanWallet();
+         task.completed();
       } catch (err) {
-         void 0 && console.error('Rescan failed:', err);
+         task.failed(err, 'scan_failed');
       } finally {
          setIsRescanning(false);
+      }
+   };
+
+   const handleRescan = async () => {
+      if (isRescanning) return;
+      // Rescan re-derives from the stored seed, which must be decrypted in memory.
+      // If the session isn't fully unlocked (e.g. after a reload), prompt for the
+      // PASSWORD only - never the recovery phrase - then rescan automatically.
+      if (wallet.canRescanWithoutPassword && !wallet.canRescanWithoutPassword()) {
+         setRescanPassword('');
+         setRescanPwError('');
+         setShowRescanPasswordModal(true);
+         return;
+      }
+      await runRescan();
+   };
+
+   const confirmRescanWithPassword = async () => {
+      if (isUnlockingForRescan) return;
+      setIsUnlockingForRescan(true);
+      setRescanPwError('');
+      try {
+         const ok = await wallet.unlockWallet(rescanPassword);
+         if (!ok) {
+            setRescanPwError('Incorrect password');
+            return;
+         }
+         setShowRescanPasswordModal(false);
+         setRescanPassword('');
+         await runRescan();
+      } catch (e: any) {
+         setRescanPwError(e?.message || 'Incorrect password');
+      } finally {
+         setIsUnlockingForRescan(false);
       }
    };
 
@@ -165,13 +303,15 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
       setIsExporting(true);
       setBackupError('');
+      const task = startTaskTelemetry('wallet.backup_export', 'SettingsPage', {}, 'encrypt');
 
       try {
          await downloadBackup(backupPassword);
          setShowBackupModal(false);
          setBackupPassword('');
+         task.completed();
       } catch (err: any) {
-         void 0 && console.error('Backup failed:', err);
+         task.failed(err, 'export_failed');
          setBackupError(err.message || 'Failed to create backup');
       } finally {
          setIsExporting(false);
@@ -203,20 +343,22 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
          return;
       }
 
-      if (newPassword.length < 1) {
-         setPasswordError(t('settings.password.errors.empty'));
+      if (newPassword.length < 8) {
+         setPasswordError(t('settings.password.errors.minLength'));
          return;
       }
 
       setIsChangingPassword(true);
       setPasswordError('');
+      const task = startTaskTelemetry('wallet.change_password', 'SettingsPage', {}, 'change');
 
       try {
          await wallet.changePassword(currentPassword, newPassword);
          closePasswordModal();
          setShowPasswordSuccess(true);
+         task.completed();
       } catch (err: any) {
-         void 0 && console.error('Change password failed:', err);
+         task.failed(err, 'change_failed');
          setPasswordError(err.message || 'Failed to change password');
       } finally {
          setIsChangingPassword(false);
@@ -235,7 +377,201 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
       }
    };
 
-   // Seed Phrase Modal Handlers
+   const buildMobileDebugPayload = async () => {
+      const debugWindow = window as typeof window & {
+         __vaultRuntimeErrors?: Array<{ at: string; level: 'error' | 'warn'; message: string }>;
+      };
+      const snapshot = walletService.getStateSnapshot();
+      const stakeLifecycle = await walletService.getStakeLifecycle();
+      const health = await walletService.checkWalletHealth();
+      const walletStateHealth = await wallet.getWalletStateHealth().catch((err: any) => ({
+         error: err?.message || 'wallet state health unavailable',
+      }));
+      const storage = await getStorageDiagnostics();
+      const sal1Contributors = await walletService.debugBalanceContributors('SAL1', 50);
+      const sal1LockedCoinProvenance = await walletService.debugLockedCoinProvenance('SAL1');
+      const appBundle = Array.from(document.scripts)
+         .map((script) => script.src)
+         .find((src) => src.includes('/assets/vault-')) || null;
+
+      const compactSnapshot = snapshot ? {
+         success: snapshot.success,
+         error: redactSensitiveText(snapshot.error),
+         wallet_height: snapshot.wallet_height,
+         refresh_start_height: snapshot.refresh_start_height,
+         daemon_height: snapshot.daemon_height,
+         transfer_count: snapshot.transfer_count,
+         transfers_indices_asset_count: snapshot.transfers_indices_asset_count,
+         key_image_count: snapshot.key_image_count,
+         pub_key_count: snapshot.pub_key_count,
+         salvium_tx_count: snapshot.salvium_tx_count,
+         locked_coin_count: snapshot.locked_coin_count,
+         assets: (snapshot.assets || []).map((asset: any) => ({
+            asset_type: asset.asset_type,
+            balance_nonzero: isNonZeroAtomic(asset.balance),
+            unlocked_nonzero: isNonZeroAtomic(asset.unlocked_balance),
+            locked_stake_nonzero: isNonZeroAtomic(asset.locked_stake),
+         })),
+         totals: compactAtomicTotals(snapshot.totals),
+         active_locked_stake_count: snapshot.active_locked_stakes?.length || 0,
+         active_locked_stakes_preview: (snapshot.active_locked_stakes || []).slice(0, 10).map((stake: any) => ({
+            txid: redactIdentifier(stake.txid),
+            asset_type: stake.asset_type,
+            status: stake.status,
+            still_locked: stake.still_locked,
+            unlock_height: stake.unlock_height,
+         })),
+      } : null;
+
+      const compactStakeLifecycle = stakeLifecycle && typeof stakeLifecycle === 'object' ? {
+         success: (stakeLifecycle as any).success,
+         error: redactSensitiveText((stakeLifecycle as any).error),
+         wallet_height: (stakeLifecycle as any).wallet_height,
+         stake_count: Array.isArray((stakeLifecycle as any).stakes) ? (stakeLifecycle as any).stakes.length : 0,
+         active_stakes_preview: Array.isArray((stakeLifecycle as any).stakes)
+            ? (stakeLifecycle as any).stakes.slice(0, 10).map((stake: any) => ({
+               txid: redactIdentifier(stake.txid),
+               status: stake.status,
+               asset_type: stake.asset_type,
+               still_locked: stake.still_locked,
+               unlock_height: stake.unlock_height,
+            }))
+            : [],
+      } : stakeLifecycle;
+
+      const compactHealth = health && typeof health === 'object' ? {
+         success: (health as any).success,
+         error: redactSensitiveText((health as any).error),
+         healthy: (health as any).healthy,
+         wallet_height: (health as any).wallet_height,
+         issue_count: (health as any).issue_count,
+         issues: Array.isArray((health as any).issues)
+            ? (health as any).issues.slice(0, 10).map((issue: any) =>
+               redactSensitiveText(issue?.message || issue)
+            )
+            : [],
+      } : health;
+
+      const compactContributors = sal1Contributors && typeof sal1Contributors === 'object' ? {
+         success: (sal1Contributors as any).success,
+         error: redactSensitiveText((sal1Contributors as any).error),
+         asset_type: (sal1Contributors as any).asset_type,
+         official_balance_nonzero: isNonZeroAtomic((sal1Contributors as any).official_balance),
+         official_unlocked_nonzero: isNonZeroAtomic((sal1Contributors as any).official_unlocked),
+         counted_contributor_count: (sal1Contributors as any).counted_contributor_count,
+         confirmed_balance_nonzero: isNonZeroAtomic((sal1Contributors as any).confirmed_balance_total),
+         confirmed_unlocked_nonzero: isNonZeroAtomic((sal1Contributors as any).confirmed_unlocked_total),
+         counted_contributors_preview: Array.isArray((sal1Contributors as any).counted_contributors)
+            ? (sal1Contributors as any).counted_contributors.slice(0, 10).map((entry: any) => ({
+               idx: entry.idx,
+               txid: redactIdentifier(entry.txid),
+               tx_type: entry.tx_type,
+               m_spent: entry.m_spent,
+               unlocked: entry.unlocked,
+               in_balance: entry.in_balance,
+               output_key: redactIdentifier(entry.output_key),
+            }))
+            : [],
+      } : sal1Contributors;
+
+      const compactLockedProvenance = sal1LockedCoinProvenance && typeof sal1LockedCoinProvenance === 'object' ? {
+         success: (sal1LockedCoinProvenance as any).success,
+         error: redactSensitiveText((sal1LockedCoinProvenance as any).error),
+         asset_type: (sal1LockedCoinProvenance as any).asset_type,
+         entry_count: Array.isArray((sal1LockedCoinProvenance as any).entries)
+            ? (sal1LockedCoinProvenance as any).entries.length
+            : 0,
+         entries_preview: Array.isArray((sal1LockedCoinProvenance as any).entries)
+            ? (sal1LockedCoinProvenance as any).entries.slice(0, 10).map((entry: any) => ({
+               idx: entry.idx,
+               txid: redactIdentifier(entry.txid),
+               output_key: redactIdentifier(entry.output_key),
+               asset_type: entry.asset_type,
+               tx_type: entry.tx_type,
+               spent: entry.spent,
+               unlocked: entry.unlocked,
+               still_locked: entry.still_locked,
+               unlock_height: entry.unlock_height,
+               amount_nonzero: isNonZeroAtomic(entry.amount),
+            }))
+            : [],
+      } : sal1LockedCoinProvenance;
+
+      const importantRuntimeErrors = (debugWindow.__vaultRuntimeErrors || [])
+         .filter((entry) =>
+            entry.level === 'error' ||
+            entry.message.includes('[WalletContext]') ||
+            entry.message.includes('[CSPScanService]') ||
+            entry.message.includes('Phase 1 scan failed') ||
+            entry.message.includes('Severe native transaction history mismatch')
+         )
+         .map((entry) => ({
+            ...entry,
+            message: redactSensitiveText(entry.message),
+         }))
+         .slice(-6);
+
+      const compactWalletStateHealth = walletStateHealth && typeof walletStateHealth === 'object'
+         ? {
+            isHealthy: (walletStateHealth as any).isHealthy,
+            needsRefresh: (walletStateHealth as any).needsRefresh,
+            staleness: (walletStateHealth as any).staleness,
+            outputCount: (walletStateHealth as any).outputCount,
+            subaddressCount: (walletStateHealth as any).subaddressCount,
+            error: redactSensitiveText((walletStateHealth as any).error),
+            recommendations: Array.isArray((walletStateHealth as any).recommendations)
+               ? (walletStateHealth as any).recommendations.map(redactSensitiveText)
+               : [],
+         }
+         : walletStateHealth;
+
+      return {
+         capturedAt: new Date().toISOString(),
+         device: getBrowserSummary(),
+         storage,
+         appBundle,
+         address: redactIdentifier(wallet.address),
+         syncStatus: compactSyncStatus(wallet.syncStatus),
+         stats: {
+            isBalanceReady: wallet.stats.isBalanceReady,
+            hasLockedBalance: wallet.stats.lockedBalance > 0,
+            hasStakedBalance: wallet.stats.staked > 0,
+         },
+         walletStateHealth: compactWalletStateHealth,
+         snapshot: compactSnapshot,
+         stakeLifecycle: compactStakeLifecycle,
+         health: compactHealth,
+         sal1Contributors: compactContributors,
+         sal1LockedCoinProvenance: compactLockedProvenance,
+         runtimeErrors: importantRuntimeErrors,
+      };
+   };
+
+   const handleOpenDebugOverlay = () => {
+      setShowDebugOverlay(true);
+      setIsDebugLoading(true);
+      buildMobileDebugPayload().then((payload) => {
+         setDebugPayload(JSON.stringify(payload, null, 2));
+      }).catch((err: any) => {
+         setDebugPayload(JSON.stringify({
+            capturedAt: new Date().toISOString(),
+            error: err?.message || 'Failed to build debug payload'
+         }, null, 2));
+      }).finally(() => {
+         setIsDebugLoading(false);
+      });
+   };
+
+   const handleCopyDebugPayload = async () => {
+      if (!debugPayload) return;
+      try {
+         await navigator.clipboard.writeText(debugPayload);
+         setDebugCopied(true);
+         setTimeout(() => setDebugCopied(false), 2000);
+      } catch (err) {
+      }
+   };
+
    const closeSeedModal = () => {
       setShowSeedModal(false);
       setSeedPassword('');
@@ -252,9 +588,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
       setIsVerifyingSeed(true);
       setSeedError('');
+      const task = startTaskTelemetry('wallet.seed_reveal', 'SettingsPage', {}, 'decrypt');
 
       try {
-         // Get the encrypted wallet from localStorage
          const currentNetwork = normalizeWalletStorageNetwork(walletService.getNetwork());
          const walletJson = localStorage.getItem(getWalletStorageKey(currentNetwork))
             || (currentNetwork === 'mainnet' ? localStorage.getItem(LEGACY_WALLET_STORAGE_KEY) : null);
@@ -264,12 +600,13 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
          const encryptedWallet = JSON.parse(walletJson);
 
-         // Decrypt the seed using the password
+         // Must pass the wallet's stored iteration count or decryption fails.
          const mnemonic = await decrypt(
             encryptedWallet.encryptedSeed,
             encryptedWallet.iv,
             encryptedWallet.salt,
-            seedPassword
+            seedPassword,
+            encryptedWallet.iterations
          );
 
          if (!mnemonic) {
@@ -277,8 +614,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
          }
 
          setRevealedSeed(mnemonic);
+         task.completed();
       } catch (err: any) {
-         void 0 && console.error('Failed to reveal seed:', err);
+         task.failed(err, 'decrypt_failed');
          setSeedError(t('settings.seedPhrase.incorrectPassword'));
       } finally {
          setIsVerifyingSeed(false);
@@ -288,48 +626,48 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
    const handleCopySeed = async () => {
       if (!revealedSeed) return;
 
+      const task = startTaskTelemetry('wallet.seed_copy', 'SettingsPage');
       try {
          await navigator.clipboard.writeText(revealedSeed);
          setSeedCopied(true);
          setTimeout(() => setSeedCopied(false), 2000);
+         task.completed();
       } catch (err) {
-         void 0 && console.error('Failed to copy seed:', err);
+         task.failed(err, 'clipboard_failed');
       }
    };
 
-   // Get node info from sync status
-   const nodeUrl = 'seed01.salvium.io:19081'; // Default node
+   const nodeUrl = '';
    const networkHeight = wallet.syncStatus?.networkHeight || 0;
    const walletHeight = Math.max(0, (wallet.syncStatus?.walletHeight || 1) - 1);
 
    return (
       <>
-         <div className={`animate-fade-in space-y-6 overflow-y-auto custom-scrollbar md:p-0 ${isMobileOrTablet
-            ? 'h-full'
-            : 'h-[calc(100vh-7rem)]'
+         <div className={`animate-fade-in overflow-y-auto custom-scrollbar md:p-0 ${isMobileOrTablet
+            ? 'h-full space-y-4 mobile-scroll-page pr-1'
+            : 'h-[calc(100vh-7rem)] space-y-6'
             }`}>
 
-            {/* Donate Section */}
-            <Card className="relative overflow-hidden group">
+            <Card className={`relative overflow-hidden group ${isMobileOrTablet ? '!p-3' : ''}`}>
                   <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:opacity-20 transition-opacity">
                      <Heart size={120} className="text-accent-primary transform rotate-12 translate-x-10 -translate-y-10" />
                   </div>
 
-                  <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-                     <div className="flex gap-4">
-                        <div className="p-3 bg-gradient-to-br from-pink-500/20 to-rose-500/20 rounded-xl border border-pink-500/20 h-fit text-pink-400">
-                           <Heart size={24} className="fill-current" />
+                  <div className={`relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between ${isMobileOrTablet ? 'gap-3' : 'gap-6'}`}>
+                     <div className={isMobileOrTablet ? 'flex gap-3' : 'flex gap-4'}>
+                        <div className={`${isMobileOrTablet ? 'p-2' : 'p-3'} bg-gradient-to-br from-pink-500/20 to-rose-500/20 rounded-xl border border-pink-500/20 h-fit text-pink-400`}>
+                           <Heart className={`${isMobileOrTablet ? 'w-5 h-5' : 'w-6 h-6'} fill-current`} />
                         </div>
                         <div>
-                           <h4 className="text-white font-bold text-lg mb-1">{t('settings.donate.title')}</h4>
-                           <p className="text-sm text-text-muted max-w-lg leading-relaxed">
+                           <h4 className={`${isMobileOrTablet ? 'text-base leading-snug' : 'text-lg'} text-white font-bold mb-1`}>{t('settings.donate.title')}</h4>
+                           <p className={`${isMobileOrTablet ? 'text-xs leading-5' : 'text-sm leading-relaxed'} text-text-muted max-w-lg`}>
                               {t('settings.donate.description')}
                            </p>
                         </div>
                      </div>
 
                      <Button
-                        className="bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white border-0 shadow-lg shadow-pink-900/20 shrink-0 w-full md:w-auto px-5 py-2.5 md:px-8 md:py-3"
+                        className={`bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white border-0 shadow-lg shadow-pink-900/20 shrink-0 w-full md:w-auto ${isMobileOrTablet ? '!px-4 !py-2 !text-sm' : 'px-5 py-2.5 md:px-8 md:py-3'}`}
                         onClick={() => {
                            if (onNavigate) {
                               onNavigate(TabView.SEND, {
@@ -345,41 +683,40 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                   </div>
             </Card>
 
-            <div className="mb-8">
-               <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-3">
-                  <div className="p-2 bg-accent-primary/20 text-accent-primary rounded-xl">
-                     <Settings size={28} />
+            <div className={isMobileOrTablet ? 'mb-3' : 'mb-8'}>
+               <h2 className={`${isMobileOrTablet ? 'text-xl' : 'text-2xl'} font-bold text-white mb-2 flex items-center gap-3`}>
+                  <div className={`${isMobileOrTablet ? 'p-1.5' : 'p-2'} bg-accent-primary/20 text-accent-primary rounded-xl`}>
+                     <Settings className={isMobileOrTablet ? 'w-5 h-5' : 'w-7 h-7'} />
                   </div>
                   {t('settings.title')}
                </h2>
-               <p className="text-text-muted text-sm pl-14">{t('settings.subtitle')}</p>
+               <p className={`${isMobileOrTablet ? 'text-[13px] leading-5 pl-11' : 'text-sm pl-14'} text-text-muted`}>{t('settings.subtitle')}</p>
             </div>
 
-            {/* General Section */}
-            <div className="space-y-4">
+            <div className={isMobileOrTablet ? 'space-y-3' : 'space-y-4'}>
                <h3 className="text-xs uppercase font-bold text-text-secondary tracking-wider ml-1">{t('settings.sections.general')}</h3>
 
-               <Card className="space-y-6">
-                  <div className="flex items-center justify-between">
-                     <div className="flex gap-4">
-                        <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
+               <Card className={isMobileOrTablet ? '!p-4' : 'space-y-6'}>
+                  <div className={`flex ${isMobileOrTablet ? 'items-start gap-3' : 'items-center justify-between'}`}>
+                     <div className={`flex ${isMobileOrTablet ? 'gap-3 min-w-0 flex-1' : 'gap-4'}`}>
+                        <div className={`${isMobileOrTablet ? 'p-2' : 'p-2.5'} bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary`}>
                            <Database size={20} />
                         </div>
-                        <div>
+                        <div className="min-w-0">
                            <h4 className="text-white font-medium mb-1">{t('settings.blockchain.title')}</h4>
-                           <p className="text-sm text-text-muted">
+                           <p className={`${isMobileOrTablet ? 'text-[13px] leading-5' : 'text-sm'} text-text-muted`}>
                               {t('settings.blockchain.syncedTo', { height: walletHeight.toLocaleString() })}
                            </p>
-                           <p className="text-xs text-text-muted mt-1">{t('settings.blockchain.rescanHint')}</p>
+                           <p className="text-xs leading-4 text-text-muted mt-1">{t('settings.blockchain.rescanHint')}</p>
                         </div>
                      </div>
                      <Button
                         variant="secondary"
                         onClick={handleRescan}
-                        disabled={isRescanning || wallet.isScanning}
-                        className="px-4 py-2 md:px-6 md:py-2.5"
+                        disabled={isRescanning}
+                        className={`${isMobileOrTablet ? 'shrink-0 px-3 py-2 text-xs' : 'px-4 py-2 md:px-6 md:py-2.5'}`}
                      >
-                        {isRescanning || wallet.isScanning ? (
+                        {isRescanning ? (
                            <>
                               <Loader2 size={16} className="mr-2 animate-spin" />
                               {t('settings.blockchain.scanning')}
@@ -395,12 +732,51 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                </Card>
             </div>
 
-            {/* Security Section */}
+            {showMobileDebug && (
+               <div className="space-y-4">
+                  <h3 className="text-xs uppercase font-bold text-text-secondary tracking-wider ml-1">Debug</h3>
+
+                  <Card>
+                     <div className="flex items-center justify-between gap-4">
+                        <div className="flex gap-4">
+                           <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
+                              <Monitor size={20} />
+                           </div>
+                           <div>
+                              <h4 className="text-white font-medium mb-1">Sync Diagnostics</h4>
+                              <p className="text-sm text-text-muted max-w-sm">
+                                 Open a copyable device, storage, and wallet sync dump for support.
+                              </p>
+                           </div>
+                        </div>
+	                        <Button variant="secondary" onClick={() => setShowDebugPrivacyNotice(true)} className="px-4 py-2 md:px-6 md:py-2.5">
+	                           <Monitor size={16} className="mr-2" />
+	                           Open
+	                        </Button>
+                     </div>
+                  </Card>
+               </div>
+            )}
+
             <div className="space-y-4">
                <h3 className="text-xs uppercase font-bold text-text-secondary tracking-wider ml-1">{t('settings.sections.securityPrivacy')}</h3>
 
                <Card className="space-y-6">
-                  {/* Biometric Unlock */}
+                  <div className="flex items-center justify-between gap-4">
+                     <div className="flex gap-4 min-w-0">
+                        <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
+                           <Network size={20} />
+                        </div>
+                        <div className="min-w-0">
+                           <h4 className="text-white font-medium mb-1">{t('settings.connection.title')}</h4>
+                           <p className="text-sm text-text-muted max-w-sm">{t('settings.connection.description')}</p>
+                        </div>
+                     </div>
+                     <NodeSelector settings />
+                  </div>
+
+                  <div className="h-[1px] bg-white/5 w-full"></div>
+
                   {isBioAvailable && (
                      <>
                         <div className="flex items-center justify-between">
@@ -428,7 +804,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                      </>
                   )}
 
-                  {/* Auto Lock Setting */}
                   <div className="flex items-start justify-between">
                      <div className="flex gap-4">
                         <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
@@ -467,7 +842,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
                   <div className="h-[1px] bg-white/5 w-full"></div>
 
-                  {/* Export Backup */}
                   <div className="flex items-center justify-between">
                      <div className="flex gap-4">
                         <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
@@ -486,7 +860,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
                   <div className="h-[1px] bg-white/5 w-full"></div>
 
-                  {/* Show Seed Phrase */}
                   <div className="flex items-center justify-between">
                      <div className="flex gap-4">
                         <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
@@ -505,7 +878,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
                   <div className="h-[1px] bg-white/5 w-full"></div>
 
-                  {/* Change Password */}
                   <div className="flex items-center justify-between">
                      <div className="flex gap-4">
                         <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
@@ -524,7 +896,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
                   <div className="h-[1px] bg-white/5 w-full"></div>
 
-                  {/* Reset Wallet */}
                   <div className="flex items-center justify-between">
                      <div className="flex gap-4">
                         <div className="p-2.5 bg-bg-primary rounded-lg border border-red-500/10 h-fit text-red-400/70">
@@ -547,11 +918,10 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                </Card>
             </div>
 
-            {/* Language Section */}
             <div className="space-y-4">
-               <h3 className="text-xs uppercase font-bold text-text-secondary tracking-wider ml-1">{t('settings.sections.language')}</h3>
+               <h3 className="text-xs uppercase font-bold text-text-secondary tracking-wider ml-1">{t('settings.sections.preferences')}</h3>
 
-               <Card>
+               <Card className="space-y-6">
                   <div className="flex items-center justify-between gap-4">
                      <div className="flex gap-4">
                         <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
@@ -564,11 +934,120 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                      </div>
                      <LanguageSelector />
                   </div>
+
+                  <div className="h-[1px] bg-white/5 w-full"></div>
+
+                  <div className="flex items-center justify-between gap-4">
+                     <div className="flex gap-4">
+                        <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
+                           <DollarSign size={20} />
+                        </div>
+                        <div>
+                           <h4 className="text-white font-medium mb-1">{t('settings.currency.title')}</h4>
+                           <p className="text-sm text-text-muted">{t('settings.currency.description')}</p>
+                        </div>
+                     </div>
+                     <CurrencySelector />
+                  </div>
                </Card>
             </div>
          </div >
 
-         {/* Backup Password Modal */}
+         {showMobileDebug && showDebugPrivacyNotice && (
+            <Overlay isOpen={showDebugPrivacyNotice} onClose={() => setShowDebugPrivacyNotice(false)} title="Diagnostics Privacy" mobileTopOffset={96}>
+               <div className="space-y-5">
+                  <div className="rounded-xl border border-accent-primary/20 bg-accent-primary/10 p-4 flex gap-3">
+                     <Shield size={20} className="text-accent-primary shrink-0 mt-0.5" />
+                     <div>
+                        <h4 className="text-white font-semibold mb-1">Nothing is uploaded automatically.</h4>
+                        <p className="text-sm text-text-muted leading-6">
+                           Sync Diagnostics creates a local report on this device. It only leaves the device if the user taps Copy and sends that copied text to support.
+                        </p>
+                     </div>
+                  </div>
+
+                  <div className="space-y-3">
+                     <h4 className="text-white font-semibold">The copied report includes</h4>
+                     <div className="grid gap-2 text-sm text-text-muted leading-6">
+                        <p>App bundle version, browser family, Android/platform summary, and whether the device is mobile or tablet.</p>
+                        <p>Storage persistence status plus rounded storage quota and usage in MB.</p>
+                        <p>Wallet and daemon scan heights, sync phase/progress, wallet-state health counts, and redacted health recommendations.</p>
+                        <p>Non-zero balance flags and redacted transaction/output previews needed to diagnose sync loops.</p>
+                        <p>Recent wallet/scan error messages with long IDs, addresses, keys, passwords, seeds, and amount fields redacted.</p>
+                     </div>
+                  </div>
+
+                  <div className="space-y-3">
+                     <h4 className="text-white font-semibold">The copied report never includes</h4>
+                     <div className="grid gap-2 text-sm text-text-muted leading-6">
+                        <p>Seed phrase, password, private keys, spend/view keys, contacts, notes, or recipient addresses.</p>
+                        <p>Full wallet address, full transaction IDs, full output keys, payment IDs, exact balances, exact stake amounts, or exact transfer amounts.</p>
+                     </div>
+                  </div>
+
+                  <div className="flex gap-3">
+                     <Button
+                        variant="ghost"
+                        onClick={() => setShowDebugPrivacyNotice(false)}
+                        className="flex-1"
+                     >
+                        Cancel
+                     </Button>
+                     <Button
+                        onClick={() => {
+                           setShowDebugPrivacyNotice(false);
+                           handleOpenDebugOverlay();
+                        }}
+                        className="flex-1"
+                     >
+                        View Report
+                     </Button>
+                  </div>
+               </div>
+            </Overlay>
+         )}
+
+         {showMobileDebug && showDebugOverlay && (
+            <Overlay isOpen={showDebugOverlay} onClose={() => setShowDebugOverlay(false)} title="Sync Diagnostics" mobileTopOffset={96}>
+               <div className="space-y-4">
+                  <div className="flex gap-3">
+                     <Button variant="secondary" onClick={handleOpenDebugOverlay} disabled={isDebugLoading} className="flex-1">
+                        {isDebugLoading ? (
+                           <>
+                              <Loader2 size={16} className="mr-2 animate-spin" />
+                              Refreshing
+                           </>
+                        ) : (
+                           <>
+                              <RefreshCw size={16} className="mr-2" />
+                              Refresh
+                           </>
+                        )}
+                     </Button>
+                     <Button onClick={handleCopyDebugPayload} className="flex-1">
+                        {debugCopied ? (
+                           <>
+                              <Check size={16} className="mr-2" />
+                              Copied
+                           </>
+                        ) : (
+                           <>
+                              <Copy size={16} className="mr-2" />
+                              Copy
+                           </>
+                        )}
+                     </Button>
+                  </div>
+
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                     <pre className="text-[11px] leading-4 text-white/70 whitespace-pre-wrap break-all max-h-[65vh] overflow-auto custom-scrollbar">
+                        {debugPayload || 'No debug payload available yet.'}
+                     </pre>
+                  </div>
+               </div>
+            </Overlay>
+         )}
+
          {
             showBackupModal && (
                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -592,16 +1071,16 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                         <div className="space-y-2">
                            <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('settings.backup.walletPassword')}</label>
                            <div className="relative">
-                              <Input
-                                 type={isMobile ? 'text' : (showBackupPassword ? 'text' : 'password')}
-                                 placeholder={t('settings.backup.enterPassword')}
-                                 value={backupPassword}
-                                 onChange={(e) => setBackupPassword(e.target.value)}
-                                 disabled={isExporting}
-                                 style={isMobile ? { WebkitTextSecurity: showBackupPassword ? 'none' : 'disc' } : {}}
-                                 autoCorrect="off"
-                                 autoCapitalize="none"
-                                 spellCheck="false"
+	                              <Input
+	                                 type={showBackupPassword ? 'text' : 'password'}
+	                                 placeholder={t('settings.backup.enterPassword')}
+	                                 value={backupPassword}
+	                                 onChange={(e) => setBackupPassword(e.target.value)}
+	                                 disabled={isExporting}
+	                                 autoComplete="current-password"
+	                                 autoCorrect="off"
+	                                 autoCapitalize="none"
+	                                 spellCheck="false"
                                  onKeyDown={(e) => e.key === 'Enter' && handleExportBackup()}
                               />
                               <button
@@ -645,7 +1124,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             )
          }
 
-         {/* Biometric Enable Modal */}
          {
             showBioModal && (
                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -669,16 +1147,16 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                         <div className="space-y-2">
                            <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('settings.backup.walletPassword')}</label>
                            <div className="relative">
-                              <Input
-                                 type={isMobile ? 'text' : (showBioPassword ? 'text' : 'password')}
-                                 placeholder={t('settings.backup.enterPassword')}
-                                 value={bioPassword}
-                                 onChange={(e) => setBioPassword(e.target.value)}
-                                 disabled={isBioProcessing}
-                                 style={isMobile ? { WebkitTextSecurity: showBioPassword ? 'none' : 'disc' } : {}}
-                                 onKeyDown={(e) => e.key === 'Enter' && handleEnableBio()}
-                                 autoCorrect="off"
-                                 autoCapitalize="none"
+	                              <Input
+	                                 type={showBioPassword ? 'text' : 'password'}
+	                                 placeholder={t('settings.backup.enterPassword')}
+	                                 value={bioPassword}
+	                                 onChange={(e) => setBioPassword(e.target.value)}
+	                                 disabled={isBioProcessing}
+	                                 autoComplete="current-password"
+	                                 onKeyDown={(e) => e.key === 'Enter' && handleEnableBio()}
+	                                 autoCorrect="off"
+	                                 autoCapitalize="none"
                                  spellCheck="false"
                               />
                               <button
@@ -716,7 +1194,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             )
          }
 
-         {/* Change Password Modal */}
          {
             showPasswordModal && (
                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in">
@@ -737,20 +1214,20 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                      </div>
 
                      <div className="space-y-4">
-                        {/* Current Password */}
                         <div className="space-y-2">
                            <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('settings.password.current')}</label>
                            <div className="relative">
-                              <Input
-                                 type={isMobile ? 'text' : (showCurrentPassword ? 'text' : 'password')}
-                                 placeholder={t('settings.password.currentPlaceholder')}
-                                 value={currentPassword}
-                                 onChange={(e) => setCurrentPassword(e.target.value)}
-                                 style={isMobile ? { WebkitTextSecurity: showCurrentPassword ? 'none' : 'disc' } : {}}
-                                 disabled={isChangingPassword}
-                                 autoCapitalize="none"
-                                 autoCorrect="off"
-                              />
+	                              <Input
+	                                 type={showCurrentPassword ? 'text' : 'password'}
+	                                 placeholder={t('settings.password.currentPlaceholder')}
+	                                 value={currentPassword}
+	                                 onChange={(e) => setCurrentPassword(e.target.value)}
+	                                 disabled={isChangingPassword}
+	                                 autoComplete="current-password"
+	                                 autoCapitalize="none"
+	                                 autoCorrect="off"
+	                                 spellCheck="false"
+	                              />
                               <button
                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-white"
                                  onClick={() => setShowCurrentPassword(!showCurrentPassword)}
@@ -760,20 +1237,20 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                            </div>
                         </div>
 
-                        {/* New Password */}
                         <div className="space-y-2">
                            <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('settings.password.new')}</label>
                            <div className="relative">
-                              <Input
-                                 type={isMobile ? 'text' : (showNewPassword ? 'text' : 'password')}
-                                 placeholder={t('settings.password.newPlaceholder')}
-                                 value={newPassword}
-                                 onChange={(e) => setNewPassword(e.target.value)}
-                                 style={isMobile ? { WebkitTextSecurity: showNewPassword ? 'none' : 'disc' } : {}}
-                                 disabled={isChangingPassword}
-                                 autoCapitalize="none"
-                                 autoCorrect="off"
-                              />
+	                              <Input
+	                                 type={showNewPassword ? 'text' : 'password'}
+	                                 placeholder={t('settings.password.newPlaceholder')}
+	                                 value={newPassword}
+	                                 onChange={(e) => setNewPassword(e.target.value)}
+	                                 disabled={isChangingPassword}
+	                                 autoComplete="new-password"
+	                                 autoCapitalize="none"
+	                                 autoCorrect="off"
+	                                 spellCheck="false"
+	                              />
                               <button
                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-white"
                                  onClick={() => setShowNewPassword(!showNewPassword)}
@@ -783,21 +1260,21 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                            </div>
                         </div>
 
-                        {/* Confirm Password */}
                         <div className="space-y-2">
                            <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('settings.password.confirm')}</label>
                            <div className="relative">
-                              <Input
-                                 type={isMobile ? 'text' : (showConfirmPassword ? 'text' : 'password')}
-                                 placeholder={t('settings.password.confirmPlaceholder')}
-                                 value={confirmPassword}
-                                 onChange={(e) => setConfirmPassword(e.target.value)}
-                                 style={isMobile ? { WebkitTextSecurity: showConfirmPassword ? 'none' : 'disc' } : {}}
-                                 disabled={isChangingPassword}
-                                 autoCapitalize="none"
-                                 autoCorrect="off"
-                                 onKeyDown={(e) => e.key === 'Enter' && handleChangePassword()}
-                              />
+	                              <Input
+	                                 type={showConfirmPassword ? 'text' : 'password'}
+	                                 placeholder={t('settings.password.confirmPlaceholder')}
+	                                 value={confirmPassword}
+	                                 onChange={(e) => setConfirmPassword(e.target.value)}
+	                                 disabled={isChangingPassword}
+	                                 autoComplete="new-password"
+	                                 autoCapitalize="none"
+	                                 autoCorrect="off"
+	                                 onKeyDown={(e) => e.key === 'Enter' && handleChangePassword()}
+	                                 spellCheck="false"
+	                              />
                               <button
                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-white"
                                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
@@ -830,7 +1307,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             )
          }
 
-         {/* Password Changed Success Modal */}
          {
             showPasswordSuccess && (
                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in">
@@ -853,7 +1329,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             )
          }
 
-         {/* Reset Wallet Confirmation Modal */}
          {
             showResetModal && (
                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in">
@@ -909,7 +1384,72 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             )
          }
 
-         {/* Show Seed Phrase Modal */}
+         {
+            showRescanPasswordModal && (
+               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in">
+                  <Card className="max-w-md w-full space-y-6 relative animate-scale-up">
+                     <button
+                        onClick={() => { if (!isUnlockingForRescan) { setShowRescanPasswordModal(false); setRescanPassword(''); setRescanPwError(''); } }}
+                        className="absolute top-4 right-4 text-text-muted hover:text-white transition-colors"
+                     >
+                        <X size={20} />
+                     </button>
+                     <div className="text-center">
+                        <div className="w-12 h-12 rounded-full bg-accent-primary/10 flex items-center justify-center text-accent-primary mx-auto mb-4">
+                           <RefreshCw size={24} />
+                        </div>
+                        <h3 className="text-xl font-bold text-white mb-2">Rescan blockchain</h3>
+                        <p className="text-text-muted text-sm">Enter your wallet password to rescan from your saved seed. You won&apos;t need to retype your recovery phrase.</p>
+                     </div>
+                     <div className="space-y-4">
+                        <div className="space-y-2">
+                           <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('settings.backup.walletPassword')}</label>
+                           <div className="relative">
+                              <Input
+                                 type={showRescanPw ? 'text' : 'password'}
+                                 placeholder={t('settings.backup.enterPassword')}
+                                 value={rescanPassword}
+                                 onChange={(e) => { setRescanPassword(e.target.value); if (rescanPwError) setRescanPwError(''); }}
+                                 disabled={isUnlockingForRescan}
+                                 autoComplete="current-password"
+                                 autoCorrect="off"
+                                 autoCapitalize="none"
+                                 spellCheck="false"
+                                 onKeyDown={(e) => e.key === 'Enter' && confirmRescanWithPassword()}
+                              />
+                              <button
+                                 className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-white"
+                                 onClick={() => setShowRescanPw(!showRescanPw)}
+                              >
+                                 {showRescanPw ? <EyeOff size={16} /> : <Eye size={16} />}
+                              </button>
+                           </div>
+                        </div>
+                        {rescanPwError && <p className="text-red-400 text-xs animate-shake">{rescanPwError}</p>}
+                        <div className="flex gap-3">
+                           <Button variant="ghost" onClick={() => { setShowRescanPasswordModal(false); setRescanPassword(''); setRescanPwError(''); }} className="flex-1" disabled={isUnlockingForRescan}>
+                              {t('common.cancel')}
+                           </Button>
+                           <Button className="flex-[2]" onClick={confirmRescanWithPassword} disabled={isUnlockingForRescan}>
+                              {isUnlockingForRescan ? (
+                                 <>
+                                    <Loader2 size={16} className="mr-2 animate-spin" />
+                                    {t('settings.biometrics.verifying')}
+                                 </>
+                              ) : (
+                                 <>
+                                    <RefreshCw size={16} className="mr-2" />
+                                    Rescan
+                                 </>
+                              )}
+                           </Button>
+                        </div>
+                     </div>
+                  </Card>
+               </div>
+            )
+         }
+
          {
             showSeedModal && (
                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in">
@@ -930,21 +1470,20 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                      </div>
 
                      {!revealedSeed ? (
-                        // Password Entry View
                         <div className="space-y-4">
                            <div className="space-y-2">
                               <label className="text-xs text-text-secondary uppercase font-bold tracking-wider">{t('settings.backup.walletPassword')}</label>
                               <div className="relative">
-                                 <Input
-                                    type={isMobile ? 'text' : (showSeedPassword ? 'text' : 'password')}
-                                    placeholder={t('settings.backup.enterPassword')}
-                                    value={seedPassword}
-                                    onChange={(e) => setSeedPassword(e.target.value)}
-                                    disabled={isVerifyingSeed}
-                                    style={isMobile ? { WebkitTextSecurity: showSeedPassword ? 'none' : 'disc' } : {}}
-                                    autoCorrect="off"
-                                    autoCapitalize="none"
-                                    spellCheck="false"
+	                                 <Input
+	                                    type={showSeedPassword ? 'text' : 'password'}
+	                                    placeholder={t('settings.backup.enterPassword')}
+	                                    value={seedPassword}
+	                                    onChange={(e) => setSeedPassword(e.target.value)}
+	                                    disabled={isVerifyingSeed}
+	                                    autoComplete="current-password"
+	                                    autoCorrect="off"
+	                                    autoCapitalize="none"
+	                                    spellCheck="false"
                                     onKeyDown={(e) => e.key === 'Enter' && handleRevealSeed()}
                                  />
                                  <button
@@ -984,7 +1523,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                            </div>
                         </div>
                      ) : (
-                        // Seed Display View
                         <div className="space-y-4">
                            <div className="bg-bg-primary border border-white/10 rounded-xl p-4">
                               <div className="grid grid-cols-3 gap-2">

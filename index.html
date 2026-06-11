@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport"
-    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
   <meta name="description" content="Salvium Vault - Private Web Wallet for Salvium (SAL)">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://vault.salvium.tools/" />
@@ -113,11 +113,65 @@
     })();
 
     (function() {
-      function setAppHeight() {
-        document.documentElement.style.setProperty('--app-height', window.innerHeight + 'px');
+      var root = document.documentElement;
+      var stableAppHeight = Math.max(window.innerHeight || 0, root.clientHeight || 0, 1);
+      var lastWidth = window.innerWidth || root.clientWidth || 0;
+      var isNativeCapacitorApp = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+      var isAndroidWebView = /; wv\)/i.test(navigator.userAgent || '');
+
+      try {
+        if (!isNativeCapacitorApp && !isAndroidWebView && 'virtualKeyboard' in navigator && navigator.virtualKeyboard) {
+          navigator.virtualKeyboard.overlaysContent = true;
+        }
+      } catch (e) {
+        // Older WebViews may expose a partial VirtualKeyboard API.
       }
-      setAppHeight();
-      window.addEventListener('resize', setAppHeight);
+
+      function isEditableFocused() {
+        var active = document.activeElement;
+        if (!active || !active.tagName) return false;
+        return /^(INPUT|TEXTAREA|SELECT)$/i.test(active.tagName);
+      }
+
+      function updateAppHeight() {
+        var nextHeight = Math.max(window.innerHeight || 0, root.clientHeight || 0, 1);
+        var nextWidth = window.innerWidth || root.clientWidth || 0;
+        var widthChanged = Math.abs(nextWidth - lastWidth) > 48;
+        if (widthChanged) {
+          stableAppHeight = nextHeight;
+          lastWidth = nextWidth;
+        }
+
+        var viewport = window.visualViewport;
+        var viewportKeyboardInset = viewport
+          ? Math.max(0, stableAppHeight - viewport.height - (viewport.offsetTop || 0))
+          : 0;
+        var innerHeightDrop = Math.max(0, stableAppHeight - nextHeight);
+        var keyboardOpen = isEditableFocused() && (viewportKeyboardInset > 96 || innerHeightDrop > 96);
+
+        if (!keyboardOpen) {
+          stableAppHeight = Math.max(stableAppHeight, nextHeight);
+        }
+
+        var appHeight = keyboardOpen && !isNativeCapacitorApp ? stableAppHeight : nextHeight;
+        root.style.setProperty('--app-height', appHeight + 'px');
+        root.classList.toggle('keyboard-open', keyboardOpen);
+      }
+
+      updateAppHeight();
+      window.addEventListener('resize', updateAppHeight);
+      window.addEventListener('orientationchange', function() {
+        stableAppHeight = Math.max(window.innerHeight || 0, root.clientHeight || 0, 1);
+        lastWidth = window.innerWidth || root.clientWidth || 0;
+        updateAppHeight();
+        setTimeout(updateAppHeight, 250);
+      });
+      window.visualViewport && window.visualViewport.addEventListener('resize', updateAppHeight);
+      window.visualViewport && window.visualViewport.addEventListener('scroll', updateAppHeight);
+      document.addEventListener('focusin', updateAppHeight);
+      document.addEventListener('focusout', function() {
+        setTimeout(updateAppHeight, 120);
+      });
     })();
   </script>
 

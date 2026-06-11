@@ -4,23 +4,55 @@ services:
     container_name: salvium-vault
     restart: unless-stopped
     cpus: 0.75
+    mem_limit: 3g
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3000:3000"
+    environment:
+      SALPAY_AGENT_URL: http://salpay-agent:3021
+      SALPAY_AGENT_PUBLIC_BASE_URL: https://vault.salvium.tools/api/salpay/orders
     volumes:
-      - vault-cache:/var/data
+      - vault-cache:/app/data
+    networks:
+      - coolify
+    depends_on:
+      - salpay-agent
+    healthcheck:
+      test: ["CMD-SHELL", "sh -c 'wget -q -T 10 -O /dev/null \"http://127.0.0.1:$${PORT:-3000}/vault/api/debug/health\" || exit 1'"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
+
+  salpay-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.salpay-agent
+    image: salvium-salpay-agent:latest
+    container_name: salvium-salpay-agent
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    environment:
+      SALPAY_AGENT_DATA_DIR: /var/data
+      SALPAY_AGENT_WALLET_RPC_URL: ${SALPAY_AGENT_WALLET_RPC_URL:-http://salvium-wallet-rpc:19091}
+      SALPAY_AGENT_VERIFIER_URL: ${SALPAY_AGENT_VERIFIER_URL:-}
+      SALPAY_AGENT_MIN_CONFIRMATIONS: ${SALPAY_AGENT_MIN_CONFIRMATIONS:-0}
+    volumes:
+      - salpay-agent-data:/var/data
     networks:
       - coolify
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/daemon/info"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3021/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 30s
 
 volumes:
   vault-cache:
-    name: zc8ssksc8k4s0so0cw48ggw8-VaultCache
+    name: salvium-vault-data
     external: true
+  salpay-agent-data:
 
 networks:
   coolify:

@@ -9,6 +9,7 @@ wasm-build/
 
 # Environment files (keep .env.example if it exists)
 .env
+.env.*
 .env.local
 .env.*.local
 .env.development
@@ -83,9 +84,40 @@ server.cjs.bak-*
 public/salvium-vault.apk
 wallet/backups/
 
+# Android release secrets and generated outputs
+*.jks
+*.keystore
+android/local.properties
+android/**/*.apk
+android/**/*.aab
+android/**/output-metadata.json
+android/**/.gradle/
+android/**/build/
+android/app/release/
+android/app/debug/
+
 # Local WASM/public staging copies
 public/SalviumWallet.js
 public/SalviumWallet.wasm
 
 # Android app links file (local-only)
 public/.well-known/
+
+# Runtime data, caches, agent state - never commit (blockchain cache + telemetry logs live here)
+data/
+.gradle/
+
+# Local audit/cleanup artifacts (not for public repo)
+.local-backups/
+server-patches/
+
+# Stray orphan duplicates at repo root (the app imports from components/*, not these)
+/AssetsPage.tsx
+/Dashboard.tsx
+/HistoryPage.tsx
+/SettingsPage.tsx
+
+# One-off debug scripts tied to removed diagnostics (not part of the app)
+scripts/debug-target-mint.cjs
+scripts/summarize-block-490710.cjs
+scripts/verify-protocol-mint-recovery.cjs

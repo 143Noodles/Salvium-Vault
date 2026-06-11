@@ -1,49 +1,21 @@
-/**
- * WalletStateService.ts - Persistent Wallet State Management
- *
- * This service handles IndexedDB persistence of critical WASM wallet state to prevent
- * the "Failed to generate key image helper" error that occurs when wallet state
- * degrades over time in browser memory.
- *
- * Key Features:
- * 1. Automatic periodic state persistence (every 5 minutes while wallet is active)
- * 2. Subaddress index map persistence (critical for key image generation)
- * 3. Output ownership data persistence
- * 4. State validation on restore
- * 5. "Refresh Wallet State" functionality for manual recovery
- *
- * Root Cause:
- * - tx_builder.cpp:2103 fails when WASM wallet can't match output public key to derived keys
- * - This happens because the subaddress map or output ownership data becomes stale
- * - Browser memory state degrades over days of continuous use
- *
- * Solution:
- * - Persist critical wallet state to IndexedDB (50MB+ capacity, async, binary-safe)
- * - Restore state on wallet load
- * - Periodic sync while wallet is active
- * - Manual refresh option as fallback
- */
+import { debugLog, debugWarn } from '../utils/debug';
 
-// PRODUCTION: Set to false to suppress verbose debug logs
 const DEBUG = false;
 
 const IDB_NAME = 'salvium_wallet_state_v1';
 const IDB_VERSION = 1;
 
-// Store names
 const STORES = {
-  WALLET_CACHE: 'wallet_cache',        // Full WASM wallet cache (export_wallet_cache_hex)
-  SUBADDRESS_MAP: 'subaddress_map',    // Subaddress index -> spend keys mapping
-  OUTPUT_DATA: 'output_data',          // Output ownership/key image data
-  METADATA: 'metadata',                // Timestamps, versions, health info
+  WALLET_CACHE: 'wallet_cache',
+  SUBADDRESS_MAP: 'subaddress_map',
+  OUTPUT_DATA: 'output_data',
+  METADATA: 'metadata',
 } as const;
 
-// Persistence intervals
-const SYNC_INTERVAL_MS = 5 * 60 * 1000;  // 5 minutes
-const HEALTH_CHECK_INTERVAL_MS = 60 * 1000;  // 1 minute for health checks
-const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;  // 24 hours before warning
+const SYNC_INTERVAL_MS = 5 * 60 * 1000;
+const HEALTH_CHECK_INTERVAL_MS = 60 * 1000;
+const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
-// Types
 export interface WalletStateMetadata {
   walletAddress: string;
   lastSyncTimestamp: number;
@@ -61,20 +33,19 @@ export interface SubaddressMapEntry {
   index: number;
   label: string;
   address: string;
-  spendPublicKey?: string;  // For ownership verification
+  spendPublicKey?: string;
 }
 
 export interface WalletStateHealth {
   isHealthy: boolean;
   needsRefresh: boolean;
-  staleness: number;  // milliseconds since last sync
+  staleness: number;
   outputCount: number;
   subaddressCount: number;
   lastError?: string;
   recommendations: string[];
 }
 
-// Database instance
 let db: IDBDatabase | null = null;
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
@@ -82,9 +53,6 @@ let currentWalletAddress: string | null = null;
 let lastSyncAttempt = 0;
 let consecutiveFailures = 0;
 
-/**
- * Open the IndexedDB database for wallet state persistence
- */
 async function openDatabase(): Promise<IDBDatabase> {
   if (db && db.name) {
     return db;
@@ -101,9 +69,8 @@ async function openDatabase(): Promise<IDBDatabase> {
     request.onsuccess = () => {
       db = request.result;
 
-      // Handle database closure (e.g., browser clearing storage)
       db.onclose = () => {
-        void DEBUG && console.warn('[WalletStateService] Database connection closed');
+        void DEBUG && debugWarn('[WalletStateService] Database connection closed');
         db = null;
       };
 
@@ -117,22 +84,18 @@ async function openDatabase(): Promise<IDBDatabase> {
     request.onupgradeneeded = (event) => {
       const database = (event.target as IDBOpenDBRequest).result;
 
-      // Wallet cache store - keyed by wallet address
       if (!database.objectStoreNames.contains(STORES.WALLET_CACHE)) {
         database.createObjectStore(STORES.WALLET_CACHE, { keyPath: 'walletAddress' });
       }
 
-      // Subaddress map store - keyed by wallet address
       if (!database.objectStoreNames.contains(STORES.SUBADDRESS_MAP)) {
         database.createObjectStore(STORES.SUBADDRESS_MAP, { keyPath: 'walletAddress' });
       }
 
-      // Output data store - keyed by wallet address
       if (!database.objectStoreNames.contains(STORES.OUTPUT_DATA)) {
         database.createObjectStore(STORES.OUTPUT_DATA, { keyPath: 'walletAddress' });
       }
 
-      // Metadata store - keyed by wallet address
       if (!database.objectStoreNames.contains(STORES.METADATA)) {
         database.createObjectStore(STORES.METADATA, { keyPath: 'walletAddress' });
       }
@@ -140,9 +103,6 @@ async function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-/**
- * Save data to a specific store
- */
 async function saveToStore<T extends { walletAddress: string }>(
   storeName: string,
   data: T
@@ -176,9 +136,6 @@ async function saveToStore<T extends { walletAddress: string }>(
   }
 }
 
-/**
- * Load data from a specific store
- */
 async function loadFromStore<T>(
   storeName: string,
   walletAddress: string
@@ -206,9 +163,6 @@ async function loadFromStore<T>(
   }
 }
 
-/**
- * Delete data from a specific store
- */
 async function deleteFromStore(storeName: string, walletAddress: string): Promise<void> {
   try {
     const database = await openDatabase();
@@ -226,31 +180,16 @@ async function deleteFromStore(storeName: string, walletAddress: string): Promis
   }
 }
 
-// ============================================================================
-// PUBLIC API
-// ============================================================================
-
-/**
- * Initialize the wallet state service for a specific wallet
- * Call this when a wallet is unlocked/loaded
- */
 export async function initializeWalletState(walletAddress: string): Promise<void> {
-  void DEBUG && console.log('[WalletStateService] Initializing for wallet:', walletAddress.substring(0, 16) + '...');
+  void DEBUG && debugLog('[WalletStateService] Initializing for wallet:', walletAddress.substring(0, 16) + '...');
 
   currentWalletAddress = walletAddress;
   consecutiveFailures = 0;
 
-  // Start periodic sync
   startPeriodicSync();
-
-  // Start health monitoring
   startHealthMonitoring();
 }
 
-/**
- * Save the current WASM wallet state to IndexedDB
- * Call this after scanning, transactions, or periodically
- */
 export async function saveWalletState(
   walletAddress: string,
   walletCacheHex: string,
@@ -265,54 +204,50 @@ export async function saveWalletState(
 
   lastSyncAttempt = Date.now();
 
+  const now = Date.now();
+  const metadata: WalletStateMetadata = {
+    walletAddress,
+    lastSyncTimestamp: now,
+    lastSyncHeight: syncHeight,
+    stateVersion: 1,
+    wasmVersion,
+    outputCount,
+    subaddressCount: subaddresses.length,
+    lastHealthCheck: now,
+    healthStatus: 'healthy',
+  };
+
   try {
-    // Save wallet cache (the main WASM state)
-    const cacheResult = await saveToStore(STORES.WALLET_CACHE, {
-      walletAddress,
-      cacheHex: walletCacheHex,
-      timestamp: Date.now(),
+    // Single multi-store transaction so cache+subaddress+metadata commit all-or-nothing; otherwise a crash between writes could leave metadata trusting a cache that was never written.
+    const database = await openDatabase();
+    const result = await new Promise<{ success: boolean; error?: string }>((resolve) => {
+      let tx: IDBTransaction;
+      try {
+        tx = database.transaction(
+          [STORES.WALLET_CACHE, STORES.SUBADDRESS_MAP, STORES.METADATA],
+          'readwrite'
+        );
+      } catch (txErr) {
+        resolve({ success: false, error: txErr instanceof Error ? txErr.message : 'transaction() failed' });
+        return;
+      }
+
+      tx.objectStore(STORES.WALLET_CACHE).put({ walletAddress, cacheHex: walletCacheHex, timestamp: now });
+      tx.objectStore(STORES.SUBADDRESS_MAP).put({ walletAddress, subaddresses, timestamp: now });
+      tx.objectStore(STORES.METADATA).put(metadata);
+
+      tx.oncomplete = () => resolve({ success: true });
+      tx.onerror = () => resolve({ success: false, error: tx.error?.message || 'Transaction error' });
+      tx.onabort = () => resolve({ success: false, error: tx.error?.message || 'Transaction aborted' });
     });
 
-    if (!cacheResult.success) {
+    if (!result.success) {
       consecutiveFailures++;
-      return cacheResult;
-    }
-
-    // Save subaddress map
-    const subaddressResult = await saveToStore(STORES.SUBADDRESS_MAP, {
-      walletAddress,
-      subaddresses,
-      timestamp: Date.now(),
-    });
-
-    if (!subaddressResult.success) {
-      void DEBUG && console.warn('[WalletStateService] Failed to save subaddress map:', subaddressResult.error);
-      // Non-fatal - continue
-    }
-
-    // Update metadata
-    const metadata: WalletStateMetadata = {
-      walletAddress,
-      lastSyncTimestamp: Date.now(),
-      lastSyncHeight: syncHeight,
-      stateVersion: 1,
-      wasmVersion,
-      outputCount,
-      subaddressCount: subaddresses.length,
-      lastHealthCheck: Date.now(),
-      healthStatus: 'healthy',
-    };
-
-    const metadataResult = await saveToStore(STORES.METADATA, metadata);
-
-    if (!metadataResult.success) {
-      void DEBUG && console.warn('[WalletStateService] Failed to save metadata:', metadataResult.error);
-      // Non-fatal
+      return result;
     }
 
     consecutiveFailures = 0;
-    void DEBUG && console.log(`[WalletStateService] State saved successfully (${outputCount} outputs, ${subaddresses.length} subaddresses)`);
-
+    void DEBUG && debugLog(`[WalletStateService] State saved atomically (${outputCount} outputs, ${subaddresses.length} subaddresses)`);
     return { success: true };
   } catch (e) {
     consecutiveFailures++;
@@ -322,10 +257,6 @@ export async function saveWalletState(
   }
 }
 
-/**
- * Load wallet state from IndexedDB
- * Call this when restoring a wallet after page refresh
- */
 export async function loadWalletState(walletAddress: string): Promise<{
   cacheHex: string | null;
   subaddresses: SubaddressMapEntry[] | null;
@@ -348,7 +279,7 @@ export async function loadWalletState(walletAddress: string): Promise<{
       loadFromStore<WalletStateMetadata>(STORES.METADATA, walletAddress),
     ]);
 
-    void DEBUG && console.log('[WalletStateService] Loaded wallet state:', {
+    void DEBUG && debugLog('[WalletStateService] Loaded wallet state:', {
       hasCacheHex: !!cacheData?.cacheHex,
       subaddressCount: subaddressData?.subaddresses?.length || 0,
       lastSync: metadata?.lastSyncTimestamp ? new Date(metadata.lastSyncTimestamp).toISOString() : 'never',
@@ -365,10 +296,6 @@ export async function loadWalletState(walletAddress: string): Promise<{
   }
 }
 
-/**
- * Check the health of the persisted wallet state
- * Returns recommendations if state needs refreshing
- */
 export async function checkStateHealth(walletAddress: string): Promise<WalletStateHealth> {
   const recommendations: string[] = [];
   let isHealthy = true;
@@ -390,7 +317,6 @@ export async function checkStateHealth(walletAddress: string): Promise<WalletSta
 
     const staleness = Date.now() - metadata.lastSyncTimestamp;
 
-    // Check staleness
     if (staleness > STALE_THRESHOLD_MS) {
       isHealthy = false;
       recommendations.push(
@@ -398,7 +324,6 @@ export async function checkStateHealth(walletAddress: string): Promise<WalletSta
       );
     }
 
-    // Check for warning/critical status
     if (metadata.healthStatus === 'warning') {
       recommendations.push('Previous sync had warnings. Consider refreshing wallet state.');
     } else if (metadata.healthStatus === 'critical') {
@@ -407,17 +332,14 @@ export async function checkStateHealth(walletAddress: string): Promise<WalletSta
       recommendations.push('Critical issues detected. Refresh wallet state immediately.');
     }
 
-    // Check for errors
     if (metadata.lastError) {
       recommendations.push(`Last error: ${metadata.lastError}`);
     }
 
-    // Check output count
     if (metadata.outputCount === 0) {
       recommendations.push('No outputs recorded. This may be a new wallet or state is corrupted.');
     }
 
-    // If staleness is severe (> 7 days), force refresh recommendation
     if (staleness > 7 * 24 * 60 * 60 * 1000) {
       needsRefresh = true;
       recommendations.push('State is over 7 days old. Strongly recommend refreshing.');
@@ -445,12 +367,8 @@ export async function checkStateHealth(walletAddress: string): Promise<WalletSta
   }
 }
 
-/**
- * Clear all persisted state for a wallet
- * Use this when resetting or for troubleshooting
- */
 export async function clearWalletState(walletAddress: string): Promise<void> {
-  void DEBUG && console.log('[WalletStateService] Clearing state for wallet:', walletAddress.substring(0, 16) + '...');
+  void DEBUG && debugLog('[WalletStateService] Clearing state for wallet:', walletAddress.substring(0, 16) + '...');
 
   await Promise.all([
     deleteFromStore(STORES.WALLET_CACHE, walletAddress),
@@ -460,33 +378,22 @@ export async function clearWalletState(walletAddress: string): Promise<void> {
   ]);
 }
 
-/**
- * Start periodic automatic state syncing
- * Called automatically by initializeWalletState
- */
 function startPeriodicSync(): void {
-  // Clear any existing timer
   if (syncTimer) {
     clearInterval(syncTimer);
   }
 
-  // Set up new periodic sync
   syncTimer = setInterval(() => {
     if (currentWalletAddress) {
-      // Emit event for WalletContext to handle the actual save
-      // (we don't have direct access to walletService here)
       window.dispatchEvent(new CustomEvent('walletStateSyncRequest', {
         detail: { walletAddress: currentWalletAddress }
       }));
     }
   }, SYNC_INTERVAL_MS);
 
-  void DEBUG && console.log('[WalletStateService] Periodic sync started (every 5 minutes)');
+  void DEBUG && debugLog('[WalletStateService] Periodic sync started (every 5 minutes)');
 }
 
-/**
- * Start health monitoring
- */
 function startHealthMonitoring(): void {
   if (healthCheckTimer) {
     clearInterval(healthCheckTimer);
@@ -497,7 +404,6 @@ function startHealthMonitoring(): void {
       const health = await checkStateHealth(currentWalletAddress);
 
       if (!health.isHealthy || health.needsRefresh) {
-        // Emit event for UI to potentially show a warning
         window.dispatchEvent(new CustomEvent('walletStateHealthWarning', {
           detail: { walletAddress: currentWalletAddress, health }
         }));
@@ -506,10 +412,6 @@ function startHealthMonitoring(): void {
   }, HEALTH_CHECK_INTERVAL_MS);
 }
 
-/**
- * Stop all background services
- * Call this when wallet is locked or closed
- */
 export function stopWalletStateService(): void {
   if (syncTimer) {
     clearInterval(syncTimer);
@@ -522,13 +424,9 @@ export function stopWalletStateService(): void {
   }
 
   currentWalletAddress = null;
-  void DEBUG && console.log('[WalletStateService] Service stopped');
+  void DEBUG && debugLog('[WalletStateService] Service stopped');
 }
 
-/**
- * Force an immediate state sync
- * Call this after transactions or when user requests refresh
- */
 export function requestImmediateSync(): void {
   if (currentWalletAddress) {
     window.dispatchEvent(new CustomEvent('walletStateSyncRequest', {
@@ -537,9 +435,6 @@ export function requestImmediateSync(): void {
   }
 }
 
-/**
- * Update health status after an operation
- */
 export async function updateHealthStatus(
   walletAddress: string,
   status: 'healthy' | 'warning' | 'critical',
@@ -561,9 +456,6 @@ export async function updateHealthStatus(
   }
 }
 
-/**
- * Get the staleness of the current wallet state in milliseconds
- */
 export async function getStateStaleness(walletAddress: string): Promise<number> {
   try {
     const metadata = await loadFromStore<WalletStateMetadata>(STORES.METADATA, walletAddress);
@@ -578,23 +470,17 @@ export async function getStateStaleness(walletAddress: string): Promise<number> 
   }
 }
 
-/**
- * Check if wallet state needs refreshing before a transaction
- * Returns true if state is too stale and should be refreshed first
- */
 export async function needsRefreshBeforeTransaction(walletAddress: string): Promise<boolean> {
   try {
     const staleness = await getStateStaleness(walletAddress);
 
-    // If state is older than 6 hours, recommend refresh before transaction
     const SIX_HOURS = 6 * 60 * 60 * 1000;
     return staleness > SIX_HOURS;
   } catch {
-    return true;  // When in doubt, suggest refresh
+    return true;
   }
 }
 
-// Export singleton-style functions for convenience
 export const walletStateService = {
   initialize: initializeWalletState,
   save: saveWalletState,

@@ -131,6 +131,108 @@ describe('buildWalletHistory', () => {
     expect(history[history.length - 1].value).toBe(11);
   });
 
+  it('rescales cached atomic transaction amounts against the authoritative wallet balance', () => {
+    const history = buildWalletHistory(
+      [
+        makeTx({
+          txid: 'atomic-in',
+          type: 'in',
+          tx_type: 3,
+          tx_type_label: 'Transfer',
+          amount: 12_500_000_000,
+          timestamp: 1_000,
+          height: 10,
+        }),
+      ],
+      [],
+      [[1_000, 2]],
+      2,
+      1_000,
+      125
+    );
+
+    expect(history[0].value).toBe(250);
+  });
+
+
+  it('rescales non-standard poisoned cached amount multipliers against the authoritative wallet balance', () => {
+    const poisonedScale = 1_943_600_000_000_000;
+    const history = buildWalletHistory(
+      [
+        makeTx({
+          txid: 'poisoned-in',
+          type: 'in',
+          tx_type: 3,
+          tx_type_label: 'Transfer',
+          amount: 125 * poisonedScale,
+          timestamp: 1_000,
+          height: 10,
+        }),
+      ],
+      [],
+      [[1_000, 2]],
+      2,
+      1_000,
+      125
+    );
+
+    expect(history[0].value).toBe(250);
+  });
+
+
+
+
+
+  it('uses the live price for the current chart point when hourly history is stale', () => {
+    const now = 7_201_000;
+    const history = buildWalletHistory(
+      [
+        makeTx({
+          txid: 'deposit',
+          type: 'in',
+          tx_type: 3,
+          tx_type_label: 'Transfer',
+          amount: 100,
+          timestamp: 1_000,
+          height: 10,
+        }),
+      ],
+      [],
+      [[1_000, 1], [3_601_000, 1]],
+      2,
+      now,
+      100
+    );
+
+    expect(history[history.length - 1]).toMatchObject({
+      date: new Date(now).toISOString(),
+      value: 200,
+    });
+  });
+  it('anchors partial restore history to the authoritative wallet balance', () => {
+    const history = buildWalletHistory(
+      [
+        makeTx({
+          txid: 'recent-stake',
+          type: 'out',
+          tx_type: 6,
+          tx_type_label: 'Stake',
+          amount: 75_000,
+          fee: 1,
+          timestamp: 1_000,
+          height: 490_000,
+        }),
+      ],
+      [],
+      [[1_000, 2]],
+      2,
+      1_000,
+      152_000
+    );
+
+    expect(history[0].value).toBe(304_000);
+  });
+
   it('ignores audit-only rows in chart balance reconstruction', () => {
     const history = buildWalletHistory(
       [
@@ -151,5 +253,29 @@ describe('buildWalletHistory', () => {
     );
 
     expect(history[0].value).toBe(0);
+  });
+});
+
+describe('wallet performance correctness (SAL1-only, card parity)', () => {
+  it('excludes token transactions from wallet value', () => {
+    const now = Date.now();
+    const txs: any[] = [
+      { txid: 'a'.repeat(64), type: 'in', amount: 10, timestamp: (now - 3600_000) / 1000 > 1e11 ? now - 3600_000 : now - 3600_000, height: 100, asset_type: 'SAL1' },
+      { txid: 'b'.repeat(64), type: 'in', amount: 5000, timestamp: now - 1800_000, height: 101, asset_type: 'salCULT' },
+    ];
+    const history = buildWalletHistory(txs, [], [], 1, now, 10);
+    const tip = history[history.length - 1];
+    expect(tip.value).toBe(10); // token units (5000) must not appear
+  });
+
+  it('pins the latest point to the actual balance times price', () => {
+    const now = Date.now();
+    const txs: any[] = [
+      { txid: 'c'.repeat(64), type: 'in', amount: 7, timestamp: now - 3600_000, height: 100, asset_type: 'SAL1' },
+    ];
+    // currentBalance deliberately differs from replayed deltas (drift simulation)
+    const history = buildWalletHistory(txs, [], [], 0.5, now, 23.893);
+    const tip = history[history.length - 1];
+    expect(tip.value).toBeCloseTo(23.893 * 0.5, 10);
   });
 });

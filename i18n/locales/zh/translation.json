@@ -32,7 +32,8 @@
     "history": "历史",
     "settings": "设置",
     "dashboard": "仪表盘",
-    "lockWallet": "锁定钱包"
+    "lockWallet": "锁定钱包",
+    "assets": "资产"
   },
   "dashboard": {
     "balance": "余额",
@@ -47,7 +48,8 @@
     "noActiveStakes": "暂无活跃质押",
     "earnRewards": "质押SAL约30天即可获得奖励。",
     "createNewStake": "创建新质押",
-    "unlocksIn": "{{time}}后解锁（{{blocks}}个区块）"
+    "unlocksIn": "{{time}}后解锁（{{blocks}}个区块）",
+    "lockedChange": "Locked change"
   },
   "chart": {
     "last24Hours": "过去24小时",
@@ -69,7 +71,7 @@
     "sendAssets": "发送资产",
     "creatingTransaction": "正在创建交易...",
     "transactionSent": "交易已发送！",
-    "amountSent": "{{amount}} SAL已发送到网络。",
+    "amountSent": "{{amount}} {{asset}}已发送到网络。",
     "transactionHash": "交易哈希",
     "sendAnother": "发送另一笔交易",
     "addressBook": "地址簿",
@@ -141,13 +143,14 @@
     },
     "errors": {
       "validAmount": "请输入有效的正数金额",
-      "exceedsBalance": "金额超过可用余额"
+      "exceedsBalance": "金额超过可用余额",
+      "partialStakeChangeRisk": "This would leave about {{amount}} SAL behind as normal change. It should unlock under standard output maturity."
     },
     "confirmStake": "Confirm Stake",
     "reviewDetails": "Review your stake details",
     "amountToStake": "Amount to Stake",
     "importantNote": "Important",
-    "stakeWarning": "Your SAL will be locked for approximately 30 days. During this time, you cannot access or withdraw your staked funds. The stake will automatically return with rewards after the lock period.",
+    "stakeWarning": "Staked SAL is locked for approximately 30 days. The stake returns automatically with rewards after the lock period. Any unstaked change remains normal wallet balance and unlocks under standard output maturity.",
     "confirmStakeButton": "Confirm Stake"
   },
   "history": {
@@ -173,7 +176,8 @@
     "sections": {
       "securityPrivacy": "安全与隐私",
       "general": "通用",
-      "language": "语言"
+      "language": "语言",
+      "preferences": "偏好设置"
     },
     "biometrics": {
       "title": "生物识别解锁",
@@ -222,7 +226,8 @@
       "errors": {
         "fillAll": "请填写所有字段",
         "mismatch": "新密码不匹配",
-        "empty": "密码不能为空"
+        "empty": "密码不能为空",
+        "minLength": "密码必须至少为 8 个字符"
       }
     },
     "blockchain": {
@@ -259,6 +264,14 @@
       "revealButton": "显示助记词",
       "copySeed": "复制助记词",
       "neverShare": "永远不要与任何人分享您的助记词。Salvium支持人员永远不会要求它。请安全地离线存储。"
+    },
+    "connection": {
+      "title": "连接",
+      "description": "选择由哪个 Salvium 节点同步您的钱包。自动模式会让您连接到健康的官方节点；仅当您自己的节点可公开访问时才添加它。无论哪种方式，请求都会通过 vault 服务器代理，而不是直接从您的设备发送。"
+    },
+    "currency": {
+      "title": "显示货币",
+      "description": "选择用于显示余额价值的法定货币。"
     }
   },
   "onboarding": {
@@ -435,5 +448,156 @@
     "initializingWallet": "正在初始化钱包...",
     "failedToCreate": "创建备份失败",
     "failedToUnlock": "解锁钱包失败"
+  },
+  "assets": {
+    "title": "资产",
+    "subtitle": "查看并管理钱包中的所有资产。",
+    "viewAll": "查看全部",
+    "viewAllAssets": "查看全部资产",
+    "viewAssets": "查看资产",
+    "create": "创建",
+    "createAsset": "创建资产",
+    "createAssetTransaction": "创建资产交易",
+    "creating": "正在创建...",
+    "yourAssets": "你的资产",
+    "searchAssets": "搜索资产...",
+    "searchAssetsShort": "搜索资产",
+    "searchAssetsLabel": "搜索资产",
+    "searchAssetsLong": "按代号、名称或资产类型搜索",
+    "filters": {
+      "all": "全部资产",
+      "metadata": "含元数据",
+      "plain": "基础资产"
+    },
+    "empty": {
+      "noBalances": "还没有资产余额",
+      "waitForTransfers": "创建资产或等待传入的资产转账。",
+      "noFilterMatches": "没有资产符合当前筛选条件。",
+      "noRecentActivity": "暂无近期资产活动。",
+      "selectAsset": "选择资产",
+      "chooseAsset": "从列表中选择一个资产进行查看。",
+      "noTransactions": "所选资产没有记录的交易。"
+    },
+    "unlock": {
+      "title": "解锁钱包以管理资产。",
+      "description": "资产余额、转账和创建都需要钱包处于解锁状态。"
+    },
+    "activation": {
+      "scheduled": "资产激活计划在 {{label}} 的区块 {{height}} 进行。",
+      "blocksRemaining": "剩余区块",
+      "estimatedTime": "预计剩余时间：{{time}}"
+    },
+    "success": {
+      "submitted": "资产创建已提交",
+      "created": "{{assetType}} 已成功提交，钱包收到或确认资产余额后会显示在这里。",
+      "submittedHashes": "已提交的交易哈希"
+    },
+    "labels": {
+      "asset": "资产",
+      "catalog": "目录",
+      "listed": "已列出",
+      "name": "名称",
+      "balance": "余额",
+      "unlocked": "已解锁",
+      "unlockedBalance": "已解锁余额",
+      "locked": "已锁定",
+      "lockedBalance": "已锁定余额",
+      "standard": "标准",
+      "type": "类型",
+      "assetType": "资产类型",
+      "supply": "供应量",
+      "totalSupply": "总供应量",
+      "ownershipPercentage": "持有比例",
+      "assetId": "资产 ID",
+      "created": "创建时间",
+      "decimals": "小数位",
+      "amount": "金额",
+      "status": "状态",
+      "date": "日期",
+      "txHash": "交易哈希",
+      "metadata": "元数据",
+      "media": "媒体",
+      "quickActions": "快捷操作",
+      "assetLinks": "资产链接",
+      "recentActivity": "近期活动",
+      "transactionHistory": "资产交易历史",
+      "assetOverview": "资产概览",
+      "premium": "高级",
+      "unknown": "未知"
+    },
+    "actions": {
+      "send": "发送",
+      "receive": "接收",
+      "sendAsset": "发送 {{ticker}}",
+      "receiveAsset": "接收 {{ticker}}",
+      "open": "打开",
+      "openAssetUrl": "打开资产 URL",
+      "viewCatalog": "查看目录",
+      "copyAssetId": "复制资产 ID",
+      "backToAssets": "返回资产",
+      "dismiss": "关闭",
+      "retry": "重试"
+    },
+    "media": {
+      "explorerImage": "浏览器资产图片"
+    },
+    "states": {
+      "publicCatalogAsset": "公共目录资产",
+      "inWallet": "钱包中有 {{amount}} {{ticker}}",
+      "catalogOnlyNotice": "此资产来自公共 SAL 目录。它当前不在此钱包中，因此发送已禁用。",
+      "loadingCatalog": "正在加载资产...",
+      "catalogLoadFailed": "无法加载浏览器目录。",
+      "catalogEmpty": "浏览器未返回任何资产。",
+      "catalogNoMatches": "没有资产符合你的搜索。",
+      "showingAssets": "显示第 {{start}} 到 {{end}} 个，共 {{total}} 个资产",
+      "unlockedAmount": "已解锁：{{amount}} {{ticker}}",
+      "unlockedAmountCompact": "已解锁 {{amount}}"
+    },
+    "categories": {
+      "baseAsset": "基础资产",
+      "token": "代币"
+    },
+    "createForm": {
+      "cost": "创建此资产需要 {{cost}} SAL{{suffix}}",
+      "premiumSuffix": "，因为这是高级资产代码。",
+      "standardSuffix": "。",
+      "assetCode": "资产代码",
+      "premiumNote": "这是高级资产代码。创建它需要 10,000 SAL。",
+      "supply": "供应量",
+      "advanced": "高级",
+      "advancedDescription": "可选的代币元数据和大小",
+      "displayName": "显示名称",
+      "displayNamePlaceholder": "示例资产",
+      "size": "大小",
+      "projectUrl": "项目 URL",
+      "additionalMetadata": "附加元数据",
+      "additionalMetadataPlaceholder": "可选 JSON 或备注。上方结构化字段会自动合并。"
+    },
+    "validation": {
+      "assetCodeRequired": "资产代码为必填项。",
+      "assetCodeFormat": "资产代码必须正好为 4 个大写字母或数字。",
+      "assetCodePrefix": "资产代码不能以 'SAL' 开头。",
+      "assetCodeReserved": "该资产代码已保留，不能使用。",
+      "supplyRequired": "供应量为必填项。",
+      "supplyWhole": "供应量必须是整数。",
+      "supplyRange": "供应量必须介于 1 和 {{max}} 之间。",
+      "supplyInteger": "供应量必须是有效整数。",
+      "decimalsRange": "小数位必须是 0 到 {{max}} 之间的整数。",
+      "metadataTooLong": "附加元数据过长（最多 {{max}} 个字符）。",
+      "assetCodeExists": "资产代码 '{{code}}' 已存在。"
+    },
+    "transactions": {
+      "pending": "待处理",
+      "received": "已接收",
+      "sent": "已发送",
+      "awaitingConfirmation": "等待确认"
+    },
+    "time": {
+      "lessThanMinute": "不到一分钟"
+    },
+    "errors": {
+      "loadFailed": "资产加载失败",
+      "createFailed": "创建资产交易失败"
+    }
   }
 }

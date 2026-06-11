@@ -3,8 +3,47 @@
 @tailwind utilities;
 
 :root {
-    --mobile-header-height: calc(56px + env(safe-area-inset-top));
+    --safe-area-inset-top: env(safe-area-inset-top, 0px);
+    --safe-area-inset-right: env(safe-area-inset-right, 0px);
+    --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-area-inset-left: env(safe-area-inset-left, 0px);
+    --android-navigation-bar-bottom: 0px;
+    --safe-area-top: max(var(--safe-area-inset-top), var(--salvium-safe-area-top, 0px));
+    --safe-area-bottom: max(var(--safe-area-inset-bottom), var(--salvium-safe-area-bottom, 0px), var(--android-navigation-bar-bottom));
+    --mobile-nav-bottom-pad: 0px;
+    --mobile-header-height: calc(clamp(50px, calc(56px * var(--mobile-ui-scale)), 56px) + var(--safe-area-top));
+    --mobile-nav-height: clamp(50px, calc(56px * var(--mobile-ui-scale)), 56px);
+    --mobile-page-bottom-clearance: calc(var(--mobile-nav-height) + var(--safe-area-bottom) + var(--mobile-nav-bottom-pad) + 28px);
+    --mobile-ui-scale: 1;
+    --mobile-compact-scale: 1;
+    --mobile-vw-scale: 1;
+    --mobile-vh-scale: 1;
     --app-height: 100dvh;
+}
+
+html.android-fullscreen-shell {
+    --safe-area-top: max(var(--safe-area-inset-top), var(--salvium-safe-area-top, 0px));
+    --safe-area-bottom: max(var(--safe-area-inset-bottom), var(--salvium-safe-area-bottom, 0px), var(--android-navigation-bar-bottom));
+}
+
+html.native-app-shell {
+    --safe-area-top: max(var(--safe-area-inset-top), var(--salvium-safe-area-top, 26px));
+    --safe-area-bottom: max(var(--safe-area-inset-bottom), var(--salvium-safe-area-bottom, 0px), var(--android-navigation-bar-bottom));
+    --mobile-nav-bottom-pad: 8px;
+}
+
+html.native-app-shell,
+html.native-app-shell body,
+html.native-app-shell #root {
+    height: var(--app-height);
+    overflow: hidden;
+}
+
+html.keyboard-open,
+html.keyboard-open body,
+html.keyboard-open #root {
+    min-height: var(--app-height);
+    background-color: #0f0f1a;
 }
 
 @layer base {
@@ -12,7 +51,7 @@
         background-color: #0f0f1a;
         margin: 0;
         padding: 0;
-        padding-bottom: env(safe-area-inset-bottom);
+        padding-bottom: var(--safe-area-bottom);
         width: 100%;
         height: 100%;
     }
@@ -30,6 +69,7 @@
         width: 100%;
         height: 100%;
         overflow: hidden;
+        background-color: #0f0f1a;
     }
 
     input[type=number]::-webkit-inner-spin-button,
@@ -40,5 +80,105 @@
 
     input[type=number] {
         -moz-appearance: textfield;
+    }
+}
+
+@layer components {
+    .mobile-header-shell {
+        padding-left: clamp(10px, calc(16px * var(--mobile-ui-scale)), 16px);
+        padding-right: clamp(10px, calc(16px * var(--mobile-ui-scale)), 16px);
+    }
+
+    .mobile-brand {
+        min-width: 0;
+        gap: clamp(6px, calc(10px * var(--mobile-ui-scale)), 10px);
+    }
+
+    .mobile-brand-logo {
+        width: clamp(22px, calc(28px * var(--mobile-ui-scale)), 28px);
+        height: clamp(22px, calc(28px * var(--mobile-ui-scale)), 28px);
+    }
+
+    .mobile-brand-title {
+        font-size: clamp(14px, calc(18px * var(--mobile-ui-scale)), 18px);
+        line-height: 1.1;
+        white-space: nowrap;
+    }
+
+    .mobile-header-actions {
+        gap: clamp(1px, calc(4px * var(--mobile-ui-scale)), 4px);
+        flex-shrink: 0;
+    }
+
+    .mobile-status-pill {
+        gap: clamp(4px, calc(6px * var(--mobile-ui-scale)), 6px);
+        padding: clamp(3px, calc(4px * var(--mobile-ui-scale)), 4px) clamp(6px, calc(8px * var(--mobile-ui-scale)), 8px);
+        margin-right: clamp(1px, calc(4px * var(--mobile-ui-scale)), 4px);
+        min-width: 0;
+    }
+
+    .mobile-status-text {
+        font-size: clamp(8px, calc(10px * var(--mobile-compact-scale)), 10px);
+        line-height: 1;
+        white-space: nowrap;
+    }
+
+    .mobile-icon-button {
+        width: clamp(34px, calc(36px * var(--mobile-ui-scale)), 40px);
+        height: clamp(34px, calc(36px * var(--mobile-ui-scale)), 40px);
+        padding: 0;
+    }
+
+    .mobile-icon-button svg {
+        width: clamp(18px, calc(22px * var(--mobile-ui-scale)), 22px);
+        height: clamp(18px, calc(22px * var(--mobile-ui-scale)), 22px);
+    }
+
+    .mobile-bottom-nav-row {
+        height: var(--mobile-nav-height);
+        padding-left: clamp(4px, calc(8px * var(--mobile-ui-scale)), 8px);
+        padding-right: clamp(4px, calc(8px * var(--mobile-ui-scale)), 8px);
+        padding-top: clamp(3px, calc(6px * var(--mobile-ui-scale)), 6px);
+    }
+
+    .mobile-nav-icon-wrap {
+        padding: clamp(4px, calc(6px * var(--mobile-ui-scale)), 6px);
+        border-radius: 12px;
+    }
+
+    .mobile-nav-icon {
+        width: clamp(18px, calc(22px * var(--mobile-ui-scale)), 22px);
+        height: clamp(18px, calc(22px * var(--mobile-ui-scale)), 22px);
+    }
+
+    .mobile-nav-label {
+        font-size: clamp(8px, calc(10px * var(--mobile-compact-scale)), 10px);
+        line-height: 1;
+        white-space: nowrap;
+    }
+
+    .mobile-page-card {
+        border-radius: clamp(14px, calc(18px * var(--mobile-ui-scale)), 18px);
+    }
+
+    .mobile-scroll-page {
+        padding-bottom: var(--mobile-page-bottom-clearance);
+        scroll-padding-bottom: var(--mobile-page-bottom-clearance);
+    }
+
+    .mobile-bottom-nav {
+        transition: transform 180ms ease, opacity 180ms ease;
+    }
+
+    html.keyboard-open .mobile-bottom-nav {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(100%);
+    }
+
+    .mobile-action-card {
+        display: flex;
+        flex-direction: column;
+        gap: clamp(10px, calc(14px * var(--mobile-ui-scale)), 14px);
     }
 }
