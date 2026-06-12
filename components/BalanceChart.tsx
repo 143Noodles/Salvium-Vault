@@ -69,11 +69,14 @@ const BalanceChart: React.FC = () => {
       ? getCachedHistoryValueDivisor(latestPoint.value, wallet.stats.balanceUsd)
       : 1;
 
-    if (divisor === 1) return data;
+    // Sanitize: a corrupt upstream state once produced an inverted axis in the
+    // field — non-finite/negative values must never reach the renderer.
+    const sane = (v: number) => (Number.isFinite(v) && v >= 0 ? v : 0);
+    if (divisor === 1) return data.map(point => ({ ...point, value: sane(point.value) }));
 
     return data.map(point => ({
       ...point,
-      value: point.value / divisor,
+      value: sane(point.value / divisor),
     }));
   }, [wallet.walletHistory, wallet.stats.balanceUsd]);
 
@@ -349,7 +352,7 @@ const BalanceChart: React.FC = () => {
                   tickFormatter={formatYAxisShorthand}
                   width={isMobileOrTablet ? 36 : 45}
                   tickMargin={isMobileOrTablet ? 2 : 8}
-                  domain={[yTicks[0], yTicks[yTicks.length - 1]]}
+                  domain={[Math.min(...yTicks), Math.max(...yTicks)]}
                   ticks={yTicks}
                 />
                 <Tooltip

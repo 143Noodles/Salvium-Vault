@@ -93,6 +93,12 @@ export class DirectEngine implements WalletEngine {
             this.wallet.cache_runtime_full_txs_from_sparse(ptr, len));
           break;
 
+        case 'expandSubaddressTable':
+          value = (typeof (this.wallet as any).expand_subaddress_table === 'function')
+            ? (this.wallet as any).expand_subaddress_table()
+            : '{"success":true,"noop":true}';
+          break;
+
         case 'getStateBundle':
           value = this.pushDelta(ALL_DELTA_FIELDS);
           break;

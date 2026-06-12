@@ -1042,6 +1042,7 @@ interface WasmWalletInstance {
 
   export_wallet_cache_hex(): string;
   import_wallet_cache_hex(cache_hex: string): string;
+  expand_subaddress_table?(): string;
 
   get_wallet_state_snapshot?(): string;
   get_locked_coins_info?(): string;
@@ -1345,6 +1346,24 @@ export class WalletService {
   // ['syncStatus','flags'] so per-block catch-ups don't re-serialize all
   // transactions in the worker (a full bundle on a heavy wallet is seconds
   // of worker CPU + a large structured clone).
+  private async runDeferredSubaddressExpand(): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resultJson = await this.engine!.op<string>('expandSubaddressTable', {}, { timeoutMs: 120000 });
+        const result = safeJsonParse<{ success?: boolean; error?: string }>(String(resultJson), {}, 'expandSubaddressTable');
+        if (result?.success) return;
+        reportAssetDiagnostic('wallet.subaddress_expand_failed', {
+          attempt, error: String(result?.error || 'unknown').slice(0, 200),
+        });
+      } catch (e: unknown) {
+        reportAssetDiagnostic('wallet.subaddress_expand_failed', {
+          attempt, error: e instanceof Error ? e.message.slice(0, 200) : 'op_rejected',
+        });
+      }
+      await new Promise<void>((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+
   private async refreshMirror(fields?: string[]): Promise<void> {
     if (!this.engine) return;
     try {
@@ -1551,6 +1570,7 @@ export class WalletService {
     }
 
     this.resetCspIncrementalState();
+    this.resetPerWalletHealState();
 
     // NOTE: arg redaction for create_random/restore_from_seed is handled worker-side.
     const success = await this.engine.op<boolean>('createRandom', { password });
@@ -1589,6 +1609,7 @@ export class WalletService {
     }
 
     this.resetCspIncrementalState();
+    this.resetPerWalletHealState();
 
     // NOTE: arg redaction (mnemonic/password) is handled worker-side; never log these.
     const success = await this.engine.op<boolean>('restoreFromSeed', {
@@ -1612,6 +1633,17 @@ export class WalletService {
     if (!keys.address) {
       throw new Error('Failed to restore wallet - no address generated');
     }
+
+    // FAST OPEN: restore now generates with a 1x1 subaddress table (~0.1s instead
+    // of ~6.5s); the full 50x200 table builds via this queued op. Enqueued AFTER
+    // extractKeys (account-level reads, safe on the tiny map) so the restore
+    // promise — the UI spinner — excludes the expansion. The worker is sequential,
+    // so every LATER op (cache import, sparse ingest, anything reading the
+    // subaddress map) queues behind the expand; coverage at scan time is identical.
+    // Failure here is survivable: the WASM re-runs the expansion inline at
+    // ingest/scan_tx (throwing into their error paths), so scans can never see
+    // the 1x1 map — this retry + telemetry is for early recovery and visibility.
+    void this.runDeferredSubaddressExpand();
 
     return keys;
   }
@@ -6191,6 +6223,10 @@ export class WalletService {
       return '';
     }
     try {
+      // Hard ensure before exporting the scan-worker ownership map: the deferred
+      // post-restore expansion must have completed (no-op when already done; the
+      // C++ getter also self-ensures as a backstop).
+      try { await this.engine!.op('expandSubaddressTable', {}, { timeoutMs: 120000 }); } catch {}
       return (await this.engineCallOptional<string>('get_subaddress_spend_keys_csv')) || '';
     } catch {
       return '';
@@ -6493,6 +6529,60 @@ export class WalletService {
     } catch {
       return false;
     }
+  }
+
+  private healOutgoingHistoryPromise: Promise<number> | null = null;
+
+  /**
+   * Heal token self-send history recorded before the reconcile fix shipped: a token
+   * send scanned by an old build left its change as a spurious "Received" row (no
+   * out-leg). Hydrates the spending txs, runs the idempotent WASM reconcile, then
+   * refreshes the mirror and persists the healed cache. Returns the number of txs
+   * reconciled (0 = nothing to heal). Memoized: concurrent/duplicate callers share
+   * one run and its result. Display-only healing — balance lives in m_transfers.
+   */
+  healOutgoingHistoryAfterOpen(): Promise<number> {
+    if (!this.healOutgoingHistoryPromise) {
+      this.healOutgoingHistoryPromise = this._healOutgoingHistoryInner().catch(() => 0);
+    }
+    return this.healOutgoingHistoryPromise;
+  }
+
+  // New wallet in the same SPA lifetime: drop the previous wallet's heal memo and
+  // hydration cooldown/attempt state so the next open hydrates and heals fresh.
+  private resetPerWalletHealState(): void {
+    this.healOutgoingHistoryPromise = null;
+    this._lastHydrationAt = 0;
+    this.attemptedRuntimeFullTxHashes.clear();
+  }
+
+  private async _healOutgoingHistoryInner(): Promise<number> {
+    // The open flow is still finishing when the cache import resolves; wait for
+    // readiness (bounded) so hydration doesn't bail with wallet_uninitialized.
+    for (let i = 0; i < 60 && !this.isWalletReadySync(); i++) {
+      await new Promise<void>((r) => setTimeout(r, 1000));
+    }
+    if (!this.isWalletReadySync()) return 0;
+    await this.hydrateRuntimeFullTxContext();
+    const resultJson = await this.engineCallOptional<string>('reconcile_outgoing_payments');
+    if (resultJson === null) return 0;
+    const result = safeJsonParse<{ success?: boolean; reconciled?: number }>(resultJson, {}, 'healOutgoingHistoryAfterOpen');
+    const reconciled = result?.success ? Number(result.reconciled || 0) : 0;
+    if (reconciled > 0) {
+      this.resetCachedNativeReads();
+      // reconcile_outgoing_payments is a generic call (no worker-side delta);
+      // re-pull the mirror or this session keeps showing the stale rows.
+      await this.refreshMirror();
+      // Persist the healed cache (worker exports + writes wallet_cache_<addr>);
+      // without this the heal re-runs from scratch on every reload. DirectEngine
+      // has no IDB persist — the per-open re-heal covers that mode.
+      try {
+        const addr = this.getAddress();
+        if (addr) await this.engine!.op('persistToIdb', { addr }, { timeoutMs: 120000 });
+      } catch { /* persistence is an optimization; the open-time heal recurs */ }
+      reportAssetDiagnostic('wallet.outgoing_history_healed', { reconciled });
+    }
+    return reconciled;
   }
 
   async prepareMultisig(): Promise<{ multisig_info?: string; success: boolean; error?: string }> {
@@ -7254,6 +7344,7 @@ export class WalletService {
       this.engine = null;
       this.initPromise = null;
       this.resetCachedNativeReads();
+      this.resetPerWalletHealState();
     }
     this.walletInstanceRaw = null;
   }
