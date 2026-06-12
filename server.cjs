@@ -5675,7 +5675,7 @@ app.post('/api/salpay/orders/:orderId/callback', salPayCallbackRateLimit, async 
     return proxySalPayAgentRequest(req, res, `/orders/${encodeURIComponent(req.params.orderId)}/callback`);
 });
 const SERVER_BUILD_TIME = new Date().toISOString();
-const SERVER_VERSION = "8.2.10-20260612";
+const SERVER_VERSION = "8.2.11-20260612";
 
 const noCacheHeaders = (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');

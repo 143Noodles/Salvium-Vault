@@ -269,16 +269,42 @@ const BalanceChart: React.FC = () => {
     [formatFiat]
   );
 
-  const tooltipFormatter = useCallback(
-    (value: number, _name: string, item: any) => {
-      const sal = item?.payload?.sal;
-      const fiat = formatFiat(value);
-      const label = Number.isFinite(sal)
-        ? `${fiat} \u00b7 ${sal.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAL`
-        : fiat;
-      return [label, t('chart.walletValue')] as [string, string];
+  // Two rows (value / SAL) instead of one combined line: the single-row tooltip
+  // overflowed the viewport on narrow mobile screens and got clipped.
+  const renderTooltipContent = useCallback(
+    ({ active, payload, label }: any) => {
+      if (!active || !payload || payload.length === 0) return null;
+      const point = payload[0];
+      const value = Number(point?.value);
+      const sal = point?.payload?.sal;
+      return (
+        <div
+          role="status"
+          style={{
+            backgroundColor: 'rgba(15, 15, 26, 0.9)',
+            border: '1px solid rgba(99, 102, 241, 0.2)',
+            backdropFilter: 'blur(8px)',
+            borderRadius: '12px',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+            padding: '8px 12px',
+            fontFamily: 'JetBrains Mono',
+          }}
+        >
+          <div style={{ color: '#94a3b8', fontSize: '12px', marginBottom: '4px' }}>
+            {formatTooltipDate(String(label ?? ''))}
+          </div>
+          <div style={{ color: '#8b5cf6', fontSize: '13px', whiteSpace: 'nowrap' }}>
+            {t('chart.walletValue')}: {Number.isFinite(value) ? formatFiat(value) : '-'}
+          </div>
+          {Number.isFinite(sal) && (
+            <div style={{ color: '#f8fafc', fontSize: '13px', whiteSpace: 'nowrap', marginTop: '2px' }}>
+              {sal.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAL
+            </div>
+          )}
+        </div>
+      );
     },
-    [formatFiat, t]
+    [formatFiat, t, formatTooltipDate]
   );
 
   const chartMargin = useMemo(
@@ -307,7 +333,15 @@ const BalanceChart: React.FC = () => {
       </div>
 
       <div className={`${isMobileOrTablet ? 'min-h-[4.5rem]' : 'min-h-[200px]'} flex-1 w-full relative`} ref={containerRef}>
-        <div className="absolute inset-0">
+        {/* Tapping the chart on mobile focused the recharts wrapper/svg (its
+            accessibility layer is intentionally KEPT so keyboard users can tab in
+            and arrow through values) and drew the browser focus ring — a second,
+            thicker one on the inner surface. Suppress only the visual outline and
+            the mobile tap-highlight flash; focusability is unchanged. */}
+        <div
+          className="absolute inset-0 [&_*:focus]:outline-none [&_.recharts-wrapper]:outline-none [&_svg]:outline-none"
+          style={{ WebkitTapHighlightColor: 'transparent', outline: 'none' }}
+        >
           {filteredData.length === 0 ? (
             <div className="flex items-center justify-center h-full text-text-muted text-center px-2">
               <p className={isMobileOrTablet ? 'text-xs leading-tight' : ''}>{t('chart.noHistoryData')}</p>
@@ -356,19 +390,8 @@ const BalanceChart: React.FC = () => {
                   ticks={yTicks}
                 />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'rgba(15, 15, 26, 0.9)',
-                    borderColor: 'rgba(99, 102, 241, 0.2)',
-                    backdropFilter: 'blur(8px)',
-                    borderRadius: '12px',
-                    color: '#f8fafc',
-                    boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
-                  }}
-                  itemStyle={{ color: '#8b5cf6', fontFamily: 'JetBrains Mono' }}
-                  labelStyle={{ color: '#94a3b8', marginBottom: '4px', fontFamily: 'JetBrains Mono', fontSize: '12px' }}
                   cursor={{ stroke: '#6366f1', strokeWidth: 1, strokeDasharray: '4 4' }}
-                  formatter={tooltipFormatter}
-                  labelFormatter={formatTooltipDate}
+                  content={renderTooltipContent}
                 />
                 <Area
                   type="monotone"

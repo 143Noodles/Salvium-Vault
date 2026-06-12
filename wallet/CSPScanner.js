@@ -361,7 +361,7 @@ class CSPScanner {
         }
     }
 
-    static WASM_VERSION = '8.2.10-20260612';
+    static WASM_VERSION = '8.2.11-20260612';
 
     // fetch() with a hard timeout so a stuck/half-open connection can't hang init/scan forever.
     static async fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
