@@ -96,6 +96,81 @@ type WalletAssetBalance = AssetInfo & {
   unlockedBalanceAtomic: string;
 };
 
+// Resolved asset metadata (name/ticker/decimals are immutable at token creation),
+// cached across page mounts: without this every Assets visit rendered bare tickers
+// (salCULT) and re-resolved full names via per-token WASM calls + explorer fetches.
+// Module memory survives page swaps; localStorage survives reloads.
+const ASSET_CATALOG_CACHE_KEY = 'vault_asset_catalog_v1';
+let assetCatalogMemoryCache: Record<string, AssetInfo> | null = null;
+
+// Entry-level sanitization: a syntactically valid but schema-invalid cached entry
+// (hand-edited storage, partial write, future schema change) must never reach the
+// render path — a missing `ticker` there would throw inside loadAssets() BEFORE the
+// self-correcting refresh, bricking the page on every mount. Invalid entries are
+// dropped; missing scalars get safe defaults and re-resolve via the refresh.
+function sanitizeCachedAssetInfo(key: string, value: unknown): AssetInfo | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const assetType = typeof v.assetType === 'string' && v.assetType ? v.assetType : key;
+  if (!assetType || typeof assetType !== 'string') return null;
+  const str = (x: unknown): string => (typeof x === 'string' ? x : '');
+  const info: AssetInfo = {
+    assetType,
+    ticker: str(v.ticker) || getTicker(assetType),
+    version: typeof v.version === 'number' && Number.isFinite(v.version) ? v.version : 0,
+    status: str(v.status),
+    supply: str(v.supply) || '0',
+    decimals: typeof v.decimals === 'number' && Number.isFinite(v.decimals) ? v.decimals : 8,
+    metadata: str(v.metadata),
+    name: str(v.name),
+    url: str(v.url),
+    signature: str(v.signature),
+    size: typeof v.size === 'number' && Number.isFinite(v.size) ? v.size : 0,
+  };
+  if (typeof v.isBaseAsset === 'boolean') info.isBaseAsset = v.isBaseAsset;
+  if (typeof v.standard === 'string') info.standard = v.standard;
+  if (typeof v.category === 'string') info.category = v.category;
+  if (typeof v.metadataSource === 'string') info.metadataSource = v.metadataSource;
+  if (typeof v.metadataResolvedUrl === 'string') info.metadataResolvedUrl = v.metadataResolvedUrl;
+  if (typeof v.description === 'string') info.description = v.description;
+  if (typeof v.createdAt === 'string') info.createdAt = v.createdAt;
+  if (typeof v.schemaVersion === 'string') info.schemaVersion = v.schemaVersion;
+  if (v.metadataVerification && typeof v.metadataVerification === 'object' && !Array.isArray(v.metadataVerification)) {
+    info.metadataVerification = v.metadataVerification as AssetInfo['metadataVerification'];
+  }
+  if (v.nft && typeof v.nft === 'object' && !Array.isArray(v.nft)) info.nft = v.nft as AssetInfo['nft'];
+  if (v.metadataObject && typeof v.metadataObject === 'object' && !Array.isArray(v.metadataObject)) {
+    info.metadataObject = v.metadataObject as Record<string, unknown>;
+  }
+  return info;
+}
+
+function loadPersistedAssetCatalog(): Record<string, AssetInfo> {
+  if (assetCatalogMemoryCache) return assetCatalogMemoryCache;
+  const sanitized: Record<string, AssetInfo> = {};
+  try {
+    const raw = localStorage.getItem(ASSET_CATALOG_CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [key, value] of Object.entries(parsed)) {
+          const info = sanitizeCachedAssetInfo(key, value);
+          if (info) sanitized[key] = info;
+        }
+      }
+    }
+  } catch { /* corrupt/unavailable storage: start empty */ }
+  assetCatalogMemoryCache = sanitized;
+  return assetCatalogMemoryCache;
+}
+
+function persistAssetCatalog(catalog: Record<string, AssetInfo>): void {
+  assetCatalogMemoryCache = catalog;
+  try {
+    localStorage.setItem(ASSET_CATALOG_CACHE_KEY, JSON.stringify(catalog));
+  } catch { /* quota/private mode: memory cache still covers page swaps */ }
+}
+
 type ExplorerAssetListItem = {
   assetType: string;
   ticker: string;
@@ -526,10 +601,11 @@ const AssetsPage: React.FC<AssetsPageProps> = ({ onNavigate }) => {
   const activationEtaDate = new Date(Date.now() + (remainingActivationSeconds * 1000));
 
   const [loading, setLoading] = useState(false);
-  const [catalog, setCatalog] = useState<Record<string, AssetInfo>>({
+  const [catalog, setCatalog] = useState<Record<string, AssetInfo>>(() => ({
+    ...loadPersistedAssetCatalog(),
     SAL: buildBaseAssetInfo('SAL'),
     SAL1: buildBaseAssetInfo('SAL1')
-  });
+  }));
   const [registryAssets, setRegistryAssets] = useState<string[]>([]);
   const [walletBalances, setWalletBalances] = useState<WalletAssetBalance[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -822,6 +898,7 @@ const AssetsPage: React.FC<AssetsPageProps> = ({ onNavigate }) => {
 
       catalogRef.current = nextCatalog;
       setCatalog(nextCatalog);
+      persistAssetCatalog(nextCatalog);
       setRegistryAssets(normalizedTokens.sort((a, b) => a.localeCompare(b)));
       setWalletBalances(ownedAssets);
 

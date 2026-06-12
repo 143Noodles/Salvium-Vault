@@ -66,6 +66,11 @@ const LONG_OPS = new Set([
   // Deferred subaddress-table build after fast restore: ~4s desktop, far more on
   // slow phones.
   'expandSubaddressTable',
+  // Key derivation + (1x1) table generation: ~0.1s since the fast-open change, but
+  // a 30s default timeout half-opened a slow Android wallet pre-8.2.9 (restore
+  // finished worker-side after the client gave up, skipping the cache import).
+  'restoreFromSeed',
+  'createRandom',
 ]);
 
 type TelemetryContextValue = string | number | boolean | null | undefined;
