@@ -2797,8 +2797,14 @@ const getDeviceMemoryBucket = (): string => {
                 // snapshot unconditionally; trust only ever gates persistence.
                 try {
                     const authBal = clampUnlockedBalance(getAuthoritativeNativeBalance(walletService.getBalance()).balance);
+                    // Empty-engine window guard: during fast-open the engine answers 0
+                    // until the queued cache import lands — never stomp a nonzero
+                    // display with a transient engine zero (the full reload path and
+                    // wound detector own the genuinely-zero case).
+                    const engineEmpty = authBal.balance === 0 && authBal.unlockedBalance === 0;
                     setBalance(prev => (
-                        prev.balance !== authBal.balance || prev.unlockedBalance !== authBal.unlockedBalance
+                        !((engineEmpty && prev.balance > 0)) &&
+                        (prev.balance !== authBal.balance || prev.unlockedBalance !== authBal.unlockedBalance)
                     ) ? authBal : prev);
                 } catch {}
                 return;
@@ -3589,6 +3595,19 @@ const getDeviceMemoryBucket = (): string => {
                 importSuccess = await walletService.importWalletCache(cachedOutputsHex, minTransfers);
                 if (importSuccess) {
                     fullWalletCacheImportedRef.current = true;
+                    // Open-time history heal (token self-send change shown as a spurious
+                    // "Received" row by pre-fix scans). Background: when it reconciles
+                    // anything, re-read the now-healed list and force the next poll to
+                    // take the full reload path (the fast path only syncs balance).
+                    void walletService.healOutgoingHistoryAfterOpen().then((reconciled) => {
+                        if (reconciled > 0) {
+                            try {
+                                const healedTxs = walletService.getTransactions();
+                                if (healedTxs && healedTxs.length > 0) setTransactions(healedTxs);
+                            } catch {}
+                            walletDataDirtyRef.current = true;
+                        }
+                    });
                     // Self-heal the tx display from the just-imported wallet (authoritative). The idb tx
                     // cache (~3214) can be empty/partial (interrupted resync) and the catch-up commit that
                     // would setTransactions is gated off when no new tx arrives on reopen -> blank list.
@@ -7286,6 +7305,19 @@ const getDeviceMemoryBucket = (): string => {
                             if (typeof walletService.importWalletCache === 'function') {
                                 const minTransfers = getMinimumExpectedCacheTransfers(cachedBalance, cachedTxs);
                                 importSuccess = await walletService.importWalletCache(cachedOutputsHex, minTransfers);
+                                if (importSuccess) {
+                                    // Same open-time history heal as the primary open path
+                                    // (memoized per wallet session — at most one run).
+                                    void walletService.healOutgoingHistoryAfterOpen().then((reconciled) => {
+                                        if (reconciled > 0) {
+                                            try {
+                                                const healedTxs = walletService.getTransactions();
+                                                if (healedTxs && healedTxs.length > 0) setTransactions(healedTxs);
+                                            } catch {}
+                                            walletDataDirtyRef.current = true;
+                                        }
+                                    });
+                                }
                             }
                             if (!importSuccess) {
                                 const numImported = await walletService.importOutputs(cachedOutputsHex);

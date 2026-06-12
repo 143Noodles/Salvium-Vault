@@ -63,6 +63,9 @@ const LONG_OPS = new Set([
   // on heavy wallets/slow machines.
   'flushDerivedState',
   'getStateBundle',
+  // Deferred subaddress-table build after fast restore: ~4s desktop, far more on
+  // slow phones.
+  'expandSubaddressTable',
 ]);
 
 type TelemetryContextValue = string | number | boolean | null | undefined;

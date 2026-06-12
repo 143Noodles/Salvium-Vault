@@ -393,6 +393,11 @@ async function handleOp(msg) {
             case 'ingestSparse':
                 value = opIngestSparse(payload);
                 break;
+            case 'expandSubaddressTable':
+                value = (typeof wallet.expand_subaddress_table === 'function')
+                    ? wallet.expand_subaddress_table()
+                    : '{"success":true,"noop":true}';
+                break;
             case 'flushDerivedState': {
                 // Runs the deferred post-passes once, then publishes fresh state.
                 // Instrumented: the first flush after a fully-deferred restore is the
