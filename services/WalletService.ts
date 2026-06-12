@@ -467,15 +467,24 @@ function shouldSuppressIncomingWalletChange(
   return Boolean(key && spendLikeOutgoingTransferKeys.has(key));
 }
 
+let estimatorTipHeight = 0;
+/** Anchor the height→time estimator at the live tip so recent heights map to the
+ * present (the fixed 120s assumption drifted ~2.5 days over 8 months and misdated
+ * recent rows). Updated by the SSE/new-block path. */
+export function noteEstimatorTipHeight(height: number): void {
+  if (Number.isFinite(height) && height > estimatorTipHeight) estimatorTipHeight = height;
+}
+
 function estimateTimestampFromHeight(height: number): number {
   const REFERENCE_HEIGHT = 334750;
   const REFERENCE_TIMESTAMP = new Date('2025-10-13T00:00:00Z').getTime();
-  const BLOCK_TIME_MS = 120 * 1000;
-
-  const heightDiff = height - REFERENCE_HEIGHT;
-  const estimatedTimestamp = REFERENCE_TIMESTAMP + (heightDiff * BLOCK_TIME_MS);
-
-  return estimatedTimestamp;
+  const FALLBACK_BLOCK_MS = 120 * 1000;
+  if (estimatorTipHeight > REFERENCE_HEIGHT + 1000) {
+    const now = Date.now();
+    const avgMs = (now - REFERENCE_TIMESTAMP) / (estimatorTipHeight - REFERENCE_HEIGHT);
+    return now - (estimatorTipHeight - height) * avgMs;
+  }
+  return REFERENCE_TIMESTAMP + (height - REFERENCE_HEIGHT) * FALLBACK_BLOCK_MS;
 }
 
 function getTxTypeLabel(txType: number | undefined, direction: 'in' | 'out' | 'pending', coinbase?: boolean): string {
@@ -1195,6 +1204,7 @@ export class WalletService {
   private daemonAddress: string = DEFAULT_DAEMON;
   private network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet';
   private wasmAssetVersion: string = WASM_CACHE_VERSION;
+  private _tokenInfoMemCache: Map<string, Record<string, unknown>> | null = null;
 
   private blockStreamConnection: EventSource | null = null;
   private newBlockCallbacks: NewBlockCallback[] = [];
@@ -1443,7 +1453,9 @@ export class WalletService {
    */
   private async startWorkerEngine(): Promise<void> {
     const wasmAssetVersion = await this.resolveWasmAssetVersion();
-    const glueUrl = '/api/wasm/SalviumWallet.js?v=' + encodeURIComponent(wasmAssetVersion);
+    // Path-versioned (no query): query-keyed wasm URLs were cache-poisonable with
+    // mismatched pairs — versioned paths are a pristine address space per release.
+    const glueUrl = '/api/wasm/' + encodeURIComponent(WASM_CACHE_VERSION) + '/SalviumWallet.js';
 
     const version = encodeURIComponent(wasmAssetVersion);
     // The WASM binary is VERSION-COUPLED to the worker/glue of this exact build, so it
@@ -1452,7 +1464,7 @@ export class WalletService {
     // cdn stays for version-independent bulk chain data only (chunks, spent-index).
     // ~MBs through the origin is fine; the Cloudflare throttle only mattered for the
     // 285MB chunk bundle.
-    const wasmUrl = `/api/wasm/SalviumWallet.wasm?v=${version}`;
+    const wasmUrl = '/api/wasm/' + encodeURIComponent(WASM_CACHE_VERSION) + '/SalviumWallet.wasm';
 
     reportClientEvent('wasm.script_load_started', {
       level: 'info',
@@ -1908,6 +1920,23 @@ export class WalletService {
       }, 'warn');
       throw new Error('Asset type is required');
     }
+    // Token metadata is mint-time-immutable: cache resolved lookups persistently.
+    // The uncached fallback chain can take ~30s (inferred mint-index path) and used
+    // to re-run on EVERY assets-page mount.
+    const metaCacheKey = `salvium_token_meta_v1:${this.network}:${assetType}`;
+    if (!this._tokenInfoMemCache) this._tokenInfoMemCache = new Map();
+    const memHit = this._tokenInfoMemCache.get(metaCacheKey);
+    if (memHit) return memHit;
+    try {
+      const stored = window.localStorage.getItem(metaCacheKey);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === 'object' && parsed.asset_type) {
+          this._tokenInfoMemCache.set(metaCacheKey, parsed);
+          return parsed;
+        }
+      }
+    } catch {}
     const candidates = this.buildTokenInfoCandidates(assetType);
     let bestResult: Record<string, unknown> | null = null;
     let bestScore = -1;
@@ -1983,6 +2012,12 @@ export class WalletService {
     }
 
     if (bestResult) {
+      try {
+        if ((bestResult as any).asset_type && ((bestResult as any).name || (bestResult as any).ticker)) {
+          this._tokenInfoMemCache.set(metaCacheKey, bestResult);
+          window.localStorage.setItem(metaCacheKey, JSON.stringify(bestResult));
+        }
+      } catch {}
       if (this.shouldTryInferredTokenInfo(bestResult)) {
         inferredAttempted = true;
         const inferred = await this.fetchInferredTokenInfo(((bestResult as any)?.asset_type as string) || assetType);
@@ -7318,6 +7353,7 @@ export class WalletService {
 
           if (data.type === 'new_block') {
             this.lastSSEBlockHeight = data.toHeight || data.fromHeight || this.lastSSEBlockHeight;
+            noteEstimatorTipHeight(this.lastSSEBlockHeight);
 
             // Feed the network-height cache so the periodic pollers (12s heartbeat / 15s
             // watchdog / 30s checkSync) hit the cache instead of re-fetching /api/daemon/info.

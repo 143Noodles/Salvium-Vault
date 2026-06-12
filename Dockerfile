@@ -40,6 +40,7 @@ RUN npm ci --only=production
 COPY server.cjs ./
 COPY server-csp-worker.cjs ./
 COPY wallet/ ./wallet/
+COPY wallet-legacy/ ./wallet-legacy/
 COPY assets/ ./assets/
 COPY utils/ ./utils/
 COPY --from=build /app/dist ./dist

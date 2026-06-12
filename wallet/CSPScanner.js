@@ -361,7 +361,7 @@ class CSPScanner {
         }
     }
 
-    static WASM_VERSION = '8.1.4-20260611';
+    static WASM_VERSION = '8.2.6-20260612';
 
     // fetch() with a hard timeout so a stuck/half-open connection can't hang init/scan forever.
     static async fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
@@ -503,10 +503,10 @@ class CSPScanner {
             const h = (typeof location !== 'undefined' && location.hostname) ||
                       (typeof self !== 'undefined' && self.location && self.location.hostname) || '';
             if (h === 'vault-test.salvium.tools') {
-                return 'https://cdn.salvium.tools/api/wasm/' + file + '?v=' + CSPScanner.WASM_VERSION;
+                return 'https://cdn.salvium.tools/api/wasm/' + encodeURIComponent(CSPScanner.WASM_VERSION) + '/' + file;
             }
         } catch (e) {}
-        return '/vault/api/wasm/' + file + '?v=' + CSPScanner.WASM_VERSION;
+        return '/vault/api/wasm/' + encodeURIComponent(CSPScanner.WASM_VERSION) + '/' + file;
     }
 
     async fetchWasmBinary() {

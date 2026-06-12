@@ -1,4 +1,4 @@
-export const WASM_CACHE_VERSION = '8.1.4-20260611';
+export const WASM_CACHE_VERSION = '8.2.6-20260612';
 
 type WasmAssetDescriptor = {
   filename?: string;

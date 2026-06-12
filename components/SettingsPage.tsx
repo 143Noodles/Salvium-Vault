@@ -732,37 +732,11 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                </Card>
             </div>
 
-            {showMobileDebug && (
-               <div className="space-y-4">
-                  <h3 className="text-xs uppercase font-bold text-text-secondary tracking-wider ml-1">Debug</h3>
-
-                  <Card>
-                     <div className="flex items-center justify-between gap-4">
-                        <div className="flex gap-4">
-                           <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
-                              <Monitor size={20} />
-                           </div>
-                           <div>
-                              <h4 className="text-white font-medium mb-1">Sync Diagnostics</h4>
-                              <p className="text-sm text-text-muted max-w-sm">
-                                 Open a copyable device, storage, and wallet sync dump for support.
-                              </p>
-                           </div>
-                        </div>
-	                        <Button variant="secondary" onClick={() => setShowDebugPrivacyNotice(true)} className="px-4 py-2 md:px-6 md:py-2.5">
-	                           <Monitor size={16} className="mr-2" />
-	                           Open
-	                        </Button>
-                     </div>
-                  </Card>
-               </div>
-            )}
-
             <div className="space-y-4">
                <h3 className="text-xs uppercase font-bold text-text-secondary tracking-wider ml-1">{t('settings.sections.securityPrivacy')}</h3>
 
                <Card className="space-y-6">
-                  <div className="flex items-center justify-between gap-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
                      <div className="flex gap-4 min-w-0">
                         <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
                            <Network size={20} />
@@ -772,7 +746,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                            <p className="text-sm text-text-muted max-w-sm">{t('settings.connection.description')}</p>
                         </div>
                      </div>
-                     <NodeSelector settings />
+                     <div className="pl-[60px] sm:pl-0 shrink-0">
+                        <NodeSelector settings />
+                     </div>
                   </div>
 
                   <div className="h-[1px] bg-white/5 w-full"></div>
@@ -922,7 +898,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                <h3 className="text-xs uppercase font-bold text-text-secondary tracking-wider ml-1">{t('settings.sections.preferences')}</h3>
 
                <Card className="space-y-6">
-                  <div className="flex items-center justify-between gap-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
                      <div className="flex gap-4">
                         <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
                            <Globe size={20} />
@@ -932,12 +908,14 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                            <p className="text-sm text-text-muted">{t('settings.language.description')}</p>
                         </div>
                      </div>
-                     <LanguageSelector />
+                     <div className="pl-[60px] sm:pl-0 shrink-0">
+                        <LanguageSelector />
+                     </div>
                   </div>
 
                   <div className="h-[1px] bg-white/5 w-full"></div>
 
-                  <div className="flex items-center justify-between gap-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
                      <div className="flex gap-4">
                         <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
                            <DollarSign size={20} />
@@ -947,7 +925,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                            <p className="text-sm text-text-muted">{t('settings.currency.description')}</p>
                         </div>
                      </div>
-                     <CurrencySelector />
+                     <div className="pl-[60px] sm:pl-0 shrink-0">
+                        <CurrencySelector />
+                     </div>
                   </div>
                </Card>
             </div>
