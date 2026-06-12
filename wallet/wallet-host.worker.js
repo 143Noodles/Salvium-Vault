@@ -183,10 +183,11 @@ async function handleInit(config) {
             throw new Error('SalviumWallet factory not found after importScripts(' + config.glueUrl + ')');
         }
 
+        let wasmFetchBust = '';
         Module = await factory({
             locateFile: function (path) {
                 if (path && /\.wasm$/.test(path)) {
-                    return config.wasmUrl;
+                    return config.wasmUrl + wasmFetchBust;
                 }
                 return path;
             },
@@ -223,6 +224,38 @@ async function handleInit(config) {
         initDone = true;
         initInProgress = false;
 
+        // PAIR SELF-VERIFICATION: stale wasm bytes survive in cache layers we cannot
+        // clear remotely (e.g. a WebView HTTP cache honoring a historically-served
+        // immutable header). Probe a signature whose arity changed across builds; on
+        // mismatch refetch with a cache-busting param no cache can answer.
+        try {
+            const proto = Module && Module.WasmWallet && Module.WasmWallet.prototype;
+            const arity = proto && typeof proto.ingest_sparse_transactions === 'function'
+                ? proto.ingest_sparse_transactions.length
+                : -1;
+            if (arity >= 0 && arity !== 5) {
+                postTelemetry('wallet.wasm_pair_mismatch_healed', 'warn', 'stale arity=' + arity, {
+                    endpoint: String(config.wasmUrl || ''),
+                    reason: 'stale-wasm-bytes'
+                });
+                // Bust BOTH files: glue and binary are a matched pair and the same
+                // poisoned cache serves both — a fresh binary under the stale glue
+                // hard-aborts on the import table (the launch-day import #229 abort).
+                wasmFetchBust = '&fresh=' + Math.random().toString(36).slice(2);
+                importScripts(config.glueUrl + wasmFetchBust);
+                const freshFactory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
+                Module = await freshFactory({
+                    locateFile: function (path) {
+                        if (path && /\.wasm$/.test(path)) {
+                            return config.wasmUrl + wasmFetchBust;
+                        }
+                        return path;
+                    },
+                    print: function () { },
+                    printErr: function () { }
+                });
+            }
+        } catch (verifyErr) { }
         postToClient({ kind: 'ready', wasmVersion: resolveWasmVersion() });
     } catch (err) {
         initInProgress = false;
@@ -368,6 +401,18 @@ async function handleOp(msg) {
                 value = (typeof wallet.flush_derived_state === 'function')
                     ? wallet.flush_derived_state()
                     : '{"success":true,"noop":true}';
+                // Surface wallet-state self-repairs: duplicate output entries are a
+                // wrong-balance class; the field must never carry them silently.
+                try {
+                    if (typeof wallet.get_last_dup_repair_detail === 'function') {
+                        const dupDetail = wallet.get_last_dup_repair_detail();
+                        if (dupDetail && dupDetail.length > 0) {
+                            postTelemetry('wallet.duplicate_outputs_repaired', 'warn', String(dupDetail).slice(0, 300), {
+                                reason: 'flush-self-repair'
+                            });
+                        }
+                    }
+                } catch (dupErr) { }
                 pushDelta(['snapshot', 'syncStatus', 'transactions', 'flags']);
                 break;
             }

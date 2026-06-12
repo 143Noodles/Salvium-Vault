@@ -103,7 +103,15 @@ export function mergeTransactionsByDirection(
     }, null as WalletTransaction | null)!;
   });
 
-  return normalizedTransactions.sort((a, b) => b.timestamp - a.timestamp);
+  // Height is the authoritative order for confirmed rows; timestamps can be
+  // estimates (height-derived fallbacks drift) and misfile rows by days. Pending
+  // (height 0) sorts first via the Infinity fallback.
+  return normalizedTransactions.sort((a, b) => {
+    const ah = a.height && a.height > 0 ? a.height : Number.POSITIVE_INFINITY;
+    const bh = b.height && b.height > 0 ? b.height : Number.POSITIVE_INFINITY;
+    if (bh !== ah) return bh - ah;
+    return (b.timestamp || 0) - (a.timestamp || 0);
+  });
 }
 
 export function findNewTransactionsByDirection(

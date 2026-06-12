@@ -111,57 +111,26 @@ const RUNTIME_FRESHNESS_ERROR_REPORT_INTERVAL_MS = 300_000;
 let runtimeFreshnessCheckInFlight = false;
 let lastRuntimeFreshnessCheckAt = 0;
 let lastRuntimeFreshnessErrorReportAt = 0;
-let deferredRuntimeReloadTimer: number | null = null;
 
 if (typeof window !== 'undefined') {
   (window as typeof window & { __salviumWasmCacheVersion?: string }).__salviumWasmCacheVersion = WASM_CACHE_VERSION;
 }
 
-const isRuntimeReloadUnsafe = (): boolean => {
-  if (typeof window === 'undefined') return false;
 
-  try {
-    const activeRestoreRaw = window.localStorage.getItem('salvium_restore_scan_session');
-    if (activeRestoreRaw) {
-      const activeRestore = JSON.parse(activeRestoreRaw);
-      if (activeRestore?.type === 'restore-full-rescan' && activeRestore?.status === 'active') {
-        return true;
-      }
-    }
-  } catch {
-    // Fall through to the DOM signal.
-  }
+if (typeof window !== 'undefined') {
+  window.addEventListener('salvium:force-reload', (event: any) => {
+    const reason = event?.detail?.reason || 'forced';
+    void clearVaultCachesAndReload(`force:${reason}`, { force: true });
+  });
+}
 
-  try {
-    const scanActiveElement = document.getElementById('scan-active-indicator');
-    if (!scanActiveElement) return false;
-    const style = window.getComputedStyle(scanActiveElement);
-    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '0') > 0;
-  } catch {
-    return false;
-  }
-};
-
-const clearVaultCachesAndReload = async (reason: string, options: { force?: boolean } = {}) => {
+const clearVaultCachesAndReload = async (reason: string, _options: { force?: boolean } = {}) => {
   if (typeof window === 'undefined') return;
 
-  if (!options.force && isRuntimeReloadUnsafe()) {
-    reportClientEvent('frontend.runtime_reload_deferred', {
-      level: 'warn',
-      context: {
-        reason,
-        source: 'active_scan',
-      },
-    });
-
-    if (deferredRuntimeReloadTimer == null) {
-      deferredRuntimeReloadTimer = window.setTimeout(() => {
-        deferredRuntimeReloadTimer = null;
-        void clearVaultCachesAndReload(reason);
-      }, 60000);
-    }
-    return;
-  }
+  // UPDATE POLICY: any staleness reloads IMMEDIATELY. The old defer-while-scanning
+  // grace period is gone — scans resume from the journal, so an interrupted scan
+  // costs seconds while a deferred update costs minutes of broken wallet (and once
+  // livelocked an entire launch-night session class).
 
   const reloadMarker = `${reason}:${BUILD_ID}`;
   try {

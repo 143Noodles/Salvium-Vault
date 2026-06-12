@@ -1736,6 +1736,16 @@ class CSPScanService {
         if (this.currentScanId) {
           recordScanError(this.currentScanId, err?.error || err?.message || 'Unknown scan error').catch(() => {});
         }
+        (() => {
+          // FORCED UPDATE: a wasm-pair signature mismatch means this session's cached
+          // code cannot ever scan — reload NOW (index.tsx listener clears caches first).
+          try {
+            const msg = String(err?.error || err?.message || '');
+            if (/called with \d+ arguments, expected \d+/.test(msg)) {
+              window.dispatchEvent(new CustomEvent('salvium:force-reload', { detail: { reason: 'wasm-pair-mismatch' } }));
+            }
+          } catch {}
+        })();
         emitScanTelemetry('scan.worker_error', {
           phase: this.activePhase || 'unknown',
           reason: err?.error || err?.message || 'Unknown scan error',
@@ -4581,7 +4591,13 @@ class CSPScanService {
 
     const missingIngestedChunks = sortedChunks.filter((chunkStart) => !successfullyIngestedChunks.has(chunkStart));
     if (missingIngestedChunks.length > 0) {
-      throw new Error(`Sparse ingest did not complete ${missingIngestedChunks.length} requested chunk(s): ${missingIngestedChunks.slice(0, 10).join(',')}`);
+      // Carry the REAL per-chunk errors (recorded into phase3Issues by the consumer
+      // catch) — the bare accounting summary hid the actual failure for a full
+      // launch-day incident.
+      const detail = phase3Issues.length > 0
+        ? ` | recorded issues: ${phase3Issues.slice(-3).join(' ;; ').slice(0, 300)}`
+        : ' | no consumer errors recorded (chunk never reached ingest)';
+      throw new Error(`Sparse ingest did not complete ${missingIngestedChunks.length} requested chunk(s): ${missingIngestedChunks.slice(0, 10).join(',')}${detail}`);
     }
     const STAKE_RETURN_OFFSET = 21601;
 

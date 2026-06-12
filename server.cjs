@@ -1738,6 +1738,31 @@ function resolveConfiguredWasmPath(requestedFilename) {
     return { actualFilename, fullPath: path.join(searchDirs[0], actualFilename) };
 }
 function sendConfiguredWasmAsset(req, res, requestedFilename) {
+    // VERSION COMPATIBILITY: cached pre-8.x clients must get the MATCHED legacy wasm
+    // pair (mixed pairs abort scans with arity errors). The ?v param is an etag-style
+    // composite carrying FILE SIZES ("js:...:\"<size>-<mtime>\"|wasm:..."), so the only
+    // exact discriminator is a legacy-size match. DEFAULT IS CURRENT: a prefix-based
+    // check here once classified every fresh fetch as legacy and served the old engine
+    // to new code — fail-current, never fail-legacy.
+    try {
+        const requestedVersion = typeof req.query?.v === 'string' ? decodeURIComponent(req.query.v) : '';
+        if (requestedVersion && /^(SalviumWallet\.(js|wasm))$/.test(requestedFilename)) {
+            const legacyPath = path.join(__dirname, 'wallet-legacy', requestedFilename);
+            if (fsSync.existsSync(legacyPath)) {
+                const legacySize = fsSync.statSync(legacyPath).size;
+                const kind = requestedFilename.endsWith('.wasm') ? 'wasm' : 'js';
+                const m = requestedVersion.match(new RegExp(kind + ':SalviumWallet\\.' + kind + ':"(\\d+)-'));
+                const requestedSize = m ? Number(m[1]) : NaN;
+                if (Number.isFinite(requestedSize) && requestedSize === legacySize) {
+                    res.set({
+                        'Content-Type': kind === 'wasm' ? 'application/wasm' : 'application/javascript',
+                        'Cache-Control': 'public, max-age=31536000, immutable',
+                    });
+                    return res.sendFile(legacyPath);
+                }
+            }
+        }
+    } catch {}
     const resolved = resolveConfiguredWasmPath(requestedFilename);
     if (!resolved) {
         console.warn('[wasm] Asset request could not be resolved', { requestedFilename });
@@ -5650,7 +5675,7 @@ app.post('/api/salpay/orders/:orderId/callback', salPayCallbackRateLimit, async 
     return proxySalPayAgentRequest(req, res, `/orders/${encodeURIComponent(req.params.orderId)}/callback`);
 });
 const SERVER_BUILD_TIME = new Date().toISOString();
-const SERVER_VERSION = "8.1.4-20260611";
+const SERVER_VERSION = "8.2.6-20260612";
 
 const noCacheHeaders = (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -5786,6 +5811,14 @@ app.get('/api/network', noCacheHeaders, (req, res) => {
         disableStakeFilter,
         forceSingleChunkScan
     });
+});
+// Versioned-path wasm serving: query-string cache keys proved poisonable (clients
+// cached mismatched pairs under ?v= URLs with immutable headers that survive every
+// remote-clearing mechanism). Path-versioned URLs are a fresh address space per
+// release; only current-build clients construct them, so they always get the
+// current matched pair.
+app.get(['/api/wasm/:version/:filename', '/vault/api/wasm/:version/:filename'], (req, res) => {
+    return sendConfiguredWasmAsset(req, res, req.params.filename);
 });
 app.get(['/api/wasm/:filename', '/vault/api/wasm/:filename'], (req, res) => {
     const filename = req.params.filename;
