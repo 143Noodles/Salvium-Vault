@@ -77,9 +77,66 @@ setInterval(() => {
     }
 }, RATE_LIMIT_CLEANUP_INTERVAL);
 
+// Cloudflare's published egress ranges (https://www.cloudflare.com/ips/, stable
+// for years). CF-Connecting-IP is only trusted when the hop we actually heard
+// from is inside them — a direct-origin caller spoofing the header is keyed by
+// its own address instead (no per-request key rotation, no store inflation).
+const rlNet = require('node:net');
+const CF_IPV4_RANGES = [
+    ['173.245.48.0', 20], ['103.21.244.0', 22], ['103.22.200.0', 22],
+    ['103.31.4.0', 22], ['141.101.64.0', 18], ['108.162.192.0', 18],
+    ['190.93.240.0', 20], ['188.114.96.0', 20], ['197.234.240.0', 22],
+    ['198.41.128.0', 17], ['162.158.0.0', 15], ['104.16.0.0', 13],
+    ['104.24.0.0', 14], ['172.64.0.0', 13], ['131.0.72.0', 22],
+];
+const CF_IPV6_PREFIX_RE = /^(2400:cb00|2606:4700|2803:f800|2405:b500|2405:8100|2c0f:f248|2a06:98c[0-7]):/i;
+
+function ipv4ToInt(ip) {
+    const parts = ip.split('.');
+    if (parts.length !== 4) return null;
+    let v = 0;
+    for (const part of parts) {
+        const n = Number(part);
+        if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+        v = (v * 256) + n;
+    }
+    return v;
+}
+
+function isCloudflareAddress(rawIp) {
+    if (typeof rawIp !== 'string' || !rawIp) return false;
+    let ip = rawIp.trim();
+    if (ip.startsWith('::ffff:')) ip = ip.slice(7); // v4-mapped
+    const kind = rlNet.isIP(ip);
+    if (kind === 4) {
+        const v = ipv4ToInt(ip);
+        if (v === null) return false;
+        return CF_IPV4_RANGES.some(([base, bits]) => {
+            const b = ipv4ToInt(base);
+            const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+            return ((v & mask) >>> 0) === ((b & mask) >>> 0);
+        });
+    }
+    if (kind === 6) return CF_IPV6_PREFIX_RE.test(ip);
+    return false;
+}
+
 function getRateLimitKey(req) {
-    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
-    return ip;
+    // Behind Cloudflare -> caddy, 'trust proxy 1' resolves req.ip to the CF EDGE
+    // ip, so every user behind that edge shared one bucket: one scanning wallet
+    // (hundreds of chunk fetches/min) starved everyone else on the edge into
+    // blanket 429s ("Disconnected", dead telemetry). Key on the real client via
+    // CF-Connecting-IP, but ONLY when the request demonstrably came through
+    // Cloudflare and the header is a real IP; everything else keys on req.ip.
+    const reqIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    const cfIp = req.headers['cf-connecting-ip'];
+    if (typeof cfIp === 'string') {
+        const candidate = cfIp.trim();
+        if (candidate.length < 64 && rlNet.isIP(candidate) && isCloudflareAddress(reqIp)) {
+            return candidate;
+        }
+    }
+    return reqIp;
 }
 
 function checkRateLimit(req, maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'general') {
@@ -95,6 +152,10 @@ function checkRateLimit(req, maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
     data.count++;
 
     if (data.count > maxRequests) {
+        if (!data.loggedLimited) {
+            data.loggedLimited = true;
+            console.warn(`[RateLimit] 429ing ${key} (window count ${data.count} > ${maxRequests})`);
+        }
         return { limited: true, remaining: 0, resetIn: RATE_LIMIT_WINDOW_MS - (now - data.windowStart) };
     }
 
@@ -5675,7 +5736,7 @@ app.post('/api/salpay/orders/:orderId/callback', salPayCallbackRateLimit, async 
     return proxySalPayAgentRequest(req, res, `/orders/${encodeURIComponent(req.params.orderId)}/callback`);
 });
 const SERVER_BUILD_TIME = new Date().toISOString();
-const SERVER_VERSION = "8.2.11-20260612";
+const SERVER_VERSION = "8.2.12-20260612";
 
 const noCacheHeaders = (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
