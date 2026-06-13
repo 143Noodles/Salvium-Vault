@@ -62,8 +62,24 @@ const corsOptions = {
 };
 
 const rateLimitStore = new Map();
+// Rate-limit observability (so a future shared-bucket pileup is countable, not
+// just a buried log line): rolling totals + the keys currently being 429'd.
+const rateLimitStats = {
+    totalLimited: 0,           // cumulative 429s since boot
+    limitedByScope: {},        // scope -> cumulative 429s
+    recentKeys: new Map(),     // key -> { scope, count, firstAt, lastAt }, pruned with the store
+};
+function recordRateLimited(scope, key) {
+    rateLimitStats.totalLimited++;
+    rateLimitStats.limitedByScope[scope] = (rateLimitStats.limitedByScope[scope] || 0) + 1;
+    const now = Date.now();
+    const existing = rateLimitStats.recentKeys.get(key);
+    if (existing) { existing.count++; existing.lastAt = now; }
+    else { rateLimitStats.recentKeys.set(key, { scope, count: 1, firstAt: now, lastAt: now }); }
+}
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute window
 const RATE_LIMIT_MAX_REQUESTS = 300; // 300 requests per minute for general endpoints
+const DAEMON_INFO_RATE_MAX = 1200; // 20/s per client — far above any legit poll, but a ceiling for cold-cache stampede
 const RATE_LIMIT_TX_MAX = 500; // 500 transaction broadcasts per minute
 const RATE_LIMIT_SALPAY_CALLBACK_MAX = Math.max(1, Number.parseInt(process.env.SALPAY_CALLBACK_RATE_LIMIT_MAX || '60', 10) || 60); // SalPay callback relay requests per minute
 const RATE_LIMIT_CLEANUP_INTERVAL = 300000; // Clean up every 5 minutes
@@ -73,6 +89,11 @@ setInterval(() => {
     for (const [key, data] of rateLimitStore.entries()) {
         if (now - data.windowStart > RATE_LIMIT_WINDOW_MS * 2) {
             rateLimitStore.delete(key);
+        }
+    }
+    for (const [key, info] of rateLimitStats.recentKeys.entries()) {
+        if (now - info.lastAt > RATE_LIMIT_WINDOW_MS * 10) {
+            rateLimitStats.recentKeys.delete(key);
         }
     }
 }, RATE_LIMIT_CLEANUP_INTERVAL);
@@ -152,6 +173,7 @@ function checkRateLimit(req, maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
     data.count++;
 
     if (data.count > maxRequests) {
+        recordRateLimited(scope, key);
         if (!data.loggedLimited) {
             data.loggedLimited = true;
             console.warn(`[RateLimit] 429ing ${key} (window count ${data.count} > ${maxRequests})`);
@@ -189,6 +211,17 @@ function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
                     path.startsWith('/vault/api/wallet/get-transactions-by-hash')
                 )
                 : false;
+        // Cached daemon status poll (10s server cache, singleflight-coalesced
+        // refresh): every wallet polls it for sync state, so it dominated the
+        // non-exempt traffic that exhausted the (formerly shared) bucket. Rather
+        // than fully exempt it (which would remove the abuse ceiling on the
+        // uncoalesced cold-cache fallback), give it a dedicated, generous
+        // per-client bucket — normal polling is nowhere near DAEMON_INFO_RATE_MAX,
+        // but a stampede is still capped. EXACT path match (no startsWith) so
+        // /api/daemon/info-* can't slip through.
+        const isDaemonStatusPoll =
+            req.method === 'GET' &&
+            (path === '/api/daemon/info' || path === '/vault/api/daemon/info');
         const isReadOnlyAssetEndpoint =
             req.method === 'GET' &&
             (
@@ -213,9 +246,13 @@ function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
         if (isReadOnlyAssetEndpoint || isStaticAsset) {
             return next();
         }
-        const result = checkRateLimit(req, maxRequests, scope);
+        // daemon/info: dedicated generous per-client ceiling (not full exemption).
+        const useDaemonInfoBucket = scope === 'general' && isDaemonStatusPoll;
+        const effectiveScope = useDaemonInfoBucket ? 'daemon-info' : scope;
+        const effectiveMax = useDaemonInfoBucket ? DAEMON_INFO_RATE_MAX : maxRequests;
+        const result = checkRateLimit(req, effectiveMax, effectiveScope);
 
-        res.setHeader('X-RateLimit-Limit', maxRequests);
+        res.setHeader('X-RateLimit-Limit', effectiveMax);
         res.setHeader('X-RateLimit-Remaining', result.remaining);
         res.setHeader('X-RateLimit-Reset', Math.ceil(result.resetIn / 1000));
 
@@ -5736,7 +5773,7 @@ app.post('/api/salpay/orders/:orderId/callback', salPayCallbackRateLimit, async 
     return proxySalPayAgentRequest(req, res, `/orders/${encodeURIComponent(req.params.orderId)}/callback`);
 });
 const SERVER_BUILD_TIME = new Date().toISOString();
-const SERVER_VERSION = "8.2.12-20260612";
+const SERVER_VERSION = "8.2.13-20260612";
 
 const noCacheHeaders = (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -5847,6 +5884,16 @@ app.get(['/api/debug/health', '/vault/api/debug/health'], noCacheHeaders, (req, 
             hits: cspBundleStats.hits
         },
         eventLoopLagMs: serverRuntimeStats.eventLoopLagMs,
+        rateLimit: (() => {
+            const keys = Array.from(rateLimitStats.recentKeys.values());
+            const topKeyLimitedCount = keys.reduce((m, k) => Math.max(m, k.count), 0);
+            return {
+                totalLimited: rateLimitStats.totalLimited,
+                limitedByScope: rateLimitStats.limitedByScope,
+                activeLimitedKeyCount: keys.length,
+                topKeyLimitedCount,
+            };
+        })(),
         activeMaintenanceJobs: Array.from(maintenanceJobs.values()).map(job => ({
             id: job.id,
             name: job.name,
@@ -5855,6 +5902,21 @@ app.get(['/api/debug/health', '/vault/api/debug/health'], noCacheHeaders, (req, 
         })),
         lastMaintenanceJob: serverRuntimeStats.lastMaintenanceJob,
         clientTelemetry: getClientTelemetryHealth()
+    });
+});
+app.get(['/api/debug/rate-limit', '/vault/api/debug/rate-limit'], noCacheHeaders, (req, res) => {
+    // Admin-gated: returns the actual 429'd keys (client IPs) for diagnosing a
+    // shared-bucket pileup. Default-deny via blockIfNotAdmin (404 without token).
+    if (blockIfNotAdmin(req, res)) return;
+    const keys = Array.from(rateLimitStats.recentKeys.entries())
+        .map(([key, info]) => ({ key, scope: info.scope, count: info.count, firstAt: info.firstAt, lastAt: info.lastAt }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 50);
+    res.json({
+        totalLimited: rateLimitStats.totalLimited,
+        limitedByScope: rateLimitStats.limitedByScope,
+        activeLimitedKeyCount: rateLimitStats.recentKeys.size,
+        keys,
     });
 });
 app.get('/api/network', noCacheHeaders, (req, res) => {
