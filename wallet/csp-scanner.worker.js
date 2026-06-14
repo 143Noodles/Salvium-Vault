@@ -856,23 +856,45 @@ async function handleScanKeyImagesOnly(msg) {
             clearTimeout(timeoutId);
         }
 
-        if (response.status === 404 || !response.ok) {
-            self.postMessage({
-                type: 'KEY_IMAGES_RESULT',
-                workerId,
-                startHeight,
-                endHeight: startHeight,
-                chunksProcessed: 0,
-                spent: [],
-                stats: { inputsScanned: 0, spentFound: 0, fetchMs: 0, scanMs: 0 }
-            });
-            return;
+        // A 404 only means "legitimately empty" when the server says the range is BEYOND TIP.
+        // The other 404 reason (cache_or_generation_failure) and any other non-OK (429 throttle,
+        // 5xx) are TRANSIENT FAILURES, not "no spends": swallowing them as an empty result would
+        // silently mark spent outputs unspent (overstated balance). Surface those as an error so
+        // the parent records a failed batch (failedBatchStarts) and retries.
+        if (response.status === 404) {
+            const reason404 = response.headers.get('X-CSP-Missing-Reason') || 'unknown';
+            if (reason404 === 'beyond_tip') {
+                self.postMessage({
+                    type: 'KEY_IMAGES_RESULT',
+                    workerId,
+                    startHeight,
+                    endHeight: startHeight,
+                    chunksProcessed: 0,
+                    spent: [],
+                    stats: { inputsScanned: 0, spentFound: 0, fetchMs: 0, scanMs: 0 }
+                });
+                return;
+            }
+            throw new Error(`CSP key-image batch 404 (${reason404})`);
+        }
+        if (!response.ok) {
+            throw new Error(`CSP key-image batch fetch failed: ${response.status}`);
         }
 
         const batchBuffer = await response.arrayBuffer();
         const fetchMs = performance.now() - fetchStart;
         const chunksReceived = parseInt(response.headers.get('X-CSP-Chunks') || '0');
         const batchEndHeight = parseInt(response.headers.get('X-CSP-End') || startHeight);
+
+        // A 200 can still be PARTIAL (some requested chunks missing in the middle). If the gap is
+        // beyond_tip it is legitimately empty; if it is a transient cache_or_generation_failure,
+        // those chunks' key images were never scanned — fail the batch so the parent retries it
+        // rather than silently advancing past unscanned spends.
+        const missingChunkStarts = response.headers.get('X-CSP-Missing-Chunk-Starts') || '';
+        const missingReason200 = response.headers.get('X-CSP-Missing-Reason') || 'none';
+        if (missingChunkStarts.trim() && missingReason200 !== 'beyond_tip') {
+            throw new Error(`CSP key-image batch incomplete (${missingReason200}; missing=${missingChunkStarts})`);
+        }
 
         const dataView = new DataView(batchBuffer);
         let offset = 0;

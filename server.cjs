@@ -80,9 +80,14 @@ function recordRateLimited(scope, key) {
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute window
 const RATE_LIMIT_MAX_REQUESTS = 300; // 300 requests per minute for general endpoints
 const DAEMON_INFO_RATE_MAX = 1200; // 20/s per client — far above any legit poll, but a ceiling for cold-cache stampede
+const SCAN_READ_RATE_MAX = Math.max(1, Number.parseInt(process.env.SCAN_READ_RATE_LIMIT_MAX || '3000', 10) || 3000); // per-IP/min ceiling for bulk scan reads (csp/sparse/bulk). ~10-25x a real restore burst; env-overridable so prod can raise without redeploy.
 const RATE_LIMIT_TX_MAX = 500; // 500 transaction broadcasts per minute
 const RATE_LIMIT_SALPAY_CALLBACK_MAX = Math.max(1, Number.parseInt(process.env.SALPAY_CALLBACK_RATE_LIMIT_MAX || '60', 10) || 60); // SalPay callback relay requests per minute
 const RATE_LIMIT_CLEANUP_INTERVAL = 300000; // Clean up every 5 minutes
+// Routine binary-proxy request/response hex logging is verbose and, for the full-body
+// dump, unbounded (a 50MB body -> ~100MB log line per request). Off by default; opt-in
+// for debugging only. Anomaly/error logs (signature mismatch, daemon errors) stay on.
+const DEBUG_BINARY_PROXY = process.env.SALVIUM_DEBUG_BINARY_PROXY === '1';
 
 setInterval(() => {
     const now = Date.now();
@@ -240,7 +245,7 @@ function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
                 path === '/manifest.json' ||
                 path === '/vault/manifest.json'
             );
-        if (scope === 'general' && (isClientTelemetryEndpoint || isScanReadEndpoint)) {
+        if (scope === 'general' && isClientTelemetryEndpoint) {
             return next();
         }
         if (isReadOnlyAssetEndpoint || isStaticAsset) {
@@ -248,8 +253,13 @@ function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
         }
         // daemon/info: dedicated generous per-client ceiling (not full exemption).
         const useDaemonInfoBucket = scope === 'general' && isDaemonStatusPoll;
-        const effectiveScope = useDaemonInfoBucket ? 'daemon-info' : scope;
-        const effectiveMax = useDaemonInfoBucket ? DAEMON_INFO_RATE_MAX : maxRequests;
+        // scan-read (csp/sparse/bulk): was fully exempt, which removed any abuse ceiling
+        // on unauthenticated bulk daemon fetches. Give it a dedicated, very generous
+        // per-IP bucket (mirrors daemon-info) — far above any real restore burst, but a
+        // flood ceiling. A 429 here is retryable client-side (scanners back off; no state risk).
+        const useScanReadBucket = scope === 'general' && isScanReadEndpoint;
+        const effectiveScope = useDaemonInfoBucket ? 'daemon-info' : (useScanReadBucket ? 'scan-read' : scope);
+        const effectiveMax = useDaemonInfoBucket ? DAEMON_INFO_RATE_MAX : (useScanReadBucket ? SCAN_READ_RATE_MAX : maxRequests);
         const result = checkRateLimit(req, effectiveMax, effectiveScope);
 
         res.setHeader('X-RateLimit-Limit', effectiveMax);
@@ -268,6 +278,24 @@ function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
 }
 
 const txRateLimit = rateLimitMiddleware(RATE_LIMIT_TX_MAX, 'tx');
+const NODE_VALIDATE_RATE_MAX = Math.max(1, Number.parseInt(process.env.NODE_VALIDATE_RATE_LIMIT_MAX || '60', 10) || 60); // per-IP/min for the explicit custom-node validate endpoint
+const nodeValidateRateLimit = rateLimitMiddleware(NODE_VALIDATE_RATE_MAX, 'node-validate');
+// Cookie-triggered custom-node revalidation runs in the hot per-request path. We must
+// NOT consume a per-request rate bucket here (a scan burst at cache-TTL expiry would
+// starve a legit user's revalidation). Instead: per-URL singleflight (dedupe concurrent
+// validations of the same base) + a small global in-flight cap so an attacker cycling
+// distinct URLs can't fan out unbounded DNS/outbound fetches. Over-cap => skip (serve auto).
+const NODE_REVALIDATE_MAX_INFLIGHT = Math.max(1, Number.parseInt(process.env.NODE_REVALIDATE_MAX_INFLIGHT || '8', 10) || 8);
+const customNodeRevalInflight = new Map(); // base -> Promise
+function scheduleCustomNodeRevalidation(base) {
+    if (customNodeRevalInflight.has(base)) return; // singleflight: already validating this URL
+    if (customNodeRevalInflight.size >= NODE_REVALIDATE_MAX_INFLIGHT) return; // global cap: shed, serve auto/stale
+    const p = Promise.resolve()
+        .then(() => validateCustomNode(base))
+        .catch(() => {})
+        .finally(() => { customNodeRevalInflight.delete(base); });
+    customNodeRevalInflight.set(base, p);
+}
 const salPayCallbackRateLimit = rateLimitMiddleware(RATE_LIMIT_SALPAY_CALLBACK_MAX, 'salpay-callback');
 const salPayOrderRateLimit = rateLimitMiddleware(RATE_LIMIT_SALPAY_CALLBACK_MAX, 'salpay-order');
 const clientTelemetryRateLimit = rateLimitMiddleware(900, 'client-telemetry');
@@ -5271,7 +5299,7 @@ function resolveRequestNodeOrder(req) {
         const base = choice.replace(/\/$/, '');
         const v = customNodeCache.get(base);
         if (v && v.ok && v.exp > Date.now()) primary = base;
-        if (!v || v.exp <= Date.now()) validateCustomNode(base).catch(() => {}); // serve-stale + revalidate
+        if (!v || v.exp <= Date.now()) scheduleCustomNodeRevalidation(base); // serve-stale + revalidate (singleflight + global cap, no per-req bucket)
     }
     if (!primary) return null; // unknown / unvalidated custom -> fall back to auto
     // Pinned node first, then seeds + hosted as a safety net so a dead pick can't brick the wallet.
@@ -5302,7 +5330,7 @@ app.get('/api/nodes', (req, res) => {
 });
 
 // Validate (SSRF-guard + live daemon probe) a user-supplied custom node URL.
-app.post('/api/nodes/validate', express.json({ limit: '4kb' }), async (req, res) => {
+app.post('/api/nodes/validate', nodeValidateRateLimit, express.json({ limit: '4kb' }), async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
     const url = String((req.body && req.body.url) || '').trim();
     if (!url) return res.status(400).json({ ok: false, error: 'bad_url' });
@@ -8422,14 +8450,18 @@ app.post(['/api/wallet-rpc/getblocks.bin', '/api/wallet-rpc/gethashes.bin', '/ge
             throw new Error('Request body is empty after conversion');
         }
 
-        const preview = requestBody.slice(0, Math.min(64, requestBody.length));
-        console.log(`[Binary Proxy POST] Request ID: ${requestId} - Request preview (first ${preview.length} bytes):`, preview.toString('hex'));
+        if (DEBUG_BINARY_PROXY) {
+            const preview = requestBody.slice(0, Math.min(64, requestBody.length));
+            console.log(`[Binary Proxy POST] Request ID: ${requestId} - Request preview (first ${preview.length} bytes):`, preview.toString('hex'));
+        }
 
         if (requestBody.length >= 9) {
             const sigA = requestBody.slice(0, 4).toString('hex');
             const sigB = requestBody.slice(4, 8).toString('hex');
             const version = requestBody[8].toString(16).padStart(2, '0');
-            console.log(`[Binary Proxy POST] Request ID: ${requestId} - Signature check - SigA: ${sigA}, SigB: ${sigB}, Version: ${version}`);
+            if (DEBUG_BINARY_PROXY) {
+                console.log(`[Binary Proxy POST] Request ID: ${requestId} - Signature check - SigA: ${sigA}, SigB: ${sigB}, Version: ${version}`);
+            }
             if (sigA !== '01110101' || sigB !== '01010201' || version !== '01') {
                 console.error(`[Binary Proxy POST] Request ID: ${requestId} - Signature mismatch! Expected SigB: 01010201, got: ${sigB}`);
             }
@@ -8438,11 +8470,10 @@ app.post(['/api/wallet-rpc/getblocks.bin', '/api/wallet-rpc/gethashes.bin', '/ge
         const contentType = 'application/octet-stream';
 
         console.log(`[Binary Proxy POST] Request ID: ${requestId} - Sending ${requestBody.length} bytes to daemon: ${targetUrl}`);
-        const requestPreview = requestBody.slice(0, Math.min(128, requestBody.length));
-        console.log(`[Binary Proxy POST] Request ID: ${requestId} - Request hex (first 128 bytes): ${requestPreview.toString('hex')}`);
-        const serverHex = requestBody.toString('hex');
-        console.log(`[Binary Proxy POST] Request ID: ${requestId} - Full request hex: ${serverHex}`);
-        console.log(`[Binary Proxy POST] Request ID: ${requestId} - First 64 bytes hex: ${serverHex.substring(0, 128)}`);
+        if (DEBUG_BINARY_PROXY) {
+            const requestPreview = requestBody.slice(0, Math.min(128, requestBody.length));
+            console.log(`[Binary Proxy POST] Request ID: ${requestId} - Request hex (first 128 bytes): ${requestPreview.toString('hex')}`);
+        }
 
         try {
             const bytes = Array.from(requestBody);
@@ -8744,8 +8775,10 @@ app.post(['/api/wallet-rpc/getblocks.bin', '/api/wallet-rpc/gethashes.bin', '/ge
         console.log(`[Binary Proxy POST] ${endpoint} succeeded`);
 
         if (responseData.length > 0) {
-            const preview = responseData.slice(0, Math.min(64, responseData.length));
-            console.log(`[Binary Proxy POST] Response preview (first ${preview.length} bytes): ${preview.toString('hex')}`);
+            if (DEBUG_BINARY_PROXY) {
+                const preview = responseData.slice(0, Math.min(64, responseData.length));
+                console.log(`[Binary Proxy POST] Response preview (first ${preview.length} bytes): ${preview.toString('hex')}`);
+            }
         } else {
             console.warn(`[Binary Proxy POST] Response is empty (0 bytes)!`);
         }
