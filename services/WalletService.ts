@@ -6542,8 +6542,14 @@ export class WalletService {
    * one run and its result. Display-only healing — balance lives in m_transfers.
    */
   healOutgoingHistoryAfterOpen(): Promise<number> {
+    // In-flight dedup only — clear the memo when it settles so EACH open re-runs
+    // the heal (a tx sent after the previous open's heal, or one whose hydration
+    // was retried under force, must get reconciled on the next open). The old
+    // permanent memo cached the first result forever and never re-healed.
     if (!this.healOutgoingHistoryPromise) {
-      this.healOutgoingHistoryPromise = this._healOutgoingHistoryInner().catch(() => 0);
+      this.healOutgoingHistoryPromise = this._healOutgoingHistoryInner()
+        .catch(() => 0)
+        .finally(() => { this.healOutgoingHistoryPromise = null; }) as Promise<number>;
     }
     return this.healOutgoingHistoryPromise;
   }
@@ -6563,7 +6569,13 @@ export class WalletService {
       await new Promise<void>((r) => setTimeout(r, 1000));
     }
     if (!this.isWalletReadySync()) return 0;
-    await this.hydrateRuntimeFullTxContext();
+    // FORCE hydration (not the throttled/governed call): a freshly-sent spending
+    // tx must be in m_runtime_full_txs for reconcile to reconstruct its out-leg
+    // (set m_dests = spent - change - fee, the stable value the reader prefers).
+    // The governed call skips already-attempted hashes and honours a 60s cooldown,
+    // so a send made minutes ago could be missed -> the reader stays on the
+    // fragile amount_in - change fallback (CryptoSyphon class).
+    await this.hydrateRuntimeFullTxContext({ force: true });
     const resultJson = await this.engineCallOptional<string>('reconcile_outgoing_payments');
     if (resultJson === null) return 0;
     const result = safeJsonParse<{ success?: boolean; reconciled?: number }>(resultJson, {}, 'healOutgoingHistoryAfterOpen');
