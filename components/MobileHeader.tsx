@@ -39,10 +39,13 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
         const timer = setTimeout(() => setConnectionGraceExpired(true), 20000);
         return () => clearTimeout(timer);
     }, [hasDaemonHeight]);
-    const isConnecting = !hasDaemonHeight &&
-        !connectionGraceExpired &&
-        typeof navigator !== 'undefined' &&
-        navigator.onLine !== false;
+    // During the grace window we're "connecting", NOT errored. navigator.onLine is
+    // intentionally NOT consulted here: mobile WebViews report it false transiently
+    // during the heavy WASM/cache load at login, which flashed a false "Error
+    // (disconnected)" before the first daemon poll landed. The grace timer (plus the
+    // arrival of a daemon height) is the reliable signal; a genuinely offline client
+    // still falls to the error state once the grace expires with no daemon height.
+    const isConnecting = !hasDaemonHeight && !connectionGraceExpired;
 
     return (
         <>
