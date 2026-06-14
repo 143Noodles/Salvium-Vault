@@ -2701,12 +2701,20 @@ class CSPScanService {
 	          for (let i = 0; i < txidList.length; i += 100) {
 	            const batch = txidList.slice(i, i + 100);
 	            try {
-	              const r = await fetchWithTimeout('/api/wallet/get-transactions-by-hash', {
-	                method: 'POST',
-	                headers: { 'Content-Type': 'application/json' },
-	                body: JSON.stringify({ hashes: batch }),
-	              });
-	              if (!r.ok) continue;
+	              // Transient throttle/server errors (429/5xx) must NOT silently drop a batch
+	              // (that leaves outgoing reconciliation incomplete) — back off and retry.
+	              let r: any = null;
+	              for (let attempt = 0; attempt < 3; attempt++) {
+	                r = await fetchWithTimeout('/api/wallet/get-transactions-by-hash', {
+	                  method: 'POST',
+	                  headers: { 'Content-Type': 'application/json' },
+	                  body: JSON.stringify({ hashes: batch }),
+	                });
+	                if (r.ok) break;
+	                if (r.status === 429 || r.status >= 500) { await new Promise(res => setTimeout(res, 250 * (attempt + 1))); continue; }
+	                break; // non-transient non-OK -> don't spin
+	              }
+	              if (!r || !r.ok) continue;
 	              const bytes = new Uint8Array(await r.arrayBuffer());
 	              if (bytes.length <= 8) continue;
 	              // Worker op: stages the buffer on the WASM heap and runs
