@@ -170,6 +170,26 @@ const IDB_VERSION = 1;
 const WALLET_HEALTH_WARNING_LOG_INTERVAL_MS = 15 * 60 * 1000;
 const SYNC_WATCHDOG_INTERVAL_MS = 15 * 1000;
 const SYNC_WATCHDOG_STALE_SCAN_MS = 90 * 1000;
+// Persist the last-known daemon tip (the PUBLIC chain height — not wallet data) so a
+// returning session can seed syncStatus.daemonHeight immediately on open. Otherwise it
+// starts at 0 and, if the first height fetch is slow/failing (weak signal at app open,
+// common on phones), the status pill flashes a false "disconnected" past the 20s grace —
+// even though the wallet is fine. The real tip corrects this within seconds via the
+// normal flow; the monotonic guard in setSyncStatus prevents any backwards jump.
+const LAST_DAEMON_TIP_KEY = 'salvium.lastDaemonTip';
+const readPersistedDaemonTip = (): number => {
+    try {
+        if (typeof window === 'undefined' || !window.localStorage) return 0;
+        const v = Number(window.localStorage.getItem(LAST_DAEMON_TIP_KEY) || 0);
+        return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+    } catch { return 0; }
+};
+const persistDaemonTip = (h: number): void => {
+    try {
+        if (typeof window === 'undefined' || !window.localStorage) return;
+        if (Number.isFinite(h) && h > 0) window.localStorage.setItem(LAST_DAEMON_TIP_KEY, String(Math.floor(h)));
+    } catch { /* storage unavailable / quota — non-fatal */ }
+};
 // Max time a responsive incremental catch-up may skip the heavy persist when nothing changed,
 // before forcing one full commit to advance the persisted resume height (bounds reload re-scan).
 const INCREMENTAL_PERSIST_THROTTLE_MS = 120 * 1000;
@@ -1268,7 +1288,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     const [syncStatus, setSyncStatusRaw] = useState<SyncStatus>({
         walletHeight: 0,
-        daemonHeight: 0,
+        daemonHeight: readPersistedDaemonTip(), // seed last-known tip so a returning login never sits at 0 (false "disconnected")
         isSyncing: false,
         progress: 0
     });
@@ -1292,13 +1312,36 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     }, []);
     const syncStatusRef = React.useRef<SyncStatus>({
         walletHeight: 0,
-        daemonHeight: 0,
+        daemonHeight: readPersistedDaemonTip(), // keep ref consistent with the seeded state
         isSyncing: false,
         progress: 0
     });
     useEffect(() => {
         syncStatusRef.current = syncStatus;
     }, [syncStatus]);
+    // Persist the daemon tip whenever a positive value is present, so the next session can
+    // seed it on open (re-writing the hydrated value is a harmless idempotent no-op).
+    useEffect(() => {
+        if (syncStatus.daemonHeight > 0) persistDaemonTip(syncStatus.daemonHeight);
+    }, [syncStatus.daemonHeight]);
+    // Freshness fallback for the provisional hydrated tip: the seeded tip suppresses the
+    // FALSE "disconnected" flash during a slow/contended login, but must NOT mask a GENUINE
+    // offline open forever. If no LIVE height is confirmed within an extended window, revert
+    // daemonHeight to 0 so the pill correctly falls back to "disconnected". getNetworkHeight()
+    // only returns >0 once a real fetch has succeeded (its cache is the authoritative
+    // live-height signal), so this needs no instrumentation of the many height write sites.
+    useEffect(() => {
+        if (readPersistedDaemonTip() <= 0) return; // no provisional seed -> nothing to revert
+        const timer = setTimeout(async () => {
+            let live = 0;
+            try { live = await cspScanService.getNetworkHeight(); } catch { live = 0; }
+            if (live <= 0) {
+                setSyncStatus((prev: any) => (prev && prev.daemonHeight > 0 ? { ...prev, daemonHeight: 0 } : prev));
+            }
+        }, 40000);
+        return () => clearTimeout(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     const [isScanning, setIsScanning] = useState(false);
     const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
     const [scanHealth, setScanHealthState] = useState<ScanHealth>(() => createInitialScanHealth());
