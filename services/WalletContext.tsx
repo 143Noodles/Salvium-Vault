@@ -170,12 +170,7 @@ const IDB_VERSION = 1;
 const WALLET_HEALTH_WARNING_LOG_INTERVAL_MS = 15 * 60 * 1000;
 const SYNC_WATCHDOG_INTERVAL_MS = 15 * 1000;
 const SYNC_WATCHDOG_STALE_SCAN_MS = 90 * 1000;
-// Persist the last-known daemon tip (the PUBLIC chain height — not wallet data) so a
-// returning session can seed syncStatus.daemonHeight immediately on open. Otherwise it
-// starts at 0 and, if the first height fetch is slow/failing (weak signal at app open,
-// common on phones), the status pill flashes a false "disconnected" past the 20s grace —
-// even though the wallet is fine. The real tip corrects this within seconds via the
-// normal flow; the monotonic guard in setSyncStatus prevents any backwards jump.
+// Persisted last-known daemon tip (public chain height) to seed daemonHeight on open.
 const LAST_DAEMON_TIP_KEY = 'salvium.lastDaemonTip';
 const readPersistedDaemonTip = (): number => {
     try {
@@ -1288,7 +1283,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     const [syncStatus, setSyncStatusRaw] = useState<SyncStatus>({
         walletHeight: 0,
-        daemonHeight: readPersistedDaemonTip(), // seed last-known tip so a returning login never sits at 0 (false "disconnected")
+        daemonHeight: readPersistedDaemonTip(),
         isSyncing: false,
         progress: 0
     });
@@ -1312,26 +1307,20 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     }, []);
     const syncStatusRef = React.useRef<SyncStatus>({
         walletHeight: 0,
-        daemonHeight: readPersistedDaemonTip(), // keep ref consistent with the seeded state
+        daemonHeight: readPersistedDaemonTip(),
         isSyncing: false,
         progress: 0
     });
     useEffect(() => {
         syncStatusRef.current = syncStatus;
     }, [syncStatus]);
-    // Persist the daemon tip whenever a positive value is present, so the next session can
-    // seed it on open (re-writing the hydrated value is a harmless idempotent no-op).
+    // Persist the daemon tip when positive so the next session can seed it.
     useEffect(() => {
         if (syncStatus.daemonHeight > 0) persistDaemonTip(syncStatus.daemonHeight);
     }, [syncStatus.daemonHeight]);
-    // Freshness fallback for the provisional hydrated tip: the seeded tip suppresses the
-    // FALSE "disconnected" flash during a slow/contended login, but must NOT mask a GENUINE
-    // offline open forever. If no LIVE height is confirmed within an extended window, revert
-    // daemonHeight to 0 so the pill correctly falls back to "disconnected". getNetworkHeight()
-    // only returns >0 once a real fetch has succeeded (its cache is the authoritative
-    // live-height signal), so this needs no instrumentation of the many height write sites.
+    // Revert the seeded tip if no live height is confirmed within the window (genuine offline).
     useEffect(() => {
-        if (readPersistedDaemonTip() <= 0) return; // no provisional seed -> nothing to revert
+        if (readPersistedDaemonTip() <= 0) return;
         const timer = setTimeout(async () => {
             let live = 0;
             try { live = await cspScanService.getNetworkHeight(); } catch { live = 0; }
@@ -6665,6 +6654,8 @@ const getDeviceMemoryBucket = (): string => {
         setScanSession(null);
 
         if (!preserveSeedInMemory) {
+            localStorage.removeItem('salvium_setup_wizard_complete');
+            localStorage.removeItem('salvium_scan_mode');
             sessionSeedRef.current = null;
             sessionPasswordRef.current = null;
         }
@@ -7617,6 +7608,10 @@ const getDeviceMemoryBucket = (): string => {
                 const hasWallet = walletService.hasWallet();
                 const serviceScanInProgress = cspScanService.isScanningInProgress();
                 const networkHeight = hasWallet ? await cspScanService.getNetworkHeight() : 0;
+                // Publish tip immediately, decoupled from the (possibly busy) WASM worker.
+                if (networkHeight > 0) {
+                    setSyncStatus((prev: any) => (prev && prev.daemonHeight === networkHeight ? prev : { ...prev, daemonHeight: networkHeight }));
+                }
                 const activeRestoreSession = activeScanSessionRef.current?.type === 'restore-full-rescan'
                     && activeScanSessionRef.current.status === 'active'
                     ? activeScanSessionRef.current
@@ -7627,7 +7622,8 @@ const getDeviceMemoryBucket = (): string => {
                     !scanCoordinatorRef.current.activePromise;
 
                 if (networkHeight > 0 && hasWallet) {
-                    await walletService.setBlockchainHeight(networkHeight);
+                    // Non-fatal: a worker-busy timeout here must not abort the tick.
+                    try { await walletService.setBlockchainHeight(networkHeight); } catch (e) { /* tip already published above */ }
                 }
 
                 const nativeSyncStatus = hasWallet
