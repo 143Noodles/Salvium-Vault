@@ -46,11 +46,29 @@ interface PendingEntry {
   timer: ReturnType<typeof setTimeout>;
   label: string;
   startedAt?: number;
+  timeoutMs: number;
+  // Set when the soft timeout fired: the caller has been rejected, but the worker
+  // (no cancellation) may still be running this op. We keep the slot until the
+  // worker actually responds, then advance.
+  timedOut?: boolean;
+  hardTimer?: ReturnType<typeof setTimeout>;
+}
+
+interface QueuedRequest {
+  message: WireRequest & { id: number };
+  label: string;
+  timeoutMs: number;
+  transfer?: Transferable[];
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
 }
 
 const INIT_TIMEOUT_MS = 60000;
 const DEFAULT_TIMEOUT_MS = 30000;
 const LONG_OP_TIMEOUT_MS = 120000;
+// After a soft timeout, how long to keep waiting for the worker's real response
+// before declaring it stalled (a true hang, not just slow) and forcing a respawn.
+const HARD_STALL_MS = 120000;
 // Ops that move/transform the whole wallet cache or large sparse-tx buffers.
 const LONG_OPS = new Set([
   'ingestSparse',
@@ -96,6 +114,12 @@ function coerceTelemetryContext(context?: Record<string, unknown>): Record<strin
 export class WalletWorkerClient {
   private worker: WorkerLike;
   private pending = new Map<number, PendingEntry>();
+  // Single-threaded WASM worker => dispatch one op at a time. Ops wait here (no timer
+  // running) until the worker frees up; their timeout starts only when they actually
+  // run. This kills the spurious "timed out" cascade where many ops queued behind a
+  // long op (e.g. an 88s importWalletCache) all expired while merely waiting.
+  private queue: QueuedRequest[] = [];
+  private dispatching = false;
   private nextId = 1;
   private deltaSubscribers = new Set<(delta: StateDelta) => void>();
   private crashSubscribers = new Set<(error: Error) => void>();
@@ -206,35 +230,88 @@ export class WalletWorkerClient {
     }
 
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const startedAt = performance.now();
-
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(message.id);
-        reportClientEvent('wallet.slow_op', {
-          level: 'warn',
-          message: `${label} timed out`,
-          context: { label, durationMs: Math.round(performance.now() - startedAt), outcome: 'timeout' },
-        });
-        reject(new Error(`Wallet worker ${label} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      this.pending.set(message.id, {
+      this.queue.push({
+        message,
+        label,
+        timeoutMs,
+        transfer: opts?.transfer,
         resolve: resolve as (value: unknown) => void,
         reject,
-        timer,
-        label,
-        startedAt,
       });
-
-      try {
-        this.post(message, opts?.transfer);
-      } catch (error) {
-        clearTimeout(timer);
-        this.pending.delete(message.id);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
+      this.drainQueue();
     });
+  }
+
+  /** Dispatch the next queued op, but only when the worker is free. */
+  private drainQueue(): void {
+    if (this.dispatching || this.queue.length === 0) return;
+    if (this.crashed || this.terminated) {
+      const err = this.crashed || new WalletWorkerCrashedError('Wallet worker terminated');
+      for (const req of this.queue.splice(0)) req.reject(err);
+      return;
+    }
+
+    const req = this.queue.shift()!;
+    this.dispatching = true;
+    const startedAt = performance.now();
+    const timer = setTimeout(() => this.onSoftTimeout(req.message.id), req.timeoutMs);
+
+    this.pending.set(req.message.id, {
+      resolve: req.resolve,
+      reject: req.reject,
+      timer,
+      label: req.label,
+      startedAt,
+      timeoutMs: req.timeoutMs,
+    });
+
+    try {
+      this.post(req.message, req.transfer);
+    } catch (error) {
+      const entry = this.pending.get(req.message.id);
+      if (entry) {
+        clearTimeout(entry.timer);
+        if (entry.hardTimer) clearTimeout(entry.hardTimer);
+        this.pending.delete(req.message.id);
+      }
+      req.reject(error instanceof Error ? error : new Error(String(error)));
+      this.advance();
+    }
+  }
+
+  /**
+   * The in-flight op exceeded its budget. Reject the caller now so the UI isn't
+   * stuck, but do NOT dispatch the next op yet: the worker has no cancellation and
+   * is still busy with this one. We advance only when the worker actually responds
+   * (handleMessage) — or, if it never does, when the hard-stall timer fires and we
+   * treat the worker as crashed (forcing a respawn) so the queue can't wedge.
+   */
+  private onSoftTimeout(id: number): void {
+    const entry = this.pending.get(id);
+    if (!entry || entry.timedOut) return;
+    entry.timedOut = true;
+    reportClientEvent('wallet.slow_op', {
+      level: 'warn',
+      message: `${entry.label} timed out`,
+      context: {
+        label: entry.label,
+        durationMs: Math.round(performance.now() - (entry.startedAt ?? performance.now())),
+        outcome: 'timeout',
+      },
+    });
+    entry.reject(new Error(`Wallet worker ${entry.label} timed out after ${entry.timeoutMs}ms`));
+    entry.hardTimer = setTimeout(() => {
+      // The worker never responded and has no cancellation — kill the wedged thread so it
+      // stops burning CPU/memory, then crash the client so subscribers respawn a fresh one.
+      try { this.worker.terminate(); } catch {}
+      this.handleCrash(new WalletWorkerCrashedError(`Wallet worker stalled on ${entry.label}`));
+    }, HARD_STALL_MS);
+  }
+
+  private advance(): void {
+    this.dispatching = false;
+    this.drainQueue();
   }
 
   private post(message: WireRequest, transfer?: Transferable[]): void {
@@ -258,9 +335,11 @@ export class WalletWorkerClient {
         if (!entry) return;
         this.pending.delete(data.id);
         clearTimeout(entry.timer);
+        if (entry.hardTimer) clearTimeout(entry.hardTimer);
         // Slow-op attribution: every worker call >2s is reported with its label so
-        // field telemetry can name exactly which WASM op eats wall-clock.
-        if (entry.startedAt !== undefined) {
+        // field telemetry can name exactly which WASM op eats wall-clock. Skip if the
+        // soft timeout already reported (and rejected) this op.
+        if (!entry.timedOut && entry.startedAt !== undefined) {
           const tookMs = Math.round(performance.now() - entry.startedAt);
           if (tookMs > 2000) {
             reportClientEvent('wallet.slow_op', {
@@ -270,14 +349,18 @@ export class WalletWorkerClient {
             });
           }
         }
-        if (data.ok) {
-          entry.resolve(data.value);
-        } else {
-          const failed = data as { error?: { name?: string; message?: string } };
-          const error = new Error(failed.error?.message || `Wallet worker ${entry.label} failed`);
-          error.name = failed.error?.name || 'Error';
-          entry.reject(error);
+        if (!entry.timedOut) {
+          if (data.ok) {
+            entry.resolve(data.value);
+          } else {
+            const failed = data as { error?: { name?: string; message?: string } };
+            const error = new Error(failed.error?.message || `Wallet worker ${entry.label} failed`);
+            error.name = failed.error?.name || 'Error';
+            entry.reject(error);
+          }
         }
+        // Worker is free again — dispatch the next queued op.
+        this.advance();
         break;
       }
 
@@ -328,8 +411,12 @@ export class WalletWorkerClient {
     this.readyWaiter?.reject(error);
     for (const entry of this.pending.values()) {
       clearTimeout(entry.timer);
-      entry.reject(error);
+      if (entry.hardTimer) clearTimeout(entry.hardTimer);
+      // A soft-timed-out caller was already rejected; don't double-reject.
+      if (!entry.timedOut) entry.reject(error);
     }
     this.pending.clear();
+    for (const req of this.queue.splice(0)) req.reject(error);
+    this.dispatching = false;
   }
 }

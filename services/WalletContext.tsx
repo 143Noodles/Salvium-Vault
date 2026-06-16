@@ -1242,6 +1242,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const [initError, setInitError] = useState<string | null>(null);
     const [restorationError, setRestorationError] = useState<string | null>(null);
     const [isWalletReady, setIsWalletReady] = useState(false);
+    // False while the cold-start cache import runs (can be ~90s on heavy wallets/slow
+    // phones). Non-critical derived queries (chart history, wound-heal) wait for this so
+    // they don't pile onto the single WASM worker and delay the catch-up scan.
+    const [coldStartSettled, setColdStartSettled] = useState(true);
     const [isLocked, setIsLocked] = useState(false);
     const [needsRecovery, setNeedsRecovery] = useState(false);
     const [address, setAddress] = useState('');
@@ -1391,6 +1395,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const walletDataDirtyRef = React.useRef<boolean>(true);
     const nativeAuditEnabledRef = React.useRef(isNativeAuditEnabled());
     const fullWalletCacheImportedRef = React.useRef(false);
+    const coldStartSafetyTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const preferredScanStartHeightRef = React.useRef<number | undefined>(undefined);
     const lastNativeSnapshotRef = React.useRef<WalletStateSnapshot | null>(null);
     const forceCleanRestoreScanRef = React.useRef(false);
@@ -2178,6 +2183,7 @@ const getDeviceMemoryBucket = (): string => {
 
     useEffect(() => {
         if (!isWalletReady) return;
+        if (!coldStartSettled) return;
         if (transactions.length === 0) {
             return;
         }
@@ -2217,7 +2223,7 @@ const getDeviceMemoryBucket = (): string => {
         lastWalletHistorySignatureRef.current = signature;
         const totalBalance = authoritativeBalanceSalRef.current;
         void generateWalletHistory(transactions, totalBalance, stakes);
-    }, [priceHistory, transactions, balance.balanceSAL, stakes, isWalletReady, syncStatus.daemonHeight, syncStatus.walletHeight, salPrice]);
+    }, [priceHistory, transactions, balance.balanceSAL, stakes, isWalletReady, coldStartSettled, syncStatus.daemonHeight, syncStatus.walletHeight, salPrice]);
 
     useEffect(() => {
         const fetchPriceHistory = async () => {
@@ -3602,6 +3608,23 @@ const getDeviceMemoryBucket = (): string => {
 
         isResettingRef.current = false;
 
+        // Hold non-critical derived queries off the single WASM worker until the cache
+        // import finishes. Set the gate in the SAME synchronous batch as isWalletReady so
+        // there's no render window where both are true before the gate engages.
+        fullWalletCacheImportedRef.current = false;
+        const willImportCache = !forceCleanRestoreScan && !!cachedOutputsHex && cachedOutputsHex.length > 0;
+        if (coldStartSafetyTimerRef.current) {
+            clearTimeout(coldStartSafetyTimerRef.current);
+            coldStartSafetyTimerRef.current = null;
+        }
+        if (willImportCache) {
+            setColdStartSettled(false);
+            // Safety net: never strand the deferred queries if cold-start throws before settling.
+            coldStartSafetyTimerRef.current = window.setTimeout(() => setColdStartSettled(true), 120000);
+        } else {
+            setColdStartSettled(true);
+        }
+
         setIsWalletReady(true);
         setIsLocked(false);
         setNeedsRecovery(false);
@@ -3614,8 +3637,6 @@ const getDeviceMemoryBucket = (): string => {
             }
         } catch {
         }
-
-        fullWalletCacheImportedRef.current = false;
 
         if (!forceCleanRestoreScan && cachedOutputsHex && cachedOutputsHex.length > 0) {
             let importSuccess = false;
@@ -3705,6 +3726,13 @@ const getDeviceMemoryBucket = (): string => {
                 }, 30000);
             }
         }
+        // Cold-start cache import is done (or there was none): let deferred derived
+        // queries run now that the worker is free.
+        if (coldStartSafetyTimerRef.current) {
+            clearTimeout(coldStartSafetyTimerRef.current);
+            coldStartSafetyTimerRef.current = null;
+        }
+        setColdStartSettled(true);
 
         let actualNetworkHeight = finalRestoreHeight;
         try {
@@ -6139,6 +6167,27 @@ const getDeviceMemoryBucket = (): string => {
                 return { terminalState: 'cancelled', reason: 'wallet reset or rescan took ownership' };
             }
 
+            // Transient worker-busy stall (a scan op timed out only because the single
+            // WASM worker was saturated, e.g. by an 88s importWalletCache). This is not a
+            // real scan failure: keep the session active and retry instead of flipping the
+            // UI to a hard error and burning the terminal budget.
+            const isTransientWorkerStall = /^Wallet worker .+ timed out after \d+ms$/.test(errorMessage);
+            if (isTransientWorkerStall) {
+                finalizeRestoreTerminalState('cancelled_retryable', {
+                    networkHeight: syncStatusRef.current.daemonHeight || syncStatusRef.current.walletHeight || 0,
+                    currentHeight: syncStatusRef.current.walletHeight || 0,
+                    isRestoreSession: request?.sessionType === 'restore-full-rescan' && !!request.sessionId,
+                    reason: errorMessage,
+                    sessionNote: 'sync paused (worker busy); retrying',
+                    retryRequest: {
+                        sessionType: request?.sessionType ?? 'background',
+                        sessionId: request?.sessionId,
+                        fromHeight,
+                    },
+                });
+                return { terminalState: 'cancelled', reason: errorMessage };
+            }
+
             console.error('[WalletContext] Scan failed:', e);
 
             finalizeRestoreTerminalState('failed', {
@@ -7093,6 +7142,7 @@ const getDeviceMemoryBucket = (): string => {
     const woundScanFiredRef = React.useRef(0);
     React.useEffect(() => {
         if (!isWalletReady || isLocked) return;
+        if (!coldStartSettled) return;
         const timer = window.setTimeout(async () => {
             try {
                 if (Date.now() - woundScanFiredRef.current < 10 * 60 * 1000) return;
@@ -7119,7 +7169,7 @@ const getDeviceMemoryBucket = (): string => {
             } catch {}
         }, 45000);
         return () => window.clearTimeout(timer);
-    }, [isWalletReady, isLocked]);
+    }, [isWalletReady, isLocked, coldStartSettled]);
 
     const requestAutomaticCatchupScan = async (
         networkHeight: number,
