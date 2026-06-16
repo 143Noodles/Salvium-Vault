@@ -84,9 +84,7 @@ const SCAN_READ_RATE_MAX = Math.max(1, Number.parseInt(process.env.SCAN_READ_RAT
 const RATE_LIMIT_TX_MAX = 500; // 500 transaction broadcasts per minute
 const RATE_LIMIT_SALPAY_CALLBACK_MAX = Math.max(1, Number.parseInt(process.env.SALPAY_CALLBACK_RATE_LIMIT_MAX || '60', 10) || 60); // SalPay callback relay requests per minute
 const RATE_LIMIT_CLEANUP_INTERVAL = 300000; // Clean up every 5 minutes
-// Routine binary-proxy request/response hex logging is verbose and, for the full-body
-// dump, unbounded (a 50MB body -> ~100MB log line per request). Off by default; opt-in
-// for debugging only. Anomaly/error logs (signature mismatch, daemon errors) stay on.
+// Verbose binary-proxy hex logging; off by default (opt-in for debugging).
 const DEBUG_BINARY_PROXY = process.env.SALVIUM_DEBUG_BINARY_PROXY === '1';
 
 setInterval(() => {
@@ -253,10 +251,7 @@ function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
         }
         // daemon/info: dedicated generous per-client ceiling (not full exemption).
         const useDaemonInfoBucket = scope === 'general' && isDaemonStatusPoll;
-        // scan-read (csp/sparse/bulk): was fully exempt, which removed any abuse ceiling
-        // on unauthenticated bulk daemon fetches. Give it a dedicated, very generous
-        // per-IP bucket (mirrors daemon-info) — far above any real restore burst, but a
-        // flood ceiling. A 429 here is retryable client-side (scanners back off; no state risk).
+        // scan-read (csp/sparse/bulk): dedicated generous per-IP bucket (was fully exempt).
         const useScanReadBucket = scope === 'general' && isScanReadEndpoint;
         const effectiveScope = useDaemonInfoBucket ? 'daemon-info' : (useScanReadBucket ? 'scan-read' : scope);
         const effectiveMax = useDaemonInfoBucket ? DAEMON_INFO_RATE_MAX : (useScanReadBucket ? SCAN_READ_RATE_MAX : maxRequests);
@@ -280,11 +275,7 @@ function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
 const txRateLimit = rateLimitMiddleware(RATE_LIMIT_TX_MAX, 'tx');
 const NODE_VALIDATE_RATE_MAX = Math.max(1, Number.parseInt(process.env.NODE_VALIDATE_RATE_LIMIT_MAX || '60', 10) || 60); // per-IP/min for the explicit custom-node validate endpoint
 const nodeValidateRateLimit = rateLimitMiddleware(NODE_VALIDATE_RATE_MAX, 'node-validate');
-// Cookie-triggered custom-node revalidation runs in the hot per-request path. We must
-// NOT consume a per-request rate bucket here (a scan burst at cache-TTL expiry would
-// starve a legit user's revalidation). Instead: per-URL singleflight (dedupe concurrent
-// validations of the same base) + a small global in-flight cap so an attacker cycling
-// distinct URLs can't fan out unbounded DNS/outbound fetches. Over-cap => skip (serve auto).
+// Custom-node revalidation: per-URL singleflight + global in-flight cap (no per-request bucket).
 const NODE_REVALIDATE_MAX_INFLIGHT = Math.max(1, Number.parseInt(process.env.NODE_REVALIDATE_MAX_INFLIGHT || '8', 10) || 8);
 const customNodeRevalInflight = new Map(); // base -> Promise
 function scheduleCustomNodeRevalidation(base) {
