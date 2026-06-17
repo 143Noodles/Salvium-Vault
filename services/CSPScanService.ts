@@ -213,11 +213,12 @@ export function deferredSparseIngestChangedDerivedState(result: any): boolean {
   }
 
   if (
-    countArrayField(result, 'stake_heights', 'stakeHeights') > 0 ||
-    countArrayField(result, 'audit_heights', 'auditHeights') > 0
+    countArrayField(result, "stake_heights", "stakeHeights") > 0 ||
+    countArrayField(result, "audit_heights", "auditHeights") > 0
   ) {
+    // Height arrays are JS phase-3 inputs copied by applySparseIngestResult; they
+    // do not by themselves mean deferred wallet-derived state needs rebuilding.
     sawKnownCounter = true;
-    return true;
   }
 
   // Legacy WASM builds may not provide a precise deferred_state_changed boolean.
