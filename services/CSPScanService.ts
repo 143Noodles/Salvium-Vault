@@ -17,7 +17,6 @@ import {
   markChunksInProgress,
   markChunksCompleted,
   recordChunksNeedRescan,
-  wasInterrupted,
   isRecoverySafe,
   forceCleanSlate,
   saveBalanceCheckpoint,
@@ -744,7 +743,8 @@ class CSPScanService {
 
   async resumeScanSafely(
     walletAddress: string,
-    targetEndHeight: number
+    targetEndHeight: number,
+    minResumeHeight: number = 0
   ): Promise<{
     shouldResume: boolean;
     resumeFromHeight: number;
@@ -755,15 +755,9 @@ class CSPScanService {
     action: 'continue' | 'full_rescan' | 'rescan_gaps';
   }> {
     try {
-      // In-progress chunks at interruption are NOT corruption: ingest is idempotent, so
-      // re-scanning them is safe. isRecoverySafe folds them into a precise rescan_gaps set
-      // (no full rescan). We still surface the count for telemetry.
-      const interruptCheck = await wasInterrupted(walletAddress);
-      if (interruptCheck.interrupted && interruptCheck.inProgressChunks.length > 0) {
-        if (DEBUG) debugWarn(`[CSPScanService] Resuming: ${interruptCheck.inProgressChunks.length} chunks were in-progress at interruption - will rescan exactly those`);
-      }
-
-      const safetyCheck = await isRecoverySafe(walletAddress, targetEndHeight, 1000);
+      const safetyCheck = await isRecoverySafe(walletAddress, targetEndHeight, 1000, {
+        minResumeHeight,
+      });
 
       if (!safetyCheck.safe && safetyCheck.action === 'full_rescan') {
         await forceCleanSlate(walletAddress);
