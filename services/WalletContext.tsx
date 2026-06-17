@@ -1134,6 +1134,7 @@ interface WalletProviderProps {
 type ScanSessionType = 'background' | 'restore-full-rescan';
 type ScanSessionStatus = 'active' | 'finished' | 'failed' | 'cancelled';
 const RESTORE_SCAN_SESSION_STORAGE_KEY = 'salvium_restore_scan_session';
+const RESTORE_SCAN_SESSION_MAX_AGE_MS = 15 * 60 * 1000;
 const SCAN_REF_STALE_RESET_MS = 10 * 60 * 1000;
 
 interface ScanSessionState {
@@ -1430,6 +1431,35 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             }
             const persisted = JSON.parse(persistedRaw) as ScanSessionState;
             if (persisted && persisted.type === 'restore-full-rescan' && persisted.status === 'active') {
+                const startedAt = Number(persisted.startedAt) || 0;
+                const ageMs = startedAt > 0 ? Date.now() - startedAt : Number.MAX_SAFE_INTEGER;
+                const storedWallet = safeReadWallet();
+                const storedWalletHeight = Math.max(0, Number(storedWallet?.height || 0) || 0, Number(storedWallet?.snapshotHeight || 0) || 0);
+                const persistedFromHeight = Number.isFinite(persisted.fromHeight)
+                    ? Math.max(0, Number(persisted.fromHeight))
+                    : 0;
+                const discardReason =
+                    ageMs > RESTORE_SCAN_SESSION_MAX_AGE_MS
+                        ? 'expired'
+                        : (persistedFromHeight === 0 && storedWalletHeight > 0)
+                            ? 'stored-wallet-progress'
+                            : '';
+
+                if (discardReason) {
+                    try {
+                        localStorage.removeItem(RESTORE_SCAN_SESSION_STORAGE_KEY);
+                    } catch {
+                    }
+                    reportRestoreDiagnostic('restore.session_discarded', {
+                        source: persisted.source || 'rehydrated-from-storage',
+                        reason: discardReason,
+                        fromHeight: persistedFromHeight,
+                        walletHeight: storedWalletHeight,
+                        pendingAgeMs: Number.isFinite(ageMs) ? ageMs : 0,
+                    }, 'warn', 'Discarded stale restore scan session');
+                    return;
+                }
+
                 const session: ScanSessionState = {
                     ...persisted,
                     source: persisted.source || 'rehydrated-from-storage',
@@ -7877,12 +7907,21 @@ const getDeviceMemoryBucket = (): string => {
                     });
 
                     if (resumeRestoreSession && activeRestoreSession) {
+                        const restoreSessionFromHeight = activeRestoreSession.fromHeight ?? 0;
+                        const restoreResumeFromHeight = decision.isBehind
+                            ? (
+                                restoreSessionFromHeight === 0 && (nativeSyncStatus.walletHeight || 0) > 0
+                                    ? nativeSyncStatus.walletHeight || 0
+                                    : restoreSessionFromHeight
+                            )
+                            : undefined;
                         void requestScanStart({
-                            // Behind: resume from the session's authoritative start height.
+                            // Behind: resume from the session start unless the native wallet
+                            // already advanced past a stale zero-height restore.
                             // At tip: pass undefined so executeScan's incremental plan reaches the
                             // already-at-tip early exit and finalizes/closes the latched session
                             // instead of re-running a full restore scan.
-                            fromHeight: decision.isBehind ? activeRestoreSession.fromHeight : undefined,
+                            fromHeight: restoreResumeFromHeight,
                             reason: 'watchdog-restore-resume',
                             sessionType: 'restore-full-rescan',
                             sessionId: activeRestoreSession.id,
