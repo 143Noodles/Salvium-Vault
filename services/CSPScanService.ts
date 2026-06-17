@@ -4017,10 +4017,15 @@ class CSPScanService {
       let protocolReplayOutputsFound = 0;
       let duplicateTransferRepairs = 0;
       let sparseBytesTotal = 0;
+      let deferredProtocolDerivedState = false;
 
       const pickIngestNumber = (key: string): number => {
         const value = Number(ingestResult?.[key]);
         return Number.isFinite(value) ? value : -1;
+      };
+
+      const recordProtocolIngestResult = (res: any): void => {
+        deferredProtocolDerivedState = deferredProtocolDerivedState || deferredSparseIngestChangedDerivedState(res);
       };
 
       if (orderedContextHashes.length > 0) {
@@ -4042,7 +4047,7 @@ class CSPScanService {
             // (former Module.allocate/HEAPU8/free block).
             const resJson = await wallet.op(
               'ingestSparse',
-              { startHeight: sweepStartHeight, allowProtocol: true, buffer: contextSparseBytes },
+              { startHeight: sweepStartHeight, allowProtocol: true, deferDerived: true, buffer: contextSparseBytes },
               { transfer: [contextSparseBytes.buffer] }
             );
             const res = JSON.parse(resJson);
@@ -4050,6 +4055,7 @@ class CSPScanService {
             if (!res || res.success === false) {
               throw new Error(res?.error || 'protocol ordered context sparse ingest failed');
             }
+            recordProtocolIngestResult(res);
             mintBlockOutputsFound += Number(res.txs_matched ?? res.txsMatched ?? 0) || 0;
             duplicateTransferRepairs += Number(res.duplicate_transfer_repairs ?? 0) || 0;
           }
@@ -4084,7 +4090,7 @@ class CSPScanService {
           offset += dataSize;
           const resJson = await wallet.op(
             'ingestSparse',
-            { startHeight: chunkStartHeight, allowProtocol: true, buffer: sparseChunk },
+            { startHeight: chunkStartHeight, allowProtocol: true, deferDerived: true, buffer: sparseChunk },
             { transfer: [sparseChunk.buffer] }
           );
           const res = JSON.parse(resJson);
@@ -4092,6 +4098,7 @@ class CSPScanService {
           if (!res || res.success === false) {
             throw new Error(res?.error || 'protocol token mint-block sparse ingest failed');
           }
+          recordProtocolIngestResult(res);
           mintBlockOutputsFound += Number(res.txs_matched ?? res.txsMatched ?? 0) || 0;
           duplicateTransferRepairs += Number(res.duplicate_transfer_repairs ?? 0) || 0;
         }
@@ -4114,7 +4121,7 @@ class CSPScanService {
         if (protocolSparseBytes.length > 8) {
           const resJson = await wallet.op(
             'ingestSparse',
-            { startHeight: sweepStartHeight, allowProtocol: true, buffer: protocolSparseBytes },
+            { startHeight: sweepStartHeight, allowProtocol: true, deferDerived: true, buffer: protocolSparseBytes },
             { transfer: [protocolSparseBytes.buffer] }
           );
           const res = JSON.parse(resJson);
@@ -4122,6 +4129,7 @@ class CSPScanService {
           if (!res || res.success === false) {
             throw new Error(res?.error || 'protocol token replay sparse ingest failed');
           }
+          recordProtocolIngestResult(res);
           protocolReplayOutputsFound = Number(res.txs_matched ?? res.txsMatched ?? 0) || 0;
           duplicateTransferRepairs += Number(res.duplicate_transfer_repairs ?? 0) || 0;
           outputsFound += protocolReplayOutputsFound;
@@ -4129,6 +4137,20 @@ class CSPScanService {
       }
 
       outputsFound += duplicateTransferRepairs;
+
+      if (deferredProtocolDerivedState) {
+        await flushDerivedStateOrThrow(
+          wallet,
+          'protocol token recovery',
+          outputsFound > 0 ? ['snapshot', 'syncStatus', 'transactions', 'flags'] : ['snapshot', 'syncStatus', 'flags']
+        );
+      } else {
+        reportClientEvent('scan.flush_derived_skipped', {
+          level: 'info',
+          message: 'Deferred derived-state flush skipped',
+          context: { reason: 'protocol token recovery' },
+        });
+      }
 
       const shouldAdvanceSweepMarker = true;
       if (shouldAdvanceSweepMarker) {
