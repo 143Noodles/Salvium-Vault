@@ -43,3 +43,6 @@ android/
 # Local edit backups
 *.bak-*
 **/*.bak-*
+
+# Android release artifacts must not be published by the web wallet
+public/*.apk
