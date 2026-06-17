@@ -4931,6 +4931,11 @@ const getDeviceMemoryBucket = (): string => {
                 throw new Error('Wallet became unavailable before scan start');
             }
 
+            const scanSubaddressCountHint = Math.max(
+                subaddressesRef.current?.length || 0,
+                safeReadWallet()?.cachedSubaddresses?.length || 0
+            );
+
             const result = await cspScanService.startScan(
                 actualStartHeight,
                 networkHeight,
@@ -5041,7 +5046,8 @@ const getDeviceMemoryBucket = (): string => {
                         }, 500);
                     }
                 },
-                forceReturnedTransferScan
+                forceReturnedTransferScan,
+                scanSubaddressCountHint
             );
 
             if (!result.success) {
@@ -5991,7 +5997,8 @@ const getDeviceMemoryBucket = (): string => {
                         result.keyImagesCsv,
                         false,
                         undefined,
-                        true
+                        true,
+                        scanSubaddressCountHint
                     );
 
                     const reportRestorePhase2Result = (attempt: number, phase2Result: Awaited<ReturnType<typeof runRestorePhase2Scan>>) => {

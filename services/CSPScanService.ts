@@ -189,8 +189,11 @@ function trimSubaddressOwnershipCsv(csv: string, maxMinorIndexExclusive: number)
     const c2 = c1 >= 0 ? entry.indexOf(':', c1 + 1) : -1;
     if (c1 === 64 && c2 > c1 + 1) {
       parsedEntries++;
-      const minor = Number.parseInt(entry.slice(c2 + 1), 10);
-      if (Number.isFinite(minor) && minor >= 0 && minor < maxMinorIndexExclusive) {
+      const firstIndex = Number.parseInt(entry.slice(c1 + 1, c2), 10);
+      const secondIndex = Number.parseInt(entry.slice(c2 + 1), 10);
+      const keyMajorMinor = firstIndex === 0 && secondIndex >= 0 && secondIndex < maxMinorIndexExclusive;
+      const keyMinorMajor = secondIndex === 0 && firstIndex >= 0 && firstIndex < maxMinorIndexExclusive;
+      if (Number.isFinite(firstIndex) && Number.isFinite(secondIndex) && (keyMajorMinor || keyMinorMajor)) {
         kept.push(entry);
       }
     }
@@ -1341,7 +1344,8 @@ class CSPScanService {
     cachedKeyImagesCsv?: string,
     isIncremental: boolean = false,
     onBackgroundComplete?: (result: { outputsFound: number; message: string; needsRescan: boolean }) => void,
-    forceReturnedTransferScan: boolean = false
+    forceReturnedTransferScan: boolean = false,
+    preferredSubaddressCount?: number
   ): Promise<ScanResult> {
     let stallReject: ((e: Error) => void) | null = null;
     const stallPromise = new Promise<ScanResult>((_, reject) => {
@@ -1350,7 +1354,7 @@ class CSPScanService {
     });
     try {
       return await Promise.race([
-        this.startScanInner(startHeight, endHeight, onProgress, onMatch, cachedKeyImagesCsv, isIncremental, onBackgroundComplete, forceReturnedTransferScan),
+        this.startScanInner(startHeight, endHeight, onProgress, onMatch, cachedKeyImagesCsv, isIncremental, onBackgroundComplete, forceReturnedTransferScan, preferredSubaddressCount),
         stallPromise,
       ]);
     } finally {
@@ -1373,7 +1377,8 @@ class CSPScanService {
     cachedKeyImagesCsv?: string,
     isIncremental: boolean = false,
     onBackgroundComplete?: (result: { outputsFound: number; message: string; needsRescan: boolean }) => void,
-    forceReturnedTransferScan: boolean = false
+    forceReturnedTransferScan: boolean = false,
+    preferredSubaddressCount?: number
   ): Promise<ScanResult> {
     if (this.isScanning) {
       return { success: false, matches: [], matchCount: 0, blocksScanned: 0, blocksPerSecond: 0, error: 'Scan already in progress', keyImagesCsv: '' };
@@ -1597,12 +1602,30 @@ class CSPScanService {
 
     const DEFAULT_SUBADDRESS_LOOKAHEAD = 200;
     const MAX_SUBADDRESS_PRECOMPUTE = 20000;
-    let knownSubaddressCount = 0;
+    const preferredCount = Number.isFinite(preferredSubaddressCount)
+      ? Math.max(0, Math.floor(Number(preferredSubaddressCount)))
+      : 0;
+    let nativeSubaddressCount = 0;
     try {
-      knownSubaddressCount = Number((await wallet.call('get_num_subaddresses', [0])) || 0) || 0;
+      nativeSubaddressCount = Number((await wallet.call('get_num_subaddresses', [0])) || 0) || 0;
     } catch {
       // Unknown-method (old WASM) or transient failure: same 0 fallback as before.
-      knownSubaddressCount = 0;
+      nativeSubaddressCount = 0;
+    }
+    const knownSubaddressCount = preferredCount > 0 &&
+      (nativeSubaddressCount === 0 || nativeSubaddressCount > preferredCount + DEFAULT_SUBADDRESS_LOOKAHEAD)
+      ? preferredCount
+      : nativeSubaddressCount;
+    if (preferredCount > 0 && knownSubaddressCount !== nativeSubaddressCount) {
+      reportClientEvent('scan.subaddress_count_source', {
+        level: 'info',
+        context: {
+          source: 'ui-cache',
+          count: preferredCount,
+          originalCount: nativeSubaddressCount,
+          subaddressCount: knownSubaddressCount,
+        },
+      });
     }
     const totalSubaddresses = Math.min(
       MAX_SUBADDRESS_PRECOMPUTE,
@@ -1765,6 +1788,21 @@ class CSPScanService {
       try {
         subaddressMapCsv = await wallet.call('get_subaddress_spend_keys_csv');
         if (subaddressMapCsv) {
+          const originalCount = countSubaddressOwnershipEntries(subaddressMapCsv);
+          const trimmedCsv = trimSubaddressOwnershipCsv(subaddressMapCsv, totalSubaddresses);
+          const trimmedCount = countSubaddressOwnershipEntries(trimmedCsv);
+          if (trimmedCsv !== subaddressMapCsv && trimmedCount >= Math.max(1, totalSubaddresses)) {
+            subaddressMapCsv = trimmedCsv;
+            reportClientEvent('scan.subaddress_ownership_map_trimmed', {
+              level: 'info',
+              context: {
+                source: 'native-export',
+                requiredCount: totalSubaddresses,
+                originalCount,
+                trimmedCount,
+              },
+            });
+          }
           subaddressMapSource = 'native-export';
           void saveSubaddressOwnershipCsv(walletAddress, subaddressMapCsv, totalSubaddresses);
         }
