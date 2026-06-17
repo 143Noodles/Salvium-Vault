@@ -267,7 +267,17 @@
     },
     "connection": {
       "title": "Verbinding",
-      "description": "Kies welke Salvium-node je wallet synchroniseert. Automatisch houdt je op een gezonde officiële node; voeg alleen je eigen node toe als deze openbaar bereikbaar is. Hoe dan ook worden verzoeken via de vault-server geproxyd in plaats van rechtstreeks vanaf je apparaat verzonden."
+      "description": "Kies welke Salvium-node je wallet synchroniseert. Automatisch houdt je op een gezonde officiële node; voeg alleen je eigen node toe als deze openbaar bereikbaar is. Hoe dan ook worden verzoeken via de vault-server geproxyd in plaats van rechtstreeks vanaf je apparaat verzonden.",
+      "scanMode": {
+        "title": "Scanindexmodus",
+        "description": "Snelle synchronisatie gebruikt een vooraf opgehaalde index voor snellere herstelbewerkingen. Onafhankelijke opbouw downloadt niets extra en reconstrueert de scanindex volledig op je apparaat.",
+        "fast": "Snelle synchronisatie",
+        "independent": "Onafhankelijke opbouw",
+        "note": "Wordt toegepast bij je volgende herstel of handmatige herscan — een al gesynchroniseerde wallet wordt niet opnieuw gesynchroniseerd."
+      },
+      "errors": {
+        "nettypeMismatch": "Dit knooppunt bevindt zich op een ander netwerk dan je wallet."
+      }
     },
     "currency": {
       "title": "Weergavevaluta",
@@ -598,6 +608,35 @@
     "errors": {
       "loadFailed": "Assets laden mislukt",
       "createFailed": "Assettransactie maken mislukt"
+    }
+  },
+  "setup": {
+    "wizard": {
+      "welcome": {
+        "title": "Welkom bij je Salvium Vault",
+        "subtitle": "Laten we instellen hoe je wallet verbinding maakt en synchroniseert. Je sleutels worden uitsluitend op dit apparaat gegenereerd en opgeslagen.",
+        "privacyNote": "Je seed en sleutels verlaten dit apparaat nooit, en al het scannen gebeurt lokaal."
+      },
+      "node": {
+        "title": "Verbinden met een node",
+        "description": "Kies welke Salvium-node je wallet synchroniseert. De officiële seed-nodes zijn standaard geselecteerd; gevorderde gebruikers kunnen hun eigen salviumd of een willekeurige bereikbare node opgeven."
+      },
+      "sync": {
+        "title": "Kies hoe je synchroniseert",
+        "description": "Beide opties houden je sleutels en het scannen volledig lokaal. Ze verschillen alleen in hoe de initiële scanindex wordt verkregen.",
+        "recommended": "Aanbevolen",
+        "bothLocalNote": "Hoe dan ook, je sleutels verlaten dit apparaat nooit en het scannen draait lokaal.",
+        "fast": {
+          "title": "Snelle synchronisatie",
+          "description": "Downloadt eenmalig een kant-en-klare scanindex van de CDN en vertrouwt erop dat dat pakket volledig is, en werkt daarna lokaal. Snelste eerste keer."
+        },
+        "independent": {
+          "title": "Onafhankelijke opbouw",
+          "description": "Bouwt de scanindex lokaal op uit de blockchain zonder vooraf opgehaalde gegevens, zodat je wallet geen enkel kant-en-klaar pakket vertrouwt. Tragere eerste keer."
+        }
+      },
+      "finish": "Installatie voltooien",
+      "stepProgress": "Stap {{current}} van {{total}}"
     }
   }
 }

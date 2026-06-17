@@ -13,6 +13,7 @@
  */
 
 import { reportClientEvent } from '../../utils/clientTelemetry';
+import { getExtensionAssetUrl, isExtensionRuntime } from '../../utils/extensionRuntime';
 import type { StateDelta, WireRequest, WireResponse, WorkerInitConfig } from './protocol';
 
 export class WalletWorkerCrashedError extends Error {
@@ -76,6 +77,7 @@ const LONG_OPS = new Set([
   'exportWalletCache',
   'persistToIdb',
   'cacheRuntimeFullTxsFromSparse',
+  'get_runtime_full_tx_candidate_hashes',
   // First flush after a fully-deferred restore runs the four O(wallet) passes over
   // everything at once; getStateBundle serializes the full tx list. Both exceed 30s
   // on heavy wallets/slow machines.
@@ -150,7 +152,10 @@ export class WalletWorkerClient {
     // bundle (and is served immutable when ?v= is present), so the app-build component must
     // change whenever the worker source changes — the wasm asset version alone stays stable
     // across app deploys and would pin a stale cached worker.
-    const url = '/wallet/wallet-host.worker.js?v=' +
+    const workerPath = isExtensionRuntime()
+      ? getExtensionAssetUrl('wallet/wallet-host.worker.js')
+      : '/wallet/wallet-host.worker.js';
+    const url = workerPath + '?v=' +
       encodeURIComponent(config.wasmAssetVersion + ':' + (config.appBuildVersion || ''));
     const worker: WorkerLike = workerFactory ? workerFactory(url) : (new Worker(url) as unknown as WorkerLike);
     const client = new WalletWorkerClient(worker);

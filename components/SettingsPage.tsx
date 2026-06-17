@@ -14,6 +14,8 @@ import { downloadBackup } from '../services/BackupService';
 import { BiometricService } from '../services/BiometricService';
 import { decrypt } from '../services/CryptoService';
 import { walletService } from '../services/WalletService';
+import { getScanMode, setScanMode, type ScanMode } from '../utils/scanMode';
+import { isDesktopApp } from '../utils/runtime';
 import {
    getWalletStorageKey,
    LEGACY_WALLET_STORAGE_KEY,
@@ -139,6 +141,12 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
    const { t } = useTranslation();
    const wallet = useWallet();
    const [isRescanning, setIsRescanning] = useState(false);
+   const [scanMode, setScanModeState] = useState<ScanMode>(() => getScanMode());
+   const chooseScanMode = (mode: ScanMode) => { setScanMode(mode); setScanModeState(mode); };
+   // On Android the prebuilt scan bundle is hard-disabled, so Fast Sync and
+   // Independent Build behave identically; hide the control to avoid implying a
+   // choice that has no effect there.
+   const isAndroidDevice = /Android/i.test(typeof navigator !== 'undefined' ? navigator.userAgent : '');
 
    const [showBackupModal, setShowBackupModal] = useState(false);
    const [backupPassword, setBackupPassword] = useState('');
@@ -750,6 +758,43 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                         <NodeSelector settings />
                      </div>
                   </div>
+
+                  {isDesktopApp() && !isAndroidDevice && (
+                     <>
+                        <div className="h-[1px] bg-white/5 w-full"></div>
+
+                        <div className="flex flex-col gap-3">
+                           <div>
+                              <h4 className="text-white font-medium mb-1">{t('settings.connection.scanMode.title')}</h4>
+                              <p className="text-sm text-text-muted max-w-sm">{t('settings.connection.scanMode.description')}</p>
+                           </div>
+                           <div className="flex gap-2">
+                              {([
+                                 ['fast', 'settings.connection.scanMode.fast'],
+                                 ['independent', 'settings.connection.scanMode.independent'],
+                              ] as const).map(([mode, labelKey]) => {
+                                 const selected = scanMode === mode;
+                                 return (
+                                    <button
+                                       key={mode}
+                                       type="button"
+                                       aria-pressed={selected}
+                                       onClick={() => chooseScanMode(mode)}
+                                       className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                                          selected
+                                             ? 'border-accent-primary bg-accent-primary/10 text-white'
+                                             : 'border-white/10 text-text-muted hover:border-white/20'
+                                       }`}
+                                    >
+                                       {t(labelKey)}
+                                    </button>
+                                 );
+                              })}
+                           </div>
+                           <p className="text-xs text-text-muted">{t('settings.connection.scanMode.note')}</p>
+                        </div>
+                     </>
+                  )}
 
                   <div className="h-[1px] bg-white/5 w-full"></div>
 

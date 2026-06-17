@@ -50,11 +50,24 @@ import {
   parseSpentIndexBinaryHeader,
 } from '../utils/cspBinary';
 import { coalesceChunksToRuns, hasCompleteCoverageManifest, selectSparseIngestLimits, shouldCompletePhase2bJournal, validateSpentIndexProgress } from '../utils/scanCoverage';
+import { shouldUseBundle } from '../utils/scanMode';
 
 
 const RETURN_ADDR_DB_NAME = 'salvium-return-addresses';
 const RETURN_ADDR_DB_VERSION = 1;
 const RETURN_ADDR_STORE = 'addresses';
+const SUBADDRESS_OWNERSHIP_DB_NAME = 'salvium-subaddress-ownership';
+const SUBADDRESS_OWNERSHIP_DB_VERSION = 1;
+const SUBADDRESS_OWNERSHIP_STORE = 'ownership';
+
+interface CachedSubaddressOwnership {
+  walletKey: string;
+  walletAddress: string;
+  csv: string;
+  count: number;
+  wasmVersion: string;
+  updatedAt: number;
+}
 
 async function openReturnAddrDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -107,6 +120,127 @@ async function loadReturnAddresses(walletAddress: string): Promise<string | null
   }
 }
 
+async function flushDerivedStateOrThrow(wallet: any, reason: string): Promise<void> {
+  const resultJson = await wallet.op('flushDerivedState', {});
+  let result: any = resultJson;
+  if (typeof resultJson === 'string') {
+    try {
+      result = JSON.parse(resultJson);
+    } catch {
+      throw new Error(`flushDerivedState failed after ${reason}: invalid JSON response`);
+    }
+  }
+  if (result && result.success === false) {
+    throw new Error(`flushDerivedState failed after ${reason}: ${result.error || 'unknown error'}`);
+  }
+}
+
+function deferredSparseIngestChangedDerivedState(result: any): boolean {
+  if (!result || result.success !== true) return false;
+  if (result.deferred_state_changed === true) return true;
+  if (result.deferred_state_changed === false) return false;
+  // Old WASM builds did not report deferred_state_changed and dirtied derived
+  // state for every deferred parse. Keep the conservative flush behavior until
+  // the new WASM field is present.
+  if (result.deferred === true) return true;
+  return Boolean(
+    Number(result.txs_matched || 0) > 0 ||
+    Number(result.outputs_marked_spent || 0) > 0 ||
+    Number(result.txs_reprocessed || 0) > 0 ||
+    Number(result.duplicate_transfer_repairs || 0) > 0 ||
+    Number(result.audit_spend_key_additions || 0) > 0 ||
+    Number(result.audit_return_address_additions || 0) > 0 ||
+    Number(result.stake_return_address_additions || 0) > 0
+  );
+}
+
+function countSubaddressOwnershipEntries(csv: string): number {
+  if (!csv) return 0;
+
+  let count = 0;
+  let start = 0;
+  while (start < csv.length) {
+    const end = csv.indexOf(',', start);
+    const entry = csv.slice(start, end === -1 ? csv.length : end);
+    const c1 = entry.indexOf(':');
+    const c2 = c1 >= 0 ? entry.indexOf(':', c1 + 1) : -1;
+    if (c1 === 64 && c2 > c1 + 1) {
+      count++;
+    }
+    if (end === -1) break;
+    start = end + 1;
+  }
+  return count;
+}
+
+async function openSubaddressOwnershipDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(SUBADDRESS_OWNERSHIP_DB_NAME, SUBADDRESS_OWNERSHIP_DB_VERSION);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(SUBADDRESS_OWNERSHIP_STORE)) {
+        db.createObjectStore(SUBADDRESS_OWNERSHIP_STORE, { keyPath: 'walletKey' });
+      }
+    };
+  });
+}
+
+async function saveSubaddressOwnershipCsv(walletAddress: string, csv: string, requiredCount: number): Promise<void> {
+  try {
+    const count = countSubaddressOwnershipEntries(csv);
+    if (!walletAddress || !csv || count < Math.max(1, requiredCount)) {
+      return;
+    }
+
+    const walletKey = walletAddress.substring(0, 32);
+    const db = await openSubaddressOwnershipDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(SUBADDRESS_OWNERSHIP_STORE, 'readwrite');
+      const store = tx.objectStore(SUBADDRESS_OWNERSHIP_STORE);
+      store.put({
+        walletKey,
+        walletAddress,
+        csv,
+        count,
+        wasmVersion: WASM_CACHE_VERSION,
+        updatedAt: Date.now(),
+      } satisfies CachedSubaddressOwnership);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+  }
+}
+
+async function loadSubaddressOwnershipCsv(walletAddress: string, requiredCount: number): Promise<string | null> {
+  try {
+    if (!walletAddress || requiredCount <= 0) return null;
+    const walletKey = walletAddress.substring(0, 32);
+    const db = await openSubaddressOwnershipDB();
+    const cached = await new Promise<CachedSubaddressOwnership | null>((resolve, reject) => {
+      const tx = db.transaction(SUBADDRESS_OWNERSHIP_STORE, 'readonly');
+      const store = tx.objectStore(SUBADDRESS_OWNERSHIP_STORE);
+      const request = store.get(walletKey);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+
+    if (!cached || cached.walletAddress !== walletAddress || cached.wasmVersion !== WASM_CACHE_VERSION) {
+      return null;
+    }
+    if (!cached.csv || cached.count < requiredCount) {
+      return null;
+    }
+
+    const verifiedCount = countSubaddressOwnershipEntries(cached.csv);
+    return verifiedCount >= requiredCount ? cached.csv : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function clearReturnAddressCache(): Promise<void> {
   try {
     if (typeof localStorage !== 'undefined') {
@@ -122,6 +256,15 @@ export async function clearReturnAddressCache(): Promise<void> {
 
   return new Promise((resolve) => {
     const request = indexedDB.deleteDatabase(RETURN_ADDR_DB_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = () => resolve();
+    request.onblocked = () => resolve();
+  });
+}
+
+export async function clearSubaddressOwnershipCache(): Promise<void> {
+  return new Promise((resolve) => {
+    const request = indexedDB.deleteDatabase(SUBADDRESS_OWNERSHIP_DB_NAME);
     request.onsuccess = () => resolve();
     request.onerror = () => resolve();
     request.onblocked = () => resolve();
@@ -1500,6 +1643,7 @@ class CSPScanService {
 
     const ua = navigator.userAgent || '';
     const isAndroid = /Android/i.test(ua);
+    const useBundle = shouldUseBundle(isAndroid);
     const maxWorkerCount = isIncremental ? Math.max(1, Math.floor(getOptimalWorkerCount() / 2)) : getOptimalWorkerCount();
     const deviceMemory = Number((navigator as any).deviceMemory);
     const workerPolicy = resolveScanWorkerPolicy({
@@ -1560,10 +1704,36 @@ class CSPScanService {
     }
 
     let subaddressMapCsv: string = '';
+    let subaddressMapSource: 'idb-cache' | 'native-export' | 'missing' = 'missing';
     try {
-      subaddressMapCsv = await wallet.call('get_subaddress_spend_keys_csv');
+      subaddressMapCsv = await loadSubaddressOwnershipCsv(walletAddress, totalSubaddresses) || '';
+      if (subaddressMapCsv) {
+        subaddressMapSource = 'idb-cache';
+      }
     } catch {
+      subaddressMapCsv = '';
     }
+
+    if (!subaddressMapCsv) {
+      try {
+        subaddressMapCsv = await wallet.call('get_subaddress_spend_keys_csv');
+        if (subaddressMapCsv) {
+          subaddressMapSource = 'native-export';
+          void saveSubaddressOwnershipCsv(walletAddress, subaddressMapCsv, totalSubaddresses);
+        }
+      } catch {
+      }
+    }
+
+    reportClientEvent('scan.subaddress_ownership_map', {
+      level: subaddressMapCsv ? 'info' : 'warn',
+      context: {
+        source: subaddressMapSource,
+        requiredCount: totalSubaddresses,
+        cached: subaddressMapSource === 'idb-cache',
+        count: subaddressMapCsv ? countSubaddressOwnershipEntries(subaddressMapCsv) : 0,
+      },
+    });
 
     let disableStakeFilter = false;
     let forceSingleChunkScan = false;
@@ -1624,7 +1794,7 @@ class CSPScanService {
       deviceMemory: workerPolicy.deviceMemory || 0,
       batchSize: isAndroid ? 6 : 20,
       chunkSize: 1000,
-      useBundleMode: !isAndroid,
+      useBundleMode: useBundle,
       useBatchMode: !forceSingleChunkOnTest,
       forceSingleChunkScan,
       disableStakeFilter,
@@ -1648,7 +1818,7 @@ class CSPScanService {
       initialWorkerCount,
       startupRampWorkerCount,
       workerCount: maxWorkerCount,
-      useBundleMode: !isAndroid,
+      useBundleMode: useBundle,
       useBatchMode: !forceSingleChunkOnTest,
       batchSize: isAndroid ? 6 : 20,
       chunkSize: 1000,
@@ -1784,7 +1954,7 @@ class CSPScanService {
     emitScanTelemetry('scan.phase1_started', {
       phase: '1',
       isAndroid,
-      useBundleMode: !isAndroid,
+      useBundleMode: useBundle,
       useBatchMode: !forceSingleChunkOnTest,
       batchSize: isAndroid ? 6 : 20,
       chunkSize: 1000,
@@ -2697,6 +2867,7 @@ class CSPScanService {
 	    if (wallet) {
 	      const txidList = Array.from(this.outgoingSpendingTxids);
 	      try {
+	        let outgoingHydrationDirty = false;
 	        if (txidList.length > 0) {
 	          for (let i = 0; i < txidList.length; i += 100) {
 	            const batch = txidList.slice(i, i + 100);
@@ -2719,9 +2890,27 @@ class CSPScanService {
 	              if (bytes.length <= 8) continue;
 	              // Worker op: stages the buffer on the WASM heap and runs
 	              // cache_runtime_full_txs_from_sparse (former Module.allocate/HEAPU8/free block).
-	              await wallet.op('cacheRuntimeFullTxsFromSparse', { buffer: bytes }, { transfer: [bytes.buffer] });
+	              const cacheResultJson = await wallet.op(
+	                'cacheRuntimeFullTxsFromSparse',
+	                { buffer: bytes, deferDerived: true },
+	                { transfer: [bytes.buffer] }
+	              );
+	              let cacheResult: any = null;
+	              try {
+	                cacheResult = JSON.parse(cacheResultJson);
+	              } catch {
+	                // If WASM accepted the sparse frame but returned malformed JSON, flush
+	                // before reconciliation rather than risking a stale derived-state read.
+	                outgoingHydrationDirty = true;
+	                throw new Error('cacheRuntimeFullTxsFromSparse returned invalid JSON');
+	              }
+	              outgoingHydrationDirty = outgoingHydrationDirty ||
+	                Number(cacheResult?.stored || 0) > 0;
 	            } catch { }
 	          }
+	        }
+	        if (outgoingHydrationDirty) {
+	          await flushDerivedStateOrThrow(wallet, 'outgoing reconciliation hydration');
 	        }
 	        const reconResult = (await wallet.call('reconcile_outgoing_payments')) as string;
 	        const reconParsed = JSON.parse(reconResult);
@@ -4203,6 +4392,7 @@ class CSPScanService {
     const totalChunks = sortedChunks.length;
     const startTime = performance.now();
     let lastPhase2ActivityProgressAt = 0;
+    let deferredSparseIngestUsed = false;
 
     const expectedBatchStarts: number[] = [];
     for (let i = 0; i < sortedChunks.length; i += CLIENT_BATCH_SIZE) {
@@ -4444,23 +4634,32 @@ class CSPScanService {
                 // ingest_sparse_transactions (former Module.allocate/HEAPU8/free block).
                 const resJson = await wallet.op(
                   'ingestSparse',
-                  { startHeight: firstHeight || 0, allowProtocol: true, buffer: mergedBuffer },
+                  { startHeight: firstHeight || 0, allowProtocol: true, deferDerived: true, buffer: mergedBuffer },
                   { transfer: [mergedBuffer.buffer] }
                 );
                 ingestMs = Math.round(performance.now() - ingestStartedAt);
 
                 const res = JSON.parse(resJson);
                 await applySparseIngestResult(res, chunks, firstHeight);
+                deferredSparseIngestUsed = deferredSparseIngestUsed ||
+                  deferredSparseIngestChangedDerivedState(res);
               }
 
               if (ingestMs > 750) {
-                debugWarn('[CSPScanService] Long sparse ingest slice', {
+                const sliceContext = {
                   kind,
                   firstHeight,
                   chunkCount: chunks.length,
                   txCount,
                   bytes: mergedBytes,
                   ingestMs,
+                  deferred: true,
+                };
+                debugWarn('[CSPScanService] Long sparse ingest slice', sliceContext);
+                reportClientEvent('scan.sparse_ingest_slice', {
+                  level: ingestMs > 5000 ? 'warn' : 'info',
+                  message: 'Sparse ingest slice timing (ms)',
+                  context: sliceContext,
                 });
               }
 
@@ -4606,6 +4805,9 @@ class CSPScanService {
         ? ` | recorded issues: ${phase3Issues.slice(-3).join(' ;; ').slice(0, 300)}`
         : ' | no consumer errors recorded (chunk never reached ingest)';
       throw new Error(`Sparse ingest did not complete ${missingIngestedChunks.length} requested chunk(s): ${missingIngestedChunks.slice(0, 10).join(',')}${detail}`);
+    }
+    if (deferredSparseIngestUsed) {
+      await flushDerivedStateOrThrow(wallet, 'phase 2 sparse ingest');
     }
     const STAKE_RETURN_OFFSET = 21601;
 
@@ -4999,9 +5201,10 @@ class CSPScanService {
     allowProtocol: boolean,
     limitsOverride?: { maxBytes: number; maxChunks: number; maxTxs: number },
     deferDerived?: boolean
-  ): Promise<{ txsMatched: number; txsProcessed: number }> {
+  ): Promise<{ txsMatched: number; txsProcessed: number; derivedDirty: boolean }> {
     let txsMatched = 0;
     let txsProcessedTotal = 0;
+    let derivedDirty = false;
 
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     const chunkCount = view.getUint32(0, true);
@@ -5130,6 +5333,9 @@ class CSPScanService {
         if (res && res.success) {
           txsMatched += res.txs_matched || 0;
           txsProcessedTotal += res.txs_processed || 0;
+          derivedDirty = derivedDirty || (
+            deferDerived === true && deferredSparseIngestChangedDerivedState(res)
+          );
           consecutiveFailures = 0;
           await yieldIfNeeded();
           return;
@@ -5226,7 +5432,7 @@ class CSPScanService {
 
     await flushPendingBatch();
 
-    return { txsMatched, txsProcessed: txsProcessedTotal };
+    return { txsMatched, txsProcessed: txsProcessedTotal, derivedDirty };
   }
 
   private async fetchStakeReturnsSparse(
@@ -5263,6 +5469,7 @@ class CSPScanService {
       const MAX_HEIGHTS_PER_REQUEST = 2000;
       let txsMatched = 0;
       let txsProcessedTotal = 0;
+      let derivedDirty = false;
 
       for (let batchStart = 0; batchStart < returnHeights.length; batchStart += MAX_HEIGHTS_PER_REQUEST) {
         if (!this.shouldContinueScan(wallet)) {
@@ -5316,6 +5523,7 @@ class CSPScanService {
         const batchResult = await this.ingestSparseFramesBatched(wallet, data, true, CSPScanService.PHASE3_DESKTOP_INGEST_LIMITS, true);
         txsMatched += batchResult.txsMatched;
         txsProcessedTotal += batchResult.txsProcessed;
+        derivedDirty = derivedDirty || batchResult.derivedDirty;
       }
 
       if (onProgress) {
@@ -5343,7 +5551,9 @@ class CSPScanService {
       // Deferred-derived flush: the batched ingests above skipped the O(wallet) post-passes;
       // run them once now (also publishes a fresh state delta to the mirror). Byte-equivalence
       // of defer+flush vs per-call passes is rig-verified (38/38, incl. spend processing).
-      try { await wallet.op('flushDerivedState', {}); } catch { /* old wasm: per-call passes already ran */ }
+      if (derivedDirty) {
+        await flushDerivedStateOrThrow(wallet, 'stake return sparse ingest');
+      }
       return { txsMatched, failedHeights };
 
     } catch (e) {
@@ -5384,6 +5594,7 @@ class CSPScanService {
       const MAX_HEIGHTS_PER_REQUEST = 2000;
       let txsMatched = 0;
       let txsProcessedTotal = 0;
+      let derivedDirty = false;
 
       for (let batchStart = 0; batchStart < returnHeights.length; batchStart += MAX_HEIGHTS_PER_REQUEST) {
         if (!this.shouldContinueScan(wallet)) {
@@ -5412,12 +5623,15 @@ class CSPScanService {
         const batchResult = await this.ingestSparseFramesBatched(wallet, data, true, CSPScanService.PHASE3_DESKTOP_INGEST_LIMITS, true);
         txsMatched += batchResult.txsMatched;
         txsProcessedTotal += batchResult.txsProcessed;
+        derivedDirty = derivedDirty || batchResult.derivedDirty;
       }
 
       // Deferred-derived flush: the batched ingests above skipped the O(wallet) post-passes;
       // run them once now (also publishes a fresh state delta to the mirror). Byte-equivalence
       // of defer+flush vs per-call passes is rig-verified (38/38, incl. spend processing).
-      try { await wallet.op('flushDerivedState', {}); } catch { /* old wasm: per-call passes already ran */ }
+      if (derivedDirty) {
+        await flushDerivedStateOrThrow(wallet, 'audit return sparse ingest');
+      }
       return { txsMatched, failedHeights };
 
     } catch (e) {
@@ -5430,5 +5644,3 @@ class CSPScanService {
 }
 
 export const cspScanService = CSPScanService.getInstance();
-
-

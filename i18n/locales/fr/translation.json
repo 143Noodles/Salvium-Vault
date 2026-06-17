@@ -267,7 +267,17 @@
     },
     "connection": {
       "title": "Connexion",
-      "description": "Choisissez quel nœud Salvium synchronise votre portefeuille. Le mode automatique vous maintient sur un nœud officiel sain ; n'ajoutez le vôtre que s'il est accessible publiquement. Dans tous les cas, les requêtes sont relayées par le serveur du vault plutôt qu'envoyées directement depuis votre appareil."
+      "description": "Choisissez quel nœud Salvium synchronise votre portefeuille. Le mode automatique vous maintient sur un nœud officiel sain ; n'ajoutez le vôtre que s'il est accessible publiquement. Dans tous les cas, les requêtes sont relayées par le serveur du vault plutôt qu'envoyées directement depuis votre appareil.",
+      "scanMode": {
+        "title": "Mode d'index d'analyse",
+        "description": "Synchronisation rapide utilise un index préchargé pour des restaurations plus rapides. Construction indépendante ne télécharge rien de plus et reconstruit l'index d'analyse entièrement sur votre appareil.",
+        "fast": "Synchronisation rapide",
+        "independent": "Construction indépendante",
+        "note": "S’applique lors de votre prochaine restauration ou nouvelle analyse manuelle — il ne resynchronise pas un portefeuille déjà synchronisé."
+      },
+      "errors": {
+        "nettypeMismatch": "Ce nœud se trouve sur un réseau différent de celui de votre portefeuille."
+      }
     },
     "currency": {
       "title": "Devise d'affichage",
@@ -598,6 +608,35 @@
     "errors": {
       "loadFailed": "Impossible de charger les actifs",
       "createFailed": "Impossible de créer la transaction d’actif"
+    }
+  },
+  "setup": {
+    "wizard": {
+      "welcome": {
+        "title": "Bienvenue dans votre Salvium Vault",
+        "subtitle": "Configurons la façon dont votre portefeuille se connecte et se synchronise. Vos clés sont générées et stockées uniquement sur cet appareil.",
+        "privacyNote": "Votre seed et vos clés ne quittent jamais cet appareil, et toute l'analyse se fait localement."
+      },
+      "node": {
+        "title": "Se connecter à un nœud",
+        "description": "Choisissez quel nœud Salvium synchronise votre portefeuille. Les nœuds seed officiels sont sélectionnés par défaut ; les utilisateurs avancés peuvent indiquer leur propre salviumd ou tout nœud accessible."
+      },
+      "sync": {
+        "title": "Choisir le mode de synchronisation",
+        "description": "Les deux options conservent vos clés et l'analyse entièrement en local. Elles ne diffèrent que par la manière dont l'index d'analyse initial est obtenu.",
+        "recommended": "Recommandé",
+        "bothLocalNote": "Dans les deux cas, vos clés ne quittent jamais cet appareil et l'analyse s'exécute localement.",
+        "fast": {
+          "title": "Synchronisation rapide",
+          "description": "Télécharge une fois un index d'analyse prédéfini depuis le CDN, en faisant confiance à ce paquet pour son exhaustivité, puis fonctionne en local. Première exécution la plus rapide."
+        },
+        "independent": {
+          "title": "Construction indépendante",
+          "description": "Construit l'index d'analyse localement à partir de la blockchain sans données préchargées, de sorte que votre portefeuille ne fait confiance à aucun paquet prédéfini. Première exécution plus lente."
+        }
+      },
+      "finish": "Terminer la configuration",
+      "stepProgress": "Étape {{current}} sur {{total}}"
     }
   }
 }

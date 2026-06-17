@@ -7,6 +7,7 @@ import {
 } from '../utils/walletIntegrity';
 import { reportClientEvent } from '../utils/clientTelemetry';
 import { WASM_CACHE_VERSION, fetchLatestWasmAssetVersion } from '../utils/wasmVersion';
+import { getExtensionAssetUrl, isExtensionRuntime } from '../utils/extensionRuntime';
 import type { WalletEngine } from './walletWorker/WalletEngine';
 import { WorkerEngine, guardEngineSurface } from './walletWorker/WorkerEngine';
 import { DirectEngine } from './walletWorker/DirectEngine';
@@ -1325,10 +1326,14 @@ export class WalletService {
    * `typeof this.walletInstance.x === 'function'` / `this.wasmModule?.x` guards).
    * Resolves null when the worker reports the method as unknown; other errors rethrow.
    */
-  private async engineCallOptional<T = unknown>(method: string, args: unknown[] = []): Promise<T | null> {
+  private async engineCallOptional<T = unknown>(
+    method: string,
+    args: unknown[] = [],
+    opts?: { timeoutMs?: number }
+  ): Promise<T | null> {
     if (!this.engine) return null;
     try {
-      return await this.engine.call<T>(method, args);
+      return await this.engine.call<T>(method, args, opts);
     } catch (error) {
       if (WalletService.isUnknownMethodError(error, method)) {
         return null;
@@ -1441,6 +1446,11 @@ export class WalletService {
 
   private async resolveWasmAssetVersion(): Promise<string> {
     window.__salviumWasmCacheVersion = WASM_CACHE_VERSION;
+    if (isExtensionRuntime()) {
+      window.__salviumExpectedWasmAssetVersion = WASM_CACHE_VERSION;
+      this.wasmAssetVersion = WASM_CACHE_VERSION;
+      return WASM_CACHE_VERSION;
+    }
     try {
       const latestAssetVersion = await fetchLatestWasmAssetVersion();
       if (latestAssetVersion) {
@@ -1474,7 +1484,9 @@ export class WalletService {
     const wasmAssetVersion = await this.resolveWasmAssetVersion();
     // Path-versioned (no query): query-keyed wasm URLs were cache-poisonable with
     // mismatched pairs — versioned paths are a pristine address space per release.
-    const glueUrl = '/api/wasm/' + encodeURIComponent(WASM_CACHE_VERSION) + '/SalviumWallet.js';
+    const glueUrl = isExtensionRuntime()
+      ? getExtensionAssetUrl('wallet/SalviumWallet.js')
+      : '/api/wasm/' + encodeURIComponent(WASM_CACHE_VERSION) + '/SalviumWallet.js';
 
     const version = encodeURIComponent(wasmAssetVersion);
     // The WASM binary is VERSION-COUPLED to the worker/glue of this exact build, so it
@@ -1483,7 +1495,9 @@ export class WalletService {
     // cdn stays for version-independent bulk chain data only (chunks, spent-index).
     // ~MBs through the origin is fine; the Cloudflare throttle only mattered for the
     // 285MB chunk bundle.
-    const wasmUrl = '/api/wasm/' + encodeURIComponent(WASM_CACHE_VERSION) + '/SalviumWallet.wasm';
+    const wasmUrl = isExtensionRuntime()
+      ? getExtensionAssetUrl('wallet/SalviumWallet.wasm')
+      : '/api/wasm/' + encodeURIComponent(WASM_CACHE_VERSION) + '/SalviumWallet.wasm';
 
     reportClientEvent('wasm.script_load_started', {
       level: 'info',
@@ -1594,7 +1608,12 @@ export class WalletService {
     return keys;
   }
 
-  async restoreFromMnemonic(mnemonic: string, password: string = '', restoreHeight: number = 0): Promise<WalletKeys> {
+  async restoreFromMnemonic(
+    mnemonic: string,
+    password: string = '',
+    restoreHeight: number = 0,
+    options: { deferSubaddressExpand?: boolean } = {}
+  ): Promise<WalletKeys> {
     await this.init();
 
     const normalizedMnemonic = mnemonic.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -1643,7 +1662,9 @@ export class WalletService {
     // Failure here is survivable: the WASM re-runs the expansion inline at
     // ingest/scan_tx (throwing into their error paths), so scans can never see
     // the 1x1 map — this retry + telemetry is for early recovery and visibility.
-    void this.runDeferredSubaddressExpand();
+    if (!options.deferSubaddressExpand) {
+      void this.runDeferredSubaddressExpand();
+    }
 
     return keys;
   }
@@ -6516,6 +6537,24 @@ export class WalletService {
       const resultJson = await this.engine!.op<string>('importWalletCache', { cacheHex: cache_hex });
       const result = JSON.parse(resultJson);
 
+      // Temporary: surface per-phase cold-import timing so the 88s import can be localized.
+      if (result && result.timings) {
+        try {
+          reportClientEvent('wallet.import_cache_phase_timings', {
+            level: 'warn',
+            message: 'importWalletCache phase breakdown (ms)',
+            context: {
+              ...result.timings,
+              transfers: Number(result.transfers || 0),
+              importedSubaddressMapSize: Number(result.imported_subaddress_map_size || 0),
+              importedExtSubaddressMapSize: Number(result.imported_ext_subaddress_map_size || 0),
+              importedCnSubaddressMapSize: Number(result.imported_cn_subaddress_map_size || 0),
+              subaddressExpandCleared: result.subaddress_expand_cleared === true,
+            },
+          });
+        } catch {}
+      }
+
       if (result.status === 'success') {
         const transfers = Number(result.transfers || 0);
         const accepted = transfers >= Math.max(0, minTransfers);
@@ -7050,8 +7089,15 @@ export class WalletService {
 
   async validateMnemonic(mnemonic: string): Promise<SeedValidationResult> {
     return new Promise(async (resolve) => {
+      const seedWorkerUrl = isExtensionRuntime()
+        ? getExtensionAssetUrl('wallet/seed-validator.worker.js')
+        : '/wallet/seed-validator.worker.js';
+      const seedWasmPath = isExtensionRuntime()
+        ? getExtensionAssetUrl('wallet')
+        : '/wallet';
+
       try {
-        const response = await fetch('/wallet/seed-validator.worker.js', { method: 'HEAD' });
+        const response = await fetch(seedWorkerUrl, { method: 'HEAD' });
         if (!response.ok) {
           resolve({ valid: false, error: `Worker file not found (Status ${response.status})` });
           return;
@@ -7059,7 +7105,7 @@ export class WalletService {
       } catch (e) {
       }
 
-      const worker = new Worker('/wallet/seed-validator.worker.js');
+      const worker = new Worker(seedWorkerUrl);
 
       const timeout = setTimeout(() => {
         worker.terminate();
@@ -7094,7 +7140,7 @@ export class WalletService {
         type: 'VALIDATE',
         payload: {
           mnemonic,
-          wasmPath: '/wallet'
+          wasmPath: seedWasmPath
         },
         id: Date.now()
       });
@@ -7632,6 +7678,7 @@ export class WalletService {
 
     let requested = 0;
     let hydrated = 0;
+    let hydrationDirty = false;
 
     try {
       const MAX_HYDRATION_PASSES = 8;
@@ -7643,7 +7690,11 @@ export class WalletService {
         if (pass > 0) await new Promise<void>((r) => setTimeout(r, 50));
         // Former capability checks (candidate hashes / sparse cache / binary buffer API):
         // a missing method now surfaces as null on the first call.
-        const candidatesJson = await this.engineCallOptional<string>('get_runtime_full_tx_candidate_hashes');
+        const candidatesJson = await this.engineCallOptional<string>(
+          'get_runtime_full_tx_candidate_hashes',
+          [],
+          { timeoutMs: 120000 }
+        );
         if (candidatesJson === null) {
           this.lastRuntimeFullTxHydration = {
             attempted: true,
@@ -7655,6 +7706,21 @@ export class WalletService {
           return { requested: 0, hydrated: 0 };
         }
         const candidates = JSON.parse(candidatesJson);
+        if (candidates?.timings || typeof candidates?.derived_rebuilt === 'boolean') {
+          try {
+            reportClientEvent('wallet.runtime_tx_candidate_timings', {
+              level: 'warn',
+              message: 'runtime tx candidate scan timing (ms)',
+              context: {
+                pass,
+                candidateCount: Number(candidates?.count || 0),
+                derivedRebuilt: candidates?.derived_rebuilt === true,
+                derivedStateMs: Number(candidates?.timings?.derived_state || 0),
+                totalMs: Number(candidates?.timings?.total || 0),
+              },
+            });
+          } catch {}
+        }
         const allCandidateHashes = Array.isArray(candidates?.hashes)
           ? candidates.hashes.filter((hash: unknown): hash is string => typeof hash === 'string' && hash.length === 64)
           : [];
@@ -7725,6 +7791,7 @@ export class WalletService {
                 batch.forEach(hash => this.hydratedRuntimeFullTxHashes.add(hash));
                 hydrated += batch.length;
                 this.lastRuntimeFullTxHydration.hydrated = hydrated;
+                hydrationDirty = hydrationDirty || Number(result?.stored || 0) > 0;
               }
               break;
             } catch (batchError) {
@@ -7745,7 +7812,20 @@ export class WalletService {
 
     // Deferred-derived flush: hydration batches above skipped the O(wallet) post-passes;
     // run them once and publish fresh state (rig-verified byte-equivalent).
-    try { await this.engine?.op('flushDerivedState', {}); } catch {}
+    if (hydrationDirty) {
+      const flushResultJson = await this.engine?.op<string>('flushDerivedState', {});
+      let flushResult: any = flushResultJson;
+      if (typeof flushResultJson === 'string') {
+        try {
+          flushResult = JSON.parse(flushResultJson);
+        } catch {
+          throw new Error('flushDerivedState failed after runtime hydration: invalid JSON response');
+        }
+      }
+      if (flushResult && flushResult.success === false) {
+        throw new Error(`flushDerivedState failed after runtime hydration: ${flushResult.error || 'unknown error'}`);
+      }
+    }
 
     return { requested, hydrated };
   }
@@ -8235,6 +8315,3 @@ export const walletService = WalletService.getInstance();
 if (typeof window !== 'undefined') {
   (window as unknown as { walletService: WalletService }).walletService = walletService;
 }
-
-
-

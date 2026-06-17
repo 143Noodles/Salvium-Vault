@@ -267,7 +267,17 @@
     },
     "connection": {
       "title": "Połączenie",
-      "description": "Wybierz, który węzeł Salvium synchronizuje Twój portfel. Tryb automatyczny utrzymuje Cię na sprawnym węźle oficjalnym; dodaj własny tylko wtedy, gdy jest publicznie dostępny. Tak czy inaczej żądania są przekazywane przez serwer vault, a nie wysyłane bezpośrednio z Twojego urządzenia."
+      "description": "Wybierz, który węzeł Salvium synchronizuje Twój portfel. Tryb automatyczny utrzymuje Cię na sprawnym węźle oficjalnym; dodaj własny tylko wtedy, gdy jest publicznie dostępny. Tak czy inaczej żądania są przekazywane przez serwer vault, a nie wysyłane bezpośrednio z Twojego urządzenia.",
+      "scanMode": {
+        "title": "Tryb indeksu skanowania",
+        "description": "Szybka synchronizacja używa wstępnie pobranego indeksu dla szybszych przywróceń. Niezależna budowa nie pobiera niczego dodatkowego i odtwarza indeks skanowania w całości na Twoim urządzeniu.",
+        "fast": "Szybka synchronizacja",
+        "independent": "Niezależna budowa",
+        "note": "Stosuje się przy następnym przywracaniu lub ręcznym ponownym skanowaniu — nie synchronizuje ponownie już zsynchronizowanego portfela."
+      },
+      "errors": {
+        "nettypeMismatch": "Ten węzeł znajduje się w innej sieci niż Twój portfel."
+      }
     },
     "currency": {
       "title": "Waluta wyświetlania",
@@ -598,6 +608,35 @@
     "errors": {
       "loadFailed": "Nie udało się wczytać zasobów",
       "createFailed": "Nie udało się utworzyć transakcji zasobu"
+    }
+  },
+  "setup": {
+    "wizard": {
+      "welcome": {
+        "title": "Witamy w Twoim Salvium Vault",
+        "subtitle": "Skonfigurujmy sposób, w jaki Twój portfel łączy się i synchronizuje. Twoje klucze są generowane i przechowywane wyłącznie na tym urządzeniu.",
+        "privacyNote": "Twój seed i klucze nigdy nie opuszczają tego urządzenia, a całe skanowanie odbywa się lokalnie."
+      },
+      "node": {
+        "title": "Połącz z węzłem",
+        "description": "Wybierz, który węzeł Salvium synchronizuje Twój portfel. Oficjalne węzły seed są wybrane domyślnie; zaawansowani użytkownicy mogą wskazać własny salviumd lub dowolny osiągalny węzeł."
+      },
+      "sync": {
+        "title": "Wybierz sposób synchronizacji",
+        "description": "Obie opcje utrzymują Twoje klucze i skanowanie całkowicie lokalnie. Różnią się jedynie sposobem uzyskania początkowego indeksu skanowania.",
+        "recommended": "Zalecane",
+        "bothLocalNote": "Tak czy inaczej, Twoje klucze nigdy nie opuszczają tego urządzenia, a skanowanie działa lokalnie.",
+        "fast": {
+          "title": "Szybka synchronizacja",
+          "description": "Jednorazowo pobiera gotowy indeks skanowania z CDN, ufając kompletności tego pakietu, a następnie działa lokalnie. Najszybsze pierwsze uruchomienie."
+        },
+        "independent": {
+          "title": "Niezależna budowa",
+          "description": "Buduje indeks skanowania lokalnie na podstawie blockchaina bez wstępnie pobranych danych, więc Twój portfel nie ufa żadnemu gotowemu pakietowi. Wolniejsze pierwsze uruchomienie."
+        }
+      },
+      "finish": "Zakończ konfigurację",
+      "stepProgress": "Krok {{current}} z {{total}}"
     }
   }
 }

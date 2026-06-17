@@ -20,7 +20,7 @@ import {
     getBaseAssetBalanceFromSnapshot,
     getDisplayAssetBalanceFromSnapshot
 } from './WalletService';
-import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache } from './CSPScanService';
+import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache, clearSubaddressOwnershipCache } from './CSPScanService';
 import { encrypt, decrypt } from './CryptoService';
 import { initDesktopSilentAudio } from './SilentAudio';
 import { forceCleanSlate, getCheckpoint, pruneCheckpointCoverageFromHeight } from './ScanJournal';
@@ -1247,6 +1247,10 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     // they don't pile onto the single WASM worker and delay the catch-up scan.
     const [coldStartSettled, setColdStartSettled] = useState(true);
     const [isLocked, setIsLocked] = useState(false);
+    const isWalletReadyRef = React.useRef(false);
+    const isLockedRef = React.useRef(false);
+    isWalletReadyRef.current = isWalletReady;
+    isLockedRef.current = isLocked;
     const [needsRecovery, setNeedsRecovery] = useState(false);
     const [address, setAddress] = useState('');
     const [legacyAddress, setLegacyAddress] = useState('');
@@ -1396,6 +1400,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const nativeAuditEnabledRef = React.useRef(isNativeAuditEnabled());
     const fullWalletCacheImportedRef = React.useRef(false);
     const coldStartSafetyTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const openTimeHistoryHealRequestedRef = React.useRef(false);
+    const openTimeHistoryHealInFlightRef = React.useRef(false);
+    const [openTimeHistoryHealRequestTick, setOpenTimeHistoryHealRequestTick] = useState(0);
     const preferredScanStartHeightRef = React.useRef<number | undefined>(undefined);
     const lastNativeSnapshotRef = React.useRef<WalletStateSnapshot | null>(null);
     const forceCleanRestoreScanRef = React.useRef(false);
@@ -2424,6 +2431,37 @@ const getDeviceMemoryBucket = (): string => {
                     needsGapCheckRef.current = true;
                 }
 
+                if (
+                    hiddenDuration > SUSPENSION_THRESHOLD_MS &&
+                    cspScanService.isScanningInProgress()
+                ) {
+                    const scanAge = lastScanTimeRef.current ? Date.now() - lastScanTimeRef.current : hiddenDuration;
+                    if (scanAge > SUSPENSION_THRESHOLD_MS) {
+                        reportClientEvent('scan.suspended_scan_recovered', {
+                            level: 'warn',
+                            message: 'Resetting stale scanner state after page suspension; coverage will be rechecked.',
+                            context: {
+                                source: 'visibility-visible',
+                                hiddenDurationMs: hiddenDuration,
+                                scanAgeMs: scanAge,
+                                scanActive: scanInProgressRef.current,
+                                serviceScanActive: cspScanService.isScanningInProgress(),
+                                sessionType: activeRestoreSession?.type || 'background',
+                            },
+                        });
+                        scanVersionRef.current += 1;
+                        scanCoordinatorRef.current.serial += 1;
+                        scanCoordinatorRef.current.activePromise = undefined;
+                        scanCoordinatorRef.current.activeRequest = undefined;
+                        scanCoordinatorRef.current.pendingRequest = undefined;
+                        cspScanService.resetScannerState();
+                        scanInProgressRef.current = false;
+                        setIsScanning(false);
+                        setScanProgress(null);
+                        needsGapCheckRef.current = true;
+                    }
+                }
+
                 // (Removed: a dead "resume restore after visibility pause" block. Its gating ref
                 // restoreScanPausedForVisibilityRef was never set true anywhere, so the branch was
                 // unreachable. Idle restore sessions are rescued by the sync watchdog instead.)
@@ -2795,9 +2833,18 @@ const getDeviceMemoryBucket = (): string => {
                     staleScanMs: SYNC_WATCHDOG_STALE_SCAN_MS,
                     tipGraceBlocks: SYNC_TIP_GRACE_BLOCKS,
                 });
+                const scanActive =
+                    scanInProgressRef.current ||
+                    !!scanCoordinatorRef.current.activePromise ||
+                    cspScanService.isScanningInProgress();
+                const terminalCoverageDisplayed =
+                    !isRestoreScanSessionActive() &&
+                    validDaemonHeight > 0 &&
+                    clampedWalletHeight >= Math.max(0, validDaemonHeight - SYNC_TIP_GRACE_BLOCKS);
                 const scanActiveForDisplay =
-                    (scanInProgressRef.current || !!scanCoordinatorRef.current.activePromise || cspScanService.isScanningInProgress()) &&
-                    !statusDecision.shouldClearStaleScanFlag;
+                    scanActive &&
+                    !statusDecision.shouldClearStaleScanFlag &&
+                    !terminalCoverageDisplayed;
                 const next = {
                     ...sync,
                     walletHeight: clampedWalletHeight,
@@ -3192,6 +3239,7 @@ const getDeviceMemoryBucket = (): string => {
                 walletStateService.clear(walletAddress),
                 forceCleanSlate(walletAddress),
                 clearReturnAddressCache(),
+                clearSubaddressOwnershipCache(),
             ]);
         }
 
@@ -3515,6 +3563,7 @@ const getDeviceMemoryBucket = (): string => {
         } else if (cacheMissing && hadData) {
             finalRestoreHeight = 0;
         }
+        const willImportCache = !forceCleanRestoreScan && !!cachedOutputsHex && cachedOutputsHex.length > 0;
 
         const restoreSessionRequested = options?.scanSessionType === 'restore-full-rescan';
         const restoreSource = options?.restoreSource || (restoreSessionRequested ? 'restore-unlock' : 'unlock');
@@ -3535,7 +3584,9 @@ const getDeviceMemoryBucket = (): string => {
 
         let restoreSuccess = false;
         try {
-            const result = await walletService.restoreFromMnemonic(mnemonic, '', finalRestoreHeight);
+            const result = await walletService.restoreFromMnemonic(mnemonic, '', finalRestoreHeight, {
+                deferSubaddressExpand: willImportCache,
+            });
             restoreSuccess = !!result;
         } catch (e) {
             throw e;
@@ -3612,7 +3663,6 @@ const getDeviceMemoryBucket = (): string => {
         // import finishes. Set the gate in the SAME synchronous batch as isWalletReady so
         // there's no render window where both are true before the gate engages.
         fullWalletCacheImportedRef.current = false;
-        const willImportCache = !forceCleanRestoreScan && !!cachedOutputsHex && cachedOutputsHex.length > 0;
         if (coldStartSafetyTimerRef.current) {
             clearTimeout(coldStartSafetyTimerRef.current);
             coldStartSafetyTimerRef.current = null;
@@ -3648,19 +3698,7 @@ const getDeviceMemoryBucket = (): string => {
                 importSuccess = await walletService.importWalletCache(cachedOutputsHex, minTransfers);
                 if (importSuccess) {
                     fullWalletCacheImportedRef.current = true;
-                    // Open-time history heal (token self-send change shown as a spurious
-                    // "Received" row by pre-fix scans). Background: when it reconciles
-                    // anything, re-read the now-healed list and force the next poll to
-                    // take the full reload path (the fast path only syncs balance).
-                    void walletService.healOutgoingHistoryAfterOpen().then((reconciled) => {
-                        if (reconciled > 0) {
-                            try {
-                                const healedTxs = walletService.getTransactions();
-                                if (healedTxs && healedTxs.length > 0) setTransactions(healedTxs);
-                            } catch {}
-                            walletDataDirtyRef.current = true;
-                        }
-                    });
+                    requestOpenTimeHistoryHeal('cache-import');
                     // Self-heal the tx display from the just-imported wallet (authoritative). The idb tx
                     // cache (~3214) can be empty/partial (interrupted resync) and the catch-up commit that
                     // would setTransactions is gated off when no new tx arrives on reopen -> blank list.
@@ -6714,6 +6752,7 @@ const getDeviceMemoryBucket = (): string => {
             await deleteFromIndexedDB(`wallet_cache_${currentAddress}`);
             await walletStateService.clear(currentAddress);
         }
+        await clearSubaddressOwnershipCache();
 
         setIsInitialized(false);
         setIsWalletReady(false);
@@ -7189,13 +7228,17 @@ const getDeviceMemoryBucket = (): string => {
             : decision;
         setAutomaticCatchupStatus(networkHeight, displayDecision);
 
+        const nativeCoverageHeight = walletService.hasWallet()
+            ? (walletService.getSyncStatus().walletHeight || 0)
+            : 0;
+        const walletStillAtLastSuccess =
+            nativeCoverageHeight >= lastSuccessfulScanHeightRef.current;
         if (
             decision.shouldStartScan &&
-            // RESPONSIVENESS: skip redundant auto catch-ups for a height already SUCCESSFULLY
-            // scanned (they re-scan + re-ingest the tail chunk = a UI freeze, for nothing). Only
-            // set on success, so failed scans still retry; reorg/gap recovery uses a fromHeight
-            // rescan that bypasses this. New blocks advance networkHeight → not skipped. Lossless.
-            networkHeight > lastSuccessfulScanHeightRef.current &&
+            // Skip a redundant catch-up only while the wallet's NATIVE coverage is still at the
+            // last-scanned tip. If it regressed below lastSuccessful (interrupted scan, reorg,
+            // tail-only success), scan even when networkHeight has not advanced. Lossless.
+            (networkHeight > lastSuccessfulScanHeightRef.current || !walletStillAtLastSuccess) &&
             (!requireNewTarget || networkHeight > scanTargetHeightRef.current)
         ) {
             needsGapCheckRef.current = true;
@@ -7349,7 +7392,9 @@ const getDeviceMemoryBucket = (): string => {
                     if (restoreHeight > 0) setSyncStatus(prev => ({ ...prev, walletHeight: restoreHeight }));
 
                     try {
-                        await walletService.restoreFromMnemonic(sessionSeed, '', restoreHeight);
+                        await walletService.restoreFromMnemonic(sessionSeed, '', restoreHeight, {
+                            deferSubaddressExpand: !!cachedOutputsHex,
+                        });
                     } catch (restoreError: any) {
                         const error = `WASM restore threw error: ${restoreError?.message || String(restoreError)}`;
                         flushSync(() => {
@@ -7390,17 +7435,7 @@ const getDeviceMemoryBucket = (): string => {
                                 const minTransfers = getMinimumExpectedCacheTransfers(cachedBalance, cachedTxs);
                                 importSuccess = await walletService.importWalletCache(cachedOutputsHex, minTransfers);
                                 if (importSuccess) {
-                                    // Same open-time history heal as the primary open path
-                                    // (memoized per wallet session — at most one run).
-                                    void walletService.healOutgoingHistoryAfterOpen().then((reconciled) => {
-                                        if (reconciled > 0) {
-                                            try {
-                                                const healedTxs = walletService.getTransactions();
-                                                if (healedTxs && healedTxs.length > 0) setTransactions(healedTxs);
-                                            } catch {}
-                                            walletDataDirtyRef.current = true;
-                                        }
-                                    });
+                                    requestOpenTimeHistoryHeal('bootstrap-cache-import');
                                 }
                             }
                             if (!importSuccess) {
@@ -7644,6 +7679,45 @@ const getDeviceMemoryBucket = (): string => {
     const restoreSessionActiveForWatchdog =
         scanSession?.type === 'restore-full-rescan' && scanSession.status === 'active';
 
+    // STALL RECOVERY: the main sync-watchdog detects "behind" but its catch-up can wedge -- a
+    // prior scan's coordinator.activePromise never resolves, so requestScanStart coalesces into
+    // the dead promise forever and the wallet sits at "100% / syncing" until the next new block
+    // (mainnet stalls of 30-90s -> the user's symptom). This independent timer recovers it: when
+    // the NATIVE coverage is behind the tip and neither scanInProgressRef nor the service report
+    // an active scan, any lingering activePromise is WEDGED -> clear it and start a fresh scan
+    // from the native height (explicit fromHeight bypasses resolveScanResumeHeight's stale max).
+    useEffect(() => {
+        const STALL_GRACE = 2;
+        const tick = () => {
+            try {
+                if (!isWalletReadyRef.current || isLockedRef.current) return;
+                if (isResettingRef.current || scanRequestsSuspendedRef.current) return;
+                if (manualFullRescanModeRef.current || needsFullRescanRef.current) return;
+                if (autoIntegrityRecoveryInFlightRef.current || isRestoreScanSessionActive()) return;
+                if (!walletService.hasWallet()) return;
+                const ss = walletService.getSyncStatus();
+                const native = ss.walletHeight || 0;
+                const tip = Math.max(ss.daemonHeight || 0, scanTargetHeightRef.current || 0);
+                if (tip <= 0 || native <= 0 || tip - native <= STALL_GRACE) return;
+                // A genuinely-active scan is making progress -> leave it alone.
+                if (scanInProgressRef.current || cspScanService.isScanningInProgress()) return;
+                // Behind + nothing actually scanning. Any held coordinator promise is wedged.
+                if (scanCoordinatorRef.current.activePromise) {
+                    scanCoordinatorRef.current.activePromise = undefined;
+                    scanCoordinatorRef.current.pendingRequest = undefined;
+                }
+                reportClientEvent('scan.stall_recovery_kick', {
+                    level: 'warn',
+                    context: { walletHeight: native, daemonHeight: tip, behindBlocks: tip - native, fetchRound: Date.now() % 1000000 },
+                });
+                needsGapCheckRef.current = true;
+                void (requestScanStartRef.current || requestScanStart)({ fromHeight: native, reason: 'stall-recovery', sessionType: 'background' });
+            } catch {}
+        };
+        const interval = window.setInterval(tick, 10000);
+        return () => window.clearInterval(interval);
+    }, []);
+
     useEffect(() => {
         if (!isWalletReady && !restoreSessionActiveForWatchdog) return;
 
@@ -7798,7 +7872,19 @@ const getDeviceMemoryBucket = (): string => {
                             sessionId: activeRestoreSession.id,
                         });
                     } else {
-                        void requestAutomaticCatchupScan(networkHeight, 'sync-watchdog-catchup');
+                        // The watchdog already proved the wallet is behind and the scanners are idle.
+                        // Bypass requestAutomaticCatchupScan here: its target/last-success coalescing can
+                        // keep returning without ever starting a scan after a detach or stalled chain.
+                        if (!scanInProgressRef.current && !serviceScanInProgress && scanCoordinatorRef.current.activePromise) {
+                            scanCoordinatorRef.current.activePromise = undefined;
+                            scanCoordinatorRef.current.pendingRequest = undefined;
+                        }
+                        needsGapCheckRef.current = true;
+                        void requestScanStart({
+                            fromHeight: nativeSyncStatus.walletHeight || undefined,
+                            reason: "sync-watchdog-catchup",
+                            sessionType: "background",
+                        });
                     }
                 }
             } catch {
@@ -7820,6 +7906,68 @@ const getDeviceMemoryBucket = (): string => {
     useEffect(() => { mempoolTransactionsRef.current = mempoolTransactions; }, [mempoolTransactions]);
     useEffect(() => { stakesRef.current = stakes; }, [stakes]);
     useEffect(() => { subaddressesRef.current = subaddresses; }, [subaddresses]);
+
+    const requestOpenTimeHistoryHeal = useCallback((source: string) => {
+        openTimeHistoryHealRequestedRef.current = true;
+        setOpenTimeHistoryHealRequestTick(tick => tick + 1);
+        reportClientEvent('wallet.outgoing_history_heal_deferred', {
+            level: 'info',
+            context: { source },
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWalletReady || isLocked || !coldStartSettled) return;
+        if (!openTimeHistoryHealRequestedRef.current || openTimeHistoryHealInFlightRef.current) return;
+        let cancelled = false;
+        const scannerBusy = () =>
+            scanInProgressRef.current ||
+            cspScanService.isScanningInProgress() ||
+            !!scanCoordinatorRef.current.activePromise;
+        const retryLater = () => {
+            if (!cancelled) {
+                setOpenTimeHistoryHealRequestTick(tick => tick + 1);
+            }
+        };
+        if (scannerBusy()) {
+            const retryTimer = window.setTimeout(retryLater, 5000);
+            return () => {
+                cancelled = true;
+                window.clearTimeout(retryTimer);
+            };
+        }
+
+        const timer = window.setTimeout(() => {
+            if (!openTimeHistoryHealRequestedRef.current || openTimeHistoryHealInFlightRef.current) return;
+            if (scannerBusy()) {
+                retryLater();
+                return;
+            }
+
+            openTimeHistoryHealRequestedRef.current = false;
+            openTimeHistoryHealInFlightRef.current = true;
+            void walletService.healOutgoingHistoryAfterOpen().then((reconciled) => {
+                if (reconciled > 0) {
+                    try {
+                        const healedTxs = walletService.getTransactions();
+                        if (healedTxs && healedTxs.length > 0) setTransactions(healedTxs);
+                    } catch {}
+                    walletDataDirtyRef.current = true;
+                }
+            }).finally(() => {
+                openTimeHistoryHealInFlightRef.current = false;
+                if (openTimeHistoryHealRequestedRef.current) {
+                    retryLater();
+                }
+            });
+        }, 5000);
+
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+    }, [isWalletReady, isLocked, coldStartSettled, isScanning, syncStatus.isSyncing, openTimeHistoryHealRequestTick]);
+
     useEffect(() => {
         if (transactions.length === 0 || stakesRef.current.length === 0) {
             return;
@@ -8304,6 +8452,10 @@ const getDeviceMemoryBucket = (): string => {
             message: outcome,
             context: { reason: (ctx.reason || '').slice(0, 120) },
         });
+        if (outcome !== 'cancelled_retryable') {
+            scanInProgressRef.current = false;
+            setIsScanning(false);
+        }
         if (outcome === 'success' || outcome === 'repair_required') {
             // Persist the wallet cache once a restore succeeds. persistFullStateNow
             // declines while ANY scan runs (post-restore validation scans linger), so

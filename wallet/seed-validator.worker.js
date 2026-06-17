@@ -1,3 +1,12 @@
+function isExtensionProtocol() {
+    try {
+        const protocol = (self.location && self.location.protocol) || '';
+        return protocol === 'chrome-extension:' || protocol === 'moz-extension:';
+    } catch (_) {
+        return false;
+    }
+}
+
 let Module = null;
 
 self.onerror = function (message, filename, lineno, colno, error) {
@@ -50,9 +59,13 @@ async function initWasm(basePath) {
 
     try {
         if (typeof self.SalviumWallet === 'undefined') {
-            const response = await fetch(jsUrl);
-            const jsCode = await response.text();
-            (0, eval)(jsCode);
+            if (isExtensionProtocol()) {
+                importScripts(jsUrl);
+            } else {
+                const response = await fetch(jsUrl);
+                const jsCode = await response.text();
+                (0, eval)(jsCode);
+            }
         }
 
         const factory = self.SalviumWallet;

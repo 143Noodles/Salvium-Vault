@@ -267,7 +267,17 @@
     },
     "connection": {
       "title": "Anslutning",
-      "description": "Välj vilken Salvium-nod som synkroniserar din plånbok. Automatiskt håller dig på en fungerande officiell nod; lägg bara till en egen om den är offentligt nåbar. Oavsett vilket skickas förfrågningar via vault-servern i stället för direkt från din enhet."
+      "description": "Välj vilken Salvium-nod som synkroniserar din plånbok. Automatiskt håller dig på en fungerande officiell nod; lägg bara till en egen om den är offentligt nåbar. Oavsett vilket skickas förfrågningar via vault-servern i stället för direkt från din enhet.",
+      "scanMode": {
+        "title": "Skanningsindexläge",
+        "description": "Snabb synkronisering använder ett förhämtat index för snabbare återställningar. Oberoende bygge laddar inte ner något extra och återskapar skanningsindexet helt på din enhet.",
+        "fast": "Snabb synkronisering",
+        "independent": "Oberoende bygge",
+        "note": "Gäller vid din nästa återställning eller manuella omskanning — den synkroniserar inte om en redan synkroniserad plånbok."
+      },
+      "errors": {
+        "nettypeMismatch": "Den här noden finns i ett annat nätverk än din plånbok."
+      }
     },
     "currency": {
       "title": "Visningsvaluta",
@@ -598,6 +608,35 @@
     "errors": {
       "loadFailed": "Kunde inte läsa in tillgångar",
       "createFailed": "Kunde inte skapa tillgångstransaktion"
+    }
+  },
+  "setup": {
+    "wizard": {
+      "welcome": {
+        "title": "Välkommen till din Salvium Vault",
+        "subtitle": "Låt oss ställa in hur din plånbok ansluter och synkroniserar. Dina nycklar genereras och lagras endast på den här enheten.",
+        "privacyNote": "Din seed och dina nycklar lämnar aldrig den här enheten, och all skanning sker lokalt."
+      },
+      "node": {
+        "title": "Anslut till en nod",
+        "description": "Välj vilken Salvium-nod som synkroniserar din plånbok. De officiella seed-noderna är valda som standard; avancerade användare kan peka mot sin egen salviumd eller vilken nåbar nod som helst."
+      },
+      "sync": {
+        "title": "Välj hur du synkroniserar",
+        "description": "Båda alternativen håller dina nycklar och skanningen helt lokala. De skiljer sig bara i hur det initiala skanningsindexet hämtas.",
+        "recommended": "Rekommenderas",
+        "bothLocalNote": "Oavsett vilket lämnar dina nycklar aldrig den här enheten och skanningen körs lokalt.",
+        "fast": {
+          "title": "Snabb synkronisering",
+          "description": "Laddar ner ett förbyggt skanningsindex från CDN en gång, litar på att det paketet är fullständigt, och arbetar sedan lokalt. Snabbaste första körningen."
+        },
+        "independent": {
+          "title": "Oberoende bygge",
+          "description": "Bygger skanningsindexet lokalt från blockkedjan utan förhämtade data, så att din plånbok inte litar på något förbyggt paket. Långsammare första körning."
+        }
+      },
+      "finish": "Slutför konfigurationen",
+      "stepProgress": "Steg {{current}} av {{total}}"
     }
   }
 }

@@ -115,6 +115,29 @@ export async function validateCustomNode(url: string): Promise<NodeValidationRes
   }
 }
 
+// Normalize the daemon-reported nettype and the vault active network to the same
+// vocabulary so a custom node can be rejected when it is on the wrong chain.
+export function normalizeNettype(nettype: string | null | undefined): string {
+  const v = String(nettype || '').toLowerCase().trim();
+  if (v === 'mainnet' || v === 'main') return 'mainnet';
+  if (v === 'testnet' || v === 'test') return 'testnet';
+  if (v === 'stagenet' || v === 'stage') return 'stagenet';
+  return v;
+}
+
+// The active vault network, derived the same way the rest of the app does it:
+// the server reports it (cookie/host-aware) from GET /api/network. Returns null
+// if it can't be determined, so callers can choose not to block on it.
+export async function getActiveNetwork(): Promise<string | null> {
+  try {
+    const resp = await fetch('/api/network');
+    const data = await resp.json();
+    return normalizeNettype(data?.network);
+  } catch {
+    return null;
+  }
+}
+
 export function nodeChoiceLabel(choice: NodeChoice): string {
   const preset = NODE_PRESETS.find((p) => p.id === choice);
   if (preset) return preset.label;
@@ -136,6 +159,8 @@ export function validationErrorMessage(error?: string): string {
       return 'That URL responded but is not a Salvium daemon RPC endpoint.';
     case 'bad_url':
       return 'Enter a node address, e.g. node.example.com:19081';
+    case 'nettype_mismatch':
+      return 'That node is on a different network than your wallet. Switch networks or use a matching node.';
     case 'unreachable':
     default:
       return 'Could not reach that node. Check the URL and that it is online.';

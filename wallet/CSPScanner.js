@@ -1,3 +1,23 @@
+function isExtensionProtocol() {
+    try {
+        const protocol = (typeof location !== 'undefined' && location.protocol) || '';
+        return protocol === 'chrome-extension:' || protocol === 'moz-extension:';
+    } catch (_) {
+        return false;
+    }
+}
+
+function extensionAssetUrl(path) {
+    const clean = String(path || '').replace(/^\/+/, '');
+    try {
+        const runtime = (typeof browser !== 'undefined' && browser.runtime)
+            ? browser.runtime
+            : ((typeof chrome !== 'undefined' && chrome.runtime) ? chrome.runtime : null);
+        if (runtime && typeof runtime.getURL === 'function') return runtime.getURL(clean);
+    } catch (_) {}
+    return '/' + clean;
+}
+
 class CSPScanner {
     constructor(options) {
         this.viewSecretKey = options.viewSecretKey;
@@ -381,6 +401,15 @@ class CSPScanner {
     resolveApiBaseUrl(apiBaseUrl) {
         if (apiBaseUrl) return String(apiBaseUrl).replace(/\/+$/, '');
 
+        if (isExtensionProtocol()) {
+            try {
+                const network = String(localStorage.getItem('salvium_extension_network') || 'mainnet').toLowerCase();
+                return network === 'testnet' ? 'https://vault-test.salvium.tools' : 'https://vault.salvium.tools';
+            } catch (_) {
+                return 'https://vault.salvium.tools';
+            }
+        }
+
         try {
             if (typeof window !== 'undefined' && window.location?.origin) {
                 return window.location.origin;
@@ -410,13 +439,15 @@ class CSPScanner {
 
     getWorkerScriptUrl() {
         const version = encodeURIComponent(CSPScanner.WASM_VERSION);
-        const epoch = this.cspCacheEpoch ? `&csp_epoch=${encodeURIComponent(this.cspCacheEpoch)}` : '';
-        return `/vault/wallet/csp-scanner.worker.js?v=${version}${epoch}`;
+        const epoch = this.cspCacheEpoch ? '&csp_epoch=' + encodeURIComponent(this.cspCacheEpoch) : '';
+        if (isExtensionProtocol()) return extensionAssetUrl('wallet/csp-scanner.worker.js') + '?v=' + version + epoch;
+        return '/vault/wallet/csp-scanner.worker.js?v=' + version + epoch;
     }
 
     getWorkerScriptFetchUrl() {
         const version = encodeURIComponent(CSPScanner.WASM_VERSION);
-        return `/vault/wallet/csp-scanner.worker.js?v=${version}`;
+        if (isExtensionProtocol()) return extensionAssetUrl('wallet/csp-scanner.worker.js') + '?v=' + version;
+        return '/vault/wallet/csp-scanner.worker.js?v=' + version;
     }
 
     async fetchWorkerScriptSource(workerStartedAt = performance.now()) {
@@ -453,7 +484,8 @@ class CSPScanner {
 
     async createWorkerInstance(workerId, workerStartedAt = performance.now()) {
         const workerScriptUrl = this.getWorkerScriptUrl();
-        const canUseBlobWorker = typeof Blob !== 'undefined'
+        const canUseBlobWorker = !isExtensionProtocol()
+            && typeof Blob !== 'undefined'
             && typeof URL !== 'undefined'
             && typeof URL.createObjectURL === 'function'
             && typeof fetch === 'function';
@@ -495,6 +527,8 @@ class CSPScanner {
 
 
     static bulkWasmUrl(file) {
+        if (isExtensionProtocol()) return extensionAssetUrl('wallet/' + file);
+
         // Scanner WASM via cdn.salvium.tools to bypass the Cloudflare throttle (plain fetch,
         // no Worker, so cross-origin is fine). Same-origin for dev.
         // vault-test ONLY -- see getBulkBaseUrl() deploy-hazard note (cdn proxies to the TEST
@@ -521,6 +555,7 @@ class CSPScanner {
     }
 
     async fetchPatchedJs() {
+        if (isExtensionProtocol()) return null;
         if (this.patchedJsCode) return this.patchedJsCode;
 
         const response = await CSPScanner.fetchWithTimeout(CSPScanner.bulkWasmUrl('SalviumWallet.js'), {}, 90000);
@@ -2384,7 +2419,7 @@ class CSPScanner {
 
         // Read-through cache: if the entire range is already cached locally, dispatch from
         // disk and skip the network entirely. Any miss falls through to the normal fetch.
-        if (await this.tryDispatchFromCache(alignedStart, alignedEnd)) {
+        if (this.useBundleMode !== false && await this.tryDispatchFromCache(alignedStart, alignedEnd)) {
             for (let i = 0; i < this.enabledWorkerCount; i++) {
                 this.scheduleNextTask();
             }

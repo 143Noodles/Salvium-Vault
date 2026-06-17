@@ -267,7 +267,17 @@
     },
     "connection": {
       "title": "Bağlantı",
-      "description": "Cüzdanınızı hangi Salvium düğümünün senkronize edeceğini seçin. Otomatik mod sizi sağlıklı bir resmi düğümde tutar; yalnızca herkese açık şekilde erişilebiliyorsa kendi düğümünüzü ekleyin. Her durumda istekler cihazınızdan doğrudan gönderilmek yerine vault sunucusu üzerinden yönlendirilir."
+      "description": "Cüzdanınızı hangi Salvium düğümünün senkronize edeceğini seçin. Otomatik mod sizi sağlıklı bir resmi düğümde tutar; yalnızca herkese açık şekilde erişilebiliyorsa kendi düğümünüzü ekleyin. Her durumda istekler cihazınızdan doğrudan gönderilmek yerine vault sunucusu üzerinden yönlendirilir.",
+      "scanMode": {
+        "title": "Tarama dizini modu",
+        "description": "Hızlı Senkronizasyon, daha hızlı geri yüklemeler için önceden alınmış bir dizin kullanır. Bağımsız Derleme fazladan hiçbir şey indirmez ve tarama dizinini tamamen cihazınızda yeniden oluşturur.",
+        "fast": "Hızlı Senkronizasyon",
+        "independent": "Bağımsız Derleme",
+        "note": "Bir sonraki geri yükleme veya elle yeniden taramada uygulanır — zaten senkronize edilmiş bir cüzdanı yeniden senkronize etmez."
+      },
+      "errors": {
+        "nettypeMismatch": "Bu düğüm cüzdanınızdan farklı bir ağda."
+      }
     },
     "currency": {
       "title": "Görüntüleme para birimi",
@@ -598,6 +608,35 @@
     "errors": {
       "loadFailed": "Varlıklar yüklenemedi",
       "createFailed": "Varlık işlemi oluşturulamadı"
+    }
+  },
+  "setup": {
+    "wizard": {
+      "welcome": {
+        "title": "Salvium Vault'unuza hoş geldiniz",
+        "subtitle": "Cüzdanınızın nasıl bağlanıp senkronize olacağını ayarlayalım. Anahtarlarınız yalnızca bu cihazda oluşturulur ve saklanır.",
+        "privacyNote": "Seed'iniz ve anahtarlarınız bu cihazdan asla ayrılmaz ve tüm tarama yerel olarak gerçekleşir."
+      },
+      "node": {
+        "title": "Bir düğüme bağlan",
+        "description": "Cüzdanınızı hangi Salvium düğümünün senkronize edeceğini seçin. Resmi seed düğümleri varsayılan olarak seçilidir; ileri düzey kullanıcılar kendi salviumd'lerini veya erişilebilir herhangi bir düğümü gösterebilir."
+      },
+      "sync": {
+        "title": "Senkronizasyon yöntemini seçin",
+        "description": "Her iki seçenek de anahtarlarınızı ve taramayı tamamen yerel tutar. Yalnızca ilk tarama dizininin nasıl elde edildiği konusunda farklılık gösterirler.",
+        "recommended": "Önerilen",
+        "bothLocalNote": "Her durumda anahtarlarınız bu cihazdan asla ayrılmaz ve tarama yerel olarak çalışır.",
+        "fast": {
+          "title": "Hızlı Senkronizasyon",
+          "description": "CDN'den önceden hazırlanmış bir tarama dizinini bir kez indirir, bu paketin eksiksizliğine güvenir ve ardından yerel olarak çalışır. En hızlı ilk çalıştırma."
+        },
+        "independent": {
+          "title": "Bağımsız Derleme",
+          "description": "Tarama dizinini önceden alınmış veri olmadan blok zincirinden yerel olarak oluşturur, böylece cüzdanınız önceden hazırlanmış hiçbir pakete güvenmez. Daha yavaş ilk çalıştırma."
+        }
+      },
+      "finish": "Kurulumu tamamla",
+      "stepProgress": "Adım {{current}} / {{total}}"
     }
   }
 }
