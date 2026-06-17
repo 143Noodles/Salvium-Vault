@@ -4691,7 +4691,9 @@ const getDeviceMemoryBucket = (): string => {
 
             if (fromHeight === undefined && address && !restoredFromVaultRef.current && !forceCleanRestoreScan) {
                 try {
-                    const recoveryCheck = await cspScanService.resumeScanSafely(address, networkHeight);
+                    // Recovery journals may be older than the wallet's live height. Keep
+                    // them from rewinding incremental scans below the resolved scan floor.
+                    const recoveryCheck = await cspScanService.resumeScanSafely(address, networkHeight, finalScanStartHeight);
                     recoveryAction = recoveryCheck.action;
                     cspScanService.setRecoveryAction(recoveryCheck.action);
 

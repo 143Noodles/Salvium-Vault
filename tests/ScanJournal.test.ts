@@ -205,6 +205,64 @@ describe('ScanJournal', () => {
       expect(result.action).toBe('rescan_gaps');
       expect(result.gaps).toContain(3000);
     });
+
+    it('does not let stale journal gaps rewind below the current resume floor', async () => {
+      const walletAddress = 'salv1stalejournalfloor';
+      const scanId = 'scan_stale_journal_floor';
+      await startScanJournal(scanId, walletAddress, 506000, 512000);
+      await recordScannedChunks(scanId, [510000, 511000], false, 0);
+      await flushPendingUpdates();
+
+      const result = await isRecoverySafe(walletAddress, 511602, 1000, {
+        minResumeHeight: 509066,
+      });
+
+      expect(result.action).toBe('rescan_gaps');
+      expect(result.gaps).toEqual([509000]);
+      expect(result.reason).toContain('ignored 3 stale chunk');
+    });
+
+    it('continues when all stale journal gaps are below the current resume floor', async () => {
+      const walletAddress = 'salv1allstalejournal';
+      const scanId = 'scan_all_stale_journal';
+      await startScanJournal(scanId, walletAddress, 506000, 509000);
+
+      const result = await isRecoverySafe(walletAddress, 511602, 1000, {
+        minResumeHeight: 509066,
+      });
+
+      expect(result.action).toBe('continue');
+      expect(result.gaps).toEqual([]);
+      expect(result.reason).toContain('below current scan floor 509000 ignored');
+    });
+
+    it('keeps all journal gaps when the resume floor is below the journal start', async () => {
+      const walletAddress = 'salv1floorbelowjournal';
+      const scanId = 'scan_floor_below_journal';
+      await startScanJournal(scanId, walletAddress, 506000, 509000);
+
+      const result = await isRecoverySafe(walletAddress, 509000, 1000, {
+        minResumeHeight: 505500,
+      });
+
+      expect(result.action).toBe('rescan_gaps');
+      expect(result.gaps).toEqual([506000, 507000, 508000]);
+    });
+
+    it('does not prune journal gaps when the resume floor is explicitly zero', async () => {
+      const walletAddress = 'salv1zerofloor';
+      const scanId = 'scan_zero_floor';
+      await startScanJournal(scanId, walletAddress, 0, 3000);
+      await recordScannedChunks(scanId, [0], false, 0);
+      await flushPendingUpdates();
+
+      const result = await isRecoverySafe(walletAddress, 3000, 1000, {
+        minResumeHeight: 0,
+      });
+
+      expect(result.action).toBe('rescan_gaps');
+      expect(result.gaps).toEqual([1000, 2000]);
+    });
   });
 
   describe('crash-injection resume', () => {

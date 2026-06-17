@@ -1082,10 +1082,15 @@ export async function forceCleanSlate(walletAddress: string): Promise<void> {
 // chunks, failed chunks awaiting retry, and gaps of ANY size all resolve to a precise
 // rescan_gaps over exactly the missing chunks. full_rescan is reserved for genuine state
 // corruption (signalled by the caller via worker/WASM invalid, or the catch block below).
+export interface RecoverySafetyOptions {
+  minResumeHeight?: number;
+}
+
 export async function isRecoverySafe(
   walletAddress: string,
   targetEndHeight: number,
-  chunkSize: number = 1000
+  chunkSize: number = 1000,
+  options: RecoverySafetyOptions = {}
 ): Promise<{
   safe: boolean;
   reason: string;
@@ -1094,6 +1099,14 @@ export async function isRecoverySafe(
   inProgressChunks?: number[];
 }> {
   try {
+    const minResumeHeight = options.minResumeHeight;
+    const resumeFloor = Number.isFinite(minResumeHeight)
+      ? Math.max(0, Math.floor(minResumeHeight as number))
+      : 0;
+    const alignedResumeFloor = resumeFloor > 0
+      ? Math.floor(resumeFloor / chunkSize) * chunkSize
+      : 0;
+
     const [journal, checkpoint, interruptCheck] = await Promise.all([
       getIncompleteJournal(walletAddress),
       getCheckpoint(walletAddress),
@@ -1110,7 +1123,7 @@ export async function isRecoverySafe(
     if (journal && journal.targetEndHeight > checkpointHeight) {
       // In-progress (mid-flight at interruption) and needs-rescan (failed, awaiting retry)
       // chunks both count as not-done, so they fold into the precise to-scan set.
-      const gaps = computeChunksToScan({
+      const rawGaps = computeChunksToScan({
         startHeight: journal.startHeight,
         endHeight: journal.targetEndHeight,
         chunkSize,
@@ -1118,13 +1131,27 @@ export async function isRecoverySafe(
         inProgressChunks: journal.inProgressChunks || [],
         needsRescanChunks: journal.needsRescanChunks || [],
       });
+      const gaps = alignedResumeFloor > journal.startHeight
+        ? rawGaps.filter(chunkStart => chunkStart >= alignedResumeFloor)
+        : rawGaps;
+      const prunedGapCount = rawGaps.length - gaps.length;
 
       if (gaps.length > 0) {
         return {
           safe: true,
-          reason: `${gaps.length} chunk(s) need (re)scanning - will rescan exactly those`,
+          reason: `${gaps.length} chunk(s) need (re)scanning - will rescan exactly those${prunedGapCount > 0 ? `; ignored ${prunedGapCount} stale chunk(s) below ${alignedResumeFloor}` : ''}`,
           action: 'rescan_gaps',
           gaps,
+          inProgressChunks: interruptCheck.inProgressChunks,
+        };
+      }
+
+      if (rawGaps.length > 0 && prunedGapCount === rawGaps.length) {
+        return {
+          safe: true,
+          reason: `${rawGaps.length} stale journal gap chunk(s) below current scan floor ${alignedResumeFloor} ignored`,
+          action: 'continue',
+          gaps: [],
           inProgressChunks: interruptCheck.inProgressChunks,
         };
       }
