@@ -173,6 +173,37 @@ function countSubaddressOwnershipEntries(csv: string): number {
   return count;
 }
 
+function trimSubaddressOwnershipCsv(csv: string, maxMinorIndexExclusive: number): string {
+  if (!csv || maxMinorIndexExclusive <= 0) return '';
+
+  const originalCount = countSubaddressOwnershipEntries(csv);
+  if (originalCount <= maxMinorIndexExclusive) return csv;
+
+  const kept: string[] = [];
+  let parsedEntries = 0;
+  let start = 0;
+  while (start < csv.length) {
+    const end = csv.indexOf(',', start);
+    const entry = csv.slice(start, end === -1 ? csv.length : end);
+    const c1 = entry.indexOf(':');
+    const c2 = c1 >= 0 ? entry.indexOf(':', c1 + 1) : -1;
+    if (c1 === 64 && c2 > c1 + 1) {
+      parsedEntries++;
+      const minor = Number.parseInt(entry.slice(c2 + 1), 10);
+      if (Number.isFinite(minor) && minor >= 0 && minor < maxMinorIndexExclusive) {
+        kept.push(entry);
+      }
+    }
+    if (end === -1) break;
+    start = end + 1;
+  }
+
+  // If the cache format ever changes, fail open and keep the full map rather than
+  // risking a false negative scan.
+  if (parsedEntries === 0 || kept.length === 0) return csv;
+  return kept.join(',');
+}
+
 async function openSubaddressOwnershipDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(SUBADDRESS_OWNERSHIP_DB_NAME, SUBADDRESS_OWNERSHIP_DB_VERSION);
@@ -1568,7 +1599,7 @@ class CSPScanService {
     const MAX_SUBADDRESS_PRECOMPUTE = 20000;
     let knownSubaddressCount = 0;
     try {
-      knownSubaddressCount = Number((await wallet.call('get_num_subaddresses')) || 0) || 0;
+      knownSubaddressCount = Number((await wallet.call('get_num_subaddresses', [0])) || 0) || 0;
     } catch {
       // Unknown-method (old WASM) or transient failure: same 0 fallback as before.
       knownSubaddressCount = 0;
@@ -1708,6 +1739,22 @@ class CSPScanService {
     try {
       subaddressMapCsv = await loadSubaddressOwnershipCsv(walletAddress, totalSubaddresses) || '';
       if (subaddressMapCsv) {
+        const originalCount = countSubaddressOwnershipEntries(subaddressMapCsv);
+        const trimmedCsv = trimSubaddressOwnershipCsv(subaddressMapCsv, totalSubaddresses);
+        const trimmedCount = countSubaddressOwnershipEntries(trimmedCsv);
+        if (trimmedCsv !== subaddressMapCsv && trimmedCount >= Math.max(1, totalSubaddresses)) {
+          subaddressMapCsv = trimmedCsv;
+          void saveSubaddressOwnershipCsv(walletAddress, subaddressMapCsv, totalSubaddresses);
+          reportClientEvent('scan.subaddress_ownership_map_trimmed', {
+            level: 'info',
+            context: {
+              source: 'idb-cache',
+              requiredCount: totalSubaddresses,
+              originalCount,
+              trimmedCount,
+            },
+          });
+        }
         subaddressMapSource = 'idb-cache';
       }
     } catch {
