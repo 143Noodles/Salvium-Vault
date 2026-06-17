@@ -1,0 +1,100 @@
+{
+  "name": "salvium-vault-desktop",
+  "productName": "Salvium Vault",
+  "version": "0.1.0-poc",
+  "description": "Salvium Vault desktop (Electron) proof-of-concept \u2014 Path C: localhost server.cjs sidecar + Fast Sync scan-index bootstrap.",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:xvfb": "xvfb-run -a electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "io.salvium.vault.desktop",
+    "productName": "Salvium Vault",
+    "files": [
+      "main.js",
+      "content-update.js",
+      "updater.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "app",
+        "filter": [
+          "server.cjs",
+          "dist/**",
+          "node_modules/**",
+          "wallet/**",
+          "services/**",
+          "server-csp-worker.cjs",
+          "utils/**",
+          "content-version.json"
+        ]
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "143Noodles",
+        "repo": "Salvium-Vault-Web-Wallet"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.finance",
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Finance",
+      "icon": "build/icon.png"
+    },
+    "directories": {
+      "output": "release"
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "tar": "^6.2.1"
+  }
+}

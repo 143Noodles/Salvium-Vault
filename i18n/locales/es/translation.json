@@ -267,7 +267,17 @@
     },
     "connection": {
       "title": "Conexión",
-      "description": "Elige qué nodo de Salvium sincroniza tu monedero. El modo automático te mantiene en un nodo oficial en buen estado; añade el tuyo solo si es accesible públicamente. En cualquier caso, las solicitudes se redirigen a través del servidor del vault en lugar de enviarse directamente desde tu dispositivo."
+      "description": "Elige qué nodo de Salvium sincroniza tu monedero. El modo automático te mantiene en un nodo oficial en buen estado; añade el tuyo solo si es accesible públicamente. En cualquier caso, las solicitudes se redirigen a través del servidor del vault en lugar de enviarse directamente desde tu dispositivo.",
+      "scanMode": {
+        "title": "Modo de índice de escaneo",
+        "description": "Sincronización rápida utiliza un índice precargado para restauraciones más rápidas. Construcción independiente no descarga nada adicional y reconstruye el índice de escaneo por completo en tu dispositivo.",
+        "fast": "Sincronización rápida",
+        "independent": "Construcción independiente",
+        "note": "Se aplica en tu próxima restauración o reescaneo manual — no vuelve a sincronizar una billetera ya sincronizada."
+      },
+      "errors": {
+        "nettypeMismatch": "Este nodo está en una red diferente a la de tu billetera."
+      }
     },
     "currency": {
       "title": "Moneda de visualización",
@@ -598,6 +608,35 @@
     "errors": {
       "loadFailed": "No se pudieron cargar los activos",
       "createFailed": "No se pudo crear la transacción de activo"
+    }
+  },
+  "setup": {
+    "wizard": {
+      "welcome": {
+        "title": "Bienvenido a tu Salvium Vault",
+        "subtitle": "Vamos a configurar cómo se conecta y sincroniza tu billetera. Tus claves se generan y se almacenan solo en este dispositivo.",
+        "privacyNote": "Tu seed y tus claves nunca salen de este dispositivo, y todo el escaneo ocurre localmente."
+      },
+      "node": {
+        "title": "Conectar a un nodo",
+        "description": "Elige qué nodo de Salvium sincroniza tu billetera. Los nodos semilla oficiales están seleccionados de forma predeterminada; los usuarios avanzados pueden apuntar a su propio salviumd o a cualquier nodo accesible."
+      },
+      "sync": {
+        "title": "Elige cómo sincronizar",
+        "description": "Ambas opciones mantienen tus claves y el escaneo totalmente locales. Solo se diferencian en cómo se obtiene el índice de escaneo inicial.",
+        "recommended": "Recomendado",
+        "bothLocalNote": "En cualquier caso, tus claves nunca salen de este dispositivo y el escaneo se ejecuta localmente.",
+        "fast": {
+          "title": "Sincronización rápida",
+          "description": "Descarga una vez un índice de escaneo prediseñado desde el CDN, confiando en que ese paquete esté completo, y luego trabaja localmente. La primera ejecución más rápida."
+        },
+        "independent": {
+          "title": "Construcción independiente",
+          "description": "Construye el índice de escaneo localmente a partir de la blockchain sin datos precargados, de modo que tu billetera no confía en ningún paquete prediseñado. Primera ejecución más lenta."
+        }
+      },
+      "finish": "Finalizar configuración",
+      "stepProgress": "Paso {{current}} de {{total}}"
     }
   }
 }

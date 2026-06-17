@@ -243,7 +243,17 @@
     },
     "connection": {
       "title": "Daemon Connection",
-      "description": "Choose which Salvium node syncs your wallet. Custom nodes must be publicly reachable. All nodes are proxied to avoid CORS issues."
+      "description": "Choose which Salvium node syncs your wallet. Custom nodes must be publicly reachable. All nodes are proxied to avoid CORS issues.",
+      "scanMode": {
+        "title": "Scan index mode",
+        "description": "Fast Sync uses a prefetched index for quicker restores. Independent Build downloads nothing extra and reconstructs the scan index entirely on your device.",
+        "fast": "Fast Sync",
+        "independent": "Independent Build",
+        "note": "Applies on your next restore or manual rescan — it does not re-sync an already-synced wallet."
+      },
+      "errors": {
+        "nettypeMismatch": "This node is on a different network than your wallet."
+      }
     },
     "language": {
       "title": "Language",
@@ -598,6 +608,35 @@
     "errors": {
       "loadFailed": "Failed to load assets",
       "createFailed": "Failed to create asset transaction"
+    }
+  },
+  "setup": {
+    "wizard": {
+      "welcome": {
+        "title": "Welcome to your Salvium Vault",
+        "subtitle": "Let's set up how your wallet connects and syncs. Your keys are generated and stored only on this device.",
+        "privacyNote": "Your seed and keys never leave this device, and all scanning happens locally."
+      },
+      "node": {
+        "title": "Connect to a node",
+        "description": "Choose which Salvium node syncs your wallet. The official seed nodes are selected by default; advanced users can point to their own salviumd or any reachable node."
+      },
+      "sync": {
+        "title": "Choose how to sync",
+        "description": "Both options keep your keys and scanning fully local. They differ only in how the initial scan index is obtained.",
+        "recommended": "Recommended",
+        "bothLocalNote": "Either way, your keys never leave this device and scanning runs locally.",
+        "fast": {
+          "title": "Fast Sync",
+          "description": "Downloads a prebuilt scan index from the CDN once, trusting that bundle for completeness, then works locally. Fastest first run."
+        },
+        "independent": {
+          "title": "Independent Build",
+          "description": "Builds the scan index locally from the blockchain with no prefetched data, so your wallet trusts no prebuilt bundle. Slower first run."
+        }
+      },
+      "finish": "Finish setup",
+      "stepProgress": "Step {{current}} of {{total}}"
     }
   }
 }

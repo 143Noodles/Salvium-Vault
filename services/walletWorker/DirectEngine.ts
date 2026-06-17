@@ -99,6 +99,13 @@ export class DirectEngine implements WalletEngine {
             : '{"success":true,"noop":true}';
           break;
 
+        case 'flushDerivedState':
+          value = (typeof (this.wallet as any).flush_derived_state === 'function')
+            ? (this.wallet as any).flush_derived_state()
+            : '{"success":true,"noop":true}';
+          this.pushDelta(ALL_DELTA_FIELDS);
+          break;
+
         case 'getStateBundle':
           value = this.pushDelta(ALL_DELTA_FIELDS);
           break;
@@ -125,7 +132,13 @@ export class DirectEngine implements WalletEngine {
   // -------------------------------------------------------------------------
   private opIngestSparse(payload: any): string {
     const resultJson = this.withBinaryBuffer(payload.buffer, (ptr, len) =>
-      this.wallet.ingest_sparse_transactions(ptr, len, Number(payload.startHeight) || 0, !!payload.allowProtocol));
+      this.wallet.ingest_sparse_transactions(
+        ptr,
+        len,
+        Number(payload.startHeight) || 0,
+        !!payload.allowProtocol,
+        payload.deferDerived === true
+      ));
 
     let matched = 0;
     try {
@@ -133,7 +146,7 @@ export class DirectEngine implements WalletEngine {
       matched = Number(parsed?.txs_matched ?? parsed?.txsMatched ?? 0) || 0;
     } catch {
     }
-    if (matched > 0) {
+    if (matched > 0 && payload.deferDerived !== true) {
       this.pushDelta(['snapshot', 'syncStatus', 'transactions', 'flags']);
     }
     return resultJson;

@@ -274,10 +274,11 @@ export function selectSparseIngestLimits(isMobile: boolean, trustedCoverageManif
   // O(wallet) derived-state rebuild passes + two full balance computations in C++, so
   // fewer/larger batches directly cut restore wall time in output-dense regions. The
   // ingest runs in the wallet worker (UI unaffected) and a failed batch already replays
-  // item-by-item, so larger batches add no failure-granularity risk. Mobile unchanged
-  // (memory headroom).
+  // item-by-item, so larger batches add no failure-granularity risk. Mobile remains
+  // below desktop memory budgets, but not so small that Android repeats fixed wallet-wide
+  // repair work for every couple of chunks.
   const base: SparseIngestLimits = isMobile
-    ? { maxBytes: 256 * 1024, maxChunks: 2, maxTxs: 50 }
+    ? { maxBytes: 768 * 1024, maxChunks: 6, maxTxs: 200 }
     : { maxBytes: 1024 * 1024, maxChunks: 10, maxTxs: 200 };
 
   if (!trustedCoverageManifest) {
@@ -285,6 +286,6 @@ export function selectSparseIngestLimits(isMobile: boolean, trustedCoverageManif
   }
 
   return isMobile
-    ? { maxBytes: 384 * 1024, maxChunks: 3, maxTxs: 75 }
+    ? { maxBytes: 1024 * 1024, maxChunks: 8, maxTxs: 300 }
     : { maxBytes: 2 * 1024 * 1024, maxChunks: 20, maxTxs: 400 };
 }

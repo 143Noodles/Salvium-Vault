@@ -1,0 +1,69 @@
+name: Desktop build (cross-platform)
+
+# Proves the Electron desktop app builds on Linux, macOS (Intel + Apple Silicon)
+# and Windows. Builds only — does NOT publish a release. Artifacts stay private
+# to the repo's Actions runs.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ desktop-ci ]
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux (x64 AppImage)
+            ebuild: --linux
+          - os: macos-latest
+            name: macOS (Intel x64 + Apple Silicon arm64)
+            ebuild: --mac
+          - os: windows-latest
+            name: Windows (x64 NSIS)
+            ebuild: --win
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install SPA deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Build SPA (dist)
+        run: npm run build
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm ci --no-audit --no-fund
+
+      - name: Build desktop app (unsigned)
+        working-directory: desktop
+        env:
+          # CI build verification only — skip code signing (separate step later).
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          GH_TOKEN: ""
+        run: npx electron-builder ${{ matrix.ebuild }} --publish never
+
+      - name: List artifacts
+        shell: bash
+        run: ls -laR desktop/release | grep -iE "\.(AppImage|dmg|zip|exe|blockmap|yml)$" || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: salvium-vault-${{ matrix.os }}
+          path: |
+            desktop/release/*.AppImage
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.exe
+            desktop/release/*.yml
+            desktop/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 14

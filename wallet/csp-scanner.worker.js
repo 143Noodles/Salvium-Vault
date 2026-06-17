@@ -1,3 +1,23 @@
+function isExtensionProtocol() {
+    try {
+        const protocol = (self.location && self.location.protocol) || '';
+        return protocol === 'chrome-extension:' || protocol === 'moz-extension:';
+    } catch (_) {
+        return false;
+    }
+}
+
+function extensionAssetUrl(path) {
+    const clean = String(path || '').replace(/^\/+/, '');
+    try {
+        const runtime = (typeof browser !== 'undefined' && browser.runtime)
+            ? browser.runtime
+            : ((typeof chrome !== 'undefined' && chrome.runtime) ? chrome.runtime : null);
+        if (runtime && typeof runtime.getURL === 'function') return runtime.getURL(clean);
+    } catch (_) {}
+    return '/' + clean;
+}
+
 let Module = null;
 let isReady = false;
 let workerId = -1;
@@ -47,6 +67,9 @@ function getWorkerDefaultOrigin() {
 
 function resolveFetchUrl(pathOrUrl) {
     if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+    if (isExtensionProtocol() && /^\/?vault\/wallet\//.test(String(pathOrUrl).replace(/^\//, ''))) {
+        return extensionAssetUrl(String(pathOrUrl).replace(/^\/?vault\//, ''));
+    }
 
     let baseUrl = apiBaseUrl || getWorkerDefaultOrigin();
     // Bulk chunk data (csp-batch/csp-cached) via cdn.salvium.tools to bypass the Cloudflare
@@ -269,15 +292,19 @@ async function handleLoadWasm(msg) {
         };
 
         let jsCode = patchedJsCode;
-        if (!jsCode) {
-            const jsResponse = await fetch(resolveFetchUrl('/vault/wallet/SalviumWallet.js'));
-            jsCode = await jsResponse.text();
-            jsCode = jsCode.replace(/PThread\.init\(\);/g, '/* disabled */');
-            jsCode = jsCode.replace(/var pthreadPoolSize = \\d+;/g, 'var pthreadPoolSize = 0;');
-        }
+        if (!jsCode && isExtensionProtocol()) {
+            importScripts(resolveFetchUrl('/vault/wallet/SalviumWallet.js'));
+        } else {
+            if (!jsCode) {
+                const jsResponse = await fetch(resolveFetchUrl('/vault/wallet/SalviumWallet.js'));
+                jsCode = await jsResponse.text();
+                jsCode = jsCode.replace(/PThread\.init\(\);/g, '/* disabled */');
+                jsCode = jsCode.replace(/var pthreadPoolSize = \\d+;/g, 'var pthreadPoolSize = 0;');
+            }
 
-        const indirectEval = eval;
-        indirectEval(jsCode);
+            const indirectEval = eval;
+            indirectEval(jsCode);
+        }
 
         self.Worker = OriginalWorker;
 

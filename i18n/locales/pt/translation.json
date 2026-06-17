@@ -267,7 +267,17 @@
     },
     "connection": {
       "title": "Conexão",
-      "description": "Escolha qual nó da Salvium sincroniza sua carteira. O modo automático mantém você em um nó oficial saudável; adicione o seu apenas se for acessível publicamente. De qualquer forma, as solicitações são encaminhadas pelo servidor do vault em vez de enviadas diretamente do seu dispositivo."
+      "description": "Escolha qual nó da Salvium sincroniza sua carteira. O modo automático mantém você em um nó oficial saudável; adicione o seu apenas se for acessível publicamente. De qualquer forma, as solicitações são encaminhadas pelo servidor do vault em vez de enviadas diretamente do seu dispositivo.",
+      "scanMode": {
+        "title": "Modo de índice de verificação",
+        "description": "Sincronização rápida usa um índice pré-carregado para restaurações mais rápidas. Construção independente não baixa nada adicional e reconstrói o índice de verificação inteiramente no seu dispositivo.",
+        "fast": "Sincronização rápida",
+        "independent": "Construção independente",
+        "note": "Aplica-se na sua próxima restauração ou nova varredura manual — não ressincroniza uma carteira já sincronizada."
+      },
+      "errors": {
+        "nettypeMismatch": "Este nó está em uma rede diferente da sua carteira."
+      }
     },
     "currency": {
       "title": "Moeda de exibição",
@@ -598,6 +608,35 @@
     "errors": {
       "loadFailed": "Falha ao carregar ativos",
       "createFailed": "Falha ao criar transação de ativo"
+    }
+  },
+  "setup": {
+    "wizard": {
+      "welcome": {
+        "title": "Bem-vindo ao seu Salvium Vault",
+        "subtitle": "Vamos configurar como a sua carteira se conecta e sincroniza. As suas chaves são geradas e armazenadas apenas neste dispositivo.",
+        "privacyNote": "A sua seed e as suas chaves nunca saem deste dispositivo, e toda a verificação acontece localmente."
+      },
+      "node": {
+        "title": "Conectar a um nó",
+        "description": "Escolha qual nó Salvium sincroniza a sua carteira. Os nós seed oficiais estão selecionados por padrão; usuários avançados podem apontar para o seu próprio salviumd ou qualquer nó acessível."
+      },
+      "sync": {
+        "title": "Escolha como sincronizar",
+        "description": "Ambas as opções mantêm as suas chaves e a verificação totalmente locais. Elas diferem apenas na forma como o índice de verificação inicial é obtido.",
+        "recommended": "Recomendado",
+        "bothLocalNote": "De qualquer forma, as suas chaves nunca saem deste dispositivo e a verificação é executada localmente.",
+        "fast": {
+          "title": "Sincronização rápida",
+          "description": "Baixa uma vez um índice de verificação pré-construído do CDN, confiando que esse pacote esteja completo, e depois funciona localmente. Primeira execução mais rápida."
+        },
+        "independent": {
+          "title": "Construção independente",
+          "description": "Constrói o índice de verificação localmente a partir da blockchain sem dados pré-carregados, de modo que a sua carteira não confia em nenhum pacote pré-construído. Primeira execução mais lenta."
+        }
+      },
+      "finish": "Concluir configuração",
+      "stepProgress": "Etapa {{current}} de {{total}}"
     }
   }
 }

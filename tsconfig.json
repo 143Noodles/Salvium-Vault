@@ -25,5 +25,12 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "exclude": [
+    "dist",
+    "dist-extension",
+    "node_modules",
+    "wallet/backups",
+    "desktop/release"
+  ]
 }

@@ -34,8 +34,20 @@ const DEFAULT_ALLOWED_ORIGINS = [
     'https://vault.salvium.tools',
     'https://vault-test.salvium.tools',
 ];
+const EXTENSION_ALLOWED_ORIGINS = (process.env.CORS_EXTENSION_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+const ALLOW_ANY_EXTENSION_ORIGIN = process.env.CORS_ALLOW_EXTENSION_ORIGINS === '1';
+
 function isLocalhostOrigin(origin) {
     return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(origin);
+}
+
+function isExtensionOrigin(origin) {
+    if (!/^(chrome-extension|moz-extension):\/\//i.test(origin || '')) return false;
+    if (EXTENSION_ALLOWED_ORIGINS.includes(origin)) return true;
+    return ALLOW_ANY_EXTENSION_ORIGIN;
 }
 
 const corsOptions = {
@@ -50,14 +62,14 @@ const corsOptions = {
             return callback(new Error('CORS not allowed'), false);
         }
         // CORS_ORIGINS unset: allow only known app hosts + localhost; deny others.
-        if (DEFAULT_ALLOWED_ORIGINS.includes(origin) || isLocalhostOrigin(origin)) {
+        if (DEFAULT_ALLOWED_ORIGINS.includes(origin) || isLocalhostOrigin(origin) || isExtensionOrigin(origin)) {
             return callback(null, true);
         }
         return callback(new Error('CORS not allowed'), false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Request-ID'],
+    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Session-ID', 'X-Request-ID', 'X-Vault-Network', 'X-Vault-Node'],
     maxAge: 86400 // 24 hours
 };
 

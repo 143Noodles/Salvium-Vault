@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Plus, Loader2, Trash2, AlertCircle, ChevronDown } from 'lucide-react';
 import { Check, ChevronRight } from './Icons';
+import { useTranslation } from 'react-i18next';
 import {
   NODE_PRESETS,
   getCurrentNodeChoice,
@@ -11,6 +12,8 @@ import {
   validateCustomNode,
   candidateNodeUrls,
   validationErrorMessage,
+  normalizeNettype,
+  getActiveNetwork,
   type NodeChoice,
 } from '../utils/vaultNode';
 
@@ -42,6 +45,7 @@ const choiceLabel = (choice: NodeChoice): string => {
 };
 
 const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, settings, className = '' }) => {
+  const { t } = useTranslation();
   const [choice, setChoice] = useState<NodeChoice>('auto');
   const [customNodes, setCustomNodes] = useState<string[]>([]);
   const [customInput, setCustomInput] = useState('');
@@ -144,6 +148,19 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
       // private_ip / not_a_daemon are verdicts about the host itself —
       // only an unreachable http attempt warrants retrying as https.
       if (result.error && result.error !== 'unreachable') break;
+    }
+    if (url && result?.ok) {
+      // Reject a node that belongs to a different chain than the active wallet
+      // network (e.g. adding a testnet node while on mainnet). Derive the active
+      // network the same way the app does (GET /api/network); only block on a
+      // confirmed mismatch so a transient network read can never strand the user.
+      const activeNet = await getActiveNetwork();
+      const nodeNet = normalizeNettype(result.nettype);
+      if (activeNet && nodeNet && activeNet !== nodeNet) {
+        setValidating(false);
+        setError(t('settings.connection.errors.nettypeMismatch'));
+        return;
+      }
     }
     setValidating(false);
     if (!url || !result?.ok) {

@@ -267,7 +267,17 @@
     },
     "connection": {
       "title": "Verbindung",
-      "description": "Wähle, welcher Salvium-Knoten deine Wallet synchronisiert. Automatisch hält dich auf einem funktionierenden offiziellen Knoten; füge nur dann einen eigenen hinzu, wenn er öffentlich erreichbar ist. In beiden Fällen werden Anfragen über den Vault-Server weitergeleitet und nicht direkt von deinem Gerät gesendet."
+      "description": "Wähle, welcher Salvium-Knoten deine Wallet synchronisiert. Automatisch hält dich auf einem funktionierenden offiziellen Knoten; füge nur dann einen eigenen hinzu, wenn er öffentlich erreichbar ist. In beiden Fällen werden Anfragen über den Vault-Server weitergeleitet und nicht direkt von deinem Gerät gesendet.",
+      "scanMode": {
+        "title": "Scan-Index-Modus",
+        "description": "Schnelle Synchronisierung nutzt einen vorab abgerufenen Index für schnellere Wiederherstellungen. Unabhängiger Aufbau lädt nichts zusätzlich herunter und rekonstruiert den Scan-Index vollständig auf Ihrem Gerät.",
+        "fast": "Schnelle Synchronisierung",
+        "independent": "Unabhängiger Aufbau",
+        "note": "Wird bei deiner nächsten Wiederherstellung oder manuellen Neusynchronisierung angewendet — eine bereits synchronisierte Wallet wird nicht erneut synchronisiert."
+      },
+      "errors": {
+        "nettypeMismatch": "Dieser Knoten befindet sich in einem anderen Netzwerk als deine Wallet."
+      }
     },
     "currency": {
       "title": "Anzeigewährung",
@@ -598,6 +608,35 @@
     "errors": {
       "loadFailed": "Assets konnten nicht geladen werden",
       "createFailed": "Asset-Transaktion konnte nicht erstellt werden"
+    }
+  },
+  "setup": {
+    "wizard": {
+      "welcome": {
+        "title": "Willkommen in Ihrem Salvium Vault",
+        "subtitle": "Lassen Sie uns einrichten, wie Ihre Wallet sich verbindet und synchronisiert. Ihre Schlüssel werden ausschließlich auf diesem Gerät generiert und gespeichert.",
+        "privacyNote": "Ihr Seed und Ihre Schlüssel verlassen dieses Gerät nie, und das gesamte Scannen erfolgt lokal."
+      },
+      "node": {
+        "title": "Mit einem Node verbinden",
+        "description": "Wählen Sie aus, welcher Salvium-Node Ihre Wallet synchronisiert. Die offiziellen Seed-Nodes sind standardmäßig ausgewählt; fortgeschrittene Nutzer können ihren eigenen salviumd oder einen beliebigen erreichbaren Node angeben."
+      },
+      "sync": {
+        "title": "Synchronisierung wählen",
+        "description": "Beide Optionen halten Ihre Schlüssel und das Scannen vollständig lokal. Sie unterscheiden sich nur darin, wie der anfängliche Scan-Index bezogen wird.",
+        "recommended": "Empfohlen",
+        "bothLocalNote": "In beiden Fällen verlassen Ihre Schlüssel dieses Gerät nie und das Scannen läuft lokal.",
+        "fast": {
+          "title": "Schnelle Synchronisierung",
+          "description": "Lädt einmalig einen vorgefertigten Scan-Index vom CDN herunter und vertraut darauf, dass dieses Bündel vollständig ist, und arbeitet dann lokal. Schnellster erster Durchlauf."
+        },
+        "independent": {
+          "title": "Unabhängiger Aufbau",
+          "description": "Baut den Scan-Index lokal aus der Blockchain auf, ohne vorab abgerufene Daten, sodass Ihre Wallet keinem vorgefertigten Bündel vertraut. Langsamerer erster Durchlauf."
+        }
+      },
+      "finish": "Einrichtung abschließen",
+      "stepProgress": "Schritt {{current}} von {{total}}"
     }
   }
 }

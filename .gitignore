@@ -3,6 +3,7 @@ node_modules/
 
 # Build output (rebuilt for deployment)
 dist/
+dist-extension/
 
 # WASM build directory (source files, not compiled output)
 wasm-build/
@@ -95,6 +96,14 @@ android/**/.gradle/
 android/**/build/
 android/app/release/
 android/app/debug/
+scripts/qa/android-webview-harness/build/
+
+# Desktop shell generated outputs
+desktop/node_modules/
+desktop/build/
+desktop/dist/
+desktop/release/
+desktop/content-dist/
 
 # Local WASM/public staging copies
 public/SalviumWallet.js
