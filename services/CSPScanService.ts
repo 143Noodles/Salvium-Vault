@@ -4533,43 +4533,7 @@ class CSPScanService {
           const chunkCount = view.getUint32(0, true);
           let offset = 4;
 
-          if (isIncremental) {
-            startFrame();
-            for (let c = 0; c < chunkCount && offset + 8 <= task.data.length; c++) {
-              const chunkStartHeight = view.getUint32(offset, true);
-              offset += 4;
-              const dataSize = view.getUint32(offset, true);
-              offset += 4;
-
-              if (dataSize > 4 && offset + dataSize <= task.data.length) {
-                // slice() (copy), NOT subarray(): the chunk is transferred to the worker, and
-                // transferring a subarray view would detach the whole batch buffer.
-                const sparseData = task.data.slice(offset, offset + dataSize);
-
-                // Worker op: stages the buffer on the WASM heap and runs
-                // ingest_sparse_transactions (former Module.allocate/HEAPU8/free block).
-                const resJson = await wallet.op(
-                  'ingestSparse',
-                  { startHeight: chunkStartHeight, allowProtocol: true, buffer: sparseData },
-                  { transfer: [sparseData.buffer] }
-                );
-
-                const res = JSON.parse(resJson);
-                if (res.success) {
-                  totalOutputsFound += res.txs_matched || 0;
-                  if (res.stake_heights) allStakeHeights.push(...res.stake_heights);
-                  if (res.audit_heights) allAuditHeights.push(...res.audit_heights);
-                  successfullyIngestedChunks.add(chunkStartHeight);
-                  this.ingestedChunksThisRestore.add(chunkStartHeight);
-                  if (chunkStartHeight > 0 && chunkStartHeight < minConfirmedHeight) minConfirmedHeight = chunkStartHeight;
-                }
-                offset += dataSize;
-                await yieldIfNeeded();
-              } else {
-                offset += dataSize;
-              }
-            }
-          } else {
+          {
             type PendingSparseKind = 'v2' | 'spr';
             let pendingKind: PendingSparseKind | null = null;
             let pendingTxCount = 0;
