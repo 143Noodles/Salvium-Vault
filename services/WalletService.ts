@@ -2608,6 +2608,37 @@ export class WalletService {
     }
   }
 
+  async getTransactionsInRange(minHeight: number, maxHeight: number): Promise<WalletTransaction[]> {
+    if (!this.isWalletReadySync()) {
+      return [];
+    }
+
+    try {
+      const min = Math.max(0, Math.floor(Number(minHeight) || 0));
+      const max = Math.max(min, Math.floor(Number(maxHeight) || min));
+      const transfersJson = await this.engine!.call<string>(
+        'get_transfers_as_json',
+        [min, max, true, true, true],
+        { timeoutMs: 30000 }
+      );
+      const transfers = JSON.parse(transfersJson || '{}');
+      const flattened: RawWalletTransfer[] = [];
+      for (const direction of ['in', 'out', 'pending', 'pool', 'failed']) {
+        const list = transfers?.[direction];
+        if (!Array.isArray(list)) continue;
+        for (const entry of list) {
+          if (entry && typeof entry === 'object') {
+            flattened.push({ ...entry, transfer_type: direction });
+          }
+        }
+      }
+      return mapFlattenedTransfersToWalletTransactions(flattened);
+    } catch (error: any) {
+      this.lastTransactionsError = error?.message || String(error);
+      return [];
+    }
+  }
+
   async estimateFee(address: string, amount: number, priority: number = 1): Promise<number> {
     try {
       const response = await fetch('/api/wallet-rpc/get_fee_estimate');

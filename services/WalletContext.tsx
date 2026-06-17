@@ -5263,7 +5263,13 @@ const getDeviceMemoryBucket = (): string => {
 
                     encryptedWallet.snapshotHeight = networkHeight;
 
-                    const newTxs = walletService.getTransactions();
+                    const shouldUseRangeTransactions =
+                        actualStartHeight > 0 &&
+                        request?.sessionType === 'background' &&
+                        ((result.outputsFound || 0) > 0 || (result.spendsFound || 0) > 0);
+                    const newTxs = shouldUseRangeTransactions
+                        ? await walletService.getTransactionsInRange(actualStartHeight, networkHeight)
+                        : walletService.getTransactions();
 
                     let cachedTxs: WalletTransaction[] = [];
                     let idbTxsRaw: string | null = null;
