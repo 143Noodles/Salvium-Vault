@@ -55,6 +55,7 @@ import {
     coalesceScanTriggerRequest,
     resolveIncrementalScanPlan,
     resolveScanResumeHeight,
+    resolveUnlockScheduledScanFromHeight,
     shouldSchedulePostScanFollowup,
     shouldRunCompletedChunkGapCheck,
     type ScanTriggerRequest,
@@ -3979,7 +3980,12 @@ const getDeviceMemoryBucket = (): string => {
 
         setTimeout(() => {
             if (scanInProgressRef.current) return;
-            const scanFromHeight = preferredScanStartHeight === 0 ? 0 : undefined;
+            const scheduledScan = resolveUnlockScheduledScanFromHeight({
+                preferredScanStartHeight,
+                finalRestoreHeight,
+                importedCache: willImportCache,
+            });
+            const scanFromHeight = scheduledScan.fromHeight;
             const scheduledSessionType = restoreSessionRequested
                 ? 'restore-full-rescan'
                 : (scanFromHeight === 0 ? 'restore-full-rescan' : 'background');
@@ -3987,10 +3993,11 @@ const getDeviceMemoryBucket = (): string => {
                 source: restoreSource,
                 sessionType: scheduledSessionType,
                 sessionActive: restoreSessionRequested,
-                fromHeight: scanFromHeight ?? finalRestoreHeight,
+                fromHeight: scanFromHeight ?? -1,
                 finalRestoreHeight,
                 actualNetworkHeight,
                 preferredScanStartHeight: preferredScanStartHeight ?? -1,
+                scanFromHeightSource: scheduledScan.source,
                 cachePresent: !cacheMissing,
                 cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
             });

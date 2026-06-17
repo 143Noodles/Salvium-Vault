@@ -9,6 +9,7 @@ import {
   resolveScanWorkerPolicy,
   resolveIncrementalScanPlan,
   resolveScanResumeHeight,
+  resolveUnlockScheduledScanFromHeight,
   shouldRunCompletedChunkGapCheck,
   shouldSchedulePostScanFollowup,
   shouldUseNarrowPhase3IncrementalWindow,
@@ -82,6 +83,30 @@ describe('scanPolicy', () => {
 
       expect(plan.profile).toBe('overlap');
       expect(plan.startHeight).toBe(498000);
+    });
+  });
+
+  describe('resolveUnlockScheduledScanFromHeight', () => {
+    it('keeps explicit full-rescan preference authoritative', () => {
+      expect(resolveUnlockScheduledScanFromHeight({
+        preferredScanStartHeight: 0,
+        finalRestoreHeight: 511626,
+        importedCache: true,
+      })).toEqual({ fromHeight: 0, source: 'preferred-full-rescan' });
+    });
+
+    it('uses imported wallet cache height instead of widening through incremental recovery', () => {
+      expect(resolveUnlockScheduledScanFromHeight({
+        finalRestoreHeight: 511626,
+        importedCache: true,
+      })).toEqual({ fromHeight: 511626, source: 'wallet-cache-height' });
+    });
+
+    it('leaves non-cache unlocks on automatic incremental planning', () => {
+      expect(resolveUnlockScheduledScanFromHeight({
+        finalRestoreHeight: 511626,
+        importedCache: false,
+      })).toEqual({ fromHeight: undefined, source: 'auto-incremental' });
     });
   });
 

@@ -6,12 +6,36 @@ export const DEFAULT_TAIL_SCAN_MAX_BLOCKS = 500;
 
 export type IncrementalScanProfile = 'overlap' | 'tail';
 export type ScanTriggerSessionType = 'background' | 'restore-full-rescan';
+export type UnlockScheduledScanFromHeightSource = 'preferred-full-rescan' | 'wallet-cache-height' | 'auto-incremental';
 
 export interface ScanTriggerRequest {
   fromHeight?: number;
   reason: string;
   sessionType: ScanTriggerSessionType;
   sessionId?: string;
+}
+
+export function resolveUnlockScheduledScanFromHeight({
+  preferredScanStartHeight,
+  finalRestoreHeight,
+  importedCache,
+}: {
+  preferredScanStartHeight?: number;
+  finalRestoreHeight: number;
+  importedCache: boolean;
+}): { fromHeight?: number; source: UnlockScheduledScanFromHeightSource } {
+  if (preferredScanStartHeight === 0) {
+    return { fromHeight: 0, source: 'preferred-full-rescan' };
+  }
+
+  if (importedCache) {
+    const normalizedHeight = Number.isFinite(finalRestoreHeight)
+      ? Math.max(0, Math.floor(finalRestoreHeight))
+      : 0;
+    return { fromHeight: normalizedHeight, source: 'wallet-cache-height' };
+  }
+
+  return { fromHeight: undefined, source: 'auto-incremental' };
 }
 
 function mergeScanReasons(existingReason: string, incomingReason: string): string {
