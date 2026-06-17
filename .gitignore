@@ -130,3 +130,6 @@ server-patches/
 scripts/debug-target-mint.cjs
 scripts/summarize-block-490710.cjs
 scripts/verify-protocol-mint-recovery.cjs
+
+# Android release artifacts must not be published by the web wallet
+public/*.apk
