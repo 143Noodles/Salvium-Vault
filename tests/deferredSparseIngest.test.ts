@@ -16,6 +16,13 @@ describe('deferredSparseIngestChangedDerivedState', () => {
       deferred_state_changed: false,
       txs_matched: 1,
     })).toBe(false);
+
+    expect(deferredSparseIngestChangedDerivedState({
+      success: true,
+      deferred: true,
+      stake_heights: [512345],
+      audit_heights: [512346],
+    })).toBe(false);
   });
 
   it('flushes when sparse ingest reports wallet-state changes', () => {
@@ -23,12 +30,6 @@ describe('deferredSparseIngestChangedDerivedState', () => {
       success: true,
       deferred: true,
       txs_matched: 1,
-    })).toBe(true);
-
-    expect(deferredSparseIngestChangedDerivedState({
-      success: true,
-      deferred: true,
-      stake_heights: [512345],
     })).toBe(true);
   });
 
