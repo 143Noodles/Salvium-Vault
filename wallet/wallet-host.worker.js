@@ -406,6 +406,10 @@ async function handleOp(msg) {
                 value = (typeof wallet.flush_derived_state === 'function')
                     ? wallet.flush_derived_state()
                     : '{"success":true,"noop":true}';
+                const flushMs = now() - flushStarted;
+                postTelemetry('wallet.flush_derived_core_completed', 'info', 'flush_derived_state completed', {
+                    durationMs: Math.max(0, Math.round(flushMs))
+                });
                 // Surface wallet-state self-repairs: duplicate output entries are a
                 // wrong-balance class; the field must never carry them silently.
                 try {
@@ -418,7 +422,17 @@ async function handleOp(msg) {
                         }
                     }
                 } catch (dupErr) { }
-                pushDelta(['snapshot', 'syncStatus', 'transactions', 'flags']);
+                const requestedFields = payload && Array.isArray(payload.fields) && payload.fields.length > 0
+                    ? payload.fields
+                    : ['snapshot', 'syncStatus', 'transactions', 'flags'];
+                const allowedFields = new Set(['snapshot', 'syncStatus', 'addresses', 'transactions', 'flags']);
+                const fields = requestedFields.filter(function (field) { return allowedFields.has(field); });
+                const deltaStarted = now();
+                pushDelta(fields.length > 0 ? fields : ['snapshot', 'syncStatus', 'transactions', 'flags']);
+                postTelemetry('wallet.flush_derived_delta_completed', 'info', 'flushDerivedState delta published', {
+                    durationMs: Math.max(0, Math.round(now() - deltaStarted)),
+                    count: fields.length
+                });
                 break;
             }
             case 'cacheRuntimeFullTxsFromSparse':

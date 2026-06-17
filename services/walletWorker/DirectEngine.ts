@@ -103,7 +103,11 @@ export class DirectEngine implements WalletEngine {
           value = (typeof (this.wallet as any).flush_derived_state === 'function')
             ? (this.wallet as any).flush_derived_state()
             : '{"success":true,"noop":true}';
-          this.pushDelta(ALL_DELTA_FIELDS);
+          this.pushDelta(
+            Array.isArray(payload?.fields) && payload.fields.length > 0
+              ? payload.fields.filter((field: string) => ALL_DELTA_FIELDS.includes(field as any))
+              : ALL_DELTA_FIELDS
+          );
           break;
 
         case 'getStateBundle':

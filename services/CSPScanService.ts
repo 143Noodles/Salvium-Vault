@@ -119,15 +119,15 @@ async function loadReturnAddresses(walletAddress: string): Promise<string | null
   }
 }
 
-async function flushDerivedStateOrThrow(wallet: any, reason: string): Promise<void> {
+async function flushDerivedStateOrThrow(wallet: any, reason: string, fields?: string[]): Promise<void> {
   const startedAt = performance.now();
   reportClientEvent('scan.flush_derived_started', {
     level: 'info',
     message: 'Deferred derived-state flush started',
-    context: { reason },
+    context: { reason, count: fields?.length || 0 },
   });
 
-  const resultJson = await wallet.op('flushDerivedState', {});
+  const resultJson = await wallet.op('flushDerivedState', fields && fields.length > 0 ? { fields } : {});
   let result: any = resultJson;
   if (typeof resultJson === 'string') {
     try {
@@ -146,6 +146,7 @@ async function flushDerivedStateOrThrow(wallet: any, reason: string): Promise<vo
     context: {
       reason,
       durationMs: Math.round(performance.now() - startedAt),
+      count: fields?.length || 0,
     },
   });
 }
@@ -4929,7 +4930,7 @@ class CSPScanService {
       throw new Error(`Sparse ingest did not complete ${missingIngestedChunks.length} requested chunk(s): ${missingIngestedChunks.slice(0, 10).join(',')}${detail}`);
     }
     if (deferredSparseIngestUsed) {
-      await flushDerivedStateOrThrow(wallet, 'phase 2 sparse ingest');
+      await flushDerivedStateOrThrow(wallet, 'phase 2 sparse ingest', ['snapshot', 'syncStatus', 'flags']);
     } else {
       reportClientEvent('scan.flush_derived_skipped', {
         level: 'info',
