@@ -120,6 +120,13 @@ async function loadReturnAddresses(walletAddress: string): Promise<string | null
 }
 
 async function flushDerivedStateOrThrow(wallet: any, reason: string): Promise<void> {
+  const startedAt = performance.now();
+  reportClientEvent('scan.flush_derived_started', {
+    level: 'info',
+    message: 'Deferred derived-state flush started',
+    context: { reason },
+  });
+
   const resultJson = await wallet.op('flushDerivedState', {});
   let result: any = resultJson;
   if (typeof resultJson === 'string') {
@@ -132,25 +139,91 @@ async function flushDerivedStateOrThrow(wallet: any, reason: string): Promise<vo
   if (result && result.success === false) {
     throw new Error(`flushDerivedState failed after ${reason}: ${result.error || 'unknown error'}`);
   }
+
+  reportClientEvent('scan.flush_derived_completed', {
+    level: 'info',
+    message: 'Deferred derived-state flush completed',
+    context: {
+      reason,
+      durationMs: Math.round(performance.now() - startedAt),
+    },
+  });
 }
 
-function deferredSparseIngestChangedDerivedState(result: any): boolean {
+const DEFERRED_SPARSE_DIRTY_COUNTERS = [
+  'txs_matched',
+  'txsMatched',
+  'outputs_marked_spent',
+  'outputsMarkedSpent',
+  'txs_reprocessed',
+  'txsReprocessed',
+  'duplicate_transfer_repairs',
+  'duplicateTransferRepairs',
+  'audit_spend_key_additions',
+  'auditSpendKeyAdditions',
+  'audit_return_address_additions',
+  'auditReturnAddressAdditions',
+  'stake_return_address_additions',
+  'stakeReturnAddressAdditions',
+];
+
+function sparseIngestNumber(result: any, snakeName: string, camelName?: string): number {
+  const value = result?.[snakeName] ?? (camelName ? result?.[camelName] : undefined);
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function countArrayField(result: any, snakeName: string, camelName: string): number {
+  const value = result?.[snakeName] ?? result?.[camelName];
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function summarizeSparseIngestResult(result: any): Record<string, string | number | boolean | null> {
+  return {
+    success: result?.success === true,
+    deferred: result?.deferred === true,
+    deferredStateChanged: typeof result?.deferred_state_changed === 'boolean'
+      ? result.deferred_state_changed
+      : null,
+    txsMatched: sparseIngestNumber(result, 'txs_matched', 'txsMatched'),
+    txsProcessed: sparseIngestNumber(result, 'txs_processed', 'txsProcessed'),
+    outputsMarkedSpent: sparseIngestNumber(result, 'outputs_marked_spent', 'outputsMarkedSpent'),
+    txsReprocessed: sparseIngestNumber(result, 'txs_reprocessed', 'txsReprocessed'),
+    duplicateTransferRepairs: sparseIngestNumber(result, 'duplicate_transfer_repairs', 'duplicateTransferRepairs'),
+    auditSpendKeyAdditions: sparseIngestNumber(result, 'audit_spend_key_additions', 'auditSpendKeyAdditions'),
+    auditReturnAddressAdditions: sparseIngestNumber(result, 'audit_return_address_additions', 'auditReturnAddressAdditions'),
+    stakeReturnAddressAdditions: sparseIngestNumber(result, 'stake_return_address_additions', 'stakeReturnAddressAdditions'),
+    stakeHeightCount: countArrayField(result, 'stake_heights', 'stakeHeights'),
+    auditHeightCount: countArrayField(result, 'audit_heights', 'auditHeights'),
+  };
+}
+
+export function deferredSparseIngestChangedDerivedState(result: any): boolean {
   if (!result || result.success !== true) return false;
   if (result.deferred_state_changed === true) return true;
   if (result.deferred_state_changed === false) return false;
-  // Old WASM builds did not report deferred_state_changed and dirtied derived
-  // state for every deferred parse. Keep the conservative flush behavior until
-  // the new WASM field is present.
-  if (result.deferred === true) return true;
-  return Boolean(
-    Number(result.txs_matched || 0) > 0 ||
-    Number(result.outputs_marked_spent || 0) > 0 ||
-    Number(result.txs_reprocessed || 0) > 0 ||
-    Number(result.duplicate_transfer_repairs || 0) > 0 ||
-    Number(result.audit_spend_key_additions || 0) > 0 ||
-    Number(result.audit_return_address_additions || 0) > 0 ||
-    Number(result.stake_return_address_additions || 0) > 0
-  );
+
+  let sawKnownCounter = false;
+  for (const key of DEFERRED_SPARSE_DIRTY_COUNTERS) {
+    if (Object.prototype.hasOwnProperty.call(result, key)) {
+      sawKnownCounter = true;
+      if (Number(result[key] || 0) > 0) return true;
+    }
+  }
+
+  if (
+    countArrayField(result, 'stake_heights', 'stakeHeights') > 0 ||
+    countArrayField(result, 'audit_heights', 'auditHeights') > 0
+  ) {
+    sawKnownCounter = true;
+    return true;
+  }
+
+  // Legacy WASM builds may not provide a precise deferred_state_changed boolean.
+  // If they still report the usual counters, all-zero counters mean no wallet-state
+  // work was deferred. If no recognizable counters exist, keep the conservative
+  // old behavior and flush.
+  return result.deferred === true && !sawKnownCounter;
 }
 
 function countSubaddressOwnershipEntries(csv: string): number {
@@ -4670,6 +4743,7 @@ class CSPScanService {
 
               const mergedBytes = mergedBuffer.length;
               let ingestMs = 0;
+              let sparseResultSummary: Record<string, string | number | boolean | null> | null = null;
 
               {
                 const ingestStartedAt = performance.now();
@@ -4684,8 +4758,12 @@ class CSPScanService {
 
                 const res = JSON.parse(resJson);
                 await applySparseIngestResult(res, chunks, firstHeight);
-                deferredSparseIngestUsed = deferredSparseIngestUsed ||
-                  deferredSparseIngestChangedDerivedState(res);
+                const dirtyDerivedState = deferredSparseIngestChangedDerivedState(res);
+                sparseResultSummary = {
+                  ...summarizeSparseIngestResult(res),
+                  dirtyDerivedState,
+                };
+                deferredSparseIngestUsed = deferredSparseIngestUsed || dirtyDerivedState;
               }
 
               if (ingestMs > 750) {
@@ -4697,6 +4775,7 @@ class CSPScanService {
                   bytes: mergedBytes,
                   ingestMs,
                   deferred: true,
+                  ...(sparseResultSummary || {}),
                 };
                 debugWarn('[CSPScanService] Long sparse ingest slice', sliceContext);
                 reportClientEvent('scan.sparse_ingest_slice', {
@@ -4851,6 +4930,12 @@ class CSPScanService {
     }
     if (deferredSparseIngestUsed) {
       await flushDerivedStateOrThrow(wallet, 'phase 2 sparse ingest');
+    } else {
+      reportClientEvent('scan.flush_derived_skipped', {
+        level: 'info',
+        message: 'Deferred derived-state flush skipped',
+        context: { reason: 'phase 2 sparse ingest' },
+      });
     }
     const STAKE_RETURN_OFFSET = 21601;
 
