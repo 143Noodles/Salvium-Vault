@@ -160,6 +160,7 @@ export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): Clie
     'scanSessionSource', 'scanProgressPresent', 'isWalletReady', 'cachePresent',
     'cacheMissing', 'cacheSizeBucket', 'hadData', 'forceCleanRestoreScan',
     'finalRestoreHeight', 'actualNetworkHeight', 'preferredScanStartHeight',
+    'scanFromHeightSource', 'scheduledFromHeight',
     'fromHeight', 'sessionType', 'sessionActive', 'blocksScanned', 'outputsFound',
     'matchCount', 'txCount', 'subaddressCount', 'persistenceSaved', 'pendingAgeMs',
     'requiredCount', 'cached', 'originalCount', 'trimmedCount',
@@ -216,6 +217,10 @@ export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): Clie
     'ingestSkippedByPrefilter', 'ingestDuplicateRepairs', 'ingestParseFailed', 'ingestFirstTxOutputs',
     'ingestTransfersSize', 'ingestKeyImagesSize',
     'ingestMs', 'chunkCount', 'bytes', 'deferred', 'firstHeight', 'kind',
+    'success', 'deferredStateChanged', 'dirtyDerivedState',
+    'txsMatched', 'txsProcessed', 'outputsMarkedSpent', 'txsReprocessed',
+    'auditSpendKeyAdditions', 'auditReturnAddressAdditions',
+    'stakeReturnAddressAdditions', 'stakeHeightCount', 'auditHeightCount',
     'sendStage', 'sendKind', 'sweepAll', 'hasPaymentId', 'requireTxKey',
     'candidateIndex', 'sweepRetry',
   ]);
