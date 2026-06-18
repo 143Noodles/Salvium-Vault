@@ -649,7 +649,8 @@
           "stakes": "Stake-Index"
         },
         "retrying": "Verbindungsproblem — neuer Versuch…",
-        "gateNote": "Wir warten, bis jeder Index den aktuellen Block erreicht, damit dein erster Scan keine neueren Transaktionen verpassen kann."
+        "gateNote": "Wir warten, bis jeder Index den aktuellen Block erreicht, damit dein erster Scan keine neueren Transaktionen verpassen kann.",
+        "continueAnyway": "Trotzdem fortfahren"
       }
     }
   }

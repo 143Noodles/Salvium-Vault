@@ -649,7 +649,8 @@
           "stakes": "Stake index"
         },
         "retrying": "Connection hiccup — retrying…",
-        "gateNote": "We wait until every index reaches the current block so your first scan can’t miss recent transactions."
+        "gateNote": "We wait until every index reaches the current block so your first scan can’t miss recent transactions.",
+        "continueAnyway": "Continue anyway"
       }
     }
   }

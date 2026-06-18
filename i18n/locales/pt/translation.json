@@ -649,7 +649,8 @@
           "stakes": "Índice de staking"
         },
         "retrying": "Falha na conexão — tentando novamente…",
-        "gateNote": "Aguardamos até que cada índice alcance o bloco atual para que sua primeira varredura não perca transações recentes."
+        "gateNote": "Aguardamos até que cada índice alcance o bloco atual para que sua primeira varredura não perca transações recentes.",
+        "continueAnyway": "Continuar mesmo assim"
       }
     }
   }

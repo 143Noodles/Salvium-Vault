@@ -38,6 +38,10 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
   // so the first scan can't run against an incomplete index and miss txs.
   const [prep, setPrep] = useState<PrepStatus | null>(null);
   const [prepError, setPrepError] = useState<string | null>(null);
+  // After a grace period without readiness (e.g. the node is briefly
+  // unreachable so the tip can't be confirmed), offer an escape hatch so the
+  // user is never permanently stuck on this screen.
+  const [prepSlow, setPrepSlow] = useState(false);
   const prepStartedRef = useRef(false);
   const prepReady = !!prep?.ready;
 
@@ -45,6 +49,7 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
     if (step !== 'preparing') return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const slowTimer = setTimeout(() => { if (!cancelled) setPrepSlow(true); }, 60000);
 
     // Kick the sidecar to provision for the chosen mode (idempotent; safe to
     // call once on entering the step).
@@ -68,7 +73,7 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
       if (!cancelled) timer = setTimeout(poll, 1500);
     };
     poll();
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    return () => { cancelled = true; if (timer) clearTimeout(timer); clearTimeout(slowTimer); };
   }, [step, scanMode]);
 
   // a11y: move focus to the active step's heading on navigation so screen
@@ -326,6 +331,15 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
                 <Shield size={12} className="text-accent-success shrink-0" />
                 <span>{t('setup.wizard.preparing.gateNote')}</span>
               </div>
+              {prepSlow && !prepReady && (
+                <button
+                  type="button"
+                  onClick={onComplete}
+                  className="text-[11px] text-text-muted underline hover:text-white self-start outline-none"
+                >
+                  {t('setup.wizard.preparing.continueAnyway')}
+                </button>
+              )}
             </div>
           )}
 

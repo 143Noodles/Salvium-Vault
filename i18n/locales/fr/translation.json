@@ -649,7 +649,8 @@
           "stakes": "Index de staking"
         },
         "retrying": "Problème de connexion — nouvelle tentative…",
-        "gateNote": "Nous attendons que chaque index atteigne le bloc actuel afin que votre premier scan ne puisse manquer aucune transaction récente."
+        "gateNote": "Nous attendons que chaque index atteigne le bloc actuel afin que votre premier scan ne puisse manquer aucune transaction récente.",
+        "continueAnyway": "Continuer quand même"
       }
     }
   }

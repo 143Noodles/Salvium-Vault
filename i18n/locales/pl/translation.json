@@ -649,7 +649,8 @@
           "stakes": "Indeks stakingu"
         },
         "retrying": "Problem z połączeniem — ponawianie…",
-        "gateNote": "Czekamy, aż każdy indeks osiągnie bieżący blok, aby Twoje pierwsze skanowanie nie pominęło ostatnich transakcji."
+        "gateNote": "Czekamy, aż każdy indeks osiągnie bieżący blok, aby Twoje pierwsze skanowanie nie pominęło ostatnich transakcji.",
+        "continueAnyway": "Kontynuuj mimo to"
       }
     }
   }

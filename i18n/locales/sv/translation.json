@@ -649,7 +649,8 @@
           "stakes": "Stake-index"
         },
         "retrying": "Anslutningsproblem — försöker igen…",
-        "gateNote": "Vi väntar tills varje index når det aktuella blocket så att din första skanning inte kan missa senaste transaktioner."
+        "gateNote": "Vi väntar tills varje index når det aktuella blocket så att din första skanning inte kan missa senaste transaktioner.",
+        "continueAnyway": "Fortsätt ändå"
       }
     }
   }
