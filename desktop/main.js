@@ -148,6 +148,10 @@ function startSidecar(port, contentDir) {
     ENABLE_CSP_CACHE: '1',
     ENABLE_BLOCK_CACHE: '1',
     SALVIUM_CSP_BUNDLE_AUTOBUILD: '0', // Fast Sync: never build from scratch
+    // The sidecar runs locally on the user's machine, so a LAN/localhost
+    // salviumd is a legitimate (and most-private) node choice — allow it. This
+    // env is NEVER set on the hosted server, where the SSRF block must stay.
+    SALVIUM_ALLOW_PRIVATE_NODES: '1',
     NODE_ENV: 'production',
     // Resolve sidecar deps (axios/cors/express) from the native shell's bundled
     // node_modules, so OTA content bundles don't need to ship them.

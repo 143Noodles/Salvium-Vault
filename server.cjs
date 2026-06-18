@@ -5203,6 +5203,10 @@ function isTrustedDaemonOrigin(urlStr) {
     } catch (e) { return false; }
 }
 
+// Desktop sidecar only: the local server.cjs runs on the user's own machine and
+// can legitimately reach a LAN/localhost salviumd, so allow private node IPs.
+// NEVER set on the hosted server, where the SSRF private-IP block must stay.
+const ALLOW_PRIVATE_NODES = process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1';
 const customNodeCache = new Map(); // base-url -> { ok, height, nettype, error, exp, pinnedIp, pinnedFamily }
 const CUSTOM_NODE_TTL_MS = 2 * 60 * 1000;
 const CUSTOM_NODE_CACHE_MAX = 200;
@@ -5218,7 +5222,7 @@ async function doValidateCustomNode(base) {
         try { ips = (await dnsp.lookup(host, { all: true })).map(a => a.address); }
         catch (e) { return { ok: false, error: 'unreachable' }; }
     }
-    if (!ips.length || ips.some(ipIsPrivate)) return { ok: false, error: 'private_ip' };
+    if (!ips.length || (ips.some(ipIsPrivate) && !ALLOW_PRIVATE_NODES)) return { ok: false, error: 'private_ip' };
     const pinnedIp = ips[0];
     const pinnedFamily = netmod.isIP(pinnedIp) || 4;
     try {

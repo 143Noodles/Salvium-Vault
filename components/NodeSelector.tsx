@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Plus, Loader2, Trash2, AlertCircle, ChevronDown } from 'lucide-react';
 import { Check, ChevronRight } from './Icons';
 import { useTranslation } from 'react-i18next';
+import { isDesktopApp } from '../utils/runtime';
 import {
   NODE_PRESETS,
   getCurrentNodeChoice,
@@ -327,8 +328,9 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
     <div className="space-y-2">
       {!compact && (
         <p className="text-sm text-text-muted">
-          Which Salvium daemon serves your wallet. Custom nodes must be publicly reachable and are
-          proxied through the vault server.
+          {isDesktopApp()
+            ? 'Which node serves your wallet. You can use your own local salviumd.'
+            : 'Which node serves your wallet. Custom nodes must be publicly reachable.'}
         </p>
       )}
 
