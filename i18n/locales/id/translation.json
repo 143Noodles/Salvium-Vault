@@ -636,7 +636,22 @@
         }
       },
       "finish": "Selesaikan penyiapan",
-      "stepProgress": "Langkah {{current}} dari {{total}}"
+      "stepProgress": "Langkah {{current}} dari {{total}}",
+      "preparing": {
+        "title": "Menyiapkan dompet Anda",
+        "descriptionFast": "Mengunduh indeks pemindaian bawaan dari CDN. Ini hanya berjalan sekali — dompet Anda akan siap memindai sepenuhnya begitu proses selesai.",
+        "descriptionIndependent": "Membangun indeks pemindaian secara lokal dari blockchain. Proses ini bisa memakan waktu pada saat pertama kali dijalankan, tetapi tidak ada data bawaan yang diambil.",
+        "ready": "Siap",
+        "inProgress": "Menyiapkan…",
+        "index": {
+          "receives": "Indeks penerimaan",
+          "spends": "Indeks pengeluaran",
+          "stakes": "Indeks staking"
+        },
+        "retrying": "Gangguan koneksi — mencoba lagi…",
+        "gateNote": "Kami menunggu hingga setiap indeks mencapai blok saat ini agar pemindaian pertama Anda tidak melewatkan transaksi terbaru.",
+        "continueAnyway": "Tetap lanjutkan"
+      }
     }
   }
 }

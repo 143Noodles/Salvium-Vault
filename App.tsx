@@ -42,7 +42,8 @@ import {
   LEGACY_WALLET_CREATED_KEY,
   normalizeWalletStorageNetwork
 } from './utils/walletStorage';
-import { isNativePlatform } from './utils/runtime';
+import { isNativePlatform, isDesktopApp } from './utils/runtime';
+import SetupWizard from './components/SetupWizard';
 import { reportTaskEvent, startTaskTelemetry } from './utils/clientTelemetry';
 
 const isDesktopOnly = isDesktop;
@@ -66,6 +67,11 @@ const AppContent: React.FC = () => {
 
   const [appState, setAppState] = useState<AppState>('initializing');
   const [initTimedOut, setInitTimedOut] = useState(false);
+  // Desktop-only first-run setup wizard (node + scan-mode). Gated to the
+  // Electron shell via isDesktopApp(); inert in the deployed web wallet.
+  const [setupWizardComplete, setSetupWizardComplete] = useState(
+    () => localStorage.getItem('salvium_setup_wizard_complete') === 'true'
+  );
   const [activeTab, setActiveTab] = useState<TabView>(TabView.DASHBOARD);
   const previousTabRef = useRef<TabView>(TabView.DASHBOARD);
   const [dashboardResetKey, setDashboardResetKey] = useState(0);
@@ -531,6 +537,9 @@ const AppContent: React.FC = () => {
 
   const handleReset = async () => {
     await wallet.resetWallet();
+    // Re-show the desktop setup wizard so a reset user can re-pick node + scan mode.
+    localStorage.removeItem('salvium_setup_wizard_complete');
+    setSetupWizardComplete(false);
     setAppState('setup');
     updateActivity();
   };
@@ -597,6 +606,16 @@ const AppContent: React.FC = () => {
   }
 
   if (appState === 'setup') {
+    if (isDesktopApp() && !setupWizardComplete) {
+      return (
+        <SetupWizard
+          onComplete={() => {
+            localStorage.setItem('salvium_setup_wizard_complete', 'true');
+            setSetupWizardComplete(true);
+          }}
+        />
+      );
+    }
     return <Onboarding onComplete={handleOnboardingComplete} />;
   }
 

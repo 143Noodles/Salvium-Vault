@@ -636,7 +636,22 @@
         }
       },
       "finish": "Installatie voltooien",
-      "stepProgress": "Stap {{current}} van {{total}}"
+      "stepProgress": "Stap {{current}} van {{total}}",
+      "preparing": {
+        "title": "Je wallet wordt voorbereid",
+        "descriptionFast": "De vooraf gebouwde scanindexen worden gedownload van de CDN. Dit gebeurt eenmalig — je wallet is volledig klaar om te scannen zodra dit is voltooid.",
+        "descriptionIndependent": "De scanindexen worden lokaal opgebouwd vanuit de blockchain. Dit kan bij de eerste keer even duren, maar er worden geen vooraf gebouwde gegevens opgehaald.",
+        "ready": "Klaar",
+        "inProgress": "Bezig met voorbereiden…",
+        "index": {
+          "receives": "Ontvangstindex",
+          "spends": "Uitgavenindex",
+          "stakes": "Stake-index"
+        },
+        "retrying": "Verbindingsprobleem — opnieuw proberen…",
+        "gateNote": "We wachten tot elke index het huidige blok bereikt, zodat je eerste scan geen recente transacties kan missen.",
+        "continueAnyway": "Toch doorgaan"
+      }
     }
   }
 }
