@@ -2,10 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { isMobile, isTablet, isIPad13 } from 'react-device-detect';
 import { isDesktopApp } from '../utils/runtime';
 
-// In the desktop app the external web shortcuts (Explorer / Vault / Pool) are
-// noise — they only matter for the hosted web wallet. Hide them there.
-const hideWebShortcuts = isDesktopApp();
-
 const isTabletDevice = isTablet || isIPad13;
 const isMobileOrTablet = isMobile || isTabletDevice;
 
@@ -20,6 +16,10 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
+  // In the desktop app the external web shortcuts (Explorer / Vault / Pool) are
+  // noise — hide them. Evaluated at render (not module load) so the desktop
+  // flag/UA are guaranteed to be set by then.
+  const hideWebShortcuts = isDesktopApp();
   const [menuOpen, setMenuOpen] = useState(false);
   const [explorerOpen, setExplorerOpen] = useState(false);
   const [price, setPrice] = useState<string | null>(null);
