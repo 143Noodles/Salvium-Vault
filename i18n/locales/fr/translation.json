@@ -636,7 +636,21 @@
         }
       },
       "finish": "Terminer la configuration",
-      "stepProgress": "Étape {{current}} sur {{total}}"
+      "stepProgress": "Étape {{current}} sur {{total}}",
+      "preparing": {
+        "title": "Préparation de votre portefeuille",
+        "descriptionFast": "Téléchargement des index de scan préconstruits depuis le CDN. Cette opération ne s'exécute qu'une seule fois — votre portefeuille sera entièrement prêt à scanner dès qu'elle sera terminée.",
+        "descriptionIndependent": "Construction des index de scan localement à partir de la blockchain. Cela peut prendre un certain temps lors de la première exécution, mais aucune donnée préconstruite n'est récupérée.",
+        "ready": "Prêt",
+        "inProgress": "Préparation…",
+        "index": {
+          "receives": "Index de réception",
+          "spends": "Index de dépense",
+          "stakes": "Index de staking"
+        },
+        "retrying": "Problème de connexion — nouvelle tentative…",
+        "gateNote": "Nous attendons que chaque index atteigne le bloc actuel afin que votre premier scan ne puisse manquer aucune transaction récente."
+      }
     }
   }
 }

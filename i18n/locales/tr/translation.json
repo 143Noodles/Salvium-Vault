@@ -636,7 +636,21 @@
         }
       },
       "finish": "Kurulumu tamamla",
-      "stepProgress": "Adım {{current}} / {{total}}"
+      "stepProgress": "Adım {{current}} / {{total}}",
+      "preparing": {
+        "title": "Cüzdanınız hazırlanıyor",
+        "descriptionFast": "Önceden oluşturulmuş tarama dizinleri CDN'den indiriliyor. Bu işlem yalnızca bir kez çalışır — tamamlanır tamamlanmaz cüzdanınız taramaya tamamen hazır olacaktır.",
+        "descriptionIndependent": "Tarama dizinleri blok zincirinden yerel olarak oluşturuluyor. İlk çalıştırmada bu biraz zaman alabilir, ancak önceden oluşturulmuş hiçbir veri indirilmez.",
+        "ready": "Hazır",
+        "inProgress": "Hazırlanıyor…",
+        "index": {
+          "receives": "Alım dizini",
+          "spends": "Harcama dizini",
+          "stakes": "Staking dizini"
+        },
+        "retrying": "Bağlantı sorunu — yeniden deneniyor…",
+        "gateNote": "İlk taramanızın son işlemleri kaçırmaması için her dizinin geçerli bloğa ulaşmasını bekleriz."
+      }
     }
   }
 }

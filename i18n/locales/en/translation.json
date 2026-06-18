@@ -636,7 +636,21 @@
         }
       },
       "finish": "Finish setup",
-      "stepProgress": "Step {{current}} of {{total}}"
+      "stepProgress": "Step {{current}} of {{total}}",
+      "preparing": {
+        "title": "Preparing your wallet",
+        "descriptionFast": "Downloading the prebuilt scan indexes from the CDN. This runs once — your wallet will be ready to scan completely as soon as it finishes.",
+        "descriptionIndependent": "Building the scan indexes locally from the blockchain. This can take a while on the first run, but no prebuilt data is fetched.",
+        "ready": "Ready",
+        "inProgress": "Preparing…",
+        "index": {
+          "receives": "Receive index",
+          "spends": "Spend index",
+          "stakes": "Stake index"
+        },
+        "retrying": "Connection hiccup — retrying…",
+        "gateNote": "We wait until every index reaches the current block so your first scan can’t miss recent transactions."
+      }
     }
   }
 }

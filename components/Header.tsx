@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { isMobile, isTablet, isIPad13 } from 'react-device-detect';
+import { isDesktopApp } from '../utils/runtime';
+
+// In the desktop app the external web shortcuts (Explorer / Vault / Pool) are
+// noise — they only matter for the hosted web wallet. Hide them there.
+const hideWebShortcuts = isDesktopApp();
 
 const isTabletDevice = isTablet || isIPad13;
 const isMobileOrTablet = isMobile || isTabletDevice;
@@ -83,6 +88,7 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
 
           {showNav && (
             <nav className="hidden md:flex items-center gap-8">
+              {!hideWebShortcuts && (
               <div ref={explorerRef} className="relative">
                 <button
                   onClick={() => setExplorerOpen(!explorerOpen)}
@@ -107,8 +113,9 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
                   </div>
                 )}
               </div>
+              )}
 
-              {navItems.map((item) => (
+              {!hideWebShortcuts && navItems.map((item) => (
                 <a
                   key={item.label}
                   href={item.href}
@@ -136,6 +143,8 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
         {showNav && menuOpen && (
           <nav className="md:hidden py-4 border-t border-dark-700">
             <div className="flex flex-col gap-4">
+              {!hideWebShortcuts && (
+              <>
               <div className="text-xs uppercase text-dark-600 font-semibold tracking-wider px-2">Explorer</div>
               {explorerItems.map((item) => (
                 <a
@@ -163,6 +172,8 @@ export const Header: React.FC<HeaderProps> = ({ showNav = true }) => {
                   {item.label}
                 </a>
               ))}
+              </>
+              )}
             </div>
           </nav>
         )}
