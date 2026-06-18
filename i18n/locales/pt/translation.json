@@ -636,7 +636,21 @@
         }
       },
       "finish": "Concluir configuração",
-      "stepProgress": "Etapa {{current}} de {{total}}"
+      "stepProgress": "Etapa {{current}} de {{total}}",
+      "preparing": {
+        "title": "Preparando sua carteira",
+        "descriptionFast": "Baixando os índices de varredura pré-construídos da CDN. Isso é executado uma única vez — sua carteira estará totalmente pronta para varredura assim que terminar.",
+        "descriptionIndependent": "Construindo os índices de varredura localmente a partir da blockchain. Isso pode demorar um pouco na primeira execução, mas nenhum dado pré-construído é baixado.",
+        "ready": "Pronto",
+        "inProgress": "Preparando…",
+        "index": {
+          "receives": "Índice de recebimento",
+          "spends": "Índice de gasto",
+          "stakes": "Índice de staking"
+        },
+        "retrying": "Falha na conexão — tentando novamente…",
+        "gateNote": "Aguardamos até que cada índice alcance o bloco atual para que sua primeira varredura não perca transações recentes."
+      }
     }
   }
 }

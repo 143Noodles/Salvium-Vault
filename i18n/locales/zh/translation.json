@@ -636,7 +636,21 @@
         }
       },
       "finish": "完成设置",
-      "stepProgress": "第 {{current}} 步，共 {{total}} 步"
+      "stepProgress": "第 {{current}} 步，共 {{total}} 步",
+      "preparing": {
+        "title": "正在准备您的钱包",
+        "descriptionFast": "正在从 CDN 下载预构建的扫描索引。此过程仅运行一次——完成后您的钱包即可完整扫描。",
+        "descriptionIndependent": "正在从区块链在本地构建扫描索引。首次运行可能需要一些时间，但不会获取任何预构建数据。",
+        "ready": "就绪",
+        "inProgress": "正在准备…",
+        "index": {
+          "receives": "接收索引",
+          "spends": "支出索引",
+          "stakes": "质押索引"
+        },
+        "retrying": "连接中断——正在重试…",
+        "gateNote": "我们会等待每个索引都同步到当前区块，以确保您的首次扫描不会遗漏最近的交易。"
+      }
     }
   }
 }

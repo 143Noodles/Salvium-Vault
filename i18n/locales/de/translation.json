@@ -636,7 +636,21 @@
         }
       },
       "finish": "Einrichtung abschließen",
-      "stepProgress": "Schritt {{current}} von {{total}}"
+      "stepProgress": "Schritt {{current}} von {{total}}",
+      "preparing": {
+        "title": "Wallet wird vorbereitet",
+        "descriptionFast": "Die vorgefertigten Scan-Indizes werden vom CDN heruntergeladen. Dies geschieht nur einmal — deine Wallet ist vollständig scanbereit, sobald der Vorgang abgeschlossen ist.",
+        "descriptionIndependent": "Die Scan-Indizes werden lokal aus der Blockchain aufgebaut. Das kann beim ersten Mal eine Weile dauern, es werden jedoch keine vorgefertigten Daten abgerufen.",
+        "ready": "Bereit",
+        "inProgress": "Wird vorbereitet…",
+        "index": {
+          "receives": "Empfangs-Index",
+          "spends": "Ausgabe-Index",
+          "stakes": "Stake-Index"
+        },
+        "retrying": "Verbindungsproblem — neuer Versuch…",
+        "gateNote": "Wir warten, bis jeder Index den aktuellen Block erreicht, damit dein erster Scan keine neueren Transaktionen verpassen kann."
+      }
     }
   }
 }
