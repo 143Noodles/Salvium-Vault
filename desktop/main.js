@@ -267,16 +267,26 @@ async function promptUpdateDecision(manifest, version) {
 // (the app closes and never reopens — observed). Relaunch via the real AppImage
 // path in $APPIMAGE instead. macOS/Windows/dev relaunch normally.
 function relaunchApp() {
+  const appImagePath = process.env.APPIMAGE;
   try {
-    if (process.env.APPIMAGE) {
-      log('relaunching via AppImage:', process.env.APPIMAGE);
-      app.relaunch({ execPath: process.env.APPIMAGE, args: [] });
-    } else {
-      app.relaunch();
+    if (appImagePath) {
+      // Spawn a FRESH AppImage instance with a clean env. The AppImage runtime
+      // exports APPDIR/APPIMAGE/ARGV0/OWD on mount; inheriting the stale values
+      // from this (now-exiting) instance makes the relaunched runtime fail to
+      // FUSE-mount ("Cannot mount AppImage"). Clearing them lets it mount fresh.
+      // Detached + unref so the child survives our exit.
+      const { spawn } = require('child_process');
+      const env = Object.assign({}, process.env);
+      for (const k of ['APPDIR', 'APPIMAGE', 'ARGV0', 'OWD']) delete env[k];
+      log('relaunching AppImage (clean env):', appImagePath);
+      spawn(appImagePath, [], { detached: true, stdio: 'ignore', env }).unref();
+      app.exit(0);
+      return;
     }
   } catch (e) {
-    log('relaunch error:', e && e.message);
+    log('AppImage relaunch failed, falling back to app.relaunch:', e && e.message);
   }
+  try { app.relaunch(); } catch (e) { log('relaunch error:', e && e.message); }
   app.exit(0);
 }
 
