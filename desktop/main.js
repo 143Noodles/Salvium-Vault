@@ -1,4 +1,4 @@
-// Salvium Vault Desktop — Path C proof-of-concept (Electron)
+// Salvium Vault Desktop — Path C (Electron)
 // ---------------------------------------------------------------------------
 // Architecture: Electron main process spawns the EXISTING production
 // `server.cjs` as a localhost-only sidecar, pointed at a public seed node,
@@ -30,34 +30,16 @@ const SERVER_ENTRY = path.join(REPO_ROOT, 'server.cjs');
 const { resolveActiveContentDir, checkForContentUpdate } = require('./content-update');
 
 // ---------------------------------------------------------------------------
-// Node-selection config stub for the FUTURE first-run wizard.
-// The wizard UI is future work; this is the data model it will drive.
-// `kind` tells the wizard how to source the RPC URL.
-// ---------------------------------------------------------------------------
-// eslint-disable-next-line no-unused-vars
-const NODE_OPTIONS = [
-  { id: 'public-daemon', kind: 'remote', label: 'Your public daemon',      url: 'http://seed01.salvium.io:19081', default: true },
-  { id: 'seed01',        kind: 'remote', label: 'Seed 01 (salvium.io)',    url: 'http://seed01.salvium.io:19081' },
-  { id: 'seed02',        kind: 'remote', label: 'Seed 02 (salvium.io)',    url: 'http://seed02.salvium.io:19081' },
-  { id: 'seed03',        kind: 'remote', label: 'Seed 03 (salvium.io)',    url: 'http://seed03.salvium.io:19081' },
-  { id: 'bundled-local', kind: 'local',  label: 'Bundled local salviumd',  binary: '/tmp/salviumd-symbol/salviumd' /* future: ship in extraResources, spawn + wait for sync */ },
-  { id: 'custom-ip',     kind: 'custom', label: 'Custom node (enter IP)',  url: null /* wizard prompts for host:port */ },
-];
-
-// Scan-mode config stub for the FUTURE wizard (Fast Sync vs Independent Build).
-// eslint-disable-next-line no-unused-vars
-const SCAN_MODES = [
-  { id: 'fast-sync',         label: 'Fast Sync (recommended)', autobuild: '0', bootstrapBundle: true,  default: true },
-  { id: 'independent-build', label: 'Independent Build',       autobuild: '1', bootstrapBundle: false },
-];
-
-// ---------------------------------------------------------------------------
-// POC configuration (what the wizard will eventually choose for us).
+// Default sidecar configuration. The first-run wizard (in the SPA) lets the
+// user pick the daemon node and scan mode at runtime; those choices are carried
+// per-request via the `salvium_node` cookie (read by server.cjs) and
+// localStorage, so they need no spawn-time plumbing here. RPC_URL below is just
+// the bootstrap default used until the wizard's cookie is set.
 // ---------------------------------------------------------------------------
 const SALVIUM_NETWORK = 'mainnet';
 const RPC_URL = process.env.SALVIUM_RPC_URL || 'http://seed01.salvium.io:19081';
 const HEALTH_TIMEOUT_MS = 90_000;
-// POC Fast-Sync source: a known-good prod bundle on this server simulates a CDN download.
+// Fast-Sync source: the CSP scan-index bundle CDN.
 const CDN_BUNDLE_URL = process.env.SALVIUM_CSP_CDN_URL || 'https://cdn.salvium.tools/api/csp-bundle';
 
 const userDataDir = app.getPath('userData');
@@ -102,12 +84,13 @@ function validateBundleFile(p) {
 }
 
 // ---------------------------------------------------------------------------
-// REAL CDN download path for Fast Sync (stub: wired but not required to
-// succeed in the POC; the local copy below is the tested fallback).
+// CDN download path for Fast Sync. Streams to a .part file then renames on
+// success. Fails soft (see fastSyncBootstrap) — scan builds incrementally if
+// the CDN is unreachable.
 // ---------------------------------------------------------------------------
 function downloadBundleFromCdn(url, destPath) {
   return new Promise((resolve, reject) => {
-    log('CDN download (stub) attempt:', url);
+    log('CDN download attempt:', url);
     const client = url.startsWith('https') ? https : http;
     const tmp = destPath + '.part';
     const file = fs.createWriteStream(tmp);
