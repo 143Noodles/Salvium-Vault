@@ -649,7 +649,8 @@
           "stakes": "Indeks staking"
         },
         "retrying": "Gangguan koneksi — mencoba lagi…",
-        "gateNote": "Kami menunggu hingga setiap indeks mencapai blok saat ini agar pemindaian pertama Anda tidak melewatkan transaksi terbaru."
+        "gateNote": "Kami menunggu hingga setiap indeks mencapai blok saat ini agar pemindaian pertama Anda tidak melewatkan transaksi terbaru.",
+        "continueAnyway": "Tetap lanjutkan"
       }
     }
   }

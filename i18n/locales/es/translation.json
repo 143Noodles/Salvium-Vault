@@ -649,7 +649,8 @@
           "stakes": "Índice de staking"
         },
         "retrying": "Problema de conexión — reintentando…",
-        "gateNote": "Esperamos a que cada índice alcance el bloque actual para que tu primer escaneo no pueda perderse transacciones recientes."
+        "gateNote": "Esperamos a que cada índice alcance el bloque actual para que tu primer escaneo no pueda perderse transacciones recientes.",
+        "continueAnyway": "Continuar de todos modos"
       }
     }
   }

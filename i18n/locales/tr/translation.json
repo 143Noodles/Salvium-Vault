@@ -649,7 +649,8 @@
           "stakes": "Staking dizini"
         },
         "retrying": "Bağlantı sorunu — yeniden deneniyor…",
-        "gateNote": "İlk taramanızın son işlemleri kaçırmaması için her dizinin geçerli bloğa ulaşmasını bekleriz."
+        "gateNote": "İlk taramanızın son işlemleri kaçırmaması için her dizinin geçerli bloğa ulaşmasını bekleriz.",
+        "continueAnyway": "Yine de devam et"
       }
     }
   }
