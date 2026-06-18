@@ -105,6 +105,17 @@
       }
     })();
 
+    // Desktop app: hide the web-only shortcuts (Explorer / Vault / Pool); the
+    // sidecar sets window.__SALVIUM_DESKTOP__. Logo + price badge stay.
+    (function () {
+      if (window.__SALVIUM_DESKTOP__ !== true) return;
+      var sel = '.top-nav a[href*="explorer.salvium.tools"], .top-nav a[href*="vault.salvium.tools"], .top-nav a[href*="pool.salvium.tools"]';
+      document.querySelectorAll(sel).forEach(function (a) {
+        var li = a.closest('li');
+        if (li) li.style.display = 'none';
+      });
+    })();
+
     (function() {
       var root = document.documentElement;
       var stableAppHeight = Math.max(window.innerHeight || 0, root.clientHeight || 0, 1);
