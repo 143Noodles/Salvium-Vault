@@ -6000,9 +6000,18 @@ app.get(['/api/prepare/status', '/vault/api/prepare/status'], noCacheHeaders, as
             if (!c.ready) allReady = false;
             if (c.percent < minPct) minPct = c.percent;
         }
+        // While Fast Sync is actively downloading the prebuilt caches, surface
+        // byte-level download progress so the bar moves during the (large)
+        // spend-index pull instead of sitting at 0% then snapping to 100%.
+        const dl = cachePrepareJob;
+        const downloading = dl && dl.running && dl.totalBytes > 0;
+        const dlPct = downloading
+            ? Math.max(1, Math.min(99, Math.round((dl.downloadedBytes / dl.totalBytes) * 100)))
+            : null;
         res.json({
             ready: allReady,
-            percent: (tip > 0 && wasmModuleReady) ? minPct : 0,
+            percent: downloading ? dlPct : ((tip > 0 && wasmModuleReady) ? minPct : 0),
+            phase: downloading ? 'downloading' : (allReady ? 'ready' : 'indexing'),
             chainTip: tip,
             wasmReady: wasmModuleReady,
             cspCacheEnabled: CSP_CACHE_ENABLED,
@@ -6057,26 +6066,36 @@ app.get(['/api/cache-export/:file', '/vault/api/cache-export/:file'], (req, res)
 // this — the background maintenance loop builds the same caches from the node.
 // ---------------------------------------------------------------------------
 const CACHE_CDN_BASE = process.env.SALVIUM_CACHE_CDN_BASE || 'https://cdn.salvium.tools/api/cache-export';
-let cachePrepareJob = { mode: null, running: false, error: null, startedAt: 0, downloaded: 0, total: 0 };
+let cachePrepareJob = { mode: null, running: false, error: null, startedAt: 0, downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0 };
 async function fastSyncProvisionCaches() {
     if (cachePrepareJob.running) return;
-    cachePrepareJob = { mode: 'fast', running: true, error: null, startedAt: Date.now(), downloaded: 0, total: 0 };
+    cachePrepareJob = { mode: 'fast', running: true, error: null, startedAt: Date.now(), downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0 };
     try {
         const manifest = (await axios.get(`${CACHE_CDN_BASE}/manifest.json`, { timeout: 30000 })).data;
         const files = Array.isArray(manifest && manifest.files) ? manifest.files : [];
         const targets = cacheExportTargets();
         cachePrepareJob.total = files.length;
+        // Sum sizes up front so the wizard can show a real byte-level progress
+        // bar during the (large) spend-index download instead of jumping 0->100.
+        cachePrepareJob.totalBytes = files.reduce((s, f) => s + (Number(f.size) || 0), 0);
         for (const f of files) {
             const dest = targets[f.name];
             if (!dest) continue;
-            const resp = await axios.get(`${CACHE_CDN_BASE}/${f.name}`, { responseType: 'arraybuffer', timeout: 180000 });
-            const buf = Buffer.from(resp.data);
             await fs.mkdir(path.dirname(dest), { recursive: true });
             const tmp = dest + '.part';
-            await fs.writeFile(tmp, buf);
+            // Stream to disk while counting bytes for live progress.
+            const resp = await axios.get(`${CACHE_CDN_BASE}/${f.name}`, { responseType: 'stream', timeout: 180000 });
+            await new Promise((resolve, reject) => {
+                const ws = fsSync.createWriteStream(tmp);
+                resp.data.on('data', (chunk) => { cachePrepareJob.downloadedBytes += chunk.length; });
+                resp.data.on('error', reject);
+                ws.on('error', reject);
+                ws.on('finish', resolve);
+                resp.data.pipe(ws);
+            });
             await fs.rename(tmp, dest);
             cachePrepareJob.downloaded++;
-            console.log(`[Fast Sync] Downloaded ${f.name} (${(buf.length / 1048576).toFixed(1)} MB)`);
+            console.log(`[Fast Sync] Downloaded ${f.name}`);
         }
         // Reload the freshly-downloaded caches so the spend/stake/timestamp
         // indexes go live without a restart; the maintenance loop tails from here.
