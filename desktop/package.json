@@ -1,7 +1,7 @@
 {
   "name": "salvium-vault-desktop",
   "productName": "Salvium Vault",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Salvium Vault Desktop Wallet",
   "private": true,
   "main": "main.js",
@@ -22,7 +22,8 @@
       "content-update.js",
       "updater.js",
       "package.json",
-      "build/icon.png"
+      "build/icon.png",
+      "preload.js"
     ],
     "extraResources": [
       {
