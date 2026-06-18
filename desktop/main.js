@@ -338,7 +338,14 @@ async function boot() {
     title: 'Salvium Vault',
     // Keep the wallet scan running at full speed when minimized to the tray —
     // Chromium otherwise throttles hidden-window timers to a crawl.
-    webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
+    // preload exposes window.__SALVIUM_DESKTOP__ so the SPA reliably detects the
+    // desktop app (Electron UA sniffing was unreliable, leaving web-only UI shown).
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
   });
   await mainWindow.loadURL('http://127.0.0.1:' + port + '/');
   log('SPA loaded. Total boot to window:', Date.now() - bootStart, 'ms');
