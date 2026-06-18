@@ -102,15 +102,15 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
           </span>
         </div>
         <div className="relative z-10">
-          <div className="flex items-center gap-2 mb-1">
-            <h3 className="text-white font-bold text-base">{title}</h3>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-1.5">
+            <h3 className="text-white font-bold text-lg whitespace-nowrap">{title}</h3>
             {badge && (
-              <span className="rounded-full bg-accent-primary/15 text-accent-primary text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5">
+              <span className="rounded-full bg-accent-primary/15 text-accent-primary text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 whitespace-nowrap">
                 {badge}
               </span>
             )}
           </div>
-          <p className="text-text-muted text-xs leading-5">{description}</p>
+          <p className="text-text-muted text-[13px] leading-relaxed">{description}</p>
         </div>
       </button>
     );
@@ -129,7 +129,7 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-[400px] bg-accent-primary/10 blur-[120px] rounded-full pointer-events-none opacity-60" />
       <div className="absolute -bottom-32 -right-32 w-[400px] h-[400px] bg-accent-secondary/5 blur-[100px] rounded-full pointer-events-none" />
 
-      <div className="w-full max-w-lg z-10 animate-fade-in relative">
+      <div className="w-full max-w-xl z-10 animate-fade-in relative">
         <Card className="space-y-6">
           {/* Step dots */}
           <div
@@ -200,7 +200,7 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
                   <p className="text-text-muted text-xs leading-5">{t('setup.wizard.sync.description')}</p>
                 </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {syncCard(
                   'fast',
                   <Zap size={22} />,
