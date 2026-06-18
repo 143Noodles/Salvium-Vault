@@ -336,7 +336,9 @@ async function boot() {
     width: 1280,
     height: 860,
     title: 'Salvium Vault',
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    // Keep the wallet scan running at full speed when minimized to the tray —
+    // Chromium otherwise throttles hidden-window timers to a crawl.
+    webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
   });
   await mainWindow.loadURL('http://127.0.0.1:' + port + '/');
   log('SPA loaded. Total boot to window:', Date.now() - bootStart, 'ms');
