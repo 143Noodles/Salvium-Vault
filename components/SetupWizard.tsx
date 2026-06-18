@@ -230,7 +230,6 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
                 </div>
                 <div>
                   <h2 ref={headingRef} tabIndex={-1} className="text-lg font-bold text-white mb-1 outline-none">{t('setup.wizard.node.title')}</h2>
-                  <p className="text-text-muted text-xs leading-5">{t('setup.wizard.node.description')}</p>
                 </div>
               </div>
               <NodeSelector />
