@@ -8,7 +8,7 @@
 // ADDITIVE ONLY: this file does not modify server.cjs in any way.
 // ---------------------------------------------------------------------------
 
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, Tray, Menu, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
@@ -49,8 +49,72 @@ const BUNDLE_FILE = path.join(CSP_DIR, 'csp-bundle-v8.bin');
 
 let sidecar = null;
 let mainWindow = null;
+let tray = null;
+let isQuitting = false;
+let lastPromptedVersion = null; // avoid re-prompting the same version every hourly check
 
 function log(...args) { console.log('[desktop]', ...args); }
+
+// ---------------------------------------------------------------------------
+// Small desktop preferences file (close-to-tray choice, etc.).
+// ---------------------------------------------------------------------------
+function prefsFile() { return path.join(app.getPath('userData'), 'desktop-prefs.json'); }
+function readPrefs() { try { return JSON.parse(fs.readFileSync(prefsFile(), 'utf8')) || {}; } catch (_) { return {}; } }
+function writePrefs(p) { try { fs.writeFileSync(prefsFile(), JSON.stringify(p)); } catch (e) { log('prefs write error:', e && e.message); } }
+
+function showMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+// Create the tray icon (once) so a hidden-to-tray window can be reopened.
+function ensureTray() {
+  if (tray) return;
+  let img = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
+  if (img.isEmpty()) { tray = new Tray(nativeImage.createEmpty()); }
+  else { tray = new Tray(img.resize({ width: 18, height: 18 })); }
+  tray.setToolTip('Salvium Vault');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Salvium Vault', click: () => showMainWindow() },
+    { type: 'separator' },
+    { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
+  ]));
+  tray.on('click', () => showMainWindow());
+  tray.on('double-click', () => showMainWindow());
+}
+
+// Window-close handler: on the user's choice, hide to the tray (keep the
+// sidecar running + synced) instead of quitting. The choice is remembered.
+function handleWindowClose(e) {
+  if (isQuitting) return; // a real quit is in progress — allow it
+  const prefs = readPrefs();
+  if (prefs.minimizeToTray === true) { e.preventDefault(); mainWindow.hide(); ensureTray(); return; }
+  if (prefs.minimizeToTray === false) return; // user chose to quit on close
+  // First close: ask once and remember.
+  e.preventDefault();
+  const res = dialog.showMessageBoxSync(mainWindow, {
+    type: 'question',
+    buttons: ['Minimize to tray', 'Quit'],
+    defaultId: 0, cancelId: 1,
+    title: 'Keep Salvium Vault running?',
+    message: 'Keep Salvium Vault running in the tray?',
+    detail: 'It stays synced in the background so it opens instantly and stays up to date. You can quit anytime from the tray icon.',
+    checkboxLabel: 'Remember my choice',
+    checkboxChecked: true,
+  });
+  const remember = res.checkboxChecked;
+  if (res.response === 0) {
+    if (remember) writePrefs(Object.assign({}, prefs, { minimizeToTray: true }));
+    mainWindow.hide();
+    ensureTray();
+  } else {
+    if (remember) writePrefs(Object.assign({}, prefs, { minimizeToTray: false }));
+    isQuitting = true;
+    app.quit();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Find a free localhost port.
@@ -223,11 +287,21 @@ async function boot() {
   });
   await mainWindow.loadURL('http://127.0.0.1:' + port + '/');
   log('SPA loaded. Total boot to window:', Date.now() - bootStart, 'ms');
-  // OTA content update: detect in the background, then let the USER decide
-  // whether to download it. Nothing is downloaded until they opt in.
-  checkForContentUpdate(REPO_ROOT)
-    .then((r) => { if (r && r.updateAvailable && !r.skipped) promptUpdateDecision(r.manifest, r.version); })
+  mainWindow.on('close', handleWindowClose);
+
+  // OTA content update: detect at launch and then hourly, letting the USER
+  // decide whether to download each one. Nothing downloads until they opt in,
+  // and we never re-prompt the same version (skip is persisted in content-update).
+  const runUpdateCheck = () => checkForContentUpdate(REPO_ROOT)
+    .then((r) => {
+      if (r && r.updateAvailable && !r.skipped && r.version !== lastPromptedVersion) {
+        lastPromptedVersion = r.version;
+        promptUpdateDecision(r.manifest, r.version);
+      }
+    })
     .catch((e) => log('content update check failed:', e && e.message));
+  runUpdateCheck();
+  setInterval(runUpdateCheck, 60 * 60 * 1000); // hourly
 }
 
 // Step 1: an update exists — ask the user what to do (no download yet).
@@ -320,6 +394,9 @@ app.whenReady().then(boot).catch((err) => {
   app.exit(1);
 });
 
-app.on('window-all-closed', () => { killSidecar(); if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', killSidecar);
+// If the window is hidden to the tray it is not "closed", so window-all-closed
+// only fires on a real quit. Hidden-to-tray keeps the app (and sidecar) alive.
+app.on('window-all-closed', () => { if (!tray) { killSidecar(); if (process.platform !== 'darwin') app.quit(); } });
+app.on('activate', () => { showMainWindow(); });
+app.on('before-quit', () => { isQuitting = true; killSidecar(); });
 process.on('exit', killSidecar);

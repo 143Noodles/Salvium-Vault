@@ -21,7 +21,8 @@
       "main.js",
       "content-update.js",
       "updater.js",
-      "package.json"
+      "package.json",
+      "build/icon.png"
     ],
     "extraResources": [
       {
