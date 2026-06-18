@@ -636,7 +636,22 @@
         }
       },
       "finish": "Finalizar configuración",
-      "stepProgress": "Paso {{current}} de {{total}}"
+      "stepProgress": "Paso {{current}} de {{total}}",
+      "preparing": {
+        "title": "Preparando tu monedero",
+        "descriptionFast": "Descargando los índices de escaneo prediseñados desde la CDN. Esto se ejecuta una sola vez: tu monedero estará completamente listo para escanear en cuanto termine.",
+        "descriptionIndependent": "Construyendo los índices de escaneo localmente a partir de la cadena de bloques. Esto puede tardar un poco en la primera ejecución, pero no se descarga ningún dato prediseñado.",
+        "ready": "Listo",
+        "inProgress": "Preparando…",
+        "index": {
+          "receives": "Índice de recepción",
+          "spends": "Índice de gasto",
+          "stakes": "Índice de staking"
+        },
+        "retrying": "Problema de conexión — reintentando…",
+        "gateNote": "Esperamos a que cada índice alcance el bloque actual para que tu primer escaneo no pueda perderse transacciones recientes.",
+        "continueAnyway": "Continuar de todos modos"
+      }
     }
   }
 }

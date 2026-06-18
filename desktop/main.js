@@ -1,4 +1,4 @@
-// Salvium Vault Desktop — Path C proof-of-concept (Electron)
+// Salvium Vault Desktop — Path C (Electron)
 // ---------------------------------------------------------------------------
 // Architecture: Electron main process spawns the EXISTING production
 // `server.cjs` as a localhost-only sidecar, pointed at a public seed node,
@@ -8,7 +8,7 @@
 // ADDITIVE ONLY: this file does not modify server.cjs in any way.
 // ---------------------------------------------------------------------------
 
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, Tray, Menu, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
@@ -27,37 +27,19 @@ const REPO_ROOT = fs.existsSync(path.join(DEV_REPO_ROOT, 'server.cjs'))
   ? DEV_REPO_ROOT
   : PACKAGED_REPO_ROOT;
 const SERVER_ENTRY = path.join(REPO_ROOT, 'server.cjs');
-const { resolveActiveContentDir, checkForContentUpdate } = require('./content-update');
+const { resolveActiveContentDir, checkForContentUpdate, applyContentUpdate, setSkippedVersion } = require('./content-update');
 
 // ---------------------------------------------------------------------------
-// Node-selection config stub for the FUTURE first-run wizard.
-// The wizard UI is future work; this is the data model it will drive.
-// `kind` tells the wizard how to source the RPC URL.
-// ---------------------------------------------------------------------------
-// eslint-disable-next-line no-unused-vars
-const NODE_OPTIONS = [
-  { id: 'public-daemon', kind: 'remote', label: 'Your public daemon',      url: 'http://seed01.salvium.io:19081', default: true },
-  { id: 'seed01',        kind: 'remote', label: 'Seed 01 (salvium.io)',    url: 'http://seed01.salvium.io:19081' },
-  { id: 'seed02',        kind: 'remote', label: 'Seed 02 (salvium.io)',    url: 'http://seed02.salvium.io:19081' },
-  { id: 'seed03',        kind: 'remote', label: 'Seed 03 (salvium.io)',    url: 'http://seed03.salvium.io:19081' },
-  { id: 'bundled-local', kind: 'local',  label: 'Bundled local salviumd',  binary: '/tmp/salviumd-symbol/salviumd' /* future: ship in extraResources, spawn + wait for sync */ },
-  { id: 'custom-ip',     kind: 'custom', label: 'Custom node (enter IP)',  url: null /* wizard prompts for host:port */ },
-];
-
-// Scan-mode config stub for the FUTURE wizard (Fast Sync vs Independent Build).
-// eslint-disable-next-line no-unused-vars
-const SCAN_MODES = [
-  { id: 'fast-sync',         label: 'Fast Sync (recommended)', autobuild: '0', bootstrapBundle: true,  default: true },
-  { id: 'independent-build', label: 'Independent Build',       autobuild: '1', bootstrapBundle: false },
-];
-
-// ---------------------------------------------------------------------------
-// POC configuration (what the wizard will eventually choose for us).
+// Default sidecar configuration. The first-run wizard (in the SPA) lets the
+// user pick the daemon node and scan mode at runtime; those choices are carried
+// per-request via the `salvium_node` cookie (read by server.cjs) and
+// localStorage, so they need no spawn-time plumbing here. RPC_URL below is just
+// the bootstrap default used until the wizard's cookie is set.
 // ---------------------------------------------------------------------------
 const SALVIUM_NETWORK = 'mainnet';
 const RPC_URL = process.env.SALVIUM_RPC_URL || 'http://seed01.salvium.io:19081';
 const HEALTH_TIMEOUT_MS = 90_000;
-// POC Fast-Sync source: a known-good prod bundle on this server simulates a CDN download.
+// Fast-Sync source: the CSP scan-index bundle CDN.
 const CDN_BUNDLE_URL = process.env.SALVIUM_CSP_CDN_URL || 'https://cdn.salvium.tools/api/csp-bundle';
 
 const userDataDir = app.getPath('userData');
@@ -67,8 +49,96 @@ const BUNDLE_FILE = path.join(CSP_DIR, 'csp-bundle-v8.bin');
 
 let sidecar = null;
 let mainWindow = null;
+let tray = null;
+let isQuitting = false;
+let lastPromptedVersion = null; // avoid re-prompting the same version every hourly check
 
 function log(...args) { console.log('[desktop]', ...args); }
+
+// ---------------------------------------------------------------------------
+// Small desktop preferences file (close-to-tray choice, etc.).
+// ---------------------------------------------------------------------------
+function prefsFile() { return path.join(app.getPath('userData'), 'desktop-prefs.json'); }
+function readPrefs() { try { return JSON.parse(fs.readFileSync(prefsFile(), 'utf8')) || {}; } catch (_) { return {}; } }
+function writePrefs(p) { try { fs.writeFileSync(prefsFile(), JSON.stringify(p)); } catch (e) { log('prefs write error:', e && e.message); } }
+
+function showMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+// Create the tray icon (once) so a hidden-to-tray window can be reopened.
+// Returns true only if a usable tray was created — callers must NOT hide the
+// window otherwise (it would strand a running-but-invisible app).
+function ensureTray() {
+  if (tray) return true;
+  try {
+    let img = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
+    if (img.isEmpty()) { log('tray: brand icon failed to load — refusing to hide'); return false; }
+    img = img.resize({ width: 22, height: 22 });
+    // Linux/KDE StatusNotifier renders far more reliably from a real on-disk PNG
+    // than an asar-backed in-memory image, so persist the icon and point at it.
+    let iconArg = img;
+    try {
+      const real = path.join(app.getPath('userData'), 'tray-icon.png');
+      fs.writeFileSync(real, img.toPNG());
+      iconArg = real;
+    } catch (e) { log('tray icon write failed, using in-memory:', e && e.message); }
+    tray = new Tray(iconArg);
+    tray.setToolTip('Salvium Vault');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open Salvium Vault', click: () => showMainWindow() },
+      { type: 'separator' },
+      { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
+    ]));
+    tray.on('click', () => showMainWindow());
+    tray.on('double-click', () => showMainWindow());
+    return true;
+  } catch (e) {
+    log('tray create failed:', e && e.message);
+    tray = null;
+    return false;
+  }
+}
+
+// Window-close handler: on the user's choice, hide to the tray (keep the
+// sidecar running + synced) instead of quitting. The choice is remembered.
+function handleWindowClose(e) {
+  if (isQuitting) return; // a real quit is in progress — allow it
+  const prefs = readPrefs();
+  // Hide to tray only if the tray was actually created; otherwise quit (never
+  // leave a running-but-invisible app with no way to reopen it).
+  const minimizeToTray = () => { if (ensureTray()) { mainWindow.hide(); return true; } return false; };
+  if (prefs.minimizeToTray === true) {
+    e.preventDefault();
+    if (!minimizeToTray()) { isQuitting = true; app.quit(); }
+    return;
+  }
+  if (prefs.minimizeToTray === false) return; // user chose to quit on close
+  // First close: ask once and remember.
+  e.preventDefault();
+  const res = dialog.showMessageBoxSync(mainWindow, {
+    type: 'question',
+    buttons: ['Minimize to tray', 'Quit'],
+    defaultId: 0, cancelId: 1,
+    title: 'Keep Salvium Vault running?',
+    message: 'Keep Salvium Vault running in the tray?',
+    detail: 'It stays synced in the background so it opens instantly and stays up to date. You can quit anytime from the tray icon.',
+    checkboxLabel: 'Remember my choice',
+    checkboxChecked: true,
+  });
+  const remember = res.checkboxChecked;
+  if (res.response === 0) {
+    if (remember) writePrefs(Object.assign({}, prefs, { minimizeToTray: true }));
+    if (!minimizeToTray()) { isQuitting = true; app.quit(); }
+  } else {
+    if (remember) writePrefs(Object.assign({}, prefs, { minimizeToTray: false }));
+    isQuitting = true;
+    app.quit();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Find a free localhost port.
@@ -83,6 +153,35 @@ function getFreePort() {
       srv.close(() => resolve(port));
     });
   });
+}
+
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.once('error', () => resolve(false));
+    srv.once('listening', () => srv.close(() => resolve(true)));
+    srv.listen(port, '127.0.0.1');
+  });
+}
+
+// CRITICAL: the SPA's localStorage/IndexedDB (wallet keys, settings, setup flag)
+// are keyed by ORIGIN = 127.0.0.1:<port>. A random port each launch would change
+// the origin and orphan all wallet storage (the app would look brand new every
+// time). So pin a stable port: reuse the persisted one when it's free, otherwise
+// pick a new free port and persist it. The single-instance lock prevents the app
+// from colliding with its own running copy.
+async function resolveStablePort() {
+  const prefs = readPrefs();
+  const saved = Number(prefs.sidecarPort) || 0;
+  if (saved >= 1024 && saved <= 65535 && await isPortFree(saved)) {
+    log('Reusing persisted sidecar port', saved);
+    return saved;
+  }
+  const port = await getFreePort();
+  writePrefs(Object.assign({}, prefs, { sidecarPort: port }));
+  log('Persisted new sidecar port', saved ? '(previous ' + saved + ' was taken)' : '', port);
+  return port;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,12 +201,13 @@ function validateBundleFile(p) {
 }
 
 // ---------------------------------------------------------------------------
-// REAL CDN download path for Fast Sync (stub: wired but not required to
-// succeed in the POC; the local copy below is the tested fallback).
+// CDN download path for Fast Sync. Streams to a .part file then renames on
+// success. Fails soft (see fastSyncBootstrap) — scan builds incrementally if
+// the CDN is unreachable.
 // ---------------------------------------------------------------------------
 function downloadBundleFromCdn(url, destPath) {
   return new Promise((resolve, reject) => {
-    log('CDN download (stub) attempt:', url);
+    log('CDN download attempt:', url);
     const client = url.startsWith('https') ? https : http;
     const tmp = destPath + '.part';
     const file = fs.createWriteStream(tmp);
@@ -165,6 +265,10 @@ function startSidecar(port, contentDir) {
     ENABLE_CSP_CACHE: '1',
     ENABLE_BLOCK_CACHE: '1',
     SALVIUM_CSP_BUNDLE_AUTOBUILD: '0', // Fast Sync: never build from scratch
+    // The sidecar runs locally on the user's machine, so a LAN/localhost
+    // salviumd is a legitimate (and most-private) node choice — allow it. This
+    // env is NEVER set on the hosted server, where the SSRF block must stay.
+    SALVIUM_ALLOW_PRIVATE_NODES: '1',
     NODE_ENV: 'production',
     // Resolve sidecar deps (axios/cors/express) from the native shell's bundled
     // node_modules, so OTA content bundles don't need to ship them.
@@ -214,8 +318,8 @@ function waitForHealth(port, timeoutMs) {
 
 async function boot() {
   const bootStart = Date.now();
-  const port = await getFreePort();
-  log('Free port:', port);
+  const port = await resolveStablePort();
+  log('Sidecar port:', port);
   log('Data dir:', DATA_DIR);
   log('RPC URL:', RPC_URL);
 
@@ -232,27 +336,127 @@ async function boot() {
     width: 1280,
     height: 860,
     title: 'Salvium Vault',
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    // Keep the wallet scan running at full speed when minimized to the tray —
+    // Chromium otherwise throttles hidden-window timers to a crawl.
+    // preload exposes window.__SALVIUM_DESKTOP__ so the SPA reliably detects the
+    // desktop app (Electron UA sniffing was unreliable, leaving web-only UI shown).
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
   });
+  // This Electron build ships a plain Chrome user-agent with NO "Electron/"
+  // token, so the SPA's isDesktopApp() UA check failed and desktop-only UI
+  // (hidden Explorer/Vault/Pool links, etc.) fell back to web behavior. Force
+  // an "Electron/<ver>" token into navigator.userAgent before the page loads.
+  try {
+    const ua = mainWindow.webContents.getUserAgent();
+    if (!/\bElectron\//i.test(ua)) {
+      mainWindow.webContents.setUserAgent(ua + ' Electron/' + process.versions.electron);
+      log('patched user-agent to include Electron token');
+    }
+  } catch (e) { log('user-agent patch failed:', e && e.message); }
   await mainWindow.loadURL('http://127.0.0.1:' + port + '/');
   log('SPA loaded. Total boot to window:', Date.now() - bootStart, 'ms');
-  // OTA content update: check in the background; verified updates apply on next launch.
-  checkForContentUpdate(REPO_ROOT)
-    .then((r) => { if (r && r.updated) promptContentUpdate(r.version); })
+  mainWindow.on('close', handleWindowClose);
+
+  // OTA content update: detect at launch and then hourly, letting the USER
+  // decide whether to download each one. Nothing downloads until they opt in,
+  // and we never re-prompt the same version (skip is persisted in content-update).
+  const runUpdateCheck = () => checkForContentUpdate(REPO_ROOT)
+    .then((r) => {
+      if (r && r.updateAvailable && !r.skipped && r.version !== lastPromptedVersion) {
+        lastPromptedVersion = r.version;
+        promptUpdateDecision(r.manifest, r.version);
+      }
+    })
     .catch((e) => log('content update check failed:', e && e.message));
+  runUpdateCheck();
+  setInterval(runUpdateCheck, 60 * 60 * 1000); // hourly
 }
 
-function promptContentUpdate(version) {
+// Step 1: an update exists — ask the user what to do (no download yet).
+async function promptUpdateDecision(manifest, version) {
+  const win = BrowserWindow.getAllWindows()[0] || null;
+  const opts = {
+    type: 'info',
+    buttons: ['Update now', 'Not now', 'Skip this version'],
+    defaultId: 0, cancelId: 1,
+    title: 'Update available',
+    message: 'Salvium Vault ' + version + ' is available.',
+    detail: 'A verified update is ready. Choose "Update now" to download and install it, '
+      + '"Not now" to be reminded next launch, or "Skip this version" to ignore it.',
+  };
+  try {
+    const { response } = await (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts));
+    if (response === 0) {
+      log('user chose to update to v' + version + '; downloading...');
+      const r = await applyContentUpdate(manifest);
+      if (r && r.updated) promptRestart(r.version);
+    } else if (response === 2) {
+      setSkippedVersion(version);
+      log('user skipped v' + version + '; will not prompt again for it');
+    } else {
+      log('user deferred v' + version + '; will prompt again next launch');
+    }
+  } catch (e) {
+    log('update decision/download error:', e && e.message);
+    const w = BrowserWindow.getAllWindows()[0] || null;
+    const eo = { type: 'error', buttons: ['OK'], title: 'Update failed',
+      message: 'Could not download the update.',
+      detail: 'You can try again next time you open the app. (' + (e && e.message) + ')' };
+    (w ? dialog.showMessageBox(w, eo) : dialog.showMessageBox(eo)).catch(() => {});
+  }
+}
+
+// Step 2: the update is downloaded + verified — offer to restart to apply it.
+// Relaunch the app, then exit so the new instance takes over.
+// In a packaged AppImage, process.execPath is the temporary /tmp/.mount_* path
+// that gets unmounted on exit, so the default app.relaunch() launches nothing
+// (the app closes and never reopens — observed). Relaunch via the real AppImage
+// path in $APPIMAGE instead. macOS/Windows/dev relaunch normally.
+function relaunchApp() {
+  const appImagePath = process.env.APPIMAGE;
+  try {
+    if (appImagePath) {
+      // Spawn a FRESH AppImage instance. Two problems make a naive relaunch fail
+      // to FUSE-mount ("Cannot mount AppImage"): (1) the child inherits the
+      // AppImage runtime/AppRun env (APPDIR, and esp. LD_LIBRARY_PATH/PATH that
+      // point at THIS instance's now-unmounted squashfs, breaking fusermount),
+      // and (2) FUSE remounts are flaky right after the parent unmounts. So we
+      // clear the injected vars AND set APPIMAGE_EXTRACT_AND_RUN=1 to skip FUSE
+      // entirely on relaunch — guaranteed to start regardless of FUSE state.
+      const { spawn } = require('child_process');
+      const env = Object.assign({}, process.env);
+      for (const k of ['APPDIR', 'APPIMAGE', 'ARGV0', 'OWD', 'LD_LIBRARY_PATH',
+                       'PYTHONPATH', 'PYTHONHOME', 'PERLLIB', 'GSETTINGS_SCHEMA_DIR',
+                       'GST_PLUGIN_SYSTEM_PATH', 'GST_PLUGIN_PATH', 'QT_PLUGIN_PATH']) delete env[k];
+      env.APPIMAGE_EXTRACT_AND_RUN = '1';
+      log('relaunching AppImage (extract-and-run):', appImagePath);
+      spawn(appImagePath, [], { detached: true, stdio: 'ignore', env }).unref();
+      app.exit(0);
+      return;
+    }
+  } catch (e) {
+    log('AppImage relaunch failed, falling back to app.relaunch:', e && e.message);
+  }
+  try { app.relaunch(); } catch (e) { log('relaunch error:', e && e.message); }
+  app.exit(0);
+}
+
+function promptRestart(version) {
   const win = BrowserWindow.getAllWindows()[0] || null;
   const opts = {
     type: 'info', buttons: ['Restart now', 'Later'], defaultId: 0, cancelId: 1,
     title: 'Update ready',
     message: 'Salvium Vault ' + version + ' is ready.',
-    detail: 'A verified update was downloaded. Restart to apply it now, or it will apply automatically next time you open the app.',
+    detail: 'The verified update was downloaded. Restart to apply it now, or it will apply automatically next time you open the app.',
   };
   (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts))
-    .then(({ response }) => { if (response === 0) { app.relaunch(); app.exit(0); } })
-    .catch((e) => log('update prompt error:', e && e.message));
+    .then(({ response }) => { if (response === 0) { relaunchApp(); } })
+    .catch((e) => log('restart prompt error:', e && e.message));
 }
 
 function killSidecar() {
@@ -262,12 +466,22 @@ function killSidecar() {
   }
 }
 
-app.whenReady().then(boot).catch((err) => {
-  console.error('[desktop] boot failed:', err);
-  killSidecar();
-  app.exit(1);
-});
+// Single-instance lock: a second launch focuses the running window instead of
+// starting a second sidecar (which would grab a different port and split storage).
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
+} else {
+  app.on('second-instance', () => showMainWindow());
+  app.whenReady().then(boot).catch((err) => {
+    console.error('[desktop] boot failed:', err);
+    killSidecar();
+    app.exit(1);
+  });
+}
 
-app.on('window-all-closed', () => { killSidecar(); if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', killSidecar);
+// If the window is hidden to the tray it is not "closed", so window-all-closed
+// only fires on a real quit. Hidden-to-tray keeps the app (and sidecar) alive.
+app.on('window-all-closed', () => { if (!tray) { killSidecar(); if (process.platform !== 'darwin') app.quit(); } });
+app.on('activate', () => { showMainWindow(); });
+app.on('before-quit', () => { isQuitting = true; killSidecar(); });
 process.on('exit', killSidecar);

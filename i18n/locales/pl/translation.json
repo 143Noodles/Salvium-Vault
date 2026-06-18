@@ -636,7 +636,22 @@
         }
       },
       "finish": "Zakończ konfigurację",
-      "stepProgress": "Krok {{current}} z {{total}}"
+      "stepProgress": "Krok {{current}} z {{total}}",
+      "preparing": {
+        "title": "Przygotowywanie portfela",
+        "descriptionFast": "Pobieranie gotowych indeksów skanowania z sieci CDN. Operacja ta jest wykonywana tylko raz — Twój portfel będzie w pełni gotowy do skanowania zaraz po jej zakończeniu.",
+        "descriptionIndependent": "Budowanie indeksów skanowania lokalnie na podstawie łańcucha bloków. Przy pierwszym uruchomieniu może to chwilę potrwać, ale nie są pobierane żadne gotowe dane.",
+        "ready": "Gotowe",
+        "inProgress": "Przygotowywanie…",
+        "index": {
+          "receives": "Indeks odbioru",
+          "spends": "Indeks wydatków",
+          "stakes": "Indeks stakingu"
+        },
+        "retrying": "Problem z połączeniem — ponawianie…",
+        "gateNote": "Czekamy, aż każdy indeks osiągnie bieżący blok, aby Twoje pierwsze skanowanie nie pominęło ostatnich transakcji.",
+        "continueAnyway": "Kontynuuj mimo to"
+      }
     }
   }
 }

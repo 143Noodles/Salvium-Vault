@@ -90,9 +90,22 @@ function verifySignature(version, sha512hex, signatureB64) {
   } catch (e) { log('verify error:', e && e.message); return false; }
 }
 
-// --- the update check -------------------------------------------------------
-// Downloads, VERIFIES (signature + sha512), and unpacks a newer content bundle
-// to userData/content/<version>/. Applied on next launch (resolveActiveContentDir).
+// --- user "skip this version" preference ------------------------------------
+// Persisted so a user who skips a version is not re-prompted for it every launch.
+function skipFile() { return path.join(contentRoot(), 'skipped-version'); }
+function getSkippedVersion() {
+  try { return fs.readFileSync(skipFile(), 'utf8').trim() || null; } catch (_) { return null; }
+}
+function setSkippedVersion(version) {
+  try { fs.mkdirSync(contentRoot(), { recursive: true }); fs.writeFileSync(skipFile(), String(version)); }
+  catch (e) { log('could not persist skipped version:', e && e.message); }
+}
+
+// --- the update CHECK (detect only — NEVER downloads) -----------------------
+// Fetches + signature-verifies the manifest and compares versions. Returns
+// { updateAvailable, version, manifest } or { upToDate }. Downloading is a
+// separate, explicitly user-confirmed step (applyContentUpdate) so a launch
+// never pulls a bundle without the user opting in.
 async function checkForContentUpdate(repoRoot) {
   const active = resolveActiveContentDir(repoRoot).version;
   log('checking for content update (active v' + active + ') at', MANIFEST_URL);
@@ -102,6 +115,17 @@ async function checkForContentUpdate(repoRoot) {
 
   if (!verifySignature(version, sha512, signature)) throw new Error('SIGNATURE INVALID — refusing update');
   if (!verGt(version, active)) { log('already up to date (v' + active + ')'); return { upToDate: true, version: active }; }
+
+  log('update available: v' + version + ' (active v' + active + ')');
+  return { updateAvailable: true, version, active, manifest, skipped: getSkippedVersion() === version };
+}
+
+// --- APPLY (download + verify + unpack) — only after the user confirms ------
+// Downloads, VERIFIES (signature + sha512), and unpacks the bundle to
+// userData/content/<version>/. Applied on next launch (resolveActiveContentDir).
+async function applyContentUpdate(manifest) {
+  const { version, url, sha512, signature } = manifest;
+  if (!verifySignature(version, sha512, signature)) throw new Error('SIGNATURE INVALID — refusing update');
 
   log('downloading content v' + version + ' from', url);
   const archive = await fetchBuffer(url);
@@ -124,4 +148,10 @@ async function checkForContentUpdate(repoRoot) {
   return { updated: true, version };
 }
 
-module.exports = { resolveActiveContentDir, checkForContentUpdate };
+module.exports = {
+  resolveActiveContentDir,
+  checkForContentUpdate,
+  applyContentUpdate,
+  getSkippedVersion,
+  setSkippedVersion,
+};

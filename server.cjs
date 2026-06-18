@@ -5203,6 +5203,10 @@ function isTrustedDaemonOrigin(urlStr) {
     } catch (e) { return false; }
 }
 
+// Desktop sidecar only: the local server.cjs runs on the user's own machine and
+// can legitimately reach a LAN/localhost salviumd, so allow private node IPs.
+// NEVER set on the hosted server, where the SSRF private-IP block must stay.
+const ALLOW_PRIVATE_NODES = process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1';
 const customNodeCache = new Map(); // base-url -> { ok, height, nettype, error, exp, pinnedIp, pinnedFamily }
 const CUSTOM_NODE_TTL_MS = 2 * 60 * 1000;
 const CUSTOM_NODE_CACHE_MAX = 200;
@@ -5218,7 +5222,7 @@ async function doValidateCustomNode(base) {
         try { ips = (await dnsp.lookup(host, { all: true })).map(a => a.address); }
         catch (e) { return { ok: false, error: 'unreachable' }; }
     }
-    if (!ips.length || ips.some(ipIsPrivate)) return { ok: false, error: 'private_ip' };
+    if (!ips.length || (ips.some(ipIsPrivate) && !ALLOW_PRIVATE_NODES)) return { ok: false, error: 'private_ip' };
     const pinnedIp = ips[0];
     const pinnedFamily = netmod.isIP(pinnedIp) || 4;
     try {
@@ -5940,6 +5944,182 @@ app.get(['/api/debug/health', '/vault/api/debug/health'], noCacheHeaders, (req, 
         lastMaintenanceJob: serverRuntimeStats.lastMaintenanceJob,
         clientTelemetry: getClientTelemetryHealth()
     });
+});
+
+// ---------------------------------------------------------------------------
+// Desktop setup: scan-cache provisioning readiness.
+// Reports how far each scan cache has been built toward the chain tip so the
+// desktop first-run wizard can show a progress bar and GATE onboarding until
+// the wallet can scan completely (a scan run before the spent-index/receive
+// index reach the tip silently misses recent txs). Caches the (cheap) readdir
+// + chain-tip lookups so polling every ~1s stays light.
+// ---------------------------------------------------------------------------
+let prepareTipCache = { value: 0, at: 0 };
+async function getPrepareChainTip() {
+    const now = Date.now();
+    if (prepareTipCache.value > 0 && now - prepareTipCache.at < 5000) return prepareTipCache.value;
+    const h = await getCurrentChainHeightForCache();
+    if (h > 0) prepareTipCache = { value: h, at: now };
+    return prepareTipCache.value || h || 0;
+}
+let cspCoverageCache = { height: 0, at: 0 };
+async function getCspCoverageHeight() {
+    const now = Date.now();
+    if (now - cspCoverageCache.at < 3000) return cspCoverageCache.height;
+    let maxEnd = 0;
+    try {
+        const files = await fs.readdir(CSP_CACHE_DIR).catch(() => []);
+        for (const file of files) {
+            if (!file.endsWith('.csp')) continue;
+            const parsed = parseCspChunkFilename(file);
+            if (parsed && parsed.end > maxEnd) maxEnd = parsed.end;
+        }
+    } catch (_) { /* dir may not exist yet */ }
+    cspCoverageCache = { height: maxEnd, at: now };
+    return maxEnd;
+}
+app.get(['/api/prepare/status', '/vault/api/prepare/status'], noCacheHeaders, async (req, res) => {
+    try {
+        const tip = await getPrepareChainTip();
+        const safeTip = Math.max(1, tip);
+        // Receive index covers the chain through whichever is further: the loaded
+        // bundle's last height or the highest on-disk CSP chunk (the live tail).
+        const receivesHeight = Math.max(cspBundleStats.lastHeight || 0, await getCspCoverageHeight());
+        const components = [
+            { key: 'receives', label: 'Receive index', height: receivesHeight },
+            { key: 'spends',   label: 'Spend index',   height: keyImageCache.lastScannedHeight || 0 },
+            { key: 'stakes',   label: 'Stake index',   height: stakeCache.lastScannedHeight || 0 },
+        ];
+        // Within a few blocks of the tip counts as ready (CSP stable-depth lag).
+        const GRACE = (typeof CSP_BUNDLE_STABLE_DEPTH === 'number' ? CSP_BUNDLE_STABLE_DEPTH : 3) + 2;
+        let minPct = 100;
+        let allReady = tip > 0 && wasmModuleReady;
+        for (const c of components) {
+            c.percent = Math.max(0, Math.min(100, Math.round((c.height / safeTip) * 100)));
+            c.ready = tip > 0 && c.height >= (tip - GRACE);
+            if (!c.ready) allReady = false;
+            if (c.percent < minPct) minPct = c.percent;
+        }
+        // While Fast Sync is actively downloading the prebuilt caches, surface
+        // byte-level download progress so the bar moves during the (large)
+        // spend-index pull instead of sitting at 0% then snapping to 100%.
+        const dl = cachePrepareJob;
+        const downloading = dl && dl.running && dl.totalBytes > 0;
+        const dlPct = downloading
+            ? Math.max(1, Math.min(99, Math.round((dl.downloadedBytes / dl.totalBytes) * 100)))
+            : null;
+        res.json({
+            ready: allReady,
+            percent: downloading ? dlPct : ((tip > 0 && wasmModuleReady) ? minPct : 0),
+            phase: downloading ? 'downloading' : (allReady ? 'ready' : 'indexing'),
+            chainTip: tip,
+            wasmReady: wasmModuleReady,
+            cspCacheEnabled: CSP_CACHE_ENABLED,
+            components,
+        });
+    } catch (e) {
+        res.status(500).json({ ready: false, percent: 0, error: e.message });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Desktop Fast Sync: serve the prebuilt scan caches (PUBLIC chain-derived data:
+// spent key-image set, stake registry, block timestamps, token-mint heights) so
+// a desktop install can DOWNLOAD them from the CDN instead of rebuilding from
+// the node — the analogue of the CSP bundle for the spend/stake indexes.
+// ---------------------------------------------------------------------------
+function cacheExportTargets() {
+    return {
+        'key-image-cache.json': KEY_IMAGE_CACHE_FILE,
+        'stake-cache.json': STAKE_CACHE_FILE,
+        'block-timestamps.json': TIMESTAMP_CACHE_FILE,
+        'protocol-token-mint-blocks.json': PROTOCOL_TOKEN_MINT_INDEX_FILE,
+    };
+}
+app.get(['/api/cache-export/manifest.json', '/vault/api/cache-export/manifest.json'], noCacheHeaders, async (req, res) => {
+    try {
+        const targets = cacheExportTargets();
+        const files = [];
+        for (const [name, p] of Object.entries(targets)) {
+            try { const st = fsSync.statSync(p); files.push({ name, size: st.size, mtimeMs: Math.round(st.mtimeMs) }); }
+            catch (_) { /* not built on this instance */ }
+        }
+        res.json({
+            chainHeight: await getPrepareChainTip(),
+            spendIndexHeight: keyImageCache.lastScannedHeight || 0,
+            stakeIndexHeight: stakeCache.lastScannedHeight || 0,
+            files,
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get(['/api/cache-export/:file', '/vault/api/cache-export/:file'], (req, res) => {
+    const targets = cacheExportTargets();
+    const p = targets[req.params.file];
+    if (!p) return res.status(404).json({ error: 'unknown cache file' });
+    if (!fsSync.existsSync(p)) return res.status(404).json({ error: 'cache not available yet' });
+    res.sendFile(p);
+});
+
+// ---------------------------------------------------------------------------
+// Desktop Fast Sync provisioner: download the prebuilt caches above from the
+// CDN into this install's data dir, then reload them. Independent Build skips
+// this — the background maintenance loop builds the same caches from the node.
+// ---------------------------------------------------------------------------
+const CACHE_CDN_BASE = process.env.SALVIUM_CACHE_CDN_BASE || 'https://cdn.salvium.tools/api/cache-export';
+let cachePrepareJob = { mode: null, running: false, error: null, startedAt: 0, downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0 };
+async function fastSyncProvisionCaches() {
+    if (cachePrepareJob.running) return;
+    cachePrepareJob = { mode: 'fast', running: true, error: null, startedAt: Date.now(), downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0 };
+    try {
+        const manifest = (await axios.get(`${CACHE_CDN_BASE}/manifest.json`, { timeout: 30000 })).data;
+        const files = Array.isArray(manifest && manifest.files) ? manifest.files : [];
+        const targets = cacheExportTargets();
+        cachePrepareJob.total = files.length;
+        // Sum sizes up front so the wizard can show a real byte-level progress
+        // bar during the (large) spend-index download instead of jumping 0->100.
+        cachePrepareJob.totalBytes = files.reduce((s, f) => s + (Number(f.size) || 0), 0);
+        for (const f of files) {
+            const dest = targets[f.name];
+            if (!dest) continue;
+            await fs.mkdir(path.dirname(dest), { recursive: true });
+            const tmp = dest + '.part';
+            // Stream to disk while counting bytes for live progress.
+            const resp = await axios.get(`${CACHE_CDN_BASE}/${f.name}`, { responseType: 'stream', timeout: 180000 });
+            await new Promise((resolve, reject) => {
+                const ws = fsSync.createWriteStream(tmp);
+                resp.data.on('data', (chunk) => { cachePrepareJob.downloadedBytes += chunk.length; });
+                resp.data.on('error', reject);
+                ws.on('error', reject);
+                ws.on('finish', resolve);
+                resp.data.pipe(ws);
+            });
+            await fs.rename(tmp, dest);
+            cachePrepareJob.downloaded++;
+            console.log(`[Fast Sync] Downloaded ${f.name}`);
+        }
+        // Reload the freshly-downloaded caches so the spend/stake/timestamp
+        // indexes go live without a restart; the maintenance loop tails from here.
+        try { await loadKeyImageCache(); } catch (e) { console.warn('[Fast Sync] reload key-image:', e.message); }
+        try { await loadStakeCache(); } catch (e) { console.warn('[Fast Sync] reload stake:', e.message); }
+        try { await loadTimestampCache(); } catch (e) { console.warn('[Fast Sync] reload timestamps:', e.message); }
+        try { await loadProtocolTokenMintIndex(); } catch (e) { console.warn('[Fast Sync] reload token-mint:', e.message); }
+        console.log('[Fast Sync] Cache provisioning complete; reloaded indexes.');
+    } catch (e) {
+        cachePrepareJob.error = e.message;
+        console.warn('[Fast Sync] Cache provisioning failed (falling back to local build):', e.message);
+    } finally {
+        cachePrepareJob.running = false;
+    }
+}
+app.post(['/api/prepare/start', '/vault/api/prepare/start'], (req, res) => {
+    const mode = String((req.query && req.query.mode) || 'fast').toLowerCase();
+    // Fast Sync pulls prebuilt caches from the CDN (best-effort; the maintenance
+    // loop still tails the node afterwards). Independent triggers nothing — the
+    // loop already builds every cache locally.
+    if (mode !== 'independent' && CSP_CACHE_ENABLED && !cachePrepareJob.running) {
+        fastSyncProvisionCaches().catch(() => {});
+    }
+    res.json({ ok: true, mode, provisioning: cachePrepareJob.running });
 });
 app.get(['/api/debug/rate-limit', '/vault/api/debug/rate-limit'], noCacheHeaders, (req, res) => {
     // Admin-gated: returns the actual 429'd keys (client IPs) for diagnosing a
@@ -8904,6 +9084,31 @@ const distStaticOptions = {
         }
     }
 };
+// Desktop sidecar: inject window.__SALVIUM_DESKTOP__ into the served index.html
+// so the SPA's isDesktopApp() is reliable. This Electron build ships a renderer
+// UA with no "Electron" token, so UA sniffing fails and desktop-only UI (hidden
+// Explorer/Vault/Pool links, the setup wizard, etc.) wrongly fell back to web.
+// Keyed on SALVIUM_ALLOW_PRIVATE_NODES, which ONLY the Electron shell sets — the
+// hosted web server never does, so its HTML is untouched (fast sendFile path).
+const SALVIUM_DESKTOP_SIDECAR = process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1';
+let desktopIndexHtmlCache = null;
+function serveIndexHtml(req, res) {
+    res.setHeader('Cache-Control', 'no-cache');
+    if (!SALVIUM_DESKTOP_SIDECAR) {
+        return res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    }
+    try {
+        if (!desktopIndexHtmlCache) {
+            let html = fsSync.readFileSync(path.join(__dirname, 'dist', 'index.html'), 'utf8');
+            html = html.replace('<head>', '<head><script>window.__SALVIUM_DESKTOP__=true;</script>');
+            desktopIndexHtmlCache = html;
+        }
+        res.type('html').send(desktopIndexHtmlCache);
+    } catch (e) {
+        res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    }
+}
+app.get(['/', '/index.html', '/vault', '/vault/', '/vault/index.html'], serveIndexHtml);
 app.use(express.static(path.join(__dirname, 'dist'), distStaticOptions));
 app.use('/vault', express.static(path.join(__dirname, 'dist'), distStaticOptions));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
@@ -12585,7 +12790,7 @@ app.get('*', (req, res) => {
     if (req.path.includes('/wallet/') && (req.path.endsWith('.js') || req.path.endsWith('.wasm'))) {
         return res.status(404).json({ error: 'Wallet file not found' });
     }
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    serveIndexHtml(req, res);
 });
 
 if (true) {

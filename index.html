@@ -24,13 +24,6 @@
 
   <link href="./assets/css/modern.css" rel="stylesheet">
 
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-    rel="stylesheet">
-
   <!-- Tailwind CSS -->
 
   <style>
@@ -110,6 +103,17 @@
         var header = document.getElementById('staticHeader');
         if (header) header.style.display = 'none';
       }
+    })();
+
+    // Desktop app: hide the web-only shortcuts (Explorer / Vault / Pool); the
+    // sidecar sets window.__SALVIUM_DESKTOP__. Logo + price badge stay.
+    (function () {
+      if (window.__SALVIUM_DESKTOP__ !== true) return;
+      var sel = '.top-nav a[href*="explorer.salvium.tools"], .top-nav a[href*="vault.salvium.tools"], .top-nav a[href*="pool.salvium.tools"]';
+      document.querySelectorAll(sel).forEach(function (a) {
+        var li = a.closest('li');
+        if (li) li.style.display = 'none';
+      });
     })();
 
     (function() {

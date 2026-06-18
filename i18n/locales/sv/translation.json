@@ -636,7 +636,22 @@
         }
       },
       "finish": "Slutför konfigurationen",
-      "stepProgress": "Steg {{current}} av {{total}}"
+      "stepProgress": "Steg {{current}} av {{total}}",
+      "preparing": {
+        "title": "Förbereder din plånbok",
+        "descriptionFast": "Laddar ner de förbyggda skanningsindexen från CDN:en. Detta körs en gång — din plånbok är helt redo att skanna så snart det är klart.",
+        "descriptionIndependent": "Bygger skanningsindexen lokalt från blockkedjan. Detta kan ta en stund vid första körningen, men ingen förbyggd data hämtas.",
+        "ready": "Redo",
+        "inProgress": "Förbereder…",
+        "index": {
+          "receives": "Mottagningsindex",
+          "spends": "Utgiftsindex",
+          "stakes": "Stake-index"
+        },
+        "retrying": "Anslutningsproblem — försöker igen…",
+        "gateNote": "Vi väntar tills varje index når det aktuella blocket så att din första skanning inte kan missa senaste transaktioner.",
+        "continueAnyway": "Fortsätt ändå"
+      }
     }
   }
 }

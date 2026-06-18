@@ -1,8 +1,8 @@
 {
   "name": "salvium-vault-desktop",
   "productName": "Salvium Vault",
-  "version": "0.1.0-poc",
-  "description": "Salvium Vault desktop (Electron) proof-of-concept \u2014 Path C: localhost server.cjs sidecar + Fast Sync scan-index bootstrap.",
+  "version": "1.0.16",
+  "description": "Salvium Vault Desktop Wallet",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -11,7 +11,7 @@
     "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "^31.0.0",
+    "electron": "31.7.7",
     "electron-builder": "^24.13.3"
   },
   "build": {
@@ -21,7 +21,9 @@
       "main.js",
       "content-update.js",
       "updater.js",
-      "package.json"
+      "package.json",
+      "build/icon.png",
+      "preload.js"
     ],
     "extraResources": [
       {
@@ -87,7 +89,10 @@
         }
       ],
       "category": "Finance",
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "desktop": {
+        "Comment": "Salvium Vault Desktop Wallet"
+      }
     },
     "directories": {
       "output": "release"

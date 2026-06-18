@@ -614,29 +614,44 @@
     "wizard": {
       "welcome": {
         "title": "Welcome to your Salvium Vault",
-        "subtitle": "Let's set up how your wallet connects and syncs. Your keys are generated and stored only on this device.",
-        "privacyNote": "Your seed and keys never leave this device, and all scanning happens locally."
+        "subtitle": "Let’s set up how your wallet connects and syncs.",
+        "privacyNote": "Your keys never leave this device. Scanning is fully local."
       },
       "node": {
         "title": "Connect to a node",
-        "description": "Choose which Salvium node syncs your wallet. The official seed nodes are selected by default; advanced users can point to their own salviumd or any reachable node."
+        "description": "Pick which node syncs your wallet, or use your own local salviumd."
       },
       "sync": {
         "title": "Choose how to sync",
-        "description": "Both options keep your keys and scanning fully local. They differ only in how the initial scan index is obtained.",
+        "description": "Both scan locally. They differ only in how the initial index is built.",
         "recommended": "Recommended",
-        "bothLocalNote": "Either way, your keys never leave this device and scanning runs locally.",
+        "bothLocalNote": "Either way, your keys stay on this device.",
         "fast": {
           "title": "Fast Sync",
-          "description": "Downloads a prebuilt scan index from the CDN once, trusting that bundle for completeness, then works locally. Fastest first run."
+          "description": "Download a prebuilt scan index from the CDN, then sync locally. Fastest first run."
         },
         "independent": {
           "title": "Independent Build",
-          "description": "Builds the scan index locally from the blockchain with no prefetched data, so your wallet trusts no prebuilt bundle. Slower first run."
+          "description": "Build the scan index locally from the chain, with no prefetched data. Slower first run."
         }
       },
       "finish": "Finish setup",
-      "stepProgress": "Step {{current}} of {{total}}"
+      "stepProgress": "Step {{current}} of {{total}}",
+      "preparing": {
+        "title": "Preparing your wallet",
+        "descriptionFast": "Downloading the prebuilt scan indexes. This runs once and your wallet will be ready shortly.",
+        "descriptionIndependent": "Building the scan indexes locally from the chain. The first run can take a while.",
+        "ready": "Ready",
+        "inProgress": "Preparing…",
+        "index": {
+          "receives": "Receive index",
+          "spends": "Spend index",
+          "stakes": "Stake index"
+        },
+        "retrying": "Connection hiccup, retrying…",
+        "gateNote": "We wait until every index reaches the latest block so your first scan doesn’t miss anything.",
+        "continueAnyway": "Continue anyway"
+      }
     }
   }
 }

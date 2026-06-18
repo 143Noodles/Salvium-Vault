@@ -100,7 +100,8 @@ scripts/qa/android-webview-harness/build/
 
 # Desktop shell generated outputs
 desktop/node_modules/
-desktop/build/
+desktop/build/*
+!desktop/build/icon.png
 desktop/dist/
 desktop/release/
 desktop/content-dist/
