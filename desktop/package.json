@@ -1,7 +1,7 @@
 {
   "name": "salvium-vault-desktop",
   "productName": "Salvium Vault",
-  "version": "1.0.2",
+  "version": "1.0.5",
   "description": "Salvium Vault desktop (Electron) \u2014 Path C: localhost server.cjs sidecar + Fast Sync scan-index bootstrap.",
   "private": true,
   "main": "main.js",
