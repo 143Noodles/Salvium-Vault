@@ -2,7 +2,7 @@
   "name": "salvium-vault-desktop",
   "productName": "Salvium Vault",
   "version": "1.0.5",
-  "description": "Salvium Vault desktop (Electron) \u2014 Path C: localhost server.cjs sidecar + Fast Sync scan-index bootstrap.",
+  "description": "Salvium Vault Desktop Wallet",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -87,7 +87,10 @@
         }
       ],
       "category": "Finance",
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "desktop": {
+        "Comment": "Salvium Vault Desktop Wallet"
+      }
     },
     "directories": {
       "output": "release"
