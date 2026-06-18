@@ -6,7 +6,8 @@ name: Desktop build (cross-platform)
 on:
   workflow_dispatch:
   push:
-    branches: [ desktop-ci ]
+    branches: [ main, desktop-ci, desktop-finalize ]
+    tags: [ 'v*' ]
 
 jobs:
   build:
