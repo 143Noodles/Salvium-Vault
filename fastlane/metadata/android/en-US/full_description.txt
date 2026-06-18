@@ -1,0 +1,5 @@
+Salvium Vault is a non-custodial wallet for the Salvium network.
+
+Create or restore a wallet, send and receive SAL, view transaction history, and manage supported Salvium protocol assets. Wallet keys and seed phrases stay on your device.
+
+The Android app uses a native Capacitor shell for the official Vault web app at vault.salvium.tools.

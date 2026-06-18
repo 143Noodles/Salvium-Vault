@@ -1,0 +1,92 @@
+AntiFeatures:
+  - TetheredNet
+  - Tracking
+Categories:
+  - Security
+License: MIT
+AuthorName: Salvium
+WebSite: https://vault.salvium.tools
+SourceCode: https://github.com/143Noodles/Salvium-Vault-Web-Wallet
+IssueTracker: https://github.com/143Noodles/Salvium-Vault-Web-Wallet/issues
+
+AutoName: Salvium Vault
+Summary: Non-custodial wallet for Salvium
+Description: |-
+  Salvium Vault is a non-custodial wallet for creating, restoring, and using
+  Salvium wallets. Wallet keys and seed phrases stay on the user's device.
+
+  The Android app is a native Capacitor shell for the official live Vault web
+  app at vault.salvium.tools. This is marked with TetheredNet because replacing
+  that service requires app or service changes. It is marked with Tracking because
+  sanitized diagnostic/client-event telemetry is sent to the official service by
+  default. Production web deployments should come from public, reviewed source
+  and meaningful Git tags.
+
+RepoType: git
+Repo: https://github.com/143Noodles/Salvium-Vault-Web-Wallet.git
+
+Builds:
+  - versionName: 1.0.1
+    versionCode: 2
+    commit: v1.0.1
+    subdir: android
+    sudo:
+      - apt-get update
+      - apt-get install -y npm
+    init: cd .. && npm ci --ignore-scripts
+    rm:
+      - wallet/SalviumWallet.wasm
+      - wallet-legacy/SalviumWallet.wasm
+      - node_modules/@img
+      - node_modules/@esbuild/linux-x64/bin/esbuild
+      - node_modules/@capacitor/cli/assets
+    prebuild:
+      - |-
+        mkdir -p app/src/main/assets/public capacitor-cordova-android-plugins/src/main
+        printf '\norg.gradle.vfs.watch=false\norg.gradle.daemon=false\n' >> gradle.properties
+        cat > app/src/main/assets/capacitor.config.json <<'JSON'
+        {"appId":"tools.salvium","appName":"Salvium Vault","webDir":"dist","bundledWebRuntime":false,"server":{"url":"https://vault.salvium.tools","androidScheme":"https"},"plugins":{"SystemBars":{"style":"DARK","insetsHandling":"css"}}}
+        JSON
+        cat > app/src/main/assets/capacitor.plugins.json <<'JSON'
+        [{"pkg":"@aparajita/capacitor-biometric-auth","classpath":"com.aparajita.capacitor.biometricauth.BiometricAuthNative"},{"pkg":"@aparajita/capacitor-secure-storage","classpath":"com.aparajita.capacitor.securestorage.SecureStorage"},{"pkg":"@capacitor/status-bar","classpath":"com.capacitorjs.plugins.statusbar.StatusBarPlugin"}]
+        JSON
+        cat > app/src/main/assets/public/index.html <<'HTML'
+        <!doctype html><html><head><meta charset="utf-8"><title>Salvium Vault</title></head><body></body></html>
+        HTML
+        cat > capacitor-cordova-android-plugins/cordova.variables.gradle <<'GRADLE'
+        ext {
+          cdvMinSdkVersion = project.hasProperty('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
+          cdvPluginPostBuildExtras = []
+          cordovaConfig = [:]
+        }
+        GRADLE
+        cat > capacitor-cordova-android-plugins/build.gradle <<'GRADLE'
+        apply plugin: 'com.android.library'
+        android {
+          namespace = 'capacitor.cordova.android.plugins'
+          compileSdk = rootProject.ext.compileSdkVersion
+          defaultConfig {
+            minSdkVersion rootProject.ext.minSdkVersion
+            targetSdkVersion rootProject.ext.targetSdkVersion
+            versionCode 1
+            versionName '1.0'
+          }
+        }
+        repositories { google(); mavenCentral() }
+        dependencies { implementation 'org.apache.cordova:framework:' + rootProject.ext.cordovaAndroidVersion }
+        apply from: 'cordova.variables.gradle'
+        for (def func : cdvPluginPostBuildExtras) { func() }
+        GRADLE
+        cat > capacitor-cordova-android-plugins/src/main/AndroidManifest.xml <<'XML'
+        <?xml version="1.0" encoding="utf-8"?>
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android"><application /></manifest>
+        XML
+    gradle:
+      - yes
+    gradleprops:
+      - fdroidBuild=true
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags
+CurrentVersion: 1.0.1
+CurrentVersionCode: 2
