@@ -70,19 +70,37 @@ function showMainWindow() {
 }
 
 // Create the tray icon (once) so a hidden-to-tray window can be reopened.
+// Returns true only if a usable tray was created — callers must NOT hide the
+// window otherwise (it would strand a running-but-invisible app).
 function ensureTray() {
-  if (tray) return;
-  let img = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
-  if (img.isEmpty()) { tray = new Tray(nativeImage.createEmpty()); }
-  else { tray = new Tray(img.resize({ width: 18, height: 18 })); }
-  tray.setToolTip('Salvium Vault');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open Salvium Vault', click: () => showMainWindow() },
-    { type: 'separator' },
-    { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
-  ]));
-  tray.on('click', () => showMainWindow());
-  tray.on('double-click', () => showMainWindow());
+  if (tray) return true;
+  try {
+    let img = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
+    if (img.isEmpty()) { log('tray: brand icon failed to load — refusing to hide'); return false; }
+    img = img.resize({ width: 22, height: 22 });
+    // Linux/KDE StatusNotifier renders far more reliably from a real on-disk PNG
+    // than an asar-backed in-memory image, so persist the icon and point at it.
+    let iconArg = img;
+    try {
+      const real = path.join(app.getPath('userData'), 'tray-icon.png');
+      fs.writeFileSync(real, img.toPNG());
+      iconArg = real;
+    } catch (e) { log('tray icon write failed, using in-memory:', e && e.message); }
+    tray = new Tray(iconArg);
+    tray.setToolTip('Salvium Vault');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open Salvium Vault', click: () => showMainWindow() },
+      { type: 'separator' },
+      { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
+    ]));
+    tray.on('click', () => showMainWindow());
+    tray.on('double-click', () => showMainWindow());
+    return true;
+  } catch (e) {
+    log('tray create failed:', e && e.message);
+    tray = null;
+    return false;
+  }
 }
 
 // Window-close handler: on the user's choice, hide to the tray (keep the
@@ -90,7 +108,14 @@ function ensureTray() {
 function handleWindowClose(e) {
   if (isQuitting) return; // a real quit is in progress — allow it
   const prefs = readPrefs();
-  if (prefs.minimizeToTray === true) { e.preventDefault(); mainWindow.hide(); ensureTray(); return; }
+  // Hide to tray only if the tray was actually created; otherwise quit (never
+  // leave a running-but-invisible app with no way to reopen it).
+  const minimizeToTray = () => { if (ensureTray()) { mainWindow.hide(); return true; } return false; };
+  if (prefs.minimizeToTray === true) {
+    e.preventDefault();
+    if (!minimizeToTray()) { isQuitting = true; app.quit(); }
+    return;
+  }
   if (prefs.minimizeToTray === false) return; // user chose to quit on close
   // First close: ask once and remember.
   e.preventDefault();
@@ -107,8 +132,7 @@ function handleWindowClose(e) {
   const remember = res.checkboxChecked;
   if (res.response === 0) {
     if (remember) writePrefs(Object.assign({}, prefs, { minimizeToTray: true }));
-    mainWindow.hide();
-    ensureTray();
+    if (!minimizeToTray()) { isQuitting = true; app.quit(); }
   } else {
     if (remember) writePrefs(Object.assign({}, prefs, { minimizeToTray: false }));
     isQuitting = true;
