@@ -27,7 +27,7 @@ const REPO_ROOT = fs.existsSync(path.join(DEV_REPO_ROOT, 'server.cjs'))
   ? DEV_REPO_ROOT
   : PACKAGED_REPO_ROOT;
 const SERVER_ENTRY = path.join(REPO_ROOT, 'server.cjs');
-const { resolveActiveContentDir, checkForContentUpdate } = require('./content-update');
+const { resolveActiveContentDir, checkForContentUpdate, applyContentUpdate, setSkippedVersion } = require('./content-update');
 
 // ---------------------------------------------------------------------------
 // Default sidecar configuration. The first-run wizard (in the SPA) lets the
@@ -219,23 +219,59 @@ async function boot() {
   });
   await mainWindow.loadURL('http://127.0.0.1:' + port + '/');
   log('SPA loaded. Total boot to window:', Date.now() - bootStart, 'ms');
-  // OTA content update: check in the background; verified updates apply on next launch.
+  // OTA content update: detect in the background, then let the USER decide
+  // whether to download it. Nothing is downloaded until they opt in.
   checkForContentUpdate(REPO_ROOT)
-    .then((r) => { if (r && r.updated) promptContentUpdate(r.version); })
+    .then((r) => { if (r && r.updateAvailable && !r.skipped) promptUpdateDecision(r.manifest, r.version); })
     .catch((e) => log('content update check failed:', e && e.message));
 }
 
-function promptContentUpdate(version) {
+// Step 1: an update exists — ask the user what to do (no download yet).
+async function promptUpdateDecision(manifest, version) {
+  const win = BrowserWindow.getAllWindows()[0] || null;
+  const opts = {
+    type: 'info',
+    buttons: ['Update now', 'Not now', 'Skip this version'],
+    defaultId: 0, cancelId: 1,
+    title: 'Update available',
+    message: 'Salvium Vault ' + version + ' is available.',
+    detail: 'A verified update is ready. Choose "Update now" to download and install it, '
+      + '"Not now" to be reminded next launch, or "Skip this version" to ignore it.',
+  };
+  try {
+    const { response } = await (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts));
+    if (response === 0) {
+      log('user chose to update to v' + version + '; downloading...');
+      const r = await applyContentUpdate(manifest);
+      if (r && r.updated) promptRestart(r.version);
+    } else if (response === 2) {
+      setSkippedVersion(version);
+      log('user skipped v' + version + '; will not prompt again for it');
+    } else {
+      log('user deferred v' + version + '; will prompt again next launch');
+    }
+  } catch (e) {
+    log('update decision/download error:', e && e.message);
+    const w = BrowserWindow.getAllWindows()[0] || null;
+    const eo = { type: 'error', buttons: ['OK'], title: 'Update failed',
+      message: 'Could not download the update.',
+      detail: 'You can try again next time you open the app. (' + (e && e.message) + ')' };
+    (w ? dialog.showMessageBox(w, eo) : dialog.showMessageBox(eo)).catch(() => {});
+  }
+}
+
+// Step 2: the update is downloaded + verified — offer to restart to apply it.
+function promptRestart(version) {
   const win = BrowserWindow.getAllWindows()[0] || null;
   const opts = {
     type: 'info', buttons: ['Restart now', 'Later'], defaultId: 0, cancelId: 1,
     title: 'Update ready',
     message: 'Salvium Vault ' + version + ' is ready.',
-    detail: 'A verified update was downloaded. Restart to apply it now, or it will apply automatically next time you open the app.',
+    detail: 'The verified update was downloaded. Restart to apply it now, or it will apply automatically next time you open the app.',
   };
   (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts))
     .then(({ response }) => { if (response === 0) { app.relaunch(); app.exit(0); } })
-    .catch((e) => log('update prompt error:', e && e.message));
+    .catch((e) => log('restart prompt error:', e && e.message));
 }
 
 function killSidecar() {
