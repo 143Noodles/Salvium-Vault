@@ -131,6 +131,35 @@ function getFreePort() {
   });
 }
 
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.once('error', () => resolve(false));
+    srv.once('listening', () => srv.close(() => resolve(true)));
+    srv.listen(port, '127.0.0.1');
+  });
+}
+
+// CRITICAL: the SPA's localStorage/IndexedDB (wallet keys, settings, setup flag)
+// are keyed by ORIGIN = 127.0.0.1:<port>. A random port each launch would change
+// the origin and orphan all wallet storage (the app would look brand new every
+// time). So pin a stable port: reuse the persisted one when it's free, otherwise
+// pick a new free port and persist it. The single-instance lock prevents the app
+// from colliding with its own running copy.
+async function resolveStablePort() {
+  const prefs = readPrefs();
+  const saved = Number(prefs.sidecarPort) || 0;
+  if (saved >= 1024 && saved <= 65535 && await isPortFree(saved)) {
+    log('Reusing persisted sidecar port', saved);
+    return saved;
+  }
+  const port = await getFreePort();
+  writePrefs(Object.assign({}, prefs, { sidecarPort: port }));
+  log('Persisted new sidecar port', saved ? '(previous ' + saved + ' was taken)' : '', port);
+  return port;
+}
+
 // ---------------------------------------------------------------------------
 // Integrity check: the CSP bundle must start with the 'BPSC' magic and be a
 // sane size. Guards Fast Sync against a truncated/HTML/error-page download.
@@ -265,8 +294,8 @@ function waitForHealth(port, timeoutMs) {
 
 async function boot() {
   const bootStart = Date.now();
-  const port = await getFreePort();
-  log('Free port:', port);
+  const port = await resolveStablePort();
+  log('Sidecar port:', port);
   log('Data dir:', DATA_DIR);
   log('RPC URL:', RPC_URL);
 
@@ -393,11 +422,18 @@ function killSidecar() {
   }
 }
 
-app.whenReady().then(boot).catch((err) => {
-  console.error('[desktop] boot failed:', err);
-  killSidecar();
-  app.exit(1);
-});
+// Single-instance lock: a second launch focuses the running window instead of
+// starting a second sidecar (which would grab a different port and split storage).
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
+} else {
+  app.on('second-instance', () => showMainWindow());
+  app.whenReady().then(boot).catch((err) => {
+    console.error('[desktop] boot failed:', err);
+    killSidecar();
+    app.exit(1);
+  });
+}
 
 // If the window is hidden to the tray it is not "closed", so window-all-closed
 // only fires on a real quit. Hidden-to-tray keeps the app (and sidecar) alive.
