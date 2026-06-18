@@ -2542,6 +2542,11 @@ class CSPScanService {
     const allProcessedChunks: number[] = [];
     let phase2bReturnAddressSourceChunks: number[] = [];
     let phase2ReturnAddressesCsv = '';
+    // Carried phase-2 deferred-flush state, handed to protocol-token recovery so the two
+    // back-to-back ~55s flushes coalesce into one. Hoisted because the rescan runs inside
+    // the matched-chunks branch but recovery (which absorbs the flush) runs unconditionally.
+    let carriedPhase2Dirty = false;
+    let carriedPhase2Fields: string[] = [];
 
     if (matchedChunks.length > 0 && allMatches.length > 0) {
       const activeWallet = await this.getCurrentValidWallet(wallet);
@@ -2565,8 +2570,12 @@ class CSPScanService {
         startHeight,
         endHeight,
         isIncremental,
-        this.currentRecoveryAction
+        this.currentRecoveryAction,
+        new Set(),   // skipChunks (unchanged default)
+        true         // deferFinalFlush — coalesce phase-2 flush into protocol recovery
       );
+      carriedPhase2Dirty = rescanResult.derivedDirty;
+      carriedPhase2Fields = rescanResult.derivedFields;
       outputsFound = rescanResult.outputsFound;
       if (rescanResult.minConfirmedHeight > 0) {
         minConfirmedHeightForSpent = rescanResult.minConfirmedHeight;
@@ -2605,8 +2614,15 @@ class CSPScanService {
       wallet,
       startHeight,
       endHeight,
-      emitScanTelemetry
+      emitScanTelemetry,
+      carriedPhase2Dirty,
+      carriedPhase2Fields
     );
+    // Backstop: recovery absorbs the carried phase-2 flush on every internal path; if it
+    // somehow did not, flush here so deferred phase-2 derived state is never left dirty.
+    if (carriedPhase2Dirty && !protocolTokenRecovery.flushedDeferred) {
+      await flushDerivedStateOrThrow(wallet, 'phase 2 sparse ingest (coalesce backstop)', carriedPhase2Fields);
+    }
     if (protocolTokenRecovery.outputsFound > 0) {
       outputsFound += protocolTokenRecovery.outputsFound;
       phase3Ran = true;
@@ -3929,15 +3945,32 @@ class CSPScanService {
       context?: Record<string, string | number | boolean | null | undefined>,
       level?: 'info' | 'warn' | 'error',
       message?: string
-    ) => void
-  ): Promise<{ outputsFound: number; protocolTokenTxCount: number; rangeCapped: boolean }> {
+    ) => void,
+    // Carried-in phase-2 deferral: when phase2Dirty is true the phase-2 flush was
+    // skipped upstream and MUST be folded into this function's single coalesced flush —
+    // on EVERY path (success, early-return, error). phase2Fields is its field set.
+    phase2Dirty: boolean = false,
+    phase2Fields: string[] = []
+  ): Promise<{ outputsFound: number; protocolTokenTxCount: number; rangeCapped: boolean; flushedDeferred: boolean }> {
+    // Guarantees a carried phase-2 dirty state flushes exactly once. Used by every
+    // early-return / error path so deferred phase-2 derived state is never dropped.
+    const flushCarriedPhase2IfNeeded = async (extraFields: string[] = []): Promise<boolean> => {
+      // Guard wallet too: on the wallet_not_ready path wallet may be null after
+      // getCurrentValidWallet; flushing null would throw OUTSIDE the inner catch and
+      // escape the parent backstop, leaving phase-2 derived state un-flushed.
+      if (!phase2Dirty || !wallet) return false;
+      const fields = [...new Set([...phase2Fields, ...extraFields])];
+      await flushDerivedStateOrThrow(wallet, 'coalesced phase 2 + protocol token recovery', fields);
+      return true;
+    };
     const scanRangeBlocks = Math.max(0, endHeight - startHeight + 1);
     if (scanRangeBlocks <= 0) {
       emitScanTelemetry('scan.protocol_token_recovery_skipped', {
         reason: 'empty_range',
         protocolRecoveryRangeBlocks: scanRangeBlocks,
       }, 'info');
-      return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped: false };
+      const flushedDeferred = await flushCarriedPhase2IfNeeded();
+      return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped: false, flushedDeferred };
     }
 
     wallet = await this.getCurrentValidWallet(wallet);
@@ -3945,7 +3978,8 @@ class CSPScanService {
       emitScanTelemetry('scan.protocol_token_recovery_skipped', {
         reason: 'wallet_not_ready',
       }, 'warn');
-      return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped: false };
+      const flushedDeferred = await flushCarriedPhase2IfNeeded();
+      return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped: false, flushedDeferred };
     }
 
     const { walletService } = await import('./WalletService');
@@ -3958,7 +3992,8 @@ class CSPScanService {
         fromHeight: endHeight,
         protocolRecoveryRangeBlocks: 0,
       }, 'info');
-      return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped: false };
+      const flushedDeferred = await flushCarriedPhase2IfNeeded();
+      return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped: false, flushedDeferred };
     }
     const sweepStartHeight = Math.max(0, lastSweptHeight + 1);
     const sweepRangeBlocks = Math.max(0, endHeight - sweepStartHeight + 1);
@@ -4003,7 +4038,8 @@ class CSPScanService {
           protocolTokenRecoveryOutputs: 0,
           rangeCapped,
         });
-        return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped };
+        const flushedDeferred = await flushCarriedPhase2IfNeeded();
+        return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped, flushedDeferred };
       }
 
       const mintBlocks = Array.isArray(listPayload?.mint_blocks)
@@ -4139,12 +4175,23 @@ class CSPScanService {
 
       outputsFound += duplicateTransferRepairs;
 
-      if (deferredProtocolDerivedState) {
+      const protocolFields = outputsFound > 0
+        ? ['snapshot', 'syncStatus', 'transactions', 'flags']
+        : ['snapshot', 'syncStatus', 'flags'];
+      let flushedDeferred = false;
+      if (deferredProtocolDerivedState || phase2Dirty) {
+        // Single coalesced flush: union of protocol-recovery fields (if it dirtied
+        // state) and the carried phase-2 fields (if deferred upstream).
+        const coalescedFields = [...new Set([
+          ...(deferredProtocolDerivedState ? protocolFields : []),
+          ...(phase2Dirty ? phase2Fields : []),
+        ])];
         await flushDerivedStateOrThrow(
           wallet,
-          'protocol token recovery',
-          outputsFound > 0 ? ['snapshot', 'syncStatus', 'transactions', 'flags'] : ['snapshot', 'syncStatus', 'flags']
+          phase2Dirty ? 'coalesced phase 2 + protocol token recovery' : 'protocol token recovery',
+          coalescedFields
         );
+        flushedDeferred = phase2Dirty;
       } else {
         reportClientEvent('scan.flush_derived_skipped', {
           level: 'info',
@@ -4169,13 +4216,16 @@ class CSPScanService {
         persistenceSaved: shouldAdvanceSweepMarker,
         rangeCapped,
       }, outputsFound > 0 ? 'info' : 'warn');
-      return { outputsFound, protocolTokenTxCount: hashes.length, rangeCapped };
+      return { outputsFound, protocolTokenTxCount: hashes.length, rangeCapped, flushedDeferred };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       emitScanTelemetry('scan.protocol_token_recovery_failed', {
         reason: message || 'protocol_token_recovery_failed',
       }, 'warn', message);
-      return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped: false };
+      // Correctness floor: even if protocol recovery throws, a carried phase-2 dirty
+      // state must still flush once so the wallet is never left un-flushed.
+      const flushedDeferred = await flushCarriedPhase2IfNeeded();
+      return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped: false, flushedDeferred };
     }
   }
 
@@ -4192,15 +4242,22 @@ class CSPScanService {
     // skipped here: ingest_sparse_transactions dedups by txid, so re-fetching+re-ingesting them
     // produces 0 new outputs — pure wasted network+WASM work (the redundant "wave 2"). Safe
     // because their txs are already in the wallet.
-    skipChunks: Set<number> = new Set()
-  ): Promise<{ outputsFound: number; successfullyProcessedChunks: number[]; minConfirmedHeight: number; phase3Degraded: boolean; phase3Issues: string[]; returnAddressSourceChunks: number[]; returnAddressesCsv: string }> {
+    skipChunks: Set<number> = new Set(),
+    // When true, do NOT run the phase-2 derived-state flush here; instead report
+    // derivedDirty + the field set so the parent can coalesce it with the protocol-
+    // token-recovery flush into ONE ~55s flush_derived_state (saves a redundant ~55s).
+    // Safe: nothing between phase-2 ingest and the end of protocol recovery reads
+    // rebuilt snapshot/syncStatus/transactions state. Callers that read derived state
+    // right after targetedRescan (phase2b) leave this false so the inline flush runs.
+    deferFinalFlush: boolean = false
+  ): Promise<{ outputsFound: number; successfullyProcessedChunks: number[]; minConfirmedHeight: number; phase3Degraded: boolean; phase3Issues: string[]; returnAddressSourceChunks: number[]; returnAddressesCsv: string; derivedDirty: boolean; derivedFields: string[] }> {
     wallet = await this.getCurrentValidWallet(wallet);
     if (!wallet) {
-      return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0, phase3Degraded: false, phase3Issues: [], returnAddressSourceChunks: [], returnAddressesCsv: '' };
+      return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0, phase3Degraded: false, phase3Issues: [], returnAddressSourceChunks: [], returnAddressesCsv: '', derivedDirty: false, derivedFields: [] };
     }
 
     if (!this.shouldContinueScan(wallet)) {
-      return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0, phase3Degraded: false, phase3Issues: [], returnAddressSourceChunks: [], returnAddressesCsv: '' };
+      return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0, phase3Degraded: false, phase3Issues: [], returnAddressSourceChunks: [], returnAddressesCsv: '', derivedDirty: false, derivedFields: [] };
     }
 
     const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '';
@@ -4952,13 +5009,22 @@ class CSPScanService {
         : ' | no consumer errors recorded (chunk never reached ingest)';
       throw new Error(`Sparse ingest did not complete ${missingIngestedChunks.length} requested chunk(s): ${missingIngestedChunks.slice(0, 10).join(',')}${detail}`);
     }
-    if (deferredSparseIngestUsed) {
-      await flushDerivedStateOrThrow(wallet, 'phase 2 sparse ingest', ['snapshot', 'syncStatus', 'flags']);
-    } else {
+    const phase2DerivedFields = ['snapshot', 'syncStatus', 'flags'];
+    if (deferredSparseIngestUsed && !deferFinalFlush) {
+      await flushDerivedStateOrThrow(wallet, 'phase 2 sparse ingest', phase2DerivedFields);
+    } else if (!deferredSparseIngestUsed) {
       reportClientEvent('scan.flush_derived_skipped', {
         level: 'info',
         message: 'Deferred derived-state flush skipped',
         context: { reason: 'phase 2 sparse ingest' },
+      });
+    } else {
+      // Coalesced: the parent will run a single flush after protocol-token recovery
+      // that folds in this phase-2 dirty state. Avoids a redundant ~55s flush.
+      reportClientEvent('scan.flush_derived_deferred', {
+        level: 'info',
+        message: 'Phase-2 derived-state flush deferred to coalesced post-recovery flush',
+        context: { reason: 'phase 2 sparse ingest', fieldCount: phase2DerivedFields.length },
       });
     }
     const STAKE_RETURN_OFFSET = 21601;
@@ -5065,7 +5131,12 @@ class CSPScanService {
       phase3Degraded: phase3Issues.length > 0,
       phase3Issues,
       returnAddressSourceChunks: [...returnAddressSourceChunks].sort((a, b) => a - b),
-      returnAddressesCsv: latestReturnAddressesCsv
+      returnAddressesCsv: latestReturnAddressesCsv,
+      // Only true when the caller opted into deferral (deferFinalFlush) AND phase-2
+      // dirtied derived state; otherwise the inline flush already ran and the parent
+      // must NOT double-flush.
+      derivedDirty: deferredSparseIngestUsed && deferFinalFlush,
+      derivedFields: phase2DerivedFields
     };
   }
 
