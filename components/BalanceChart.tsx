@@ -308,7 +308,7 @@ const BalanceChart: React.FC = () => {
   );
 
   const chartMargin = useMemo(
-    () => ({ top: 10, right: isMobileOrTablet ? 0 : 5, left: isMobileOrTablet ? 2 : 0, bottom: isMobileOrTablet ? 0 : 20 }),
+    () => ({ top: 10, right: isMobileOrTablet ? 0 : 5, left: isMobileOrTablet ? 2 : 4, bottom: isMobileOrTablet ? 0 : 20 }),
     []
   );
 
@@ -384,7 +384,7 @@ const BalanceChart: React.FC = () => {
                   tickLine={false}
                   tick={{ fill: '#64748b', fontSize: 10, fontFamily: 'JetBrains Mono' }}
                   tickFormatter={formatYAxisShorthand}
-                  width={isMobileOrTablet ? 36 : 45}
+                  width={isMobileOrTablet ? 42 : 58}
                   tickMargin={isMobileOrTablet ? 2 : 8}
                   domain={[Math.min(...yTicks), Math.max(...yTicks)]}
                   ticks={yTicks}

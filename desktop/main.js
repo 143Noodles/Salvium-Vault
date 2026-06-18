@@ -347,6 +347,17 @@ async function boot() {
       preload: path.join(__dirname, 'preload.js'),
     },
   });
+  // This Electron build ships a plain Chrome user-agent with NO "Electron/"
+  // token, so the SPA's isDesktopApp() UA check failed and desktop-only UI
+  // (hidden Explorer/Vault/Pool links, etc.) fell back to web behavior. Force
+  // an "Electron/<ver>" token into navigator.userAgent before the page loads.
+  try {
+    const ua = mainWindow.webContents.getUserAgent();
+    if (!/\bElectron\//i.test(ua)) {
+      mainWindow.webContents.setUserAgent(ua + ' Electron/' + process.versions.electron);
+      log('patched user-agent to include Electron token');
+    }
+  } catch (e) { log('user-agent patch failed:', e && e.message); }
   await mainWindow.loadURL('http://127.0.0.1:' + port + '/');
   log('SPA loaded. Total boot to window:', Date.now() - bootStart, 'ms');
   mainWindow.on('close', handleWindowClose);
