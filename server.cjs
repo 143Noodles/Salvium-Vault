@@ -9084,6 +9084,31 @@ const distStaticOptions = {
         }
     }
 };
+// Desktop sidecar: inject window.__SALVIUM_DESKTOP__ into the served index.html
+// so the SPA's isDesktopApp() is reliable. This Electron build ships a renderer
+// UA with no "Electron" token, so UA sniffing fails and desktop-only UI (hidden
+// Explorer/Vault/Pool links, the setup wizard, etc.) wrongly fell back to web.
+// Keyed on SALVIUM_ALLOW_PRIVATE_NODES, which ONLY the Electron shell sets — the
+// hosted web server never does, so its HTML is untouched (fast sendFile path).
+const SALVIUM_DESKTOP_SIDECAR = process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1';
+let desktopIndexHtmlCache = null;
+function serveIndexHtml(req, res) {
+    res.setHeader('Cache-Control', 'no-cache');
+    if (!SALVIUM_DESKTOP_SIDECAR) {
+        return res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    }
+    try {
+        if (!desktopIndexHtmlCache) {
+            let html = fsSync.readFileSync(path.join(__dirname, 'dist', 'index.html'), 'utf8');
+            html = html.replace('<head>', '<head><script>window.__SALVIUM_DESKTOP__=true;</script>');
+            desktopIndexHtmlCache = html;
+        }
+        res.type('html').send(desktopIndexHtmlCache);
+    } catch (e) {
+        res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    }
+}
+app.get(['/', '/index.html', '/vault', '/vault/', '/vault/index.html'], serveIndexHtml);
 app.use(express.static(path.join(__dirname, 'dist'), distStaticOptions));
 app.use('/vault', express.static(path.join(__dirname, 'dist'), distStaticOptions));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
@@ -12765,7 +12790,7 @@ app.get('*', (req, res) => {
     if (req.path.includes('/wallet/') && (req.path.endsWith('.js') || req.path.endsWith('.wasm'))) {
         return res.status(404).json({ error: 'Wallet file not found' });
     }
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    serveIndexHtml(req, res);
 });
 
 if (true) {
