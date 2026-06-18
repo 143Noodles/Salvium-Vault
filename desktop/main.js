@@ -261,6 +261,25 @@ async function promptUpdateDecision(manifest, version) {
 }
 
 // Step 2: the update is downloaded + verified — offer to restart to apply it.
+// Relaunch the app, then exit so the new instance takes over.
+// In a packaged AppImage, process.execPath is the temporary /tmp/.mount_* path
+// that gets unmounted on exit, so the default app.relaunch() launches nothing
+// (the app closes and never reopens — observed). Relaunch via the real AppImage
+// path in $APPIMAGE instead. macOS/Windows/dev relaunch normally.
+function relaunchApp() {
+  try {
+    if (process.env.APPIMAGE) {
+      log('relaunching via AppImage:', process.env.APPIMAGE);
+      app.relaunch({ execPath: process.env.APPIMAGE, args: [] });
+    } else {
+      app.relaunch();
+    }
+  } catch (e) {
+    log('relaunch error:', e && e.message);
+  }
+  app.exit(0);
+}
+
 function promptRestart(version) {
   const win = BrowserWindow.getAllWindows()[0] || null;
   const opts = {
@@ -270,7 +289,7 @@ function promptRestart(version) {
     detail: 'The verified update was downloaded. Restart to apply it now, or it will apply automatically next time you open the app.',
   };
   (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts))
-    .then(({ response }) => { if (response === 0) { app.relaunch(); app.exit(0); } })
+    .then(({ response }) => { if (response === 0) { relaunchApp(); } })
     .catch((e) => log('restart prompt error:', e && e.message));
 }
 
