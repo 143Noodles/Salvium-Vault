@@ -348,15 +348,20 @@ function relaunchApp() {
   const appImagePath = process.env.APPIMAGE;
   try {
     if (appImagePath) {
-      // Spawn a FRESH AppImage instance with a clean env. The AppImage runtime
-      // exports APPDIR/APPIMAGE/ARGV0/OWD on mount; inheriting the stale values
-      // from this (now-exiting) instance makes the relaunched runtime fail to
-      // FUSE-mount ("Cannot mount AppImage"). Clearing them lets it mount fresh.
-      // Detached + unref so the child survives our exit.
+      // Spawn a FRESH AppImage instance. Two problems make a naive relaunch fail
+      // to FUSE-mount ("Cannot mount AppImage"): (1) the child inherits the
+      // AppImage runtime/AppRun env (APPDIR, and esp. LD_LIBRARY_PATH/PATH that
+      // point at THIS instance's now-unmounted squashfs, breaking fusermount),
+      // and (2) FUSE remounts are flaky right after the parent unmounts. So we
+      // clear the injected vars AND set APPIMAGE_EXTRACT_AND_RUN=1 to skip FUSE
+      // entirely on relaunch — guaranteed to start regardless of FUSE state.
       const { spawn } = require('child_process');
       const env = Object.assign({}, process.env);
-      for (const k of ['APPDIR', 'APPIMAGE', 'ARGV0', 'OWD']) delete env[k];
-      log('relaunching AppImage (clean env):', appImagePath);
+      for (const k of ['APPDIR', 'APPIMAGE', 'ARGV0', 'OWD', 'LD_LIBRARY_PATH',
+                       'PYTHONPATH', 'PYTHONHOME', 'PERLLIB', 'GSETTINGS_SCHEMA_DIR',
+                       'GST_PLUGIN_SYSTEM_PATH', 'GST_PLUGIN_PATH', 'QT_PLUGIN_PATH']) delete env[k];
+      env.APPIMAGE_EXTRACT_AND_RUN = '1';
+      log('relaunching AppImage (extract-and-run):', appImagePath);
       spawn(appImagePath, [], { detached: true, stdio: 'ignore', env }).unref();
       app.exit(0);
       return;
