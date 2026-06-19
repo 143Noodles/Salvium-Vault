@@ -614,33 +614,33 @@
     "wizard": {
       "welcome": {
         "title": "Bienvenido a tu Salvium Vault",
-        "subtitle": "Vamos a configurar cómo se conecta y sincroniza tu billetera. Tus claves se generan y se almacenan solo en este dispositivo.",
-        "privacyNote": "Tu seed y tus claves nunca salen de este dispositivo, y todo el escaneo ocurre localmente."
+        "subtitle": "Vamos a configurar cómo se conecta y sincroniza tu monedero.",
+        "privacyNote": "Tus claves nunca salen de este dispositivo. El escaneo es totalmente local."
       },
       "node": {
         "title": "Conectar a un nodo",
-        "description": "Elige qué nodo de Salvium sincroniza tu billetera. Los nodos semilla oficiales están seleccionados de forma predeterminada; los usuarios avanzados pueden apuntar a su propio salviumd o a cualquier nodo accesible."
+        "description": "Elige qué nodo sincroniza tu monedero, o usa tu propio salviumd local."
       },
       "sync": {
         "title": "Elige cómo sincronizar",
-        "description": "Ambas opciones mantienen tus claves y el escaneo totalmente locales. Solo se diferencian en cómo se obtiene el índice de escaneo inicial.",
+        "description": "Ambos escanean localmente. Solo se diferencian en cómo se construye el índice inicial.",
         "recommended": "Recomendado",
-        "bothLocalNote": "En cualquier caso, tus claves nunca salen de este dispositivo y el escaneo se ejecuta localmente.",
+        "bothLocalNote": "En cualquier caso, tus claves permanecen en este dispositivo.",
         "fast": {
           "title": "Sincronización rápida",
-          "description": "Descarga una vez un índice de escaneo prediseñado desde el CDN, confiando en que ese paquete esté completo, y luego trabaja localmente. La primera ejecución más rápida."
+          "description": "Descarga un índice de escaneo prediseñado desde el CDN y luego sincroniza localmente. El primer arranque más rápido."
         },
         "independent": {
           "title": "Construcción independiente",
-          "description": "Construye el índice de escaneo localmente a partir de la blockchain sin datos precargados, de modo que tu billetera no confía en ningún paquete prediseñado. Primera ejecución más lenta."
+          "description": "Construye el índice de escaneo localmente a partir de la cadena, sin datos precargados. Primer arranque más lento."
         }
       },
       "finish": "Finalizar configuración",
       "stepProgress": "Paso {{current}} de {{total}}",
       "preparing": {
         "title": "Preparando tu monedero",
-        "descriptionFast": "Descargando los índices de escaneo prediseñados desde la CDN. Esto se ejecuta una sola vez: tu monedero estará completamente listo para escanear en cuanto termine.",
-        "descriptionIndependent": "Construyendo los índices de escaneo localmente a partir de la cadena de bloques. Esto puede tardar un poco en la primera ejecución, pero no se descarga ningún dato prediseñado.",
+        "descriptionFast": "Descargando los índices de escaneo prediseñados. Esto ocurre una sola vez y tu monedero estará listo en breve.",
+        "descriptionIndependent": "Construyendo los índices de escaneo localmente a partir de la cadena. El primer arranque puede tardar un poco.",
         "ready": "Listo",
         "inProgress": "Preparando…",
         "index": {
@@ -648,8 +648,8 @@
           "spends": "Índice de gasto",
           "stakes": "Índice de staking"
         },
-        "retrying": "Problema de conexión — reintentando…",
-        "gateNote": "Esperamos a que cada índice alcance el bloque actual para que tu primer escaneo no pueda perderse transacciones recientes.",
+        "retrying": "Problema de conexión, reintentando…",
+        "gateNote": "Esperamos a que cada índice alcance el último bloque para que tu primer escaneo no se pierda nada.",
         "continueAnyway": "Continuar de todos modos"
       }
     }
