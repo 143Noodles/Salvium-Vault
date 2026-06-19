@@ -104,5 +104,10 @@
   "dependencies": {
     "electron-updater": "^6.3.9",
     "tar": "^6.2.1"
+  },
+  "homepage": "https://salvium.io",
+  "author": {
+    "name": "Salvium",
+    "email": "143Noodles@users.noreply.github.com"
   }
 }
