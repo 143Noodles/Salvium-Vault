@@ -102,6 +102,9 @@ scripts/qa/android-webview-harness/build/
 desktop/node_modules/
 desktop/build/*
 !desktop/build/icon.png
+!desktop/build/icon.ico
+!desktop/build/installerHeader.bmp
+!desktop/build/installerSidebar.bmp
 desktop/dist/
 desktop/release/
 desktop/content-dist/
