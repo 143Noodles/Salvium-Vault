@@ -41,11 +41,28 @@ const RPC_URL = process.env.SALVIUM_RPC_URL || 'http://seed01.salvium.io:19081';
 const HEALTH_TIMEOUT_MS = 90_000;
 // Fast-Sync source: the CSP scan-index bundle CDN.
 const CDN_BUNDLE_URL = process.env.SALVIUM_CSP_CDN_URL || 'https://cdn.salvium.tools/api/csp-bundle';
+// Fast-Sync source for the prebuilt spend/stake/timestamp indexes (the analogue
+// of the CSP bundle). Without these the sidecar rebuilds the 300MB+ spend index
+// from the node on first run — the ~10min "stuck at 0% before scanning" delay.
+const CACHE_EXPORT_URL = process.env.SALVIUM_CACHE_EXPORT_URL ||
+  CDN_BUNDLE_URL.replace(/\/csp-bundle\/?$/, '/cache-export');
 
 const userDataDir = app.getPath('userData');
 const DATA_DIR = path.join(userDataDir, 'salvium-data');
 const CSP_DIR = path.join(DATA_DIR, SALVIUM_NETWORK, 'salvium-csp');
 const BUNDLE_FILE = path.join(CSP_DIR, 'csp-bundle-v8.bin');
+// Local paths the sidecar's server.cjs reads its prebuilt indexes from.
+// NOTE: salvium-blocks is NOT network-scoped (server.cjs CACHE_DIR =
+// DEFAULT_DATA_DIR/salvium-blocks); protocol-token-mint IS under <network>/.
+const NET_DIR = path.join(DATA_DIR, SALVIUM_NETWORK);
+const BLOCKS_CACHE_DIR = path.join(DATA_DIR, 'salvium-blocks');
+// manifest filename -> local destination dir (must match server.cjs paths)
+const CACHE_EXPORT_TARGETS = {
+  'key-image-cache.json': BLOCKS_CACHE_DIR,
+  'stake-cache.json': BLOCKS_CACHE_DIR,
+  'block-timestamps.json': BLOCKS_CACHE_DIR,
+  'protocol-token-mint-blocks.json': NET_DIR,
+};
 
 let sidecar = null;
 let mainWindow = null;
@@ -305,6 +322,60 @@ async function fastSyncBootstrap() {
   }
 }
 
+// Small JSON GET (for the cache-export manifest). Fails soft.
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const client = url.startsWith('https') ? https : http;
+    const req = client.get(url, { timeout: 30_000 }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; if (body.length > 8 * 1024 * 1024) req.destroy(new Error('manifest too large')); });
+      res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
+    });
+    req.on('timeout', () => req.destroy(new Error('manifest timeout')));
+    req.on('error', reject);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Fast Sync (indexes): download the prebuilt spend/stake/timestamp caches so the
+// sidecar does NOT rebuild the 300MB+ spend index from the node on first run.
+// Fails SOFT per-file: a missing cache just falls back to incremental build.
+// Skips files already present at the expected size (cached across launches).
+// ---------------------------------------------------------------------------
+async function fastSyncCacheBootstrap() {
+  fs.mkdirSync(BLOCKS_CACHE_DIR, { recursive: true });
+  let manifest;
+  try {
+    manifest = await fetchJson(CACHE_EXPORT_URL + '/manifest.json');
+  } catch (err) {
+    log('Fast Sync indexes: manifest unavailable (' + err.message + '); scan will build indexes incrementally.');
+    return { source: 'unavailable', error: err.message };
+  }
+  const files = Array.isArray(manifest && manifest.files) ? manifest.files : [];
+  const start = Date.now();
+  let downloaded = 0;
+  for (const f of files) {
+    const dir = f && CACHE_EXPORT_TARGETS[f.name];
+    if (!dir) continue; // only known index caches
+    const dest = path.join(dir, f.name);
+    try {
+      if (fs.existsSync(dest) && (!f.size || fs.statSync(dest).size === f.size)) {
+        log('Fast Sync indexes: already present', f.name);
+        continue;
+      }
+      await downloadBundleFromCdn(CACHE_EXPORT_URL + '/' + encodeURIComponent(f.name), dest);
+      downloaded++;
+      log('Fast Sync indexes: downloaded', f.name, '(' + (f.size || '?') + ' bytes)');
+    } catch (err) {
+      log('Fast Sync indexes: failed', f.name, '-', err.message, '(will build this index incrementally).');
+    }
+  }
+  log('Fast Sync indexes: ' + downloaded + ' file(s) fetched in', Date.now() - start, 'ms');
+  return { source: 'cdn', ms: Date.now() - start, downloaded };
+}
+
 // ---------------------------------------------------------------------------
 // Spawn server.cjs as a localhost sidecar.
 // ---------------------------------------------------------------------------
@@ -412,6 +483,8 @@ async function boot() {
 
   const bundle = await fastSyncBootstrap();
   log('Fast Sync result:', JSON.stringify(bundle));
+  const cacheBundle = await fastSyncCacheBootstrap();
+  log('Fast Sync indexes result:', JSON.stringify(cacheBundle));
 
   const active = resolveActiveContentDir(REPO_ROOT);
   log('Active content: v' + active.version + ' @ ' + active.dir);
