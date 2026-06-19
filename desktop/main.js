@@ -361,7 +361,7 @@ async function fastSyncCacheBootstrap() {
     if (!dir) continue; // only known index caches
     const dest = path.join(dir, f.name);
     try {
-      if (fs.existsSync(dest) && (!f.size || fs.statSync(dest).size === f.size)) {
+      if (fs.existsSync(dest) && (!f.size || fs.statSync(dest).size >= f.size)) {
         log('Fast Sync indexes: already present', f.name);
         continue;
       }
