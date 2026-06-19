@@ -314,6 +314,9 @@ function startSidecar(port, contentDir) {
     SALVIUM_DATA_DIR: DATA_DIR,
     SALVIUM_NETWORK: SALVIUM_NETWORK,
     ENABLE_CSP_CACHE: '1',
+    // The sidecar downloads the CSP receive bundle during restore (prepare),
+    // rather than the shell pulling it at boot — keeps boot cheap.
+    SALVIUM_CSP_CDN_URL: CDN_BUNDLE_URL,
     ENABLE_BLOCK_CACHE: '1',
     SALVIUM_CSP_BUNDLE_AUTOBUILD: '0', // Fast Sync: never build from scratch
     // The sidecar runs locally on the user's machine, so a LAN/localhost
@@ -407,9 +410,6 @@ async function boot() {
   log('Sidecar port:', port);
   log('Data dir:', DATA_DIR);
   log('RPC URL:', RPC_URL);
-
-  const bundle = await fastSyncBootstrap();
-  log('Fast Sync result:', JSON.stringify(bundle));
 
   const active = resolveActiveContentDir(REPO_ROOT);
   log('Active content: v' + active.version + ' @ ' + active.dir);

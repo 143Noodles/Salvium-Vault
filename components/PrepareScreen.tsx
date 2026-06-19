@@ -44,6 +44,10 @@ const PrepareScreen: React.FC<PrepareScreenProps> = ({ onReady }) => {
 
     if (!startedRef.current) {
       startedRef.current = true;
+      // Align the scanner with what we download: it honours salvium_scan_mode via
+      // shouldUseBundle(), so force 'fast' or a stale 'independent' would make it
+      // refuse the very bundle we just fetched.
+      try { localStorage.setItem('salvium_scan_mode', 'fast'); } catch { /* ignore */ }
       fetch('/api/prepare/start?mode=fast', { method: 'POST' }).catch(() => {});
     }
 

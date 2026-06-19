@@ -6095,6 +6095,14 @@ async function fastSyncProvisionCaches() {
         // Sum sizes up front so the wizard can show a real byte-level progress
         // bar during the (large) spend-index download instead of jumping 0->100.
         cachePrepareJob.totalBytes = files.reduce((s, f) => s + (Number(f.size) || 0), 0);
+        // The CSP receive bundle is downloaded here too (see below) so restore has
+        // the receive index, not just spend/stake. Include its size in the total so
+        // the progress bar stays honest. URL is passed only by the Electron shell.
+        const cspBundleUrl = process.env.SALVIUM_CSP_CDN_URL;
+        const cspBundlePresent = !!cspBundleUrl && fsSync.existsSync(CSP_BUNDLE_FILE) && fsSync.statSync(CSP_BUNDLE_FILE).size > 0;
+        if (cspBundleUrl && !cspBundlePresent) {
+            try { const h = await axios.head(cspBundleUrl, { timeout: 30000 }); cachePrepareJob.totalBytes += Number(h.headers['content-length']) || 0; } catch (_) {}
+        }
         for (const f of files) {
             const dest = targets[f.name];
             if (!dest) continue;
@@ -6124,6 +6132,26 @@ async function fastSyncProvisionCaches() {
             cachePrepareJob.downloaded++;
             console.log(`[Fast Sync] Downloaded ${f.name}`);
         }
+        // CSP receive bundle: download in the sidecar (during restore prepare),
+        // not at Electron boot. New wallets never enter prepare, so they skip it.
+        if (cspBundleUrl && !cspBundlePresent) {
+            try {
+                await fs.mkdir(path.dirname(CSP_BUNDLE_FILE), { recursive: true });
+                const tmp = CSP_BUNDLE_FILE + '.part';
+                const resp = await axios.get(cspBundleUrl, { responseType: 'stream', timeout: 300000 });
+                await new Promise((resolve, reject) => {
+                    const ws = fsSync.createWriteStream(tmp);
+                    resp.data.on('data', (chunk) => { cachePrepareJob.downloadedBytes += chunk.length; });
+                    resp.data.on('error', reject);
+                    ws.on('error', reject);
+                    ws.on('finish', resolve);
+                    resp.data.pipe(ws);
+                });
+                await fs.rename(tmp, CSP_BUNDLE_FILE);
+                console.log('[Fast Sync] Downloaded CSP receive bundle');
+            } catch (e) { console.warn('[Fast Sync] CSP bundle download:', e.message); }
+        }
+        try { await loadCspBundle(); } catch (e) { console.warn('[Fast Sync] reload CSP bundle:', e.message); }
         // Reload the freshly-downloaded caches so the spend/stake/timestamp
         // indexes go live without a restart; the maintenance loop tails from here.
         try { await loadKeyImageCache(); } catch (e) { console.warn('[Fast Sync] reload key-image:', e.message); }
@@ -6143,10 +6171,13 @@ app.post(['/api/prepare/start', '/vault/api/prepare/start'], (req, res) => {
     // Fast Sync pulls prebuilt caches from the CDN (best-effort; the maintenance
     // loop still tails the node afterwards). Independent triggers nothing — the
     // loop already builds every cache locally.
-    if (mode !== 'independent' && CSP_CACHE_ENABLED && !cachePrepareJob.running) {
+    // Desktop sidecar ONLY: the hosted web backend must never run the CDN
+    // provisioner. SALVIUM_ALLOW_PRIVATE_NODES is set only by the Electron shell.
+    const isDesktopSidecar = process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1';
+    if (isDesktopSidecar && mode !== 'independent' && CSP_CACHE_ENABLED && !cachePrepareJob.running) {
         fastSyncProvisionCaches().catch(() => {});
     }
-    res.json({ ok: true, mode, provisioning: cachePrepareJob.running });
+    res.json({ ok: true, mode, provisioning: cachePrepareJob.running, desktop: isDesktopSidecar });
 });
 app.get(['/api/debug/rate-limit', '/vault/api/debug/rate-limit'], noCacheHeaders, (req, res) => {
     // Admin-gated: returns the actual 429'd keys (client IPs) for diagnosing a
