@@ -64,6 +64,7 @@ jobs:
             desktop/release/*.dmg
             desktop/release/*.zip
             desktop/release/*.exe
+            desktop/release/*.deb
             desktop/release/*.yml
             desktop/release/*.blockmap
           if-no-files-found: error
