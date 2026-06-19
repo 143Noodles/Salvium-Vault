@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { RefreshCw, Download, Shield } from './Icons';
+import { isDesktopApp } from '../utils/runtime';
 import { useWallet } from '../services/WalletContext';
 import { isDesktop } from '../utils/device';
 import { reportClientEvent } from '../utils/clientTelemetry';
@@ -55,10 +56,43 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
     return () => clearInterval(interval);
   }, [tips.length]);
 
+  useEffect(() => {
+    if (!isDesktopApp() || !vaultRestorePending || dlReady) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (!dlStartedRef.current) {
+      dlStartedRef.current = true;
+      // Align the scanner with the bundle we download (shouldUseBundle honours this).
+      try { window.localStorage.setItem('salvium_scan_mode', 'fast'); } catch { /* ignore */ }
+      fetch('/api/prepare/start?mode=fast', { method: 'POST' }).catch(() => {});
+    }
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/prepare/status', { cache: 'no-store' });
+        if (res.ok) {
+          const d = await res.json();
+          if (cancelled) return;
+          setDlPct(typeof d.percent === 'number' ? d.percent : 0);
+          if (d.ready || d.fallback) { setDlReady(true); return; }
+        }
+      } catch { /* keep polling; status is the source of truth */ }
+      if (!cancelled) timer = setTimeout(poll, 1500);
+    };
+    poll();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaultRestorePending, dlReady]);
+
   const [scanInitiated, setScanInitiated] = useState(false);
   const scanStartRequestedAtRef = useRef(0);
 
   const [maxProgress, setMaxProgress] = useState(0);
+  // Desktop Fast Sync: download/extract the prebuilt CSP bundle + indexes before
+  // the scan, shown as a "Downloading scan data" phase on THIS screen (no separate
+  // wizard). Inert on web (isDesktopApp() === false).
+  const [dlPct, setDlPct] = useState(0);
+  const [dlReady, setDlReady] = useState(false);
+  const dlStartedRef = useRef(false);
 
   const progress = wallet.scanProgress;
   const isScanning = wallet.isScanning;
@@ -68,6 +102,7 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
   const vaultRestorePending = typeof window !== 'undefined'
     ? window.localStorage.getItem(VAULT_RESTORE_PENDING_KEY) === 'true'
     : false;
+  const downloadPhaseActive = isDesktopApp() && vaultRestorePending && !dlReady;
   const vaultRestoreStartedAtRef = useRef(readVaultRestoreStartedAt());
   const loadingTelemetryStartedAtRef = useRef(Date.now());
   const firstProgressReportedRef = useRef(false);
@@ -155,7 +190,9 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
     prevRawPercentageRef.current = rawPercentage;
   }, [rawPercentage, isScanning, restoreProgressPinned]);
 
-  const percentage = scanInitiated
+  const percentage = downloadPhaseActive
+    ? dlPct
+    : scanInitiated
     ? Math.max(maxProgress, rawPercentage)
     : 0;
 
@@ -212,7 +249,9 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
     wallet.scanSession && isScanUiPhase(wallet.scanSession.noteKey)
       ? wallet.scanSession.noteKey
       : undefined;
-  const statusMessage = restoreScanFailed
+  const statusMessage = downloadPhaseActive
+    ? 'Downloading scan data…'
+    : restoreScanFailed
     ? SCAN_UI_PHASE_COPY.failed
     : hasVerifiedCompletion
       ? SCAN_UI_PHASE_COPY.complete
