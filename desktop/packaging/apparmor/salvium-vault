@@ -1,0 +1,19 @@
+# AppArmor profile to let the Salvium Vault AppImage use unprivileged user
+# namespaces on Ubuntu 24.04+ (which sets
+# kernel.apparmor_restrict_unprivileged_userns=1 and otherwise blocks the
+# Chromium sandbox, so the app fails to start).
+#
+# Install:
+#   sudo cp desktop/packaging/apparmor/salvium-vault /etc/apparmor.d/salvium-vault
+#   # edit the path below if you installed the AppImage elsewhere
+#   sudo apparmor_parser -r /etc/apparmor.d/salvium-vault
+#
+# This keeps the Chromium sandbox ENABLED (unlike --no-sandbox); it only grants
+# the namespace permission the sandbox needs.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile salvium-vault /home/*/Applications/Salvium-Vault*.AppImage flags=(unconfined) {
+  userns,
+  include if exists <local/salvium-vault>
+}

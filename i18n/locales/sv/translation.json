@@ -614,42 +614,42 @@
     "wizard": {
       "welcome": {
         "title": "Välkommen till din Salvium Vault",
-        "subtitle": "Låt oss ställa in hur din plånbok ansluter och synkroniserar. Dina nycklar genereras och lagras endast på den här enheten.",
-        "privacyNote": "Din seed och dina nycklar lämnar aldrig den här enheten, och all skanning sker lokalt."
+        "subtitle": "Låt oss ställa in hur din plånbok ansluter och synkroniserar.",
+        "privacyNote": "Dina nycklar lämnar aldrig den här enheten. Skanningen sker helt lokalt."
       },
       "node": {
         "title": "Anslut till en nod",
-        "description": "Välj vilken Salvium-nod som synkroniserar din plånbok. De officiella seed-noderna är valda som standard; avancerade användare kan peka mot sin egen salviumd eller vilken nåbar nod som helst."
+        "description": "Välj vilken nod som synkroniserar din plånbok, eller använd din egen lokala salviumd."
       },
       "sync": {
         "title": "Välj hur du synkroniserar",
-        "description": "Båda alternativen håller dina nycklar och skanningen helt lokala. De skiljer sig bara i hur det initiala skanningsindexet hämtas.",
+        "description": "Båda skannar lokalt. De skiljer sig endast i hur det initiala indexet byggs upp.",
         "recommended": "Rekommenderas",
-        "bothLocalNote": "Oavsett vilket lämnar dina nycklar aldrig den här enheten och skanningen körs lokalt.",
+        "bothLocalNote": "Oavsett vilket stannar dina nycklar på den här enheten.",
         "fast": {
           "title": "Snabb synkronisering",
-          "description": "Laddar ner ett förbyggt skanningsindex från CDN en gång, litar på att det paketet är fullständigt, och arbetar sedan lokalt. Snabbaste första körningen."
+          "description": "Ladda ner ett färdigbyggt skanningsindex från CDN och synkronisera sedan lokalt. Snabbaste första körningen."
         },
         "independent": {
           "title": "Oberoende bygge",
-          "description": "Bygger skanningsindexet lokalt från blockkedjan utan förhämtade data, så att din plånbok inte litar på något förbyggt paket. Långsammare första körning."
+          "description": "Bygg skanningsindexet lokalt från kedjan, utan förhämtade data. Långsammare första körning."
         }
       },
       "finish": "Slutför konfigurationen",
       "stepProgress": "Steg {{current}} av {{total}}",
       "preparing": {
         "title": "Förbereder din plånbok",
-        "descriptionFast": "Laddar ner de förbyggda skanningsindexen från CDN:en. Detta körs en gång — din plånbok är helt redo att skanna så snart det är klart.",
-        "descriptionIndependent": "Bygger skanningsindexen lokalt från blockkedjan. Detta kan ta en stund vid första körningen, men ingen förbyggd data hämtas.",
+        "descriptionFast": "Laddar ner de färdigbyggda skanningsindexen. Detta sker en gång och din plånbok är snart redo.",
+        "descriptionIndependent": "Bygger skanningsindexen lokalt från kedjan. Den första körningen kan ta en stund.",
         "ready": "Redo",
         "inProgress": "Förbereder…",
         "index": {
           "receives": "Mottagningsindex",
           "spends": "Utgiftsindex",
-          "stakes": "Stake-index"
+          "stakes": "Stakeindex"
         },
-        "retrying": "Anslutningsproblem — försöker igen…",
-        "gateNote": "Vi väntar tills varje index når det aktuella blocket så att din första skanning inte kan missa senaste transaktioner.",
+        "retrying": "Anslutningsproblem, försöker igen…",
+        "gateNote": "Vi väntar tills varje index når det senaste blocket så att din första skanning inte missar något.",
         "continueAnyway": "Fortsätt ändå"
       }
     }

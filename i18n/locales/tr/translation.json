@@ -614,42 +614,42 @@
     "wizard": {
       "welcome": {
         "title": "Salvium Vault'unuza hoş geldiniz",
-        "subtitle": "Cüzdanınızın nasıl bağlanıp senkronize olacağını ayarlayalım. Anahtarlarınız yalnızca bu cihazda oluşturulur ve saklanır.",
-        "privacyNote": "Seed'iniz ve anahtarlarınız bu cihazdan asla ayrılmaz ve tüm tarama yerel olarak gerçekleşir."
+        "subtitle": "Cüzdanınızın nasıl bağlanıp senkronize olacağını ayarlayalım.",
+        "privacyNote": "Anahtarlarınız bu cihazdan asla ayrılmaz. Tarama tamamen yerel olarak yapılır."
       },
       "node": {
-        "title": "Bir düğüme bağlan",
-        "description": "Cüzdanınızı hangi Salvium düğümünün senkronize edeceğini seçin. Resmi seed düğümleri varsayılan olarak seçilidir; ileri düzey kullanıcılar kendi salviumd'lerini veya erişilebilir herhangi bir düğümü gösterebilir."
+        "title": "Bir düğüme bağlanın",
+        "description": "Cüzdanınızı hangi düğümün senkronize edeceğini seçin veya kendi yerel salviumd'nizi kullanın."
       },
       "sync": {
         "title": "Senkronizasyon yöntemini seçin",
-        "description": "Her iki seçenek de anahtarlarınızı ve taramayı tamamen yerel tutar. Yalnızca ilk tarama dizininin nasıl elde edildiği konusunda farklılık gösterirler.",
+        "description": "Her ikisi de yerel olarak tarar. Yalnızca ilk dizinin nasıl oluşturulduğu konusunda farklılık gösterirler.",
         "recommended": "Önerilen",
-        "bothLocalNote": "Her durumda anahtarlarınız bu cihazdan asla ayrılmaz ve tarama yerel olarak çalışır.",
+        "bothLocalNote": "Her iki durumda da anahtarlarınız bu cihazda kalır.",
         "fast": {
           "title": "Hızlı Senkronizasyon",
-          "description": "CDN'den önceden hazırlanmış bir tarama dizinini bir kez indirir, bu paketin eksiksizliğine güvenir ve ardından yerel olarak çalışır. En hızlı ilk çalıştırma."
+          "description": "CDN'den önceden oluşturulmuş bir tarama dizini indirin, ardından yerel olarak senkronize edin. En hızlı ilk çalıştırma."
         },
         "independent": {
-          "title": "Bağımsız Derleme",
-          "description": "Tarama dizinini önceden alınmış veri olmadan blok zincirinden yerel olarak oluşturur, böylece cüzdanınız önceden hazırlanmış hiçbir pakete güvenmez. Daha yavaş ilk çalıştırma."
+          "title": "Bağımsız Oluşturma",
+          "description": "Tarama dizinini, önceden alınmış veri olmadan zincirden yerel olarak oluşturun. Daha yavaş ilk çalıştırma."
         }
       },
       "finish": "Kurulumu tamamla",
       "stepProgress": "Adım {{current}} / {{total}}",
       "preparing": {
         "title": "Cüzdanınız hazırlanıyor",
-        "descriptionFast": "Önceden oluşturulmuş tarama dizinleri CDN'den indiriliyor. Bu işlem yalnızca bir kez çalışır — tamamlanır tamamlanmaz cüzdanınız taramaya tamamen hazır olacaktır.",
-        "descriptionIndependent": "Tarama dizinleri blok zincirinden yerel olarak oluşturuluyor. İlk çalıştırmada bu biraz zaman alabilir, ancak önceden oluşturulmuş hiçbir veri indirilmez.",
+        "descriptionFast": "Önceden oluşturulmuş tarama dizinleri indiriliyor. Bu yalnızca bir kez çalışır ve cüzdanınız kısa süre içinde hazır olur.",
+        "descriptionIndependent": "Tarama dizinleri zincirden yerel olarak oluşturuluyor. İlk çalıştırma biraz zaman alabilir.",
         "ready": "Hazır",
         "inProgress": "Hazırlanıyor…",
         "index": {
           "receives": "Alım dizini",
           "spends": "Harcama dizini",
-          "stakes": "Staking dizini"
+          "stakes": "Stake dizini"
         },
-        "retrying": "Bağlantı sorunu — yeniden deneniyor…",
-        "gateNote": "İlk taramanızın son işlemleri kaçırmaması için her dizinin geçerli bloğa ulaşmasını bekleriz.",
+        "retrying": "Bağlantı aksaklığı, yeniden deneniyor…",
+        "gateNote": "İlk taramanızın hiçbir şeyi atlamaması için her dizinin en son bloğa ulaşmasını bekleriz.",
         "continueAnyway": "Yine de devam et"
       }
     }
