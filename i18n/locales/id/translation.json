@@ -614,33 +614,33 @@
     "wizard": {
       "welcome": {
         "title": "Selamat datang di Salvium Vault Anda",
-        "subtitle": "Mari kita atur cara dompet Anda terhubung dan menyinkronkan. Kunci Anda dibuat dan disimpan hanya di perangkat ini.",
-        "privacyNote": "Seed dan kunci Anda tidak pernah meninggalkan perangkat ini, dan semua pemindaian berlangsung secara lokal."
+        "subtitle": "Mari atur cara dompet Anda terhubung dan tersinkronisasi.",
+        "privacyNote": "Kunci Anda tidak pernah meninggalkan perangkat ini. Pemindaian sepenuhnya lokal."
       },
       "node": {
         "title": "Hubungkan ke node",
-        "description": "Pilih node Salvium mana yang menyinkronkan dompet Anda. Node seed resmi dipilih secara default; pengguna tingkat lanjut dapat mengarahkan ke salviumd milik mereka sendiri atau node mana pun yang dapat dijangkau."
+        "description": "Pilih node mana yang menyinkronkan dompet Anda, atau gunakan salviumd lokal Anda sendiri."
       },
       "sync": {
-        "title": "Pilih cara menyinkronkan",
-        "description": "Kedua opsi menjaga kunci dan pemindaian Anda sepenuhnya lokal. Keduanya hanya berbeda dalam cara indeks pemindaian awal diperoleh.",
-        "recommended": "Disarankan",
-        "bothLocalNote": "Bagaimanapun juga, kunci Anda tidak pernah meninggalkan perangkat ini dan pemindaian berjalan secara lokal.",
+        "title": "Pilih cara sinkronisasi",
+        "description": "Keduanya memindai secara lokal. Perbedaannya hanya pada cara indeks awal dibangun.",
+        "recommended": "Direkomendasikan",
+        "bothLocalNote": "Bagaimanapun, kunci Anda tetap berada di perangkat ini.",
         "fast": {
           "title": "Sinkronisasi Cepat",
-          "description": "Mengunduh indeks pemindaian bawaan dari CDN satu kali, mempercayai kelengkapan paket tersebut, lalu bekerja secara lokal. Pengoperasian pertama tercepat."
+          "description": "Unduh indeks pemindaian siap pakai dari CDN, lalu sinkronkan secara lokal. Proses pertama tercepat."
         },
         "independent": {
           "title": "Bangun Mandiri",
-          "description": "Membangun indeks pemindaian secara lokal dari blockchain tanpa data yang diambil sebelumnya, sehingga dompet Anda tidak mempercayai paket bawaan apa pun. Pengoperasian pertama lebih lambat."
+          "description": "Bangun indeks pemindaian secara lokal dari rantai, tanpa data yang diunduh sebelumnya. Proses pertama lebih lambat."
         }
       },
       "finish": "Selesaikan penyiapan",
       "stepProgress": "Langkah {{current}} dari {{total}}",
       "preparing": {
         "title": "Menyiapkan dompet Anda",
-        "descriptionFast": "Mengunduh indeks pemindaian bawaan dari CDN. Ini hanya berjalan sekali — dompet Anda akan siap memindai sepenuhnya begitu proses selesai.",
-        "descriptionIndependent": "Membangun indeks pemindaian secara lokal dari blockchain. Proses ini bisa memakan waktu pada saat pertama kali dijalankan, tetapi tidak ada data bawaan yang diambil.",
+        "descriptionFast": "Mengunduh indeks pemindaian siap pakai. Ini berjalan sekali dan dompet Anda akan segera siap.",
+        "descriptionIndependent": "Membangun indeks pemindaian secara lokal dari rantai. Proses pertama bisa memakan waktu.",
         "ready": "Siap",
         "inProgress": "Menyiapkan…",
         "index": {
@@ -648,8 +648,8 @@
           "spends": "Indeks pengeluaran",
           "stakes": "Indeks staking"
         },
-        "retrying": "Gangguan koneksi — mencoba lagi…",
-        "gateNote": "Kami menunggu hingga setiap indeks mencapai blok saat ini agar pemindaian pertama Anda tidak melewatkan transaksi terbaru.",
+        "retrying": "Gangguan koneksi, mencoba lagi…",
+        "gateNote": "Kami menunggu hingga setiap indeks mencapai blok terbaru agar pemindaian pertama Anda tidak melewatkan apa pun.",
         "continueAnyway": "Tetap lanjutkan"
       }
     }

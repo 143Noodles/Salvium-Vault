@@ -614,42 +614,42 @@
     "wizard": {
       "welcome": {
         "title": "Welkom bij je Salvium Vault",
-        "subtitle": "Laten we instellen hoe je wallet verbinding maakt en synchroniseert. Je sleutels worden uitsluitend op dit apparaat gegenereerd en opgeslagen.",
-        "privacyNote": "Je seed en sleutels verlaten dit apparaat nooit, en al het scannen gebeurt lokaal."
+        "subtitle": "Laten we instellen hoe je wallet verbindt en synchroniseert.",
+        "privacyNote": "Je sleutels verlaten dit apparaat nooit. Het scannen gebeurt volledig lokaal."
       },
       "node": {
         "title": "Verbinden met een node",
-        "description": "Kies welke Salvium-node je wallet synchroniseert. De officiële seed-nodes zijn standaard geselecteerd; gevorderde gebruikers kunnen hun eigen salviumd of een willekeurige bereikbare node opgeven."
+        "description": "Kies welke node je wallet synchroniseert, of gebruik je eigen lokale salviumd."
       },
       "sync": {
         "title": "Kies hoe je synchroniseert",
-        "description": "Beide opties houden je sleutels en het scannen volledig lokaal. Ze verschillen alleen in hoe de initiële scanindex wordt verkregen.",
+        "description": "Beide scannen lokaal. Ze verschillen alleen in hoe de eerste index wordt opgebouwd.",
         "recommended": "Aanbevolen",
-        "bothLocalNote": "Hoe dan ook, je sleutels verlaten dit apparaat nooit en het scannen draait lokaal.",
+        "bothLocalNote": "Hoe dan ook, je sleutels blijven op dit apparaat.",
         "fast": {
           "title": "Snelle synchronisatie",
-          "description": "Downloadt eenmalig een kant-en-klare scanindex van de CDN en vertrouwt erop dat dat pakket volledig is, en werkt daarna lokaal. Snelste eerste keer."
+          "description": "Download een kant-en-klare scanindex van het CDN en synchroniseer daarna lokaal. Snelste eerste start."
         },
         "independent": {
           "title": "Onafhankelijke opbouw",
-          "description": "Bouwt de scanindex lokaal op uit de blockchain zonder vooraf opgehaalde gegevens, zodat je wallet geen enkel kant-en-klaar pakket vertrouwt. Tragere eerste keer."
+          "description": "Bouw de scanindex lokaal op vanaf de chain, zonder vooraf opgehaalde gegevens. Tragere eerste start."
         }
       },
       "finish": "Installatie voltooien",
       "stepProgress": "Stap {{current}} van {{total}}",
       "preparing": {
         "title": "Je wallet wordt voorbereid",
-        "descriptionFast": "De vooraf gebouwde scanindexen worden gedownload van de CDN. Dit gebeurt eenmalig — je wallet is volledig klaar om te scannen zodra dit is voltooid.",
-        "descriptionIndependent": "De scanindexen worden lokaal opgebouwd vanuit de blockchain. Dit kan bij de eerste keer even duren, maar er worden geen vooraf gebouwde gegevens opgehaald.",
+        "descriptionFast": "De kant-en-klare scanindexen worden gedownload. Dit gebeurt eenmalig en je wallet is binnenkort klaar.",
+        "descriptionIndependent": "De scanindexen worden lokaal opgebouwd vanaf de chain. De eerste start kan even duren.",
         "ready": "Klaar",
-        "inProgress": "Bezig met voorbereiden…",
+        "inProgress": "Voorbereiden…",
         "index": {
           "receives": "Ontvangstindex",
-          "spends": "Uitgavenindex",
+          "spends": "Uitgaveindex",
           "stakes": "Stake-index"
         },
-        "retrying": "Verbindingsprobleem — opnieuw proberen…",
-        "gateNote": "We wachten tot elke index het huidige blok bereikt, zodat je eerste scan geen recente transacties kan missen.",
+        "retrying": "Verbindingsprobleem, opnieuw proberen…",
+        "gateNote": "We wachten tot elke index het nieuwste blok bereikt, zodat je eerste scan niets mist.",
         "continueAnyway": "Toch doorgaan"
       }
     }

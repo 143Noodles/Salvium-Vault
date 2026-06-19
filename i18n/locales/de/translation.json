@@ -613,43 +613,43 @@
   "setup": {
     "wizard": {
       "welcome": {
-        "title": "Willkommen in Ihrem Salvium Vault",
-        "subtitle": "Lassen Sie uns einrichten, wie Ihre Wallet sich verbindet und synchronisiert. Ihre Schlüssel werden ausschließlich auf diesem Gerät generiert und gespeichert.",
-        "privacyNote": "Ihr Seed und Ihre Schlüssel verlassen dieses Gerät nie, und das gesamte Scannen erfolgt lokal."
+        "title": "Willkommen in deinem Salvium Vault",
+        "subtitle": "Richten wir ein, wie deine Wallet sich verbindet und synchronisiert.",
+        "privacyNote": "Deine Schlüssel verlassen dieses Gerät nie. Das Scannen erfolgt vollständig lokal."
       },
       "node": {
         "title": "Mit einem Node verbinden",
-        "description": "Wählen Sie aus, welcher Salvium-Node Ihre Wallet synchronisiert. Die offiziellen Seed-Nodes sind standardmäßig ausgewählt; fortgeschrittene Nutzer können ihren eigenen salviumd oder einen beliebigen erreichbaren Node angeben."
+        "description": "Wähle, welcher Node deine Wallet synchronisiert, oder nutze deinen eigenen lokalen salviumd."
       },
       "sync": {
         "title": "Synchronisierung wählen",
-        "description": "Beide Optionen halten Ihre Schlüssel und das Scannen vollständig lokal. Sie unterscheiden sich nur darin, wie der anfängliche Scan-Index bezogen wird.",
+        "description": "Beide scannen lokal. Sie unterscheiden sich nur darin, wie der anfängliche Index aufgebaut wird.",
         "recommended": "Empfohlen",
-        "bothLocalNote": "In beiden Fällen verlassen Ihre Schlüssel dieses Gerät nie und das Scannen läuft lokal.",
+        "bothLocalNote": "So oder so bleiben deine Schlüssel auf diesem Gerät.",
         "fast": {
           "title": "Schnelle Synchronisierung",
-          "description": "Lädt einmalig einen vorgefertigten Scan-Index vom CDN herunter und vertraut darauf, dass dieses Bündel vollständig ist, und arbeitet dann lokal. Schnellster erster Durchlauf."
+          "description": "Lade einen vorgefertigten Scan-Index vom CDN herunter und synchronisiere dann lokal. Schnellster erster Start."
         },
         "independent": {
           "title": "Unabhängiger Aufbau",
-          "description": "Baut den Scan-Index lokal aus der Blockchain auf, ohne vorab abgerufene Daten, sodass Ihre Wallet keinem vorgefertigten Bündel vertraut. Langsamerer erster Durchlauf."
+          "description": "Erstelle den Scan-Index lokal aus der Chain, ohne vorab geladene Daten. Langsamerer erster Start."
         }
       },
       "finish": "Einrichtung abschließen",
       "stepProgress": "Schritt {{current}} von {{total}}",
       "preparing": {
-        "title": "Wallet wird vorbereitet",
-        "descriptionFast": "Die vorgefertigten Scan-Indizes werden vom CDN heruntergeladen. Dies geschieht nur einmal — deine Wallet ist vollständig scanbereit, sobald der Vorgang abgeschlossen ist.",
-        "descriptionIndependent": "Die Scan-Indizes werden lokal aus der Blockchain aufgebaut. Das kann beim ersten Mal eine Weile dauern, es werden jedoch keine vorgefertigten Daten abgerufen.",
+        "title": "Deine Wallet wird vorbereitet",
+        "descriptionFast": "Die vorgefertigten Scan-Indizes werden heruntergeladen. Das geschieht einmalig und deine Wallet ist bald bereit.",
+        "descriptionIndependent": "Die Scan-Indizes werden lokal aus der Chain aufgebaut. Der erste Start kann eine Weile dauern.",
         "ready": "Bereit",
         "inProgress": "Wird vorbereitet…",
         "index": {
-          "receives": "Empfangs-Index",
-          "spends": "Ausgabe-Index",
+          "receives": "Empfangsindex",
+          "spends": "Ausgabeindex",
           "stakes": "Stake-Index"
         },
-        "retrying": "Verbindungsproblem — neuer Versuch…",
-        "gateNote": "Wir warten, bis jeder Index den aktuellen Block erreicht, damit dein erster Scan keine neueren Transaktionen verpassen kann.",
+        "retrying": "Verbindungsproblem, erneuter Versuch…",
+        "gateNote": "Wir warten, bis jeder Index den neuesten Block erreicht, damit dein erster Scan nichts verpasst.",
         "continueAnyway": "Trotzdem fortfahren"
       }
     }
