@@ -6091,6 +6091,16 @@ async function fastSyncProvisionCaches() {
         for (const f of files) {
             const dest = targets[f.name];
             if (!dest) continue;
+            // The native boot bootstrap may have already downloaded this file;
+            // skip a redundant (large) re-download if it is present at full size.
+            try {
+                const st = await fs.stat(dest);
+                if (Number(f.size) > 0 && st.size === Number(f.size)) {
+                    cachePrepareJob.downloaded++;
+                    cachePrepareJob.downloadedBytes += st.size;
+                    continue;
+                }
+            } catch (_) { /* not present -> download below */ }
             await fs.mkdir(path.dirname(dest), { recursive: true });
             const tmp = dest + '.part';
             // Stream to disk while counting bytes for live progress.
