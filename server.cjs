@@ -5992,14 +5992,24 @@ app.get(['/api/prepare/status', '/vault/api/prepare/status'], noCacheHeaders, as
         ];
         // Within a few blocks of the tip counts as ready (CSP stable-depth lag).
         const GRACE = (typeof CSP_BUNDLE_STABLE_DEPTH === 'number' ? CSP_BUNDLE_STABLE_DEPTH : 3) + 2;
+        // Fast Sync downloads fixed-height snapshots; the chain tip keeps moving
+        // while the (large) CSP bundle streams, so an index can finish downloading
+        // yet sit just under the live tip forever and this gate would never release.
+        // Once the download job has finished cleanly, an index that reached >=99%
+        // of the tip counts as ready: the wallet scans the snapshot->tip tail during
+        // normal sync without missing txs. Independent Build keeps the strict
+        // reach-the-tip gate (it actively scans toward the tip, so it converges).
+        const fastDone = cachePrepareJob.mode === 'fast'
+            && cachePrepareJob.startedAt > 0
+            && !cachePrepareJob.running
+            && !cachePrepareJob.error;
         let minPct = 100;
-        let allReady = tip > 0 && wasmModuleReady;
         for (const c of components) {
             c.percent = Math.max(0, Math.min(100, Math.round((c.height / safeTip) * 100)));
-            c.ready = tip > 0 && c.height >= (tip - GRACE);
-            if (!c.ready) allReady = false;
+            c.ready = (tip > 0 && c.height >= (tip - GRACE)) || (fastDone && c.percent >= 99);
             if (c.percent < minPct) minPct = c.percent;
         }
+        const allReady = tip > 0 && wasmModuleReady && components.every(c => c.ready);
         // While Fast Sync is actively downloading the prebuilt caches, surface
         // byte-level download progress so the bar moves during the (large)
         // spend-index pull instead of sitting at 0% then snapping to 100%.
@@ -6010,7 +6020,7 @@ app.get(['/api/prepare/status', '/vault/api/prepare/status'], noCacheHeaders, as
             : null;
         res.json({
             ready: allReady,
-            percent: downloading ? dlPct : ((tip > 0 && wasmModuleReady) ? minPct : 0),
+            percent: downloading ? dlPct : (allReady ? 100 : ((tip > 0 && wasmModuleReady) ? minPct : 0)),
             phase: downloading ? 'downloading' : (allReady ? 'ready' : 'indexing'),
             chainTip: tip,
             wasmReady: wasmModuleReady,
