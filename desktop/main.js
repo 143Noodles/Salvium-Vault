@@ -49,6 +49,7 @@ const BUNDLE_FILE = path.join(CSP_DIR, 'csp-bundle-v8.bin');
 
 let sidecar = null;
 let mainWindow = null;
+let currentPort = 0;
 let tray = null;
 let isQuitting = false;
 let lastPromptedVersion = null; // avoid re-prompting the same version every hourly check
@@ -63,7 +64,7 @@ function readPrefs() { try { return JSON.parse(fs.readFileSync(prefsFile(), 'utf
 function writePrefs(p) { try { fs.writeFileSync(prefsFile(), JSON.stringify(p)); } catch (e) { log('prefs write error:', e && e.message); } }
 
 function showMainWindow() {
-  if (!mainWindow) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
@@ -368,22 +369,8 @@ function waitForHealth(port, timeoutMs) {
   });
 }
 
-async function boot() {
-  const bootStart = Date.now();
-  const port = await resolveStablePort();
-  log('Sidecar port:', port);
-  log('Data dir:', DATA_DIR);
-  log('RPC URL:', RPC_URL);
-
-  const bundle = await fastSyncBootstrap();
-  log('Fast Sync result:', JSON.stringify(bundle));
-
-  const active = resolveActiveContentDir(REPO_ROOT);
-  log('Active content: v' + active.version + ' @ ' + active.dir);
-  sidecar = startSidecar(port, active.dir);
-  const healthMs = await waitForHealth(port, HEALTH_TIMEOUT_MS);
-  log('Health ready in', healthMs, 'ms (total boot', Date.now() - bootStart, 'ms)');
-
+async function createMainWindow(port) {
+  currentPort = port;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -411,9 +398,29 @@ async function boot() {
     }
   } catch (e) { log('user-agent patch failed:', e && e.message); }
   await mainWindow.loadURL('http://127.0.0.1:' + port + '/');
-  log('SPA loaded. Total boot to window:', Date.now() - bootStart, 'ms');
+  log('SPA window loaded.');
   mainWindow.on('close', handleWindowClose);
   buildAppMenu();
+}
+
+async function boot() {
+  const bootStart = Date.now();
+  const port = await resolveStablePort();
+  log('Sidecar port:', port);
+  log('Data dir:', DATA_DIR);
+  log('RPC URL:', RPC_URL);
+
+  const bundle = await fastSyncBootstrap();
+  log('Fast Sync result:', JSON.stringify(bundle));
+
+  const active = resolveActiveContentDir(REPO_ROOT);
+  log('Active content: v' + active.version + ' @ ' + active.dir);
+  sidecar = startSidecar(port, active.dir);
+  const healthMs = await waitForHealth(port, HEALTH_TIMEOUT_MS);
+  log('Health ready in', healthMs, 'ms (total boot', Date.now() - bootStart, 'ms)');
+
+  await createMainWindow(port);
+  log('Total boot to window:', Date.now() - bootStart, 'ms');
 
   // OTA content update: detect at launch and then hourly, letting the USER
   // decide whether to download each one. Nothing downloads until they opt in,
@@ -535,6 +542,9 @@ if (!app.requestSingleInstanceLock()) {
 // If the window is hidden to the tray it is not "closed", so window-all-closed
 // only fires on a real quit. Hidden-to-tray keeps the app (and sidecar) alive.
 app.on('window-all-closed', () => { if (!tray) { killSidecar(); if (process.platform !== 'darwin') app.quit(); } });
-app.on('activate', () => { showMainWindow(); });
+app.on('activate', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) { showMainWindow(); return; }
+  if (currentPort) createMainWindow(currentPort).catch((e) => log('window recreate failed:', e && e.message));
+});
 app.on('before-quit', () => { isQuitting = true; killSidecar(); });
 process.on('exit', killSidecar);
