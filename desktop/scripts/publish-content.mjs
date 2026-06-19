@@ -57,7 +57,7 @@ const sha512 = crypto.createHash('sha512').update(buf).digest('hex');
 const key = crypto.createPrivateKey(fs.readFileSync(keyPath));
 const signature = crypto.sign(null, Buffer.from(version + '\n' + sha512, 'utf8'), key).toString('base64');
 
-const tag = 'content-v' + version;
+const tag = 'v' + version; // unified release (installers + OTA content on one tag)
 const url = 'https://github.com/' + OWNER + '/' + NAME + '/releases/download/' + tag + '/' + archiveName;
 const manifest = { version, url, sha512, signature, size: buf.length };
 fs.writeFileSync(path.join(OUT, 'content-manifest.json'), JSON.stringify(manifest, null, 2));
