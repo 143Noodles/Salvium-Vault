@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Card, Button } from './UIComponents';
-import { Shield, Server, Zap, Lock, Check, ChevronRight, ArrowRight, Database, Loader2 } from './Icons';
+import { Shield, Server, Zap, Lock, Check, ChevronRight, ArrowRight, Database, Loader2, Clock } from './Icons';
 import NodeSelector from './NodeSelector';
 import { getScanMode, setScanMode, type ScanMode } from '../utils/scanMode';
 
@@ -107,58 +107,70 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
     accent: 'primary' | 'secondary',
     title: string,
     description: string,
+    eta: string,
+    prominent: boolean,
     badge?: string,
   ) => {
     const selected = scanMode === mode;
-    // Static, fully-spelled class strings so Tailwind's JIT scanner picks them up
-    // (dynamically interpolated class names are NOT detected at build time).
+    // Static, fully-spelled class strings so Tailwind's JIT scanner picks them up.
     const styles =
       accent === 'primary'
         ? {
             selectedCard: 'border-accent-primary bg-[#1c1c2e] shadow-2xl shadow-accent-primary/20',
-            idleCard: 'border-white/10 hover:border-accent-primary/50 hover:bg-[#1c1c2e]',
+            idleCard: 'border-accent-primary/40 hover:border-accent-primary hover:bg-[#1c1c2e]',
             iconWrap: 'bg-accent-primary/10 text-accent-primary',
             checkOn: 'bg-accent-primary border-accent-primary text-black',
+            etaText: 'text-accent-primary',
           }
         : {
             selectedCard: 'border-accent-secondary bg-[#1c1c2e] shadow-2xl shadow-accent-secondary/20',
-            idleCard: 'border-white/10 hover:border-accent-secondary/50 hover:bg-[#1c1c2e]',
+            idleCard: 'border-white/10 hover:border-accent-secondary/40 hover:bg-[#1c1c2e]',
             iconWrap: 'bg-accent-secondary/10 text-accent-secondary',
             checkOn: 'bg-accent-secondary border-accent-secondary text-black',
+            etaText: 'text-text-muted',
           };
     return (
       <button
         type="button"
         onClick={() => chooseScanMode(mode)}
         aria-pressed={selected}
-        className={`group relative overflow-hidden rounded-2xl bg-[#13131f] border p-5 flex flex-col items-start text-left gap-3 transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl ${
-          selected ? styles.selectedCard : styles.idleCard
-        }`}
+        className={`group relative overflow-hidden rounded-2xl bg-[#13131f] border text-left transition-all duration-300 hover:-translate-y-0.5 hover:shadow-2xl ${
+          prominent ? 'p-5' : 'p-3.5'
+        } ${selected ? styles.selectedCard : styles.idleCard}`}
       >
-        <div className="flex w-full items-start justify-between">
+        {prominent && (
+          <div className="absolute -top-px inset-x-0 h-px bg-gradient-to-r from-transparent via-accent-primary/70 to-transparent" />
+        )}
+        <div className="flex w-full items-start gap-3">
           <div
-            className={`p-2.5 rounded-full ring-1 ring-white/5 group-hover:scale-110 transition-transform duration-300 ${styles.iconWrap}`}
+            className={`shrink-0 rounded-full ring-1 ring-white/5 transition-transform duration-300 group-hover:scale-110 ${styles.iconWrap} ${
+              prominent ? 'p-3' : 'p-2'
+            }`}
           >
             {icon}
           </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-1">
+              <h3 className={`text-white font-bold whitespace-nowrap ${prominent ? 'text-lg' : 'text-sm'}`}>{title}</h3>
+              {badge && (
+                <span className="rounded-full bg-accent-primary text-black text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 whitespace-nowrap">
+                  {badge}
+                </span>
+              )}
+            </div>
+            <p className={`text-text-muted leading-relaxed ${prominent ? 'text-[13px]' : 'text-[12px]'}`}>{description}</p>
+            <div className={`mt-2 flex items-center gap-1.5 text-[11px] font-semibold ${styles.etaText}`}>
+              <Clock size={12} className="shrink-0" />
+              <span>{eta}</span>
+            </div>
+          </div>
           <span
-            className={`flex h-5 w-5 items-center justify-center rounded-full border transition-colors ${
+            className={`shrink-0 flex h-5 w-5 items-center justify-center rounded-full border transition-colors ${
               selected ? styles.checkOn : 'border-white/20 text-transparent'
             }`}
           >
             <Check size={12} strokeWidth={3} />
           </span>
-        </div>
-        <div className="relative z-10">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-1.5">
-            <h3 className="text-white font-bold text-lg whitespace-nowrap">{title}</h3>
-            {badge && (
-              <span className="rounded-full bg-accent-primary/15 text-accent-primary text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 whitespace-nowrap">
-                {badge}
-              </span>
-            )}
-          </div>
-          <p className="text-text-muted text-[13px] leading-relaxed">{description}</p>
         </div>
       </button>
     );
@@ -247,21 +259,25 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
                   <p className="text-text-muted text-xs leading-5">{t('setup.wizard.sync.description')}</p>
                 </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-3">
                 {syncCard(
                   'fast',
-                  <Zap size={22} />,
+                  <Zap size={24} />,
                   'primary',
                   t('setup.wizard.sync.fast.title'),
                   t('setup.wizard.sync.fast.description'),
+                  '~2-5 min',
+                  true,
                   t('setup.wizard.sync.recommended'),
                 )}
                 {syncCard(
                   'independent',
-                  <Lock size={22} />,
+                  <Lock size={18} />,
                   'secondary',
                   t('setup.wizard.sync.independent.title'),
                   t('setup.wizard.sync.independent.description'),
+                  '~30-60 min',
+                  false,
                 )}
               </div>
               <div className="flex items-center gap-2 text-[11px] text-text-muted px-1">
