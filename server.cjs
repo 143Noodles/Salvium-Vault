@@ -6095,7 +6095,7 @@ async function fastSyncProvisionCaches() {
             // skip a redundant (large) re-download if it is present at full size.
             try {
                 const st = await fs.stat(dest);
-                if (Number(f.size) > 0 && st.size === Number(f.size)) {
+                if (Number(f.size) > 0 && st.size >= Number(f.size)) {
                     cachePrepareJob.downloaded++;
                     cachePrepareJob.downloadedBytes += st.size;
                     continue;
