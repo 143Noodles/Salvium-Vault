@@ -24,7 +24,7 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
   // than show two indistinguishable options with misleading CDN copy.
   const stepOrder = useMemo<WizardStep[]>(() => {
     const isAndroid = /Android/i.test(navigator.userAgent || '');
-    return isAndroid ? ['welcome', 'node'] : ['welcome', 'node', 'sync', 'preparing'];
+    return ['welcome', 'node']; // sync picker + preparing moved post-onboarding (desktop restore)
   }, []);
 
   const stepIndex = stepOrder.indexOf(step);
