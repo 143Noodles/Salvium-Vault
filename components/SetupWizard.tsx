@@ -1,80 +1,27 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Card, Button } from './UIComponents';
-import { Shield, Server, Zap, Lock, Check, ChevronRight, ArrowRight, Database, Loader2, Clock } from './Icons';
+import { Shield, Server, Lock, ArrowRight } from './Icons';
 import NodeSelector from './NodeSelector';
-import { getScanMode, setScanMode, type ScanMode } from '../utils/scanMode';
 
 interface SetupWizardProps {
   onComplete: () => void;
 }
 
-type WizardStep = 'welcome' | 'node' | 'sync' | 'preparing';
+type WizardStep = 'welcome' | 'node';
 
-interface PrepComponent { key: string; label: string; percent: number; ready: boolean; }
-interface PrepStatus { ready: boolean; percent: number; chainTip: number; wasmReady: boolean; cspCacheEnabled: boolean; components: PrepComponent[]; }
-
+// Desktop first-run wizard: welcome -> pick a node. That's it. Scan-index
+// provisioning happens later and only on RESTORE (PrepareScreen / the sidecar
+// prepare flow); a freshly created wallet has no history to scan, so it needs
+// no prebuilt data at all.
 const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
   const { t } = useTranslation();
   const [step, setStep] = useState<WizardStep>('welcome');
-  const [scanMode, setScanModeState] = useState<ScanMode>(() => getScanMode());
 
-  // On Android the prebuilt-bundle path is hard-disabled, so Fast Sync and
-  // Independent Build are identical there; skip the sync step entirely rather
-  // than show two indistinguishable options with misleading CDN copy.
-  const stepOrder = useMemo<WizardStep[]>(() => {
-    const isAndroid = /Android/i.test(navigator.userAgent || '');
-    return ['welcome', 'node']; // sync picker + preparing moved post-onboarding (desktop restore)
-  }, []);
-
+  const stepOrder: WizardStep[] = ['welcome', 'node'];
   const stepIndex = stepOrder.indexOf(step);
   const isFirst = stepIndex === 0;
   const isLast = stepIndex === stepOrder.length - 1;
-
-  // --- Pre-onboarding cache provisioning (the "preparing" step) -------------
-  // Fast Sync downloads the prebuilt scan caches from the CDN; Independent Build
-  // builds them locally from the node. Either way we GATE onboarding until the
-  // receive index, spend index and stake index have all reached the chain tip,
-  // so the first scan can't run against an incomplete index and miss txs.
-  const [prep, setPrep] = useState<PrepStatus | null>(null);
-  const [prepError, setPrepError] = useState<string | null>(null);
-  // After a grace period without readiness (e.g. the node is briefly
-  // unreachable so the tip can't be confirmed), offer an escape hatch so the
-  // user is never permanently stuck on this screen.
-  const [prepSlow, setPrepSlow] = useState(false);
-  const prepStartedRef = useRef(false);
-  const prepReady = !!prep?.ready;
-
-  useEffect(() => {
-    if (step !== 'preparing') return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const slowTimer = setTimeout(() => { if (!cancelled) setPrepSlow(true); }, 60000);
-
-    // Kick the sidecar to provision for the chosen mode (idempotent; safe to
-    // call once on entering the step).
-    if (!prepStartedRef.current) {
-      prepStartedRef.current = true;
-      fetch(`/api/prepare/start?mode=${encodeURIComponent(scanMode)}`, { method: 'POST' })
-        .catch(() => { /* status poll is the source of truth; ignore start errors */ });
-    }
-
-    const poll = async () => {
-      try {
-        const res = await fetch('/api/prepare/status', { cache: 'no-store' });
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data: PrepStatus = await res.json();
-        if (cancelled) return;
-        setPrep(data);
-        setPrepError(null);
-      } catch (e) {
-        if (!cancelled) setPrepError(e instanceof Error ? e.message : String(e));
-      }
-      if (!cancelled) timer = setTimeout(poll, 1500);
-    };
-    poll();
-    return () => { cancelled = true; if (timer) clearTimeout(timer); clearTimeout(slowTimer); };
-  }, [step, scanMode]);
 
   // a11y: move focus to the active step's heading on navigation so screen
   // readers announce the new step and keyboard focus follows the content swap.
@@ -94,86 +41,6 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
   const goBack = () => {
     if (isFirst) return;
     setStep(stepOrder[stepIndex - 1]);
-  };
-
-  const chooseScanMode = (mode: ScanMode) => {
-    setScanMode(mode);
-    setScanModeState(mode);
-  };
-
-  const syncCard = (
-    mode: ScanMode,
-    icon: React.ReactNode,
-    accent: 'primary' | 'secondary',
-    title: string,
-    description: string,
-    eta: string,
-    prominent: boolean,
-    badge?: string,
-  ) => {
-    const selected = scanMode === mode;
-    // Static, fully-spelled class strings so Tailwind's JIT scanner picks them up.
-    const styles =
-      accent === 'primary'
-        ? {
-            selectedCard: 'border-accent-primary bg-[#1c1c2e] shadow-2xl shadow-accent-primary/20',
-            idleCard: 'border-accent-primary/40 hover:border-accent-primary hover:bg-[#1c1c2e]',
-            iconWrap: 'bg-accent-primary/10 text-accent-primary',
-            checkOn: 'bg-accent-primary border-accent-primary text-black',
-            etaText: 'text-accent-primary',
-          }
-        : {
-            selectedCard: 'border-accent-secondary bg-[#1c1c2e] shadow-2xl shadow-accent-secondary/20',
-            idleCard: 'border-white/10 hover:border-accent-secondary/40 hover:bg-[#1c1c2e]',
-            iconWrap: 'bg-accent-secondary/10 text-accent-secondary',
-            checkOn: 'bg-accent-secondary border-accent-secondary text-black',
-            etaText: 'text-text-muted',
-          };
-    return (
-      <button
-        type="button"
-        onClick={() => chooseScanMode(mode)}
-        aria-pressed={selected}
-        className={`group relative overflow-hidden rounded-2xl bg-[#13131f] border text-left transition-all duration-300 hover:-translate-y-0.5 hover:shadow-2xl ${
-          prominent ? 'p-5' : 'p-3.5'
-        } ${selected ? styles.selectedCard : styles.idleCard}`}
-      >
-        {prominent && (
-          <div className="absolute -top-px inset-x-0 h-px bg-gradient-to-r from-transparent via-accent-primary/70 to-transparent" />
-        )}
-        <div className="flex w-full items-start gap-3">
-          <div
-            className={`shrink-0 rounded-full ring-1 ring-white/5 transition-transform duration-300 group-hover:scale-110 ${styles.iconWrap} ${
-              prominent ? 'p-3' : 'p-2'
-            }`}
-          >
-            {icon}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-1">
-              <h3 className={`text-white font-bold whitespace-nowrap ${prominent ? 'text-lg' : 'text-sm'}`}>{title}</h3>
-              {badge && (
-                <span className="rounded-full bg-accent-primary text-black text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 whitespace-nowrap">
-                  {badge}
-                </span>
-              )}
-            </div>
-            <p className={`text-text-muted leading-relaxed ${prominent ? 'text-[13px]' : 'text-[12px]'}`}>{description}</p>
-            <div className={`mt-2 flex items-center gap-1.5 text-[11px] font-semibold ${styles.etaText}`}>
-              <Clock size={12} className="shrink-0" />
-              <span>{eta}</span>
-            </div>
-          </div>
-          <span
-            className={`shrink-0 flex h-5 w-5 items-center justify-center rounded-full border transition-colors ${
-              selected ? styles.checkOn : 'border-white/20 text-transparent'
-            }`}
-          >
-            <Check size={12} strokeWidth={3} />
-          </span>
-        </div>
-      </button>
-    );
   };
 
   return (
@@ -248,116 +115,6 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
             </div>
           )}
 
-          {step === 'sync' && (
-            <div className="flex flex-col gap-4 animate-fade-in">
-              <div className="flex items-start gap-3">
-                <div className="p-2.5 rounded-full bg-accent-primary/10 text-accent-primary ring-1 ring-white/5 h-fit">
-                  <Zap size={20} />
-                </div>
-                <div>
-                  <h2 ref={headingRef} tabIndex={-1} className="text-lg font-bold text-white mb-1 outline-none">{t('setup.wizard.sync.title')}</h2>
-                  <p className="text-text-muted text-xs leading-5">{t('setup.wizard.sync.description')}</p>
-                </div>
-              </div>
-              <div className="flex flex-col gap-3">
-                {syncCard(
-                  'fast',
-                  <Zap size={24} />,
-                  'primary',
-                  t('setup.wizard.sync.fast.title'),
-                  t('setup.wizard.sync.fast.description'),
-                  '~2-5 min',
-                  true,
-                  t('setup.wizard.sync.recommended'),
-                )}
-                {syncCard(
-                  'independent',
-                  <Lock size={18} />,
-                  'secondary',
-                  t('setup.wizard.sync.independent.title'),
-                  t('setup.wizard.sync.independent.description'),
-                  '~30-60 min',
-                  false,
-                )}
-              </div>
-              <div className="flex items-center gap-2 text-[11px] text-text-muted px-1">
-                <Shield size={12} className="text-accent-success shrink-0" />
-                <span>{t('setup.wizard.sync.bothLocalNote')}</span>
-              </div>
-            </div>
-          )}
-
-          {step === 'preparing' && (
-            <div className="flex flex-col gap-5 animate-fade-in">
-              <div className="flex items-start gap-3">
-                <div className="p-2.5 rounded-full bg-accent-primary/10 text-accent-primary ring-1 ring-white/5 h-fit">
-                  <Database size={20} />
-                </div>
-                <div>
-                  <h2 ref={headingRef} tabIndex={-1} className="text-lg font-bold text-white mb-1 outline-none">
-                    {t('setup.wizard.preparing.title')}
-                  </h2>
-                  <p className="text-text-muted text-xs leading-5">
-                    {scanMode === 'independent'
-                      ? t('setup.wizard.preparing.descriptionIndependent')
-                      : t('setup.wizard.preparing.descriptionFast')}
-                  </p>
-                </div>
-              </div>
-
-              {/* Overall progress bar */}
-              <div className="w-full">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-medium text-text-secondary">
-                    {prepReady ? t('setup.wizard.preparing.ready') : t('setup.wizard.preparing.inProgress')}
-                  </span>
-                  <span className="text-xs font-mono text-text-muted">{prep ? `${prep.percent}%` : '—'}</span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${prepReady ? 'bg-accent-success' : 'bg-accent-primary'}`}
-                    style={{ width: `${prep ? prep.percent : 0}%` }}
-                    role="progressbar"
-                    aria-valuenow={prep ? prep.percent : 0}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-label={t('setup.wizard.preparing.title')}
-                  />
-                </div>
-              </div>
-
-              {/* Per-index breakdown */}
-              <div className="flex flex-col gap-2">
-                {(prep?.components || []).map((c) => (
-                  <div key={c.key} className="flex items-center gap-2.5">
-                    <span className={`flex h-4 w-4 items-center justify-center rounded-full border shrink-0 ${c.ready ? 'bg-accent-success border-accent-success text-black' : 'border-white/20 text-transparent'}`}>
-                      <Check size={10} strokeWidth={3} />
-                    </span>
-                    <span className="text-xs text-text-secondary flex-1">{t(`setup.wizard.preparing.index.${c.key}`)}</span>
-                    <span className="text-[11px] font-mono text-text-muted">{c.ready ? '✓' : `${c.percent}%`}</span>
-                  </div>
-                ))}
-              </div>
-
-              {prepError && (
-                <p className="text-[11px] text-accent-secondary/90 px-1">{t('setup.wizard.preparing.retrying')}</p>
-              )}
-              <div className="flex items-center gap-2 text-[11px] text-text-muted px-1">
-                <Shield size={12} className="text-accent-success shrink-0" />
-                <span>{t('setup.wizard.preparing.gateNote')}</span>
-              </div>
-              {prepSlow && !prepReady && (
-                <button
-                  type="button"
-                  onClick={onComplete}
-                  className="text-[11px] text-text-muted underline hover:text-white self-start outline-none"
-                >
-                  {t('setup.wizard.preparing.continueAnyway')}
-                </button>
-              )}
-            </div>
-          )}
-
           {/* Navigation */}
           <div className="flex items-center gap-3 pt-2">
             {!isFirst && (
@@ -365,18 +122,10 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
                 {t('common.back')}
               </Button>
             )}
-            <Button
-              onClick={goNext}
-              disabled={step === 'preparing' && !prepReady}
-              className={isFirst ? 'w-full' : 'flex-[2]'}
-            >
+            <Button onClick={goNext} className={isFirst ? 'w-full' : 'flex-[2]'}>
               <span className="inline-flex items-center justify-center gap-2">
-                {step === 'preparing'
-                  ? (prepReady ? t('setup.wizard.finish') : t('setup.wizard.preparing.inProgress'))
-                  : t('common.next')}
-                {step === 'preparing'
-                  ? (prepReady ? <ChevronRight size={16} /> : <Loader2 size={16} className="animate-spin" />)
-                  : <ArrowRight size={16} />}
+                {isLast ? t('setup.wizard.finish') : t('common.next')}
+                <ArrowRight size={16} />
               </span>
             </Button>
           </div>
