@@ -23,7 +23,8 @@
       "updater.js",
       "package.json",
       "build/icon.png",
-      "preload.js"
+      "preload.js",
+      "afterPack.js"
     ],
     "extraResources": [
       {
@@ -56,17 +57,11 @@
             "x64",
             "arm64"
           ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
         }
       ],
       "category": "public.app-category.finance",
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "identity": null
     },
     "win": {
       "target": [
@@ -86,17 +81,25 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "category": "Finance",
       "icon": "build/icon.png",
       "desktop": {
         "Comment": "Salvium Vault Desktop Wallet"
-      }
+      },
+      "maintainer": "143Noodles <143Noodles@users.noreply.github.com>"
     },
     "directories": {
       "output": "release"
-    }
+    },
+    "afterPack": "afterPack.js"
   },
   "dependencies": {
     "electron-updater": "^6.3.9",
