@@ -2664,6 +2664,15 @@ async function checkAndInvalidateStaleCspChunks() {
 
 async function checkAndFillMissingCspChunks() {
     if (!CSP_CACHE_ENABLED) return;
+    // Desktop sidecar: CSP chunks are exploded from the downloaded bundle and have
+    // no .txi sibling, so this gap filler would flag every one as "missing" and
+    // regenerate it from the node (the load this fix removed). The scan reads the
+    // .csp files directly; on-demand csp-batch + the realtime watcher cover the
+    // live tail and any genuine gap. Skip the background filler on desktop.
+    if (process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1') {
+        console.log('[CSP-Gap-Check] Skipped on desktop sidecar (CSP chunks serve the scan).');
+        return;
+    }
 
     console.log('[CSP-Gap-Check] Scanning for missing CSP chunks...');
 
@@ -6113,6 +6122,10 @@ async function extractCspBundleToChunks() {
             try {
                 if (fsSync.existsSync(dest) && fsSync.statSync(dest).size === c.dataLength) continue;
             } catch (_) {}
+            if (dataStart + c.dataOffset + c.dataLength > (meta.stat ? meta.stat.size : 0)) {
+                console.warn('[Fast Sync] CSP bundle truncated: chunk ' + c.startHeight + ' exceeds file size; bundle incomplete');
+                continue;
+            }
             const buf = Buffer.alloc(c.dataLength);
             const { bytesRead } = await fh.read(buf, 0, c.dataLength, dataStart + c.dataOffset);
             if (bytesRead !== c.dataLength) { console.warn('[Fast Sync] short read extracting chunk ' + c.startHeight); continue; }
