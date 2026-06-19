@@ -614,33 +614,33 @@
     "wizard": {
       "welcome": {
         "title": "Bienvenue dans votre Salvium Vault",
-        "subtitle": "Configurons la façon dont votre portefeuille se connecte et se synchronise. Vos clés sont générées et stockées uniquement sur cet appareil.",
-        "privacyNote": "Votre seed et vos clés ne quittent jamais cet appareil, et toute l'analyse se fait localement."
+        "subtitle": "Configurons la façon dont votre portefeuille se connecte et se synchronise.",
+        "privacyNote": "Vos clés ne quittent jamais cet appareil. L'analyse est entièrement locale."
       },
       "node": {
         "title": "Se connecter à un nœud",
-        "description": "Choisissez quel nœud Salvium synchronise votre portefeuille. Les nœuds seed officiels sont sélectionnés par défaut ; les utilisateurs avancés peuvent indiquer leur propre salviumd ou tout nœud accessible."
+        "description": "Choisissez le nœud qui synchronise votre portefeuille, ou utilisez votre propre salviumd local."
       },
       "sync": {
         "title": "Choisir le mode de synchronisation",
-        "description": "Les deux options conservent vos clés et l'analyse entièrement en local. Elles ne diffèrent que par la manière dont l'index d'analyse initial est obtenu.",
+        "description": "Les deux analysent localement. Ils diffèrent seulement dans la façon dont l'index initial est construit.",
         "recommended": "Recommandé",
-        "bothLocalNote": "Dans les deux cas, vos clés ne quittent jamais cet appareil et l'analyse s'exécute localement.",
+        "bothLocalNote": "Dans tous les cas, vos clés restent sur cet appareil.",
         "fast": {
           "title": "Synchronisation rapide",
-          "description": "Télécharge une fois un index d'analyse prédéfini depuis le CDN, en faisant confiance à ce paquet pour son exhaustivité, puis fonctionne en local. Première exécution la plus rapide."
+          "description": "Téléchargez un index d'analyse prédéfini depuis le CDN, puis synchronisez localement. Premier lancement le plus rapide."
         },
         "independent": {
           "title": "Construction indépendante",
-          "description": "Construit l'index d'analyse localement à partir de la blockchain sans données préchargées, de sorte que votre portefeuille ne fait confiance à aucun paquet prédéfini. Première exécution plus lente."
+          "description": "Construisez l'index d'analyse localement à partir de la chaîne, sans données préchargées. Premier lancement plus lent."
         }
       },
       "finish": "Terminer la configuration",
       "stepProgress": "Étape {{current}} sur {{total}}",
       "preparing": {
         "title": "Préparation de votre portefeuille",
-        "descriptionFast": "Téléchargement des index de scan préconstruits depuis le CDN. Cette opération ne s'exécute qu'une seule fois — votre portefeuille sera entièrement prêt à scanner dès qu'elle sera terminée.",
-        "descriptionIndependent": "Construction des index de scan localement à partir de la blockchain. Cela peut prendre un certain temps lors de la première exécution, mais aucune donnée préconstruite n'est récupérée.",
+        "descriptionFast": "Téléchargement des index d'analyse prédéfinis. Cela se produit une seule fois et votre portefeuille sera bientôt prêt.",
+        "descriptionIndependent": "Construction des index d'analyse localement à partir de la chaîne. Le premier lancement peut prendre un certain temps.",
         "ready": "Prêt",
         "inProgress": "Préparation…",
         "index": {
@@ -648,8 +648,8 @@
           "spends": "Index de dépense",
           "stakes": "Index de staking"
         },
-        "retrying": "Problème de connexion — nouvelle tentative…",
-        "gateNote": "Nous attendons que chaque index atteigne le bloc actuel afin que votre premier scan ne puisse manquer aucune transaction récente.",
+        "retrying": "Problème de connexion, nouvelle tentative…",
+        "gateNote": "Nous attendons que chaque index atteigne le dernier bloc afin que votre première analyse ne manque rien.",
         "continueAnyway": "Continuer quand même"
       }
     }

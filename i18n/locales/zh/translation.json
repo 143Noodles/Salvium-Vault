@@ -614,33 +614,33 @@
     "wizard": {
       "welcome": {
         "title": "欢迎使用您的 Salvium Vault",
-        "subtitle": "让我们来设置您的钱包如何连接和同步。您的密钥仅在此设备上生成和存储。",
-        "privacyNote": "您的助记词和密钥永远不会离开此设备，所有扫描都在本地进行。"
+        "subtitle": "让我们设置您的钱包如何连接和同步。",
+        "privacyNote": "您的密钥永不离开本设备。扫描完全在本地进行。"
       },
       "node": {
         "title": "连接到节点",
-        "description": "选择由哪个 Salvium 节点同步您的钱包。默认选择官方种子节点；高级用户可以指向自己的 salviumd 或任何可访问的节点。"
+        "description": "选择同步您钱包的节点，或使用您自己的本地 salviumd。"
       },
       "sync": {
         "title": "选择同步方式",
-        "description": "两种方式都将您的密钥和扫描完全保留在本地。它们仅在如何获取初始扫描索引方面有所不同。",
+        "description": "两者都在本地扫描，区别仅在于初始索引的构建方式。",
         "recommended": "推荐",
-        "bothLocalNote": "无论哪种方式，您的密钥都不会离开此设备，扫描均在本地运行。",
+        "bothLocalNote": "无论哪种方式，您的密钥都保留在本设备上。",
         "fast": {
           "title": "快速同步",
-          "description": "从 CDN 一次性下载预构建的扫描索引，信任该数据包的完整性，然后在本地工作。首次运行最快。"
+          "description": "从 CDN 下载预构建的扫描索引，然后在本地同步。首次运行最快。"
         },
         "independent": {
           "title": "独立构建",
-          "description": "在本地从区块链构建扫描索引，不预取任何数据，因此您的钱包不信任任何预构建的数据包。首次运行较慢。"
+          "description": "在本地从链上构建扫描索引，不使用任何预取数据。首次运行较慢。"
         }
       },
       "finish": "完成设置",
       "stepProgress": "第 {{current}} 步，共 {{total}} 步",
       "preparing": {
         "title": "正在准备您的钱包",
-        "descriptionFast": "正在从 CDN 下载预构建的扫描索引。此过程仅运行一次——完成后您的钱包即可完整扫描。",
-        "descriptionIndependent": "正在从区块链在本地构建扫描索引。首次运行可能需要一些时间，但不会获取任何预构建数据。",
+        "descriptionFast": "正在下载预构建的扫描索引。此过程仅运行一次，您的钱包很快即可就绪。",
+        "descriptionIndependent": "正在本地从链上构建扫描索引。首次运行可能需要一些时间。",
         "ready": "就绪",
         "inProgress": "正在准备…",
         "index": {
@@ -648,8 +648,8 @@
           "spends": "支出索引",
           "stakes": "质押索引"
         },
-        "retrying": "连接中断——正在重试…",
-        "gateNote": "我们会等待每个索引都同步到当前区块，以确保您的首次扫描不会遗漏最近的交易。",
+        "retrying": "连接中断，正在重试…",
+        "gateNote": "我们会等待每个索引都到达最新区块，以确保您的首次扫描不会遗漏任何内容。",
         "continueAnyway": "仍然继续"
       }
     }

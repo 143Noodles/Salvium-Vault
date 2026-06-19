@@ -8,7 +8,7 @@
 // ADDITIVE ONLY: this file does not modify server.cjs in any way.
 // ---------------------------------------------------------------------------
 
-const { app, BrowserWindow, dialog, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, dialog, Tray, Menu, nativeImage, shell } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
@@ -67,6 +67,58 @@ function showMainWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+// Force a content-update check (from the menu): prompt the decision if one is
+// available, otherwise tell the user they're up to date.
+function manualUpdateCheck() {
+  checkForContentUpdate(REPO_ROOT)
+    .then((r) => {
+      if (r && r.updateAvailable) { lastPromptedVersion = r.version; promptUpdateDecision(r.manifest, r.version); return; }
+      const win = BrowserWindow.getAllWindows()[0] || null;
+      const o = { type: 'info', buttons: ['OK'], title: 'Up to date', message: 'Salvium Vault is up to date.' };
+      (win ? dialog.showMessageBox(win, o) : dialog.showMessageBox(o)).catch(() => {});
+    })
+    .catch((e) => log('manual update check failed:', e && e.message));
+}
+
+// --- Application menu (replaces Electron's generic default) -----------------
+function buildAppMenu() {
+  const isMac = process.platform === 'darwin';
+  const isDev = !app.isPackaged;
+  const template = [
+    ...(isMac ? [{ role: 'appMenu' }] : []),
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Check for Updates…', click: () => manualUpdateCheck() },
+        { type: 'separator' },
+        isMac ? { role: 'close' } : { role: 'quit' },
+      ],
+    },
+    { role: 'editMenu' }, // undo/redo/cut/copy/paste/selectAll — needed for inputs
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        ...(isDev ? [{ role: 'toggleDevTools' }] : []), // dev only — no DevTools in prod builds
+        { type: 'separator' },
+        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    { role: 'windowMenu' },
+    {
+      role: 'help',
+      submenu: [
+        { label: 'Salvium Website', click: () => shell.openExternal('https://salvium.io') },
+        { label: 'Block Explorer', click: () => shell.openExternal('https://explorer.salvium.tools') },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 // Create the tray icon (once) so a hidden-to-tray window can be reopened.
@@ -361,6 +413,7 @@ async function boot() {
   await mainWindow.loadURL('http://127.0.0.1:' + port + '/');
   log('SPA loaded. Total boot to window:', Date.now() - bootStart, 'ms');
   mainWindow.on('close', handleWindowClose);
+  buildAppMenu();
 
   // OTA content update: detect at launch and then hourly, letting the USER
   // decide whether to download each one. Nothing downloads until they opt in,

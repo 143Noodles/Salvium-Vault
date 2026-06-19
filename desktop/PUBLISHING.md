@@ -47,3 +47,44 @@ release assets after publishing or the checksum will mismatch.
 `updater.js` honors `SALVIUM_UPDATE_FEED_URL=<url>` (generic feed) and
 `SALVIUM_FORCE_UPDATE_CHECK=1` to exercise the full detect/download path against a
 local `python3 -m http.server` serving a newer build + `latest-linux.yml`.
+
+## Linux sandbox on Ubuntu 24.04+
+
+Ubuntu 24.04 (and derivatives) set `kernel.apparmor_restrict_unprivileged_userns=1`,
+which blocks the unprivileged user namespaces Chromium needs. An **unsigned**
+AppImage can therefore fail to launch (sandbox error / "Cannot mount"). Most
+other distros are unaffected. Three options, best first:
+
+1. **Install the bundled AppArmor profile (keeps the sandbox ON):**
+   ```sh
+   sudo cp desktop/packaging/apparmor/salvium-vault /etc/apparmor.d/salvium-vault
+   sudo apparmor_parser -r /etc/apparmor.d/salvium-vault   # edit the path inside if needed
+   ```
+2. **Run with `--no-sandbox`** (quick; disables the Chromium sandbox):
+   add `--no-sandbox` to the AppImage launch command / `.desktop` `Exec=`.
+3. **System-wide (affects all apps):** `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
+
+We do NOT ship `--no-sandbox` by default because the sandbox is meaningful
+defense-in-depth for a wallet.
+
+## Cross-platform status & test checklist
+
+**Linux:** fully verified (boot, restore, scan, OTA update + restart, tray,
+stable-port persistence, header gating, fonts).
+
+**macOS / Windows:** CI-BUILT only (dmg x64+arm64, NSIS x64) — not yet
+runtime-tested on real hardware. The native code is portable by construction:
+- AppImage-specific bits (`$APPIMAGE`, `APPIMAGE_EXTRACT_AND_RUN`, XDG paths) are
+  Linux-guarded; the relaunch falls back to `app.relaunch()` off-Linux.
+- Tray, application menu (`role:`-based with `isMac` branches), single-instance
+  lock, stable persisted port, and OTA content updates are all OS-agnostic
+  Electron APIs.
+
+Manual checklist to run on a real Mac / Windows box before shipping there:
+- [ ] First-run wizard -> Fast Sync download progress -> onboarding
+- [ ] Restore from .vault, scans to tip, balance correct
+- [ ] Quit + relaunch: wallet persists (stable port -> same origin)
+- [ ] OTA: detect update -> "Update now" -> "Restart now" actually reopens
+- [ ] Close-to-tray: minimizes to menu bar (mac) / system tray (win), keeps syncing
+- [ ] App menu: Check for Updates, Edit copy/paste in password field, no DevTools
+- [ ] Gatekeeper (mac) / SmartScreen (win) warning on first open (expected unsigned)

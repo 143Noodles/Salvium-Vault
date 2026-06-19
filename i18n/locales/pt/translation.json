@@ -613,34 +613,34 @@
   "setup": {
     "wizard": {
       "welcome": {
-        "title": "Bem-vindo ao seu Salvium Vault",
-        "subtitle": "Vamos configurar como a sua carteira se conecta e sincroniza. As suas chaves são geradas e armazenadas apenas neste dispositivo.",
-        "privacyNote": "A sua seed e as suas chaves nunca saem deste dispositivo, e toda a verificação acontece localmente."
+        "title": "Bem-vindo à sua Salvium Vault",
+        "subtitle": "Vamos configurar como a sua carteira se conecta e sincroniza.",
+        "privacyNote": "As suas chaves nunca saem deste dispositivo. A verificação é totalmente local."
       },
       "node": {
         "title": "Conectar a um nó",
-        "description": "Escolha qual nó Salvium sincroniza a sua carteira. Os nós seed oficiais estão selecionados por padrão; usuários avançados podem apontar para o seu próprio salviumd ou qualquer nó acessível."
+        "description": "Escolha qual nó sincroniza a sua carteira, ou use o seu próprio salviumd local."
       },
       "sync": {
         "title": "Escolha como sincronizar",
-        "description": "Ambas as opções mantêm as suas chaves e a verificação totalmente locais. Elas diferem apenas na forma como o índice de verificação inicial é obtido.",
+        "description": "Ambos verificam localmente. Diferem apenas na forma como o índice inicial é construído.",
         "recommended": "Recomendado",
-        "bothLocalNote": "De qualquer forma, as suas chaves nunca saem deste dispositivo e a verificação é executada localmente.",
+        "bothLocalNote": "De qualquer forma, as suas chaves permanecem neste dispositivo.",
         "fast": {
           "title": "Sincronização rápida",
-          "description": "Baixa uma vez um índice de verificação pré-construído do CDN, confiando que esse pacote esteja completo, e depois funciona localmente. Primeira execução mais rápida."
+          "description": "Baixe um índice de verificação pré-criado do CDN e depois sincronize localmente. Primeira execução mais rápida."
         },
         "independent": {
           "title": "Construção independente",
-          "description": "Constrói o índice de verificação localmente a partir da blockchain sem dados pré-carregados, de modo que a sua carteira não confia em nenhum pacote pré-construído. Primeira execução mais lenta."
+          "description": "Construa o índice de verificação localmente a partir da cadeia, sem dados pré-carregados. Primeira execução mais lenta."
         }
       },
       "finish": "Concluir configuração",
       "stepProgress": "Etapa {{current}} de {{total}}",
       "preparing": {
-        "title": "Preparando sua carteira",
-        "descriptionFast": "Baixando os índices de varredura pré-construídos da CDN. Isso é executado uma única vez — sua carteira estará totalmente pronta para varredura assim que terminar.",
-        "descriptionIndependent": "Construindo os índices de varredura localmente a partir da blockchain. Isso pode demorar um pouco na primeira execução, mas nenhum dado pré-construído é baixado.",
+        "title": "Preparando a sua carteira",
+        "descriptionFast": "Baixando os índices de verificação pré-criados. Isso ocorre uma única vez e a sua carteira estará pronta em breve.",
+        "descriptionIndependent": "Construindo os índices de verificação localmente a partir da cadeia. A primeira execução pode demorar um pouco.",
         "ready": "Pronto",
         "inProgress": "Preparando…",
         "index": {
@@ -648,8 +648,8 @@
           "spends": "Índice de gasto",
           "stakes": "Índice de staking"
         },
-        "retrying": "Falha na conexão — tentando novamente…",
-        "gateNote": "Aguardamos até que cada índice alcance o bloco atual para que sua primeira varredura não perca transações recentes.",
+        "retrying": "Falha de conexão, tentando novamente…",
+        "gateNote": "Esperamos até que cada índice alcance o bloco mais recente para que a sua primeira verificação não perca nada.",
         "continueAnyway": "Continuar mesmo assim"
       }
     }

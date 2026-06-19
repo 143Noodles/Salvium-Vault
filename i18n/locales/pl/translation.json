@@ -613,34 +613,34 @@
   "setup": {
     "wizard": {
       "welcome": {
-        "title": "Witamy w Twoim Salvium Vault",
-        "subtitle": "Skonfigurujmy sposób, w jaki Twój portfel łączy się i synchronizuje. Twoje klucze są generowane i przechowywane wyłącznie na tym urządzeniu.",
-        "privacyNote": "Twój seed i klucze nigdy nie opuszczają tego urządzenia, a całe skanowanie odbywa się lokalnie."
+        "title": "Witaj w swoim Salvium Vault",
+        "subtitle": "Skonfigurujmy sposób łączenia i synchronizacji Twojego portfela.",
+        "privacyNote": "Twoje klucze nigdy nie opuszczają tego urządzenia. Skanowanie odbywa się w pełni lokalnie."
       },
       "node": {
         "title": "Połącz z węzłem",
-        "description": "Wybierz, który węzeł Salvium synchronizuje Twój portfel. Oficjalne węzły seed są wybrane domyślnie; zaawansowani użytkownicy mogą wskazać własny salviumd lub dowolny osiągalny węzeł."
+        "description": "Wybierz węzeł, który synchronizuje Twój portfel, lub użyj własnego lokalnego salviumd."
       },
       "sync": {
         "title": "Wybierz sposób synchronizacji",
-        "description": "Obie opcje utrzymują Twoje klucze i skanowanie całkowicie lokalnie. Różnią się jedynie sposobem uzyskania początkowego indeksu skanowania.",
+        "description": "Oba skanują lokalnie. Różnią się jedynie sposobem budowania początkowego indeksu.",
         "recommended": "Zalecane",
-        "bothLocalNote": "Tak czy inaczej, Twoje klucze nigdy nie opuszczają tego urządzenia, a skanowanie działa lokalnie.",
+        "bothLocalNote": "Tak czy inaczej, Twoje klucze pozostają na tym urządzeniu.",
         "fast": {
           "title": "Szybka synchronizacja",
-          "description": "Jednorazowo pobiera gotowy indeks skanowania z CDN, ufając kompletności tego pakietu, a następnie działa lokalnie. Najszybsze pierwsze uruchomienie."
+          "description": "Pobierz gotowy indeks skanowania z CDN, a następnie synchronizuj lokalnie. Najszybsze pierwsze uruchomienie."
         },
         "independent": {
           "title": "Niezależna budowa",
-          "description": "Buduje indeks skanowania lokalnie na podstawie blockchaina bez wstępnie pobranych danych, więc Twój portfel nie ufa żadnemu gotowemu pakietowi. Wolniejsze pierwsze uruchomienie."
+          "description": "Zbuduj indeks skanowania lokalnie z łańcucha, bez wstępnie pobranych danych. Wolniejsze pierwsze uruchomienie."
         }
       },
       "finish": "Zakończ konfigurację",
       "stepProgress": "Krok {{current}} z {{total}}",
       "preparing": {
         "title": "Przygotowywanie portfela",
-        "descriptionFast": "Pobieranie gotowych indeksów skanowania z sieci CDN. Operacja ta jest wykonywana tylko raz — Twój portfel będzie w pełni gotowy do skanowania zaraz po jej zakończeniu.",
-        "descriptionIndependent": "Budowanie indeksów skanowania lokalnie na podstawie łańcucha bloków. Przy pierwszym uruchomieniu może to chwilę potrwać, ale nie są pobierane żadne gotowe dane.",
+        "descriptionFast": "Pobieranie gotowych indeksów skanowania. Odbywa się to jednorazowo i Twój portfel będzie wkrótce gotowy.",
+        "descriptionIndependent": "Budowanie indeksów skanowania lokalnie z łańcucha. Pierwsze uruchomienie może chwilę potrwać.",
         "ready": "Gotowe",
         "inProgress": "Przygotowywanie…",
         "index": {
@@ -648,8 +648,8 @@
           "spends": "Indeks wydatków",
           "stakes": "Indeks stakingu"
         },
-        "retrying": "Problem z połączeniem — ponawianie…",
-        "gateNote": "Czekamy, aż każdy indeks osiągnie bieżący blok, aby Twoje pierwsze skanowanie nie pominęło ostatnich transakcji.",
+        "retrying": "Problem z połączeniem, ponawianie…",
+        "gateNote": "Czekamy, aż każdy indeks osiągnie najnowszy blok, aby Twoje pierwsze skanowanie niczego nie pominęło.",
         "continueAnyway": "Kontynuuj mimo to"
       }
     }
