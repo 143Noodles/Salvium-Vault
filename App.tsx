@@ -10,6 +10,7 @@ import { walletService } from './services/WalletService';
 import Dashboard from './components/Dashboard';
 import Onboarding from './components/Onboarding';
 import LoadingScreen from './components/LoadingScreen';
+import PrepareScreen from './components/PrepareScreen';
 import LockScreen from './components/LockScreen';
 import RecoveryOptionsScreen from './components/RecoveryOptionsScreen';
 import SendPage from './components/SendPage';
@@ -48,7 +49,7 @@ import { reportTaskEvent, startTaskTelemetry } from './utils/clientTelemetry';
 
 const isDesktopOnly = isDesktop;
 
-type AppState = 'initializing' | 'setup' | 'loading' | 'dashboard' | 'locked';
+type AppState = 'initializing' | 'setup' | 'preparing' | 'loading' | 'dashboard' | 'locked';
 
 // One-time dashboard announcement popup. null = no popup. Bump `version` so users who
 // dismissed an earlier notice see a new one.
@@ -509,8 +510,15 @@ const AppContent: React.FC = () => {
     if (mode === 'restore') {
       localStorage.setItem('salvium_initial_scan_complete', 'false');
       localStorage.removeItem('salvium_restore_scan_finished');
-      setNeedsScan(true);
-      setAppState('loading');
+      // Desktop: download the prebuilt scan indexes first (PrepareScreen gates
+      // the scan), then run the restore scan. The web wallet has no sidecar
+      // prepare step, so it scans directly (unchanged behaviour).
+      if (isDesktopApp()) {
+        setAppState('preparing');
+      } else {
+        setNeedsScan(true);
+        setAppState('loading');
+      }
     } else {
       localStorage.setItem('salvium_initial_scan_complete', 'true');
       localStorage.removeItem(VAULT_RESTORE_PENDING_KEY);
@@ -617,6 +625,11 @@ const AppContent: React.FC = () => {
       );
     }
     return <Onboarding onComplete={handleOnboardingComplete} />;
+  }
+
+  if (appState === 'preparing') {
+    // Desktop-only: download prebuilt scan indexes before the restore scan.
+    return <PrepareScreen onReady={() => { setNeedsScan(true); setAppState('loading'); }} />;
   }
 
   if (appState === 'loading') {

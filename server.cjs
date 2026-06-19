@@ -6009,7 +6009,13 @@ app.get(['/api/prepare/status', '/vault/api/prepare/status'], noCacheHeaders, as
             c.ready = (tip > 0 && c.height >= (tip - GRACE)) || (fastDone && c.percent >= 99);
             if (c.percent < minPct) minPct = c.percent;
         }
-        const allReady = tip > 0 && wasmModuleReady && components.every(c => c.ready);
+        // Fast Sync download failed (CDN unreachable): let the wizard proceed and
+        // build locally instead of hanging. Reported as `fallback` so the UI can say so.
+        const fastFailed = cachePrepareJob.mode === 'fast'
+            && cachePrepareJob.startedAt > 0
+            && !cachePrepareJob.running
+            && !!cachePrepareJob.error;
+        const allReady = tip > 0 && wasmModuleReady && (components.every(c => c.ready) || fastFailed);
         // While Fast Sync is actively downloading the prebuilt caches, surface
         // byte-level download progress so the bar moves during the (large)
         // spend-index pull instead of sitting at 0% then snapping to 100%.
@@ -6025,6 +6031,7 @@ app.get(['/api/prepare/status', '/vault/api/prepare/status'], noCacheHeaders, as
             chainTip: tip,
             wasmReady: wasmModuleReady,
             cspCacheEnabled: CSP_CACHE_ENABLED,
+            fallback: fastFailed,
             components,
         });
     } catch (e) {
