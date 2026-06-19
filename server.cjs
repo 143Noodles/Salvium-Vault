@@ -4530,6 +4530,15 @@ let syncStatus = {
 
 async function aggressiveStartupSync() {
     if (!CACHE_ENABLED) return;
+    // Desktop sidecar: the CSP bundle (exploded into .csp chunks) serves the scan,
+    // so bulk-downloading every raw block bin here is redundant and hammers the
+    // node. The realtime watcher + on-demand csp-batch cover the live tail.
+    if (process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1') {
+        console.log('[Startup sync] Skipped on desktop sidecar (CSP chunks serve the scan).');
+        startupSyncComplete = true;
+        syncStatus.phase = 'complete';
+        return;
+    }
 
     console.log('Starting aggressive startup sync - downloading ALL missing block bins...');
     syncStatus.lastStartTime = new Date().toISOString();
@@ -6083,6 +6092,39 @@ app.get(['/api/cache-export/:file', '/vault/api/cache-export/:file'], (req, res)
 // this — the background maintenance loop builds the same caches from the node.
 // ---------------------------------------------------------------------------
 const CACHE_CDN_BASE = process.env.SALVIUM_CACHE_CDN_BASE || 'https://cdn.salvium.tools/api/cache-export';
+// Desktop Fast Sync: explode the downloaded CSP bundle into the individual
+// csp-v{N}-{start}-{end}.csp files the scan reads via csp-cached / csp-batch, so
+// the prebuilt data is actually USED instead of every chunk being regenerated
+// from the daemon (~9s/chunk). buildCspBundle copies each .csp file verbatim, so
+// the chunk data in the bundle is byte-identical to the original .csp file.
+async function extractCspBundleToChunks() {
+    const meta = await readCspBundleMetadataFromDisk();
+    if (!meta.valid || !Array.isArray(meta.chunks) || meta.chunks.length === 0) {
+        console.warn('[Fast Sync] CSP bundle not extractable: ' + (meta.reason || 'no chunks'));
+        return 0;
+    }
+    const dataStart = 20 + meta.chunkCount * 16;
+    await fs.mkdir(CSP_CACHE_DIR, { recursive: true });
+    const fh = await fs.open(CSP_BUNDLE_FILE, 'r');
+    let written = 0;
+    try {
+        for (const c of meta.chunks) {
+            const dest = path.join(CSP_CACHE_DIR, 'csp-v' + CSP_CACHE_SCHEMA_VERSION + '-' + c.startHeight + '-' + c.endHeight + '.csp');
+            try {
+                if (fsSync.existsSync(dest) && fsSync.statSync(dest).size === c.dataLength) continue;
+            } catch (_) {}
+            const buf = Buffer.alloc(c.dataLength);
+            const { bytesRead } = await fh.read(buf, 0, c.dataLength, dataStart + c.dataOffset);
+            if (bytesRead !== c.dataLength) { console.warn('[Fast Sync] short read extracting chunk ' + c.startHeight); continue; }
+            await atomicWriteFile(dest, buf);
+            written++;
+        }
+    } finally {
+        await fh.close();
+    }
+    console.log('[Fast Sync] Exploded CSP bundle into ' + written + ' new chunk file(s) (of ' + meta.chunks.length + ')');
+    return written;
+}
 let cachePrepareJob = { mode: null, running: false, error: null, startedAt: 0, downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0 };
 async function fastSyncProvisionCaches() {
     if (cachePrepareJob.running) return;
@@ -6152,6 +6194,7 @@ async function fastSyncProvisionCaches() {
             } catch (e) { console.warn('[Fast Sync] CSP bundle download:', e.message); }
         }
         try { await loadCspBundle(); } catch (e) { console.warn('[Fast Sync] reload CSP bundle:', e.message); }
+        try { await extractCspBundleToChunks(); } catch (e) { console.warn('[Fast Sync] explode CSP bundle:', e.message); }
         // Reload the freshly-downloaded caches so the spend/stake/timestamp
         // indexes go live without a restart; the maintenance loop tails from here.
         try { await loadKeyImageCache(); } catch (e) { console.warn('[Fast Sync] reload key-image:', e.message); }
