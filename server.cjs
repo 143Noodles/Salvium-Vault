@@ -888,6 +888,14 @@ setInterval(() => {
   eventLoopDelayMonitor.reset();
 }, 5000).unref();
 const CSP_BUNDLE_MAGIC = 0x43535042;
+// TXI bundle (desktop Fast Sync): mirrors the CSP bundle but for the per-chunk
+// blocks-<start>-<end>.txi files, so the desktop sidecar serves the TXI exactly
+// like the hosted server does (same scan path as the web wallet). Streamed
+// (~2.7GB) so it never sits in a single Buffer. Index entry: start(u32) end(u32)
+// dataOffset(u64) dataLength(u64) = 24 bytes; header 20 bytes like CSP.
+const TXI_BUNDLE_FILE = path.join(CACHE_DIR, 'txi-bundle-v4.bin');
+const TXI_BUNDLE_MAGIC = 0x42495854; // 'TXIB'
+const TXI_BUNDLE_VERSION = 1;
 let cspBundleCache = null;
 let cspBundleGzipCache = null;
 let cspBundleStats = {
@@ -6138,6 +6146,49 @@ async function extractCspBundleToChunks() {
     console.log('[Fast Sync] Exploded CSP bundle into ' + written + ' new chunk file(s) (of ' + meta.chunks.length + ')');
     return written;
 }
+// Desktop Fast Sync: explode the downloaded TXI bundle into the individual
+// blocks-<start>-<end>.txi files the sidecar serves for sparse-by-heights, so
+// the stake-return / protocol-token phases read TXI from disk (like the web
+// server) instead of regenerating it from the daemon (~9s/chunk). Byte-exact.
+async function extractTxiBundleToChunks() {
+    let stat;
+    try { stat = await fs.stat(TXI_BUNDLE_FILE); } catch (_) { return 0; }
+    const fh = await fs.open(TXI_BUNDLE_FILE, 'r');
+    try {
+        const header = Buffer.alloc(20);
+        const hr = await fh.read(header, 0, 20, 0);
+        if (hr.bytesRead < 20 || header.readUInt32LE(0) !== TXI_BUNDLE_MAGIC) {
+            console.warn('[Fast Sync] TXI bundle invalid (bad magic/too small)');
+            return 0;
+        }
+        const chunkCount = header.readUInt32LE(8);
+        if (chunkCount === 0 || chunkCount > 1000000) { console.warn('[Fast Sync] TXI bundle bad chunk count'); return 0; }
+        const indexSize = chunkCount * 24;
+        const index = Buffer.alloc(indexSize);
+        const ir = await fh.read(index, 0, indexSize, 20);
+        if (ir.bytesRead < indexSize) { console.warn('[Fast Sync] TXI bundle truncated index'); return 0; }
+        const dataStart = 20 + indexSize;
+        await fs.mkdir(CACHE_DIR, { recursive: true });
+        let written = 0;
+        for (let i = 0; i < chunkCount; i++) {
+            const o = i * 24;
+            const start = index.readUInt32LE(o);
+            const end = index.readUInt32LE(o + 4);
+            const off = Number(index.readBigUInt64LE(o + 8));
+            const len = Number(index.readBigUInt64LE(o + 16));
+            const dest = getTxiFilename(start, end);
+            try { if (fsSync.existsSync(dest) && fsSync.statSync(dest).size === len) continue; } catch (_) {}
+            if (len <= 0 || dataStart + off + len > stat.size) { console.warn('[Fast Sync] TXI bundle truncated at chunk ' + start); continue; }
+            const buf = Buffer.alloc(len);
+            const { bytesRead } = await fh.read(buf, 0, len, dataStart + off);
+            if (bytesRead !== len || !buf.slice(0, 4).equals(TXI_MAGIC_V4)) { console.warn('[Fast Sync] bad/short TXI chunk ' + start); continue; }
+            await atomicWriteFile(dest, buf);
+            written++;
+        }
+        console.log('[Fast Sync] Exploded TXI bundle into ' + written + ' new .txi file(s) (of ' + chunkCount + ')');
+        return written;
+    } finally { await fh.close(); }
+}
 let cachePrepareJob = { mode: null, running: false, error: null, startedAt: 0, downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0 };
 async function fastSyncProvisionCaches() {
     if (cachePrepareJob.running) return;
@@ -6208,6 +6259,30 @@ async function fastSyncProvisionCaches() {
         }
         try { await loadCspBundle(); } catch (e) { console.warn('[Fast Sync] reload CSP bundle:', e.message); }
         try { await extractCspBundleToChunks(); } catch (e) { console.warn('[Fast Sync] explode CSP bundle:', e.message); }
+        // TXI bundle: same desktop-only path as the CSP bundle. URL is passed only
+        // by the Electron shell (SALVIUM_TXI_CDN_URL); the hosted web/Android never
+        // set it, so this is a no-op there.
+        const txiBundleUrl = process.env.SALVIUM_TXI_CDN_URL;
+        if (txiBundleUrl) {
+            const txiPresent = fsSync.existsSync(TXI_BUNDLE_FILE) && fsSync.statSync(TXI_BUNDLE_FILE).size > 0;
+            if (!txiPresent) {
+                try { const h = await axios.head(txiBundleUrl, { timeout: 30000 }); cachePrepareJob.totalBytes += Number(h.headers['content-length']) || 0; } catch (_) {}
+                try {
+                    await fs.mkdir(path.dirname(TXI_BUNDLE_FILE), { recursive: true });
+                    const tmp = TXI_BUNDLE_FILE + '.part';
+                    const resp = await axios.get(txiBundleUrl, { responseType: 'stream', timeout: 1800000 });
+                    await new Promise((resolve, reject) => {
+                        const ws = fsSync.createWriteStream(tmp);
+                        resp.data.on('data', (chunk) => { cachePrepareJob.downloadedBytes += chunk.length; });
+                        resp.data.on('error', reject); ws.on('error', reject); ws.on('finish', resolve);
+                        resp.data.pipe(ws);
+                    });
+                    await fs.rename(tmp, TXI_BUNDLE_FILE);
+                    console.log('[Fast Sync] Downloaded TXI bundle');
+                } catch (e) { console.warn('[Fast Sync] TXI bundle download:', e.message); }
+            }
+            try { await extractTxiBundleToChunks(); } catch (e) { console.warn('[Fast Sync] explode TXI bundle:', e.message); }
+        }
         // Reload the freshly-downloaded caches so the spend/stake/timestamp
         // indexes go live without a restart; the maintenance loop tails from here.
         try { await loadKeyImageCache(); } catch (e) { console.warn('[Fast Sync] reload key-image:', e.message); }
@@ -7806,6 +7881,34 @@ app.options(['/api/csp-bundle', '/vault/api/csp-bundle'], (req, res) => {
     res.sendStatus(200);
 });
 
+app.get(['/api/txi-bundle', '/vault/api/txi-bundle'], async (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges');
+    try {
+        if (!fsSync.existsSync(TXI_BUNDLE_FILE)) { res.status(503).json({ error: 'TXI bundle not available' }); return; }
+        const st = await fs.stat(TXI_BUNDLE_FILE);
+        res.header('Content-Type', 'application/octet-stream');
+        res.header('Accept-Ranges', 'bytes');
+        const range = req.headers.range;
+        let opts = null;
+        if (range) {
+            const m = range.match(/bytes=(\d+)-(\d*)/);
+            if (m) {
+                const start = parseInt(m[1], 10);
+                const end = m[2] ? parseInt(m[2], 10) : st.size - 1;
+                if (start >= st.size || end >= st.size || start > end) { res.status(416); res.header('Content-Range', `bytes */${st.size}`); res.end(); return; }
+                opts = { start, end };
+                res.status(206);
+                res.header('Content-Range', `bytes ${start}-${end}/${st.size}`);
+                res.header('Content-Length', end - start + 1);
+            }
+        }
+        if (!opts) res.header('Content-Length', st.size);
+        const rs = opts ? fsSync.createReadStream(TXI_BUNDLE_FILE, opts) : fsSync.createReadStream(TXI_BUNDLE_FILE);
+        rs.on('error', () => { if (!res.headersSent) res.status(500).json({ error: 'Failed to stream TXI bundle' }); else res.destroy(); });
+        rs.pipe(res);
+    } catch (e) { if (!res.headersSent) res.status(500).json({ error: 'TXI bundle error' }); }
+});
 app.get(['/api/csp-bundle', '/vault/api/csp-bundle'], async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Expose-Headers', 'X-Bundle-Chunks, X-Bundle-Size, X-Bundle-First-Height, X-Bundle-Last-Height, X-Uncompressed-Size, Content-Range, Accept-Ranges');
