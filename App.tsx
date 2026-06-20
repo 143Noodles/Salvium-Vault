@@ -648,7 +648,7 @@ const AppContent: React.FC = () => {
     return <LockScreen onUnlock={handleUnlock} onReset={handleReset} />;
   }
 
-  if (!appState || appState === 'initializing') {
+  if (!appState) {
     return (
       <div className="fixed inset-0 z-50 bg-bg-primary flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-4 p-6 max-w-sm text-center">

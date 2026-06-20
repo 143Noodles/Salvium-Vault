@@ -995,7 +995,7 @@ describe('WalletService', () => {
     };
 
     const installFetchMock = () => {
-      const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+      const fetchMock = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) => {
         const path = String(url);
         if (path.includes('/api/wallet/get_random_outs')) {
           return jsonResponse({ status: 'OK' });

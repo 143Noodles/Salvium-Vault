@@ -290,7 +290,8 @@ async function retrySalPayCallback(
 function isRetryableCallbackResult(result: SalPayCallbackResult): boolean {
   if (!result.attempted || result.ok) return false;
   if (result.status === undefined) return true;
-  return result.status === 408 || result.status === 425 || result.status === 429 || result.status >= 500;
+  return result.status === 408 || result.status === 425 || result.status === 429 ||
+    (typeof result.status === 'number' && result.status >= 500);
 }
 
 function waitForCallbackRetry(attempt: number): Promise<void> {

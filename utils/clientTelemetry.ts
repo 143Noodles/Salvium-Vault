@@ -403,7 +403,7 @@ export const installGlobalClientTelemetry = () => {
 
   window.addEventListener('error', (event) => {
     const target = event.target as HTMLElement | null;
-    const isResourceError = Boolean(target && target !== window && 'tagName' in target);
+    const isResourceError = Boolean(target && 'tagName' in target);
     const asset = isResourceError ? getElementAsset(target) : '';
     const message = event.error?.message || event.message || (isResourceError ? 'resource failed to load' : 'window error');
     const errorName = event.error?.name || 'Error';

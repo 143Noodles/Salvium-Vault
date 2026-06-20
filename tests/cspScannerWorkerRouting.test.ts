@@ -89,7 +89,7 @@ describe('csp-scanner.worker routing', () => {
   });
 
   it('uses the spent-capable ownership scanner even before key images exist', () => {
-    const ownershipSpent = vi.fn(() => JSON.stringify({
+    const ownershipSpent = vi.fn((..._args: unknown[]) => JSON.stringify({
       matches: [{ tx_idx: 7 }],
       spent: [],
       stats: { view_tag_matches: 1 },

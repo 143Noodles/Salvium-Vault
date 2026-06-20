@@ -21,7 +21,7 @@ vi.mock('html5-qrcode', () => {
             return true;
         },
     }));
-    Html5Qrcode.getCameras = html5QrcodeMocks.getCameras;
+    (Html5Qrcode as any).getCameras = html5QrcodeMocks.getCameras;
 
     return {
         Html5Qrcode,

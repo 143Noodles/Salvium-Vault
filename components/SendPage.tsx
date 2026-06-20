@@ -413,7 +413,8 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
         sendKind: salPayRequest ? 'salpay' : 'standard',
         hasPaymentId: Boolean(paymentId),
         sweepAll: validationState?.type === 'warning',
-        validationValid: validationState?.type !== 'error',
+        // 'error' already returned above, so validation has passed here
+        validationValid: true,
       },
     });
     setShowSendConfirm(true);

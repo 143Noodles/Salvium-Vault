@@ -3,7 +3,9 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 type TranslationValue = string | number | boolean | null | TranslationTree;
-type TranslationTree = Record<string, TranslationValue>;
+interface TranslationTree {
+  [key: string]: TranslationValue;
+}
 
 const localesDir = path.join(process.cwd(), 'i18n/locales');
 

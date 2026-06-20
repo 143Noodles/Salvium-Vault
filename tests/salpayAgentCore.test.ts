@@ -10,7 +10,7 @@ const core = require('../utils/salpayAgentCore.cjs') as {
     tokenGenerator?: () => string;
   }): {
     createOrder(input: Record<string, unknown>, options?: { ttlMs?: number }): Promise<Record<string, any>>;
-    getOrderStatus(orderId: string, watchToken: string): Promise<Record<string, any>>;
+    getOrderStatus(orderId: string, watchToken: string, options?: Record<string, unknown>): Promise<Record<string, any>>;
     deleteOrder(orderId: string, watchToken: string): Promise<Record<string, any>>;
     handleCallback(orderId: string, payload: Record<string, unknown>, options: Record<string, unknown>): Promise<Record<string, any>>;
   };
