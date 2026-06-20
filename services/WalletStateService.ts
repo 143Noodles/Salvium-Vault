@@ -1,6 +1,6 @@
 import { debugLog, debugWarn } from '../utils/debug';
 
-const DEBUG = false;
+const DEBUG: boolean = false;
 
 const IDB_NAME = 'salvium_wallet_state_v1';
 const IDB_VERSION = 1;
@@ -62,7 +62,7 @@ async function openDatabase(): Promise<IDBDatabase> {
     const request = indexedDB.open(IDB_NAME, IDB_VERSION);
 
     request.onerror = () => {
-      void DEBUG && console.error('[WalletStateService] Failed to open database:', request.error);
+      DEBUG && console.error('[WalletStateService] Failed to open database:', request.error);
       reject(request.error);
     };
 
@@ -70,12 +70,12 @@ async function openDatabase(): Promise<IDBDatabase> {
       db = request.result;
 
       db.onclose = () => {
-        void DEBUG && debugWarn('[WalletStateService] Database connection closed');
+        DEBUG && debugWarn('[WalletStateService] Database connection closed');
         db = null;
       };
 
       db.onerror = (event) => {
-        void DEBUG && console.error('[WalletStateService] Database error:', event);
+        DEBUG && console.error('[WalletStateService] Database error:', event);
       };
 
       resolve(db);
@@ -117,7 +117,7 @@ async function saveToStore<T extends { walletAddress: string }>(
 
       request.onerror = () => {
         const error = request.error?.message || 'Unknown error';
-        void DEBUG && console.error(`[WalletStateService] Failed to save to ${storeName}:`, error);
+        DEBUG && console.error(`[WalletStateService] Failed to save to ${storeName}:`, error);
         resolve({ success: false, error });
       };
 
@@ -149,7 +149,7 @@ async function loadFromStore<T>(
       const request = store.get(walletAddress);
 
       request.onerror = () => {
-        void DEBUG && console.error(`[WalletStateService] Failed to load from ${storeName}:`, request.error);
+        DEBUG && console.error(`[WalletStateService] Failed to load from ${storeName}:`, request.error);
         reject(request.error);
       };
 
@@ -158,7 +158,7 @@ async function loadFromStore<T>(
       };
     });
   } catch (e) {
-    void DEBUG && console.error(`[WalletStateService] Error loading from ${storeName}:`, e);
+    DEBUG && console.error(`[WalletStateService] Error loading from ${storeName}:`, e);
     return null;
   }
 }
@@ -176,12 +176,12 @@ async function deleteFromStore(storeName: string, walletAddress: string): Promis
       tx.oncomplete = () => resolve();
     });
   } catch (e) {
-    void DEBUG && console.error(`[WalletStateService] Error deleting from ${storeName}:`, e);
+    DEBUG && console.error(`[WalletStateService] Error deleting from ${storeName}:`, e);
   }
 }
 
 export async function initializeWalletState(walletAddress: string): Promise<void> {
-  void DEBUG && debugLog('[WalletStateService] Initializing for wallet:', walletAddress.substring(0, 16) + '...');
+  DEBUG && debugLog('[WalletStateService] Initializing for wallet:', walletAddress.substring(0, 16) + '...');
 
   currentWalletAddress = walletAddress;
   consecutiveFailures = 0;
@@ -247,12 +247,12 @@ export async function saveWalletState(
     }
 
     consecutiveFailures = 0;
-    void DEBUG && debugLog(`[WalletStateService] State saved atomically (${outputCount} outputs, ${subaddresses.length} subaddresses)`);
+    DEBUG && debugLog(`[WalletStateService] State saved atomically (${outputCount} outputs, ${subaddresses.length} subaddresses)`);
     return { success: true };
   } catch (e) {
     consecutiveFailures++;
     const error = e instanceof Error ? e.message : 'Unknown error';
-    void DEBUG && console.error('[WalletStateService] Failed to save wallet state:', error);
+    DEBUG && console.error('[WalletStateService] Failed to save wallet state:', error);
     return { success: false, error };
   }
 }
@@ -279,7 +279,7 @@ export async function loadWalletState(walletAddress: string): Promise<{
       loadFromStore<WalletStateMetadata>(STORES.METADATA, walletAddress),
     ]);
 
-    void DEBUG && debugLog('[WalletStateService] Loaded wallet state:', {
+    DEBUG && debugLog('[WalletStateService] Loaded wallet state:', {
       hasCacheHex: !!cacheData?.cacheHex,
       subaddressCount: subaddressData?.subaddresses?.length || 0,
       lastSync: metadata?.lastSyncTimestamp ? new Date(metadata.lastSyncTimestamp).toISOString() : 'never',
@@ -291,7 +291,7 @@ export async function loadWalletState(walletAddress: string): Promise<{
       metadata,
     };
   } catch (e) {
-    void DEBUG && console.error('[WalletStateService] Failed to load wallet state:', e);
+    DEBUG && console.error('[WalletStateService] Failed to load wallet state:', e);
     return { cacheHex: null, subaddresses: null, metadata: null };
   }
 }
@@ -368,7 +368,7 @@ export async function checkStateHealth(walletAddress: string): Promise<WalletSta
 }
 
 export async function clearWalletState(walletAddress: string): Promise<void> {
-  void DEBUG && debugLog('[WalletStateService] Clearing state for wallet:', walletAddress.substring(0, 16) + '...');
+  DEBUG && debugLog('[WalletStateService] Clearing state for wallet:', walletAddress.substring(0, 16) + '...');
 
   await Promise.all([
     deleteFromStore(STORES.WALLET_CACHE, walletAddress),
@@ -391,7 +391,7 @@ function startPeriodicSync(): void {
     }
   }, SYNC_INTERVAL_MS);
 
-  void DEBUG && debugLog('[WalletStateService] Periodic sync started (every 5 minutes)');
+  DEBUG && debugLog('[WalletStateService] Periodic sync started (every 5 minutes)');
 }
 
 function startHealthMonitoring(): void {
@@ -424,7 +424,7 @@ export function stopWalletStateService(): void {
   }
 
   currentWalletAddress = null;
-  void DEBUG && debugLog('[WalletStateService] Service stopped');
+  DEBUG && debugLog('[WalletStateService] Service stopped');
 }
 
 export function requestImmediateSync(): void {
@@ -452,7 +452,7 @@ export async function updateHealthStatus(
       await saveToStore(STORES.METADATA, metadata);
     }
   } catch (e) {
-    void DEBUG && console.error('[WalletStateService] Failed to update health status:', e);
+    DEBUG && console.error('[WalletStateService] Failed to update health status:', e);
   }
 }
 
