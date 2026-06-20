@@ -40,7 +40,7 @@ import {
     mergeTransactionsByDirection
 } from '../utils/transactionMerge';
 import { shouldForceReturnedTransferScan } from '../utils/scanHints';
-import { isNativePlatform } from '../utils/runtime';
+import { isNativePlatform, isDesktopApp } from '../utils/runtime';
 import { reportClientEvent, reportTaskEvent } from '../utils/clientTelemetry';
 import { getSyncWatchdogDecision } from '../utils/syncWatchdog';
 import { getWalletRescanCacheKeys } from '../utils/walletRescan';
@@ -1133,6 +1133,29 @@ interface WalletProviderProps {
 
 type ScanSessionType = 'background' | 'restore-full-rescan';
 type ScanSessionStatus = 'active' | 'finished' | 'failed' | 'cancelled';
+// Desktop: block the restore scan until the prebuilt scan data (CSP receive bundle,
+// TXI index, key-image/stake/timestamp caches) has finished downloading + unpacking,
+// so the scan reads it from the local sidecar instead of regenerating from the daemon.
+// Checks the prepare status first (returns instantly once ready), only kicking the
+// sidecar prepare job if it has not started. The syncing screen shows the progress.
+async function waitForDesktopPrepareReady(): Promise<void> {
+    const deadline = Date.now() + 45 * 60 * 1000;
+    let kicked = false;
+    while (Date.now() < deadline) {
+        try {
+            const res = await fetch('/api/prepare/status', { cache: 'no-store' });
+            if (res.ok) {
+                const d = await res.json();
+                if (d && (d.ready || d.fallback)) return;
+            }
+        } catch { /* keep polling */ }
+        if (!kicked) {
+            kicked = true;
+            try { await fetch('/api/prepare/start?mode=fast', { method: 'POST' }); } catch { /* may already be running */ }
+        }
+        await new Promise(r => setTimeout(r, 1500));
+    }
+}
 const RESTORE_SCAN_SESSION_STORAGE_KEY = 'salvium_restore_scan_session';
 const RESTORE_SCAN_SESSION_MAX_AGE_MS = 15 * 60 * 1000;
 const SCAN_REF_STALE_RESET_MS = 10 * 60 * 1000;
@@ -7169,6 +7192,14 @@ const getDeviceMemoryBucket = (): string => {
     };
 
     const startScan = async (fromHeight?: number) => {
+        // Desktop fresh restore: finish all downloads before scanning so the scan
+        // serves prebuilt data instead of regenerating it. The syncing screen shows
+        // "Downloading scan data %" while this waits. No-op on web/Android, and a
+        // no-op (instant) once provisioning is ready or after the restore completes.
+        if (isDesktopApp() && typeof window !== 'undefined' &&
+            window.localStorage.getItem('salvium_vault_restore_pending') === 'true') {
+            await waitForDesktopPrepareReady();
+        }
         const restoreActive = isRestoreScanSessionActive();
         return requestScanStart({
             fromHeight,
