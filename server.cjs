@@ -6207,6 +6207,79 @@ async function extractTxiBundleToChunks() {
         return written;
     } finally { await fh.close(); }
 }
+// Desktop Fast Sync: stream the TXI bundle straight into the per-chunk
+// blocks-<start>-<end>.txi files WITHOUT ever storing the full ~3GB .bin, so disk
+// stays at the steady ~unpacked size instead of peaking at bundle+unpacked. Parses
+// the 20B header + chunkCount*24B index from the head of the stream, then routes the
+// concatenated data section to each chunk's .txi (written via .part -> rename).
+// Verifies TXI_MAGIC_V4 at every chunk start and that the stream delivers all chunks.
+async function streamDownloadAndExtractTxi(url) {
+    const resp = await axios.get(url, { responseType: 'stream', timeout: 1800000 });
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+    const stream = resp.data;
+    let headerBuf = Buffer.alloc(0);
+    let chunks = null, chunkCount = 0, indexTotal = 0, parsed = false;
+    let ci = 0, ws = null, writtenInChunk = 0, curDest = null, magicBuf = Buffer.alloc(0), magicOk = false;
+    const writeChunk = (st, buf) => new Promise((res, rej) => st.write(buf, (e) => e ? rej(e) : res()));
+    const endChunk = (st) => new Promise((res, rej) => st.end((e) => e ? rej(e) : res()));
+    async function feed(data) {
+        let pos = 0;
+        while (pos < data.length) {
+            if (ci >= chunks.length) break;
+            if (!ws) {
+                curDest = getTxiFilename(chunks[ci].start, chunks[ci].end);
+                ws = fsSync.createWriteStream(curDest + '.part');
+                writtenInChunk = 0; magicBuf = Buffer.alloc(0); magicOk = false;
+            }
+            const need = chunks[ci].len - writtenInChunk;
+            const take = Math.min(need, data.length - pos);
+            const piece = data.subarray(pos, pos + take);
+            if (!magicOk) {
+                magicBuf = Buffer.concat([magicBuf, piece.subarray(0, Math.max(0, 4 - magicBuf.length))]);
+                if (magicBuf.length >= 4) {
+                    if (!magicBuf.equals(TXI_MAGIC_V4)) throw new Error('bad TXI chunk magic @' + chunks[ci].start);
+                    magicOk = true;
+                }
+            }
+            await writeChunk(ws, piece);
+            writtenInChunk += take; pos += take;
+            if (writtenInChunk >= chunks[ci].len) {
+                await endChunk(ws);
+                await fs.rename(curDest + '.part', curDest);
+                ws = null; ci++;
+            }
+        }
+    }
+    for await (const data of stream) {
+        if (cachePrepareJob) cachePrepareJob.downloadedBytes += data.length;
+        if (!parsed) {
+            headerBuf = Buffer.concat([headerBuf, data]);
+            if (headerBuf.length < 20) continue;
+            if (chunkCount === 0) {
+                if (headerBuf.readUInt32LE(0) !== TXI_BUNDLE_MAGIC) throw new Error('bad TXI bundle magic');
+                chunkCount = headerBuf.readUInt32LE(8);
+                if (chunkCount === 0 || chunkCount > 1000000) throw new Error('bad TXI chunk count ' + chunkCount);
+                indexTotal = 20 + chunkCount * 24;
+            }
+            if (headerBuf.length < indexTotal) continue;
+            chunks = [];
+            for (let i = 0; i < chunkCount; i++) {
+                const o = 20 + i * 24;
+                chunks.push({ start: headerBuf.readUInt32LE(o), end: headerBuf.readUInt32LE(o + 4), len: Number(headerBuf.readBigUInt64LE(o + 16)) });
+            }
+            parsed = true;
+            const rest = Buffer.from(headerBuf.subarray(indexTotal));
+            headerBuf = null;
+            if (rest.length) await feed(rest);
+            continue;
+        }
+        await feed(data);
+    }
+    if (ws) { try { await endChunk(ws); } catch (_) {} }
+    if (!parsed || ci < chunks.length) throw new Error('TXI stream incomplete (' + ci + '/' + (chunks ? chunks.length : '?') + ')');
+    await atomicWriteFile(TXI_BUNDLE_FILE + '.extracted', Buffer.from('1'));
+    console.log('[Fast Sync] Streamed TXI bundle -> ' + ci + ' .txi file(s) (no .bin stored)');
+}
 let cachePrepareJob = { mode: null, running: false, error: null, startedAt: 0, downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0 };
 async function fastSyncProvisionCaches() {
     if (cachePrepareJob.running) return;
@@ -6282,24 +6355,21 @@ async function fastSyncProvisionCaches() {
         // set it, so this is a no-op there.
         const txiBundleUrl = process.env.SALVIUM_TXI_CDN_URL;
         if (txiBundleUrl) {
-            const txiPresent = (fsSync.existsSync(TXI_BUNDLE_FILE) && fsSync.statSync(TXI_BUNDLE_FILE).size > 0) || fsSync.existsSync(TXI_BUNDLE_FILE + '.extracted');
-            if (!txiPresent) {
+            const txiDone = fsSync.existsSync(TXI_BUNDLE_FILE + '.extracted');
+            if (!txiDone) {
                 try { const h = await axios.head(txiBundleUrl, { timeout: 30000 }); cachePrepareJob.totalBytes += Number(h.headers['content-length']) || 0; } catch (_) {}
-                try {
-                    await fs.mkdir(path.dirname(TXI_BUNDLE_FILE), { recursive: true });
-                    const tmp = TXI_BUNDLE_FILE + '.part';
-                    const resp = await axios.get(txiBundleUrl, { responseType: 'stream', timeout: 1800000 });
-                    await new Promise((resolve, reject) => {
-                        const ws = fsSync.createWriteStream(tmp);
-                        resp.data.on('data', (chunk) => { cachePrepareJob.downloadedBytes += chunk.length; });
-                        resp.data.on('error', reject); ws.on('error', reject); ws.on('finish', resolve);
-                        resp.data.pipe(ws);
-                    });
-                    await fs.rename(tmp, TXI_BUNDLE_FILE);
-                    console.log('[Fast Sync] Downloaded TXI bundle');
-                } catch (e) { console.warn('[Fast Sync] TXI bundle download:', e.message); }
+                if (fsSync.existsSync(TXI_BUNDLE_FILE) && fsSync.statSync(TXI_BUNDLE_FILE).size > 0) {
+                    // Legacy/manual .bin present -> unpack it the old way (then it self-deletes).
+                    try { await extractTxiBundleToChunks(); } catch (e) { console.warn('[Fast Sync] explode TXI bundle:', e.message); }
+                } else {
+                    // Stream straight into .txi files: no full .bin on disk, so no ~6GB peak.
+                    try { await streamDownloadAndExtractTxi(txiBundleUrl); }
+                    catch (e) {
+                        console.warn('[Fast Sync] TXI stream failed:', e.message);
+                        try { for (const f of await fs.readdir(CACHE_DIR)) { if (f.startsWith('blocks-') && f.endsWith('.txi.part')) await fs.unlink(path.join(CACHE_DIR, f)).catch(() => {}); } } catch (_) {}
+                    }
+                }
             }
-            try { await extractTxiBundleToChunks(); } catch (e) { console.warn('[Fast Sync] explode TXI bundle:', e.message); }
         }
         // Reload the freshly-downloaded caches so the spend/stake/timestamp
         // indexes go live without a restart; the maintenance loop tails from here.
