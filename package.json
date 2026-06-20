@@ -22,7 +22,9 @@
     "build:extensions": "npm run build:extension:chrome && npm run build:extension:firefox",
     "test:extension:headless": "node scripts/test-extension-headless.mjs",
     "verify:extensions": "npm run build:extensions && npm run test:extension:headless",
-    "install:extension-browsers": "npx playwright install chromium firefox"
+    "install:extension-browsers": "npx playwright install chromium firefox",
+    "typecheck": "node scripts/typecheck-gate.mjs",
+    "typecheck:update-baseline": "node scripts/typecheck-gate.mjs --update-baseline"
   },
   "dependencies": {
     "@aparajita/capacitor-biometric-auth": "^10.0.0",

@@ -24,6 +24,9 @@ cleanup_rollback_containers() {
 
 cleanup_rollback_containers
 
+echo "=== Type-check gate (fails on NEW type errors vs scripts/tsc-baseline.json) ==="
+npm run typecheck
+
 echo "=== Building Salvium Vault ==="
 docker build -t salvium-vault:latest .
 
