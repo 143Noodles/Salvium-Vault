@@ -25,10 +25,12 @@ const MAGIC=0x42495854, VERSION=1; const TXI_V4=Buffer.from('TXI\x04');
   header.writeUInt32LE(MAGIC,p);p+=4; header.writeUInt32LE(VERSION,p);p+=4; header.writeUInt32LE(chunks.length,p);p+=4;
   header.writeUInt32LE(chunks[0].start,p);p+=4; header.writeUInt32LE(chunks[chunks.length-1].end,p);p+=4;
   for(const c of chunks){header.writeUInt32LE(c.start,p);p+=4; header.writeUInt32LE(c.end,p);p+=4; header.writeBigUInt64LE(BigInt(c.offset),p);p+=8; header.writeBigUInt64LE(BigInt(c.size),p);p+=8;}
+  const crypto=require('crypto'); const hash=crypto.createHash('sha256'); hash.update(header);
   const tmp=OUT+'.part'; const ws=fs.createWriteStream(tmp);
   await new Promise((res,rej)=>ws.write(header,e=>e?rej(e):res()));
-  for(const c of chunks){ await new Promise((res,rej)=>{const rs=fs.createReadStream(c.file);rs.on('error',rej);rs.on('end',res);rs.pipe(ws,{end:false});}); }
+  for(const c of chunks){ const buf=await fsp.readFile(c.file); hash.update(buf); await new Promise((res,rej)=>ws.write(buf,e=>e?rej(e):res())); }
   await new Promise(res=>ws.end(res));
   await fsp.rename(tmp,OUT);
-  console.log('BUILT '+OUT+': '+chunks.length+' chunks, '+((headerSize+off)/1e9).toFixed(2)+'GB ('+chunks[0].start+'-'+chunks[chunks.length-1].end+')');
+  const sha=hash.digest('hex'); await fsp.writeFile(OUT+'.sha256', sha);
+  console.log('BUILT '+OUT+': '+chunks.length+' chunks, '+((headerSize+off)/1e9).toFixed(2)+'GB ('+chunks[0].start+'-'+chunks[chunks.length-1].end+') sha256='+sha.slice(0,12));
 })().catch(e=>{console.error('FATAL',e.message);process.exit(1);});

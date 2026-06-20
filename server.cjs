@@ -6217,10 +6217,36 @@ async function extractTxiBundleToChunks() {
 // the 20B header + chunkCount*24B index from the head of the stream, then routes the
 // concatenated data section to each chunk's .txi (written via .part -> rename).
 // Verifies TXI_MAGIC_V4 at every chunk start and that the stream delivers all chunks.
+// Returns the sha256 of the whole TXI bundle (.bin), read from the <file>.sha256
+// sidecar (written by build-txi-bundle.cjs) or lazily computed + cached + persisted.
+// Lets the desktop client verify content integrity beyond per-chunk magic.
+let _txiShaCache = null;
+async function getTxiBundleSha256() {
+    let st;
+    try { st = await fs.stat(TXI_BUNDLE_FILE); } catch (_) { return null; }
+    if (_txiShaCache && _txiShaCache.mtimeMs === st.mtimeMs && _txiShaCache.size === st.size) return _txiShaCache.sha;
+    const sidecar = TXI_BUNDLE_FILE + '.sha256';
+    try {
+        const sc = (await fs.readFile(sidecar, 'utf8')).trim().toLowerCase();
+        if (/^[0-9a-f]{64}$/.test(sc)) { _txiShaCache = { mtimeMs: st.mtimeMs, size: st.size, sha: sc }; return sc; }
+    } catch (_) {}
+    const sha = await new Promise((resolve, reject) => {
+        const h = crypto.createHash('sha256');
+        const rs = fsSync.createReadStream(TXI_BUNDLE_FILE);
+        rs.on('data', (d) => h.update(d));
+        rs.on('error', reject);
+        rs.on('end', () => resolve(h.digest('hex')));
+    });
+    try { await fs.writeFile(sidecar, sha); } catch (_) {}
+    _txiShaCache = { mtimeMs: st.mtimeMs, size: st.size, sha };
+    return sha;
+}
 async function streamDownloadAndExtractTxi(url) {
     const resp = await axios.get(url, { responseType: 'stream', timeout: 1800000 });
     await fs.mkdir(CACHE_DIR, { recursive: true });
     const stream = resp.data;
+    const expectedSha = String(resp.headers['x-txi-sha256'] || '').trim().toLowerCase();
+    const bundleHash = /^[0-9a-f]{64}$/.test(expectedSha) ? crypto.createHash('sha256') : null;
     let headerBuf = Buffer.alloc(0);
     let chunks = null, chunkCount = 0, indexTotal = 0, parsed = false;
     let ci = 0, ws = null, writtenInChunk = 0, curDest = null, magicBuf = Buffer.alloc(0), magicOk = false;
@@ -6257,6 +6283,7 @@ async function streamDownloadAndExtractTxi(url) {
         }
     }
     for await (const data of stream) {
+        if (bundleHash) bundleHash.update(data);
         if (cachePrepareJob) cachePrepareJob.downloadedBytes += data.length;
         if (!parsed) {
             headerBuf = Buffer.concat([headerBuf, data]);
@@ -6283,6 +6310,15 @@ async function streamDownloadAndExtractTxi(url) {
     }
     if (ws) { try { await endChunk(ws); } catch (_) {} }
     if (!parsed || ci < chunks.length) throw new Error('TXI stream incomplete (' + ci + '/' + (chunks ? chunks.length : '?') + ')');
+    if (bundleHash) {
+        const got = bundleHash.digest('hex');
+        if (got !== expectedSha) {
+            // Corrupt bundle: drop every .txi this stream wrote so the scan never reads
+            // bad data (the marker guards against a prior good full set existing).
+            for (const c of (chunks || [])) { try { await fs.unlink(getTxiFilename(c.start, c.end)); } catch (_) {} }
+            throw new Error('TXI bundle sha256 mismatch (got ' + got.slice(0, 12) + ' want ' + expectedSha.slice(0, 12) + ')');
+        }
+    }
     await atomicWriteFile(TXI_BUNDLE_FILE + '.extracted', Buffer.from('1'));
     console.log('[Fast Sync] Streamed TXI bundle -> ' + ci + ' .txi file(s) (no .bin stored)');
 }
@@ -7989,10 +8025,11 @@ app.options(['/api/csp-bundle', '/vault/api/csp-bundle'], (req, res) => {
 
 app.get(['/api/txi-bundle', '/vault/api/txi-bundle'], async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges');
+    res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, X-Txi-Sha256');
     try {
         if (!fsSync.existsSync(TXI_BUNDLE_FILE)) { res.status(503).json({ error: 'TXI bundle not available' }); return; }
         const st = await fs.stat(TXI_BUNDLE_FILE);
+        try { const sha = await getTxiBundleSha256(); if (sha) res.header('X-Txi-Sha256', sha); } catch (_) {}
         res.header('Content-Type', 'application/octet-stream');
         res.header('Accept-Ranges', 'bytes');
         const range = req.headers.range;
