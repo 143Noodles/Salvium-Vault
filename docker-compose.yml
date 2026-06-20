@@ -10,6 +10,7 @@ services:
     environment:
       SALPAY_AGENT_URL: http://salpay-agent:3021
       SALPAY_AGENT_PUBLIC_BASE_URL: https://vault.salvium.tools/api/salpay/orders
+      SALVIUM_TXI_BUNDLE_AUTOBUILD: "1"
     volumes:
       - vault-cache:/app/data
     networks:

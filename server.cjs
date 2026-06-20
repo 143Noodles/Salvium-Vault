@@ -6227,8 +6227,11 @@ async function getTxiBundleSha256() {
     if (_txiShaCache && _txiShaCache.mtimeMs === st.mtimeMs && _txiShaCache.size === st.size) return _txiShaCache.sha;
     const sidecar = TXI_BUNDLE_FILE + '.sha256';
     try {
-        const sc = (await fs.readFile(sidecar, 'utf8')).trim().toLowerCase();
-        if (/^[0-9a-f]{64}$/.test(sc)) { _txiShaCache = { mtimeMs: st.mtimeMs, size: st.size, sha: sc }; return sc; }
+        const sst = await fs.stat(sidecar);
+        if (sst.mtimeMs >= st.mtimeMs) { // only trust a sidecar that is for the current .bin
+            const sc = (await fs.readFile(sidecar, 'utf8')).trim().toLowerCase();
+            if (/^[0-9a-f]{64}$/.test(sc)) { _txiShaCache = { mtimeMs: st.mtimeMs, size: st.size, sha: sc }; return sc; }
+        }
     } catch (_) {}
     const sha = await new Promise((resolve, reject) => {
         const h = crypto.createHash('sha256');
@@ -6240,6 +6243,77 @@ async function getTxiBundleSha256() {
     try { await fs.writeFile(sidecar, sha); } catch (_) {}
     _txiShaCache = { mtimeMs: st.mtimeMs, size: st.size, sha };
     return sha;
+}
+// Hosted server only (SALVIUM_TXI_BUNDLE_AUTOBUILD=1): (re)build the TXI bundle that
+// desktops download, from the current per-chunk blocks-*.txi, when it is missing or the
+// chain has grown past it (chunk count / last height changed). Keeps /api/txi-bundle
+// current. Atomic (.part -> rename) + sha256 sidecar. Never runs on the desktop sidecar
+// (it streams the bundle, never builds it). Same byte layout as build-txi-bundle.cjs.
+let txiBundleBuildInProgress = false;
+async function ensureTxiBundleFresh() {
+    if (process.env.SALVIUM_TXI_BUNDLE_AUTOBUILD !== '1' || !CSP_CACHE_ENABLED) return;
+    if (txiBundleBuildInProgress) return;
+    try {
+        const all = await fs.readdir(CACHE_DIR).catch(() => []);
+        const chunks = [];
+        for (const f of all) {
+            const m = f.match(/^blocks-(\d+)-(\d+)\.txi$/);
+            if (!m) continue;
+            const fp = path.join(CACHE_DIR, f);
+            let cst; try { cst = await fs.stat(fp); } catch (_) { continue; }
+            if (cst.size < 4) continue;
+            chunks.push({ start: +m[1], end: +m[2], size: cst.size, file: fp });
+        }
+        if (chunks.length === 0) return;
+        chunks.sort((a, b) => a.start - b.start);
+        const lastEnd = chunks[chunks.length - 1].end;
+        try {
+            const bst = await fs.stat(TXI_BUNDLE_FILE);
+            if (bst.size > 20) {
+                const fh = await fs.open(TXI_BUNDLE_FILE, 'r');
+                try {
+                    const hdr = Buffer.alloc(20);
+                    await fh.read(hdr, 0, 20, 0);
+                    if (hdr.readUInt32LE(0) === TXI_BUNDLE_MAGIC && hdr.readUInt32LE(8) === chunks.length && hdr.readUInt32LE(16) === lastEnd) return;
+                } finally { await fh.close(); }
+            }
+        } catch (_) {}
+        txiBundleBuildInProgress = true;
+        console.log('[TXI bundle] (re)building from ' + chunks.length + ' .txi chunk(s) (0-' + lastEnd + ')...');
+        let off = 0; for (const c of chunks) { c.offset = off; off += c.size; }
+        const header = Buffer.alloc(20 + chunks.length * 24);
+        let q = 0;
+        header.writeUInt32LE(TXI_BUNDLE_MAGIC, q); q += 4;
+        header.writeUInt32LE(TXI_BUNDLE_VERSION, q); q += 4;
+        header.writeUInt32LE(chunks.length, q); q += 4;
+        header.writeUInt32LE(chunks[0].start, q); q += 4;
+        header.writeUInt32LE(lastEnd, q); q += 4;
+        for (const c of chunks) {
+            header.writeUInt32LE(c.start, q); q += 4;
+            header.writeUInt32LE(c.end, q); q += 4;
+            header.writeBigUInt64LE(BigInt(c.offset), q); q += 8;
+            header.writeBigUInt64LE(BigInt(c.size), q); q += 8;
+        }
+        const hash = crypto.createHash('sha256'); hash.update(header);
+        const tmp = TXI_BUNDLE_FILE + '.part';
+        const ws = fsSync.createWriteStream(tmp);
+        await new Promise((res, rej) => ws.write(header, e => e ? rej(e) : res()));
+        for (const c of chunks) {
+            const buf = await fs.readFile(c.file);
+            hash.update(buf);
+            await new Promise((res, rej) => ws.write(buf, e => e ? rej(e) : res()));
+        }
+        await new Promise(res => ws.end(res));
+        const sha = hash.digest('hex');
+        await fs.rename(tmp, TXI_BUNDLE_FILE);
+        await atomicWriteFile(TXI_BUNDLE_FILE + '.sha256', Buffer.from(sha));
+        _txiShaCache = null;
+        console.log('[TXI bundle] built ' + chunks.length + ' chunks (0-' + lastEnd + ') sha256=' + sha.slice(0, 12));
+    } catch (e) {
+        console.warn('[TXI bundle] build failed:', e.message);
+    } finally {
+        txiBundleBuildInProgress = false;
+    }
 }
 async function streamDownloadAndExtractTxi(url) {
     const resp = await axios.get(url, { responseType: 'stream', timeout: 1800000 });
@@ -13210,6 +13284,10 @@ if (true) {
                 updateStakeCache().catch(err => console.warn('[Stake Cache] Initial update failed:', err.message));
 
                 startBlockCacheSync();
+
+                // Keep the desktop TXI bundle current (hosted server only; env-gated).
+                ensureTxiBundleFresh().catch(err => console.warn('[TXI bundle] initial build failed:', err.message));
+                setInterval(() => { ensureTxiBundleFresh().catch(() => {}); }, 6 * 60 * 60 * 1000).unref();
 
                 console.log('\n[Vault] Startup complete');
 

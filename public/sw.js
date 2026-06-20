@@ -8,10 +8,11 @@
  * - Static: Network first for the app bundle, cache fallback for other static files
  */
 
-const CACHE_VERSION = 'salvium-vault-v42';
+const SW_BUILD_ID = '__SW_BUILD_ID__'; // replaced at build time by the stamp-sw vite plugin
+const CACHE_VERSION = 'salvium-vault-' + SW_BUILD_ID;
 const WASM_CACHE = 'salvium-wasm-v27';
-const STATIC_CACHE = 'salvium-static-v39';
-const API_CACHE = 'salvium-api-v29';
+const STATIC_CACHE = 'salvium-static-' + SW_BUILD_ID;
+const API_CACHE = 'salvium-api-' + SW_BUILD_ID;
 const WASM_VERSION = '5.53.36-pid-detach-20260606';
 
 // Critical assets that must be cached for offline use
