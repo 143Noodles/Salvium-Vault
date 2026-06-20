@@ -6123,7 +6123,7 @@ async function extractCspBundleToChunks() {
     const dataStart = 20 + meta.chunkCount * 16;
     await fs.mkdir(CSP_CACHE_DIR, { recursive: true });
     const fh = await fs.open(CSP_BUNDLE_FILE, 'r');
-    let written = 0;
+    let written = 0, failed = 0;
     try {
         for (const c of meta.chunks) {
             const dest = path.join(CSP_CACHE_DIR, 'csp-v' + CSP_CACHE_SCHEMA_VERSION + '-' + c.startHeight + '-' + c.endHeight + '.csp');
@@ -6132,11 +6132,11 @@ async function extractCspBundleToChunks() {
             } catch (_) {}
             if (dataStart + c.dataOffset + c.dataLength > (meta.stat ? meta.stat.size : 0)) {
                 console.warn('[Fast Sync] CSP bundle truncated: chunk ' + c.startHeight + ' exceeds file size; bundle incomplete');
-                continue;
+                failed++; continue;
             }
             const buf = Buffer.alloc(c.dataLength);
             const { bytesRead } = await fh.read(buf, 0, c.dataLength, dataStart + c.dataOffset);
-            if (bytesRead !== c.dataLength) { console.warn('[Fast Sync] short read extracting chunk ' + c.startHeight); continue; }
+            if (bytesRead !== c.dataLength) { console.warn('[Fast Sync] short read extracting chunk ' + c.startHeight); failed++; continue; }
             await atomicWriteFile(dest, buf);
             written++;
         }
@@ -6144,6 +6144,15 @@ async function extractCspBundleToChunks() {
         await fh.close();
     }
     console.log('[Fast Sync] Exploded CSP bundle into ' + written + ' new chunk file(s) (of ' + meta.chunks.length + ')');
+    // Disk save: every chunk is on disk, so the bundle is redundant. Drop it and
+    // leave a marker so the next launch skips the re-download.
+    if (failed === 0) {
+        try {
+            await fs.unlink(CSP_BUNDLE_FILE);
+            await atomicWriteFile(CSP_BUNDLE_FILE + '.extracted', Buffer.from('1'));
+            console.log('[Fast Sync] CSP bundle removed after unpack (disk saved)');
+        } catch (e) { console.warn('[Fast Sync] CSP bundle cleanup failed:', e.message); }
+    }
     return written;
 }
 // Desktop Fast Sync: explode the downloaded TXI bundle into the individual
@@ -6169,7 +6178,7 @@ async function extractTxiBundleToChunks() {
         if (ir.bytesRead < indexSize) { console.warn('[Fast Sync] TXI bundle truncated index'); return 0; }
         const dataStart = 20 + indexSize;
         await fs.mkdir(CACHE_DIR, { recursive: true });
-        let written = 0;
+        let written = 0, failed = 0;
         for (let i = 0; i < chunkCount; i++) {
             const o = i * 24;
             const start = index.readUInt32LE(o);
@@ -6178,14 +6187,23 @@ async function extractTxiBundleToChunks() {
             const len = Number(index.readBigUInt64LE(o + 16));
             const dest = getTxiFilename(start, end);
             try { if (fsSync.existsSync(dest) && fsSync.statSync(dest).size === len) continue; } catch (_) {}
-            if (len <= 0 || dataStart + off + len > stat.size) { console.warn('[Fast Sync] TXI bundle truncated at chunk ' + start); continue; }
+            if (len <= 0 || dataStart + off + len > stat.size) { console.warn('[Fast Sync] TXI bundle truncated at chunk ' + start); failed++; continue; }
             const buf = Buffer.alloc(len);
             const { bytesRead } = await fh.read(buf, 0, len, dataStart + off);
-            if (bytesRead !== len || !buf.slice(0, 4).equals(TXI_MAGIC_V4)) { console.warn('[Fast Sync] bad/short TXI chunk ' + start); continue; }
+            if (bytesRead !== len || !buf.slice(0, 4).equals(TXI_MAGIC_V4)) { console.warn('[Fast Sync] bad/short TXI chunk ' + start); failed++; continue; }
             await atomicWriteFile(dest, buf);
             written++;
         }
         console.log('[Fast Sync] Exploded TXI bundle into ' + written + ' new .txi file(s) (of ' + chunkCount + ')');
+        // Disk save: drop the now-redundant ~3GB bundle (unlinking an open file is
+        // safe on the sidecar host); leave a marker so the next launch skips re-download.
+        if (failed === 0) {
+            try {
+                await fs.unlink(TXI_BUNDLE_FILE);
+                await atomicWriteFile(TXI_BUNDLE_FILE + '.extracted', Buffer.from('1'));
+                console.log('[Fast Sync] TXI bundle removed after unpack (~3GB disk saved)');
+            } catch (e) { console.warn('[Fast Sync] TXI bundle cleanup failed:', e.message); }
+        }
         return written;
     } finally { await fh.close(); }
 }
@@ -6205,7 +6223,7 @@ async function fastSyncProvisionCaches() {
         // the receive index, not just spend/stake. Include its size in the total so
         // the progress bar stays honest. URL is passed only by the Electron shell.
         const cspBundleUrl = process.env.SALVIUM_CSP_CDN_URL;
-        const cspBundlePresent = !!cspBundleUrl && fsSync.existsSync(CSP_BUNDLE_FILE) && fsSync.statSync(CSP_BUNDLE_FILE).size > 0;
+        const cspBundlePresent = !!cspBundleUrl && ((fsSync.existsSync(CSP_BUNDLE_FILE) && fsSync.statSync(CSP_BUNDLE_FILE).size > 0) || fsSync.existsSync(CSP_BUNDLE_FILE + '.extracted'));
         if (cspBundleUrl && !cspBundlePresent) {
             try { const h = await axios.head(cspBundleUrl, { timeout: 30000 }); cachePrepareJob.totalBytes += Number(h.headers['content-length']) || 0; } catch (_) {}
         }
@@ -6264,7 +6282,7 @@ async function fastSyncProvisionCaches() {
         // set it, so this is a no-op there.
         const txiBundleUrl = process.env.SALVIUM_TXI_CDN_URL;
         if (txiBundleUrl) {
-            const txiPresent = fsSync.existsSync(TXI_BUNDLE_FILE) && fsSync.statSync(TXI_BUNDLE_FILE).size > 0;
+            const txiPresent = (fsSync.existsSync(TXI_BUNDLE_FILE) && fsSync.statSync(TXI_BUNDLE_FILE).size > 0) || fsSync.existsSync(TXI_BUNDLE_FILE + '.extracted');
             if (!txiPresent) {
                 try { const h = await axios.head(txiBundleUrl, { timeout: 30000 }); cachePrepareJob.totalBytes += Number(h.headers['content-length']) || 0; } catch (_) {}
                 try {
