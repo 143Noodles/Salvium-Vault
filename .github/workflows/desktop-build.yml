@@ -36,6 +36,9 @@ jobs:
       - name: Install SPA deps
         run: npm ci --no-audit --no-fund
 
+      - name: Type-check gate (no new TS errors vs baseline)
+        run: npm run typecheck
+
       - name: Build SPA (dist)
         run: npm run build
 
