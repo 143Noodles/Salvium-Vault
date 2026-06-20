@@ -41,6 +41,7 @@ const RPC_URL = process.env.SALVIUM_RPC_URL || 'http://seed01.salvium.io:19081';
 const HEALTH_TIMEOUT_MS = 90_000;
 // Fast-Sync source: the CSP scan-index bundle CDN.
 const CDN_BUNDLE_URL = process.env.SALVIUM_CSP_CDN_URL || 'https://cdn.salvium.tools/api/csp-bundle';
+const TXI_CDN_URL = process.env.SALVIUM_TXI_CDN_URL || 'https://cdn.salvium.tools/api/txi-bundle';
 const userDataDir = app.getPath('userData');
 const DATA_DIR = path.join(userDataDir, 'salvium-data');
 const CSP_DIR = path.join(DATA_DIR, SALVIUM_NETWORK, 'salvium-csp');
@@ -317,6 +318,7 @@ function startSidecar(port, contentDir) {
     // The sidecar downloads the CSP receive bundle during restore (prepare),
     // rather than the shell pulling it at boot — keeps boot cheap.
     SALVIUM_CSP_CDN_URL: CDN_BUNDLE_URL,
+    SALVIUM_TXI_CDN_URL: TXI_CDN_URL,
     ENABLE_BLOCK_CACHE: '1',
     SALVIUM_CSP_BUNDLE_AUTOBUILD: '0', // Fast Sync: never build from scratch
     // The sidecar runs locally on the user's machine, so a LAN/localhost
