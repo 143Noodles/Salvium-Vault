@@ -3557,7 +3557,7 @@ async function initBlockCache() {
 
         try {
             const files = await fs.readdir(CACHE_DIR);
-            const binFiles = files.filter(f => f.endsWith('.bin'));
+            const binFiles = files.filter(f => /^blocks-\d+-\d+\.bin$/.test(f)); // only chunk files; never txi-bundle-v4.bin
             let validFiles = 0;
             let invalidFiles = 0;
             let cleanedFiles = 0;
