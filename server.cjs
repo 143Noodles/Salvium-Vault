@@ -6041,7 +6041,11 @@ app.get(['/api/prepare/status', '/vault/api/prepare/status'], noCacheHeaders, as
             && cachePrepareJob.startedAt > 0
             && !cachePrepareJob.running
             && !!cachePrepareJob.error;
-        const allReady = tip > 0 && wasmModuleReady && (components.every(c => c.ready) || fastFailed);
+        // Desktop: do not release the scan gate until the TXI is unpacked (marker)
+        // OR it definitively failed (txiFailed -> scan regenerates sparse TXI on demand)
+        // OR Fast Sync overall fell back. Prevents scanning without the TXI.
+        const txiReady = !process.env.SALVIUM_TXI_CDN_URL || fsSync.existsSync(TXI_BUNDLE_FILE + '.extracted') || !!cachePrepareJob.txiFailed || fastFailed;
+        const allReady = tip > 0 && wasmModuleReady && (components.every(c => c.ready) || fastFailed) && txiReady;
         // While Fast Sync is actively downloading the prebuilt caches, surface
         // byte-level download progress so the bar moves during the (large)
         // spend-index pull instead of sitting at 0% then snapping to 100%.
@@ -6227,6 +6231,7 @@ async function streamDownloadAndExtractTxi(url) {
         while (pos < data.length) {
             if (ci >= chunks.length) break;
             if (!ws) {
+                if (chunks[ci].len < 4) throw new Error('TXI chunk too short @' + chunks[ci].start + ' (len ' + chunks[ci].len + ')');
                 curDest = getTxiFilename(chunks[ci].start, chunks[ci].end);
                 ws = fsSync.createWriteStream(curDest + '.part');
                 writtenInChunk = 0; magicBuf = Buffer.alloc(0); magicOk = false;
@@ -6244,6 +6249,7 @@ async function streamDownloadAndExtractTxi(url) {
             await writeChunk(ws, piece);
             writtenInChunk += take; pos += take;
             if (writtenInChunk >= chunks[ci].len) {
+                if (!magicOk) throw new Error('TXI chunk missing magic @' + chunks[ci].start);
                 await endChunk(ws);
                 await fs.rename(curDest + '.part', curDest);
                 ws = null; ci++;
@@ -6280,10 +6286,10 @@ async function streamDownloadAndExtractTxi(url) {
     await atomicWriteFile(TXI_BUNDLE_FILE + '.extracted', Buffer.from('1'));
     console.log('[Fast Sync] Streamed TXI bundle -> ' + ci + ' .txi file(s) (no .bin stored)');
 }
-let cachePrepareJob = { mode: null, running: false, error: null, startedAt: 0, downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0 };
+let cachePrepareJob = { mode: null, running: false, error: null, startedAt: 0, downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0, txiFailed: false };
 async function fastSyncProvisionCaches() {
     if (cachePrepareJob.running) return;
-    cachePrepareJob = { mode: 'fast', running: true, error: null, startedAt: Date.now(), downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0 };
+    cachePrepareJob = { mode: 'fast', running: true, error: null, startedAt: Date.now(), downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0, txiFailed: false };
     try {
         const manifest = (await axios.get(`${CACHE_CDN_BASE}/manifest.json`, { timeout: 30000 })).data;
         const files = Array.isArray(manifest && manifest.files) ? manifest.files : [];
@@ -6355,19 +6361,31 @@ async function fastSyncProvisionCaches() {
         // set it, so this is a no-op there.
         const txiBundleUrl = process.env.SALVIUM_TXI_CDN_URL;
         if (txiBundleUrl) {
-            const txiDone = fsSync.existsSync(TXI_BUNDLE_FILE + '.extracted');
-            if (!txiDone) {
+            const txiMarker = TXI_BUNDLE_FILE + '.extracted';
+            if (!fsSync.existsSync(txiMarker)) {
                 try { const h = await axios.head(txiBundleUrl, { timeout: 30000 }); cachePrepareJob.totalBytes += Number(h.headers['content-length']) || 0; } catch (_) {}
+                const cleanParts = async () => { try { for (const f of await fs.readdir(CACHE_DIR)) { if (f.startsWith('blocks-') && f.endsWith('.txi.part')) await fs.unlink(path.join(CACHE_DIR, f)).catch(() => {}); } } catch (_) {} };
                 if (fsSync.existsSync(TXI_BUNDLE_FILE) && fsSync.statSync(TXI_BUNDLE_FILE).size > 0) {
                     // Legacy/manual .bin present -> unpack it the old way (then it self-deletes).
                     try { await extractTxiBundleToChunks(); } catch (e) { console.warn('[Fast Sync] explode TXI bundle:', e.message); }
                 } else {
-                    // Stream straight into .txi files: no full .bin on disk, so no ~6GB peak.
-                    try { await streamDownloadAndExtractTxi(txiBundleUrl); }
-                    catch (e) {
-                        console.warn('[Fast Sync] TXI stream failed:', e.message);
-                        try { for (const f of await fs.readdir(CACHE_DIR)) { if (f.startsWith('blocks-') && f.endsWith('.txi.part')) await fs.unlink(path.join(CACHE_DIR, f)).catch(() => {}); } } catch (_) {}
+                    // Stream straight into .txi files (no full .bin on disk). Retry transient
+                    // failures so the download-before-scan gate gets a real TXI when possible.
+                    for (let attempt = 1; attempt <= 3; attempt++) {
+                        try { await streamDownloadAndExtractTxi(txiBundleUrl); break; }
+                        catch (e) {
+                            console.warn('[Fast Sync] TXI stream attempt ' + attempt + '/3 failed:', e.message);
+                            await cleanParts();
+                            if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt));
+                        }
                     }
+                }
+                // Still not unpacked -> flag it so prepare/status can release the scan gate
+                // (scan regenerates sparse TXI on demand) instead of hanging or silently
+                // scanning without the TXI.
+                if (!fsSync.existsSync(txiMarker)) {
+                    cachePrepareJob.txiFailed = true;
+                    console.warn('[Fast Sync] TXI unavailable after attempts; scan will regenerate sparse TXI on demand');
                 }
             }
         }
