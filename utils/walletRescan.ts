@@ -20,7 +20,7 @@ const SCAN_CACHE_FIELDS = [
 ] as const;
 
 export function prepareStoredWalletForFullRescan<T extends Record<string, any>>(wallet: T): T {
-  const nextWallet = { ...wallet };
+  const nextWallet: Record<string, any> = { ...wallet };
 
   for (const field of SCAN_CACHE_FIELDS) {
     delete nextWallet[field];
@@ -30,5 +30,5 @@ export function prepareStoredWalletForFullRescan<T extends Record<string, any>>(
   nextWallet.completedChunks = [];
   nextWallet.lastScanTimestamp = 0;
 
-  return nextWallet;
+  return nextWallet as T;
 }

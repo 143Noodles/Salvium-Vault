@@ -14,6 +14,10 @@ const relay = require('../utils/salpayRelay.cjs') as {
     pinnedFamily: number;
   }>;
   validateSalPayCallbackPayload(value: unknown): Record<string, unknown>;
+  createPinnedHttpsAgent(
+    target: { url: URL; hostname: string; pinnedAddress: string; pinnedFamily: number },
+    options?: { timeoutMs?: number }
+  ): { options: { lookup?: unknown } };
 };
 
 describe('SalPay callback relay helpers', () => {

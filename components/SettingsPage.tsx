@@ -638,7 +638,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
    };
 
    const nodeUrl = '';
-   const networkHeight = wallet.syncStatus?.networkHeight || 0;
+   const networkHeight = wallet.syncStatus?.daemonHeight || 0;
    const walletHeight = Math.max(0, (wallet.syncStatus?.walletHeight || 1) - 1);
 
    return (

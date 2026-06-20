@@ -82,7 +82,6 @@ describe('stakeReturnRepair', () => {
 
     expect(filterOutstandingStakeReturnRepairCandidates(candidates, [
       {
-        txid: 'e'.repeat(64),
         type: 'in',
         tx_type: 2,
         tx_type_label: 'Yield',

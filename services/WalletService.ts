@@ -8123,7 +8123,7 @@ export class WalletService {
       runtimeTxCandidates: this.lastRuntimeFullTxHydration.candidateCount,
       runtimeTxRequested: this.lastRuntimeFullTxHydration.requested,
       runtimeTxHydrated: this.lastRuntimeFullTxHydration.hydrated,
-    } as T;
+    } as unknown as T;
   }
 
   async checkWalletHealth(): Promise<object | null> {

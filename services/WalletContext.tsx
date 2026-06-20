@@ -1408,7 +1408,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
     const needsFullRescanRef = React.useRef(false);
 
-    const startScanRef = React.useRef<((fromHeight?: number) => Promise<void>) | undefined>(undefined);
+    const startScanRef = React.useRef<((fromHeight?: number) => Promise<ScanExecutionResult>) | undefined>(undefined);
 
     const pageHiddenTimestampRef = React.useRef<number>(0);
     const needsGapCheckRef = React.useRef<boolean>(false);
@@ -2108,7 +2108,7 @@ const getDeviceMemoryBucket = (): string => {
                 const assetType = String(stake.asset_type || '').toUpperCase();
                 return assetType === 'SAL' || assetType === 'SAL1';
             })
-            .map((stake: WalletStakeLifecycleEntry) => {
+            .map((stake: WalletStakeLifecycleEntry): Stake => {
                 const nativeActive = stake.status === 'active' && stake.still_locked;
                 const realizedReward = atomicToAmount(stake.realized_reward);
                 const derivedReward = atomicToAmount(stake.derived_reward);
@@ -3224,6 +3224,8 @@ const getDeviceMemoryBucket = (): string => {
         hasReturnedTransfers: boolean,
         options?: {
             forceFullRescan?: boolean;
+            scanSessionType?: ScanSessionType;
+            scanSessionId?: string;
         }
     ): Promise<WalletKeys> => {
         const keys = await walletService.restoreFromMnemonic(mnemonic, '', restoreHeight);
@@ -3724,7 +3726,7 @@ const getDeviceMemoryBucket = (): string => {
         if (willImportCache) {
             setColdStartSettled(false);
             // Safety net: never strand the deferred queries if cold-start throws before settling.
-            coldStartSafetyTimerRef.current = window.setTimeout(() => setColdStartSettled(true), 120000);
+            coldStartSafetyTimerRef.current = setTimeout(() => setColdStartSettled(true), 120000);
         } else {
             setColdStartSettled(true);
         }
@@ -6038,6 +6040,8 @@ const getDeviceMemoryBucket = (): string => {
                 setRestoreScanPhase('phase4_post_restore_validation', 'validating returned-output reconstruction', 'validating');
                 reportRestoreTerminalProgress(networkHeight, actualStartHeight, 96, 'Validating restore...', 'validating');
                 let restoreValidation = await validateRestorePipelineState(networkHeight);
+                let phase2NeedsRescanAfterFollowup = false;
+                let phase2NeedsRescanAfterFollowupReason = '';
 
                 if (!restoreValidation.valid && (restoreValidation.unresolvedReturnedOutputs || restoreValidation.missingRuntimeTxContext)) {
                     const requirePhase2bCompletion = restoreValidation.unresolvedReturnedOutputs === true;
@@ -6090,8 +6094,6 @@ const getDeviceMemoryBucket = (): string => {
                         }, phase2Result.success && phase2Result.phase2bSucceeded ? 'info' : 'warn', phase2Result.phase2bError || phase2Result.error);
                     };
 
-                    let phase2NeedsRescanAfterFollowup = false;
-                    let phase2NeedsRescanAfterFollowupReason = '';
                     let phase2Result = await runRestorePhase2Scan();
                     reportRestorePhase2Result(1, phase2Result);
 

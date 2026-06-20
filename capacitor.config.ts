@@ -4,7 +4,6 @@ const config: CapacitorConfig = {
   appId: 'tools.salvium',
   appName: 'Salvium Vault',
   webDir: 'dist',
-  bundledWebRuntime: false,
   server: {
     url: 'https://vault.salvium.tools',
     androidScheme: 'https',

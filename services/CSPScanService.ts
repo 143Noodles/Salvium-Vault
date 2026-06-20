@@ -3067,7 +3067,7 @@ class CSPScanService {
 	              );
 	              let cacheResult: any = null;
 	              try {
-	                cacheResult = JSON.parse(cacheResultJson);
+	                cacheResult = JSON.parse(cacheResultJson as string);
 	              } catch {
 	                // If WASM accepted the sparse frame but returned malformed JSON, flush
 	                // before reconciliation rather than risking a stale derived-state read.

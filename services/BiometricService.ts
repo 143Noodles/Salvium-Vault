@@ -264,7 +264,7 @@ async function getPRFKey(credentialIdBase64: string): Promise<Uint8Array | null>
             return null;
         }
 
-        return new Uint8Array(prfResults.first);
+        return new Uint8Array(prfResults.first as ArrayBuffer);
 
     } catch (e) {
         return null;
