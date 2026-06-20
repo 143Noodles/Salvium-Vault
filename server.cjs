@@ -5687,7 +5687,7 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   // TODO(post-launch): replace script-src/style-src 'unsafe-inline' (and 'unsafe-eval', kept for Emscripten WASM) with per-request nonces.
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://*.salvium.io https://*.salvium.io:19081 https://*.salvium.tools wss://*; img-src 'self' data: blob: https://dweb.link https://*.ipfs.dweb.link https://ipfs.io https://*.ipfs.ipfs.io https://arweave.net https://*.arweave.net https://*.salvium.tools; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self'; base-uri 'self';");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://*.salvium.io https://*.salvium.io:19081 https://*.salvium.tools wss://*; img-src 'self' data: blob: https://dweb.link https://*.ipfs.dweb.link https://ipfs.io https://*.ipfs.ipfs.io https://arweave.net https://*.arweave.net https://*.salvium.tools; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self'; base-uri 'self';");
   next();
 });
 
