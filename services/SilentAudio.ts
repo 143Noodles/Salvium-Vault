@@ -1,6 +1,6 @@
 import { debugWarn } from '../utils/debug';
 
-const DEBUG = false;
+const DEBUG: boolean = false;
 
 let audioContext: AudioContext | null = null;
 let oscillator: OscillatorNode | null = null;
@@ -20,7 +20,7 @@ function initAudioContext(): AudioContext | null {
   try {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) {
-      void DEBUG && debugWarn('[SilentAudio] Web Audio API not supported');
+      DEBUG && debugWarn('[SilentAudio] Web Audio API not supported');
       return null;
     }
 
@@ -39,7 +39,7 @@ function initAudioContext(): AudioContext | null {
 
     return audioContext;
   } catch (err) {
-    void DEBUG && debugWarn('[SilentAudio] Failed to create AudioContext:', err);
+    DEBUG && debugWarn('[SilentAudio] Failed to create AudioContext:', err);
     return null;
   }
 }
@@ -71,7 +71,7 @@ export async function startSilentAudio(): Promise<boolean> {
     isPlaying = true;
     return true;
   } catch (err: any) {
-    void DEBUG && debugWarn('[SilentAudio] Could not start:', err?.message || err);
+    DEBUG && debugWarn('[SilentAudio] Could not start:', err?.message || err);
     return false;
   }
 }

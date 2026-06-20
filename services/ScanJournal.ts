@@ -2,7 +2,7 @@ import { debugLog, debugWarn } from '../utils/debug';
 import { reportTaskEvent } from '../utils/clientTelemetry';
 import { buildScanCoverageProof, computeChunksToScan, type ScanCoverageManifest } from '../utils/scanCoverage';
 
-const DEBUG = false;
+const DEBUG: boolean = false;
 
 const SCAN_JOURNAL_DB_NAME = 'salvium-scan-journal';
 const SCAN_JOURNAL_DB_VERSION = 1;
@@ -143,14 +143,14 @@ async function openJournalDB(forceNew = false): Promise<IDBDatabase> {
     const request = indexedDB.open(SCAN_JOURNAL_DB_NAME, SCAN_JOURNAL_DB_VERSION);
 
     request.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to open database:', request.error);
+      DEBUG && console.error('[ScanJournal] Failed to open database:', request.error);
       resetJournalDB();
       reject(request.error);
     };
 
     // Reject when blocked by another tab's older-version connection; without this the open never settles and all journal writes hang.
     request.onblocked = () => {
-      void DEBUG && debugWarn('[ScanJournal] Database open blocked by another connection');
+      DEBUG && debugWarn('[ScanJournal] Database open blocked by another connection');
       resetJournalDB();
       reject(new Error('Scan journal database open blocked by another tab'));
     };
@@ -429,7 +429,7 @@ export async function flushPendingUpdates(): Promise<void> {
         count: updateCount,
         reason: 'indexeddb_write_failed',
       }, 'warn', tx.error?.message || 'journal flush failed');
-      void DEBUG && console.error('[ScanJournal] Failed to flush pending updates:', tx.error);
+      DEBUG && console.error('[ScanJournal] Failed to flush pending updates:', tx.error);
       reject(tx.error);
     };
   });
@@ -592,7 +592,7 @@ export async function completeScanJournal(
       reportTaskEvent('failed', 'scan.journal', 'complete_failed', 'ScanJournal', {
         reason: 'indexeddb_write_failed',
       }, 'warn', tx.error?.message || 'journal complete failed');
-      void DEBUG && console.error('[ScanJournal] Failed to complete scan journal:', tx.error);
+      DEBUG && console.error('[ScanJournal] Failed to complete scan journal:', tx.error);
       reject(tx.error);
     };
     tx.onabort = () => {
@@ -624,7 +624,7 @@ export async function getIncompleteJournal(walletAddress: string): Promise<ScanJ
     };
 
     request.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to get incomplete journal:', request.error);
+      DEBUG && console.error('[ScanJournal] Failed to get incomplete journal:', request.error);
       reject(request.error);
     };
   });
@@ -643,7 +643,7 @@ export async function getCheckpoint(walletAddress: string): Promise<ScanCheckpoi
     };
 
     request.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to get checkpoint:', request.error);
+      DEBUG && console.error('[ScanJournal] Failed to get checkpoint:', request.error);
       reject(request.error);
     };
   });
@@ -702,7 +702,7 @@ export async function validateAndResume(
       const staleScanThreshold = 24 * 60 * 60 * 1000;
 
       if (timeSinceUpdate > staleScanThreshold) {
-        void DEBUG && debugWarn(`[ScanJournal] Incomplete scan is ${Math.round(timeSinceUpdate / 3600000)}h old - starting fresh`);
+        DEBUG && debugWarn(`[ScanJournal] Incomplete scan is ${Math.round(timeSinceUpdate / 3600000)}h old - starting fresh`);
         return {
           canResume: false,
           gaps: [],
@@ -726,7 +726,7 @@ export async function validateAndResume(
       );
 
       if (gaps.length > 0) {
-        void DEBUG && debugWarn(`[ScanJournal] Found ${gaps.length} gaps in interrupted scan ${incompleteJournal.scanId}`);
+        DEBUG && debugWarn(`[ScanJournal] Found ${gaps.length} gaps in interrupted scan ${incompleteJournal.scanId}`);
       }
 
       // Resume from the FIRST hole so no earlier gap is silently skipped; using max(scannedChunks) would permanently miss blocks in earlier gaps.
@@ -780,7 +780,7 @@ export async function validateAndResume(
     };
 
   } catch (error) {
-    void DEBUG && console.error('[ScanJournal] Error validating resume:', error);
+    DEBUG && console.error('[ScanJournal] Error validating resume:', error);
     return {
       canResume: false,
       gaps: [],
@@ -815,7 +815,7 @@ export async function recordScanError(scanId: string, error: string): Promise<vo
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to record error:', tx.error);
+      DEBUG && console.error('[ScanJournal] Failed to record error:', tx.error);
       reject(tx.error);
     };
   });
@@ -843,7 +843,7 @@ export async function cleanupOldJournals(walletAddress: string, keepDays: number
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to cleanup old journals:', tx.error);
+      DEBUG && console.error('[ScanJournal] Failed to cleanup old journals:', tx.error);
       reject(tx.error);
     };
   });
@@ -877,7 +877,7 @@ export async function markChunksInProgress(scanId: string, chunkStartHeights: nu
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to mark chunks in progress:', tx.error);
+      DEBUG && console.error('[ScanJournal] Failed to mark chunks in progress:', tx.error);
       reject(tx.error);
     };
   });
@@ -924,7 +924,7 @@ export async function markChunksCompleted(
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to mark chunks completed:', tx.error);
+      DEBUG && console.error('[ScanJournal] Failed to mark chunks completed:', tx.error);
       reject(tx.error);
     };
   });
@@ -979,7 +979,7 @@ export async function recordChunksNeedRescan(
 
     tx.oncomplete = () => resolve(maxAttempts);
     tx.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to record chunks needing rescan:', tx.error);
+      DEBUG && console.error('[ScanJournal] Failed to record chunks needing rescan:', tx.error);
       reject(tx.error);
     };
   });
@@ -1008,7 +1008,7 @@ export async function clearChunkRescanFlag(scanId: string, chunkStartHeights: nu
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to clear chunk rescan flag:', tx.error);
+      DEBUG && console.error('[ScanJournal] Failed to clear chunk rescan flag:', tx.error);
       reject(tx.error);
     };
   });
@@ -1028,7 +1028,7 @@ export async function wasInterrupted(walletAddress: string): Promise<{
   const inProgress = journal.inProgressChunks || [];
 
   if (inProgress.length > 0) {
-    void DEBUG && debugWarn(`[ScanJournal] Found ${inProgress.length} chunks that were in-progress when interrupted`);
+    DEBUG && debugWarn(`[ScanJournal] Found ${inProgress.length} chunks that were in-progress when interrupted`);
     return {
       interrupted: true,
       inProgressChunks: inProgress,
@@ -1048,7 +1048,7 @@ export async function wasInterrupted(walletAddress: string): Promise<{
 }
 
 export async function forceCleanSlate(walletAddress: string): Promise<void> {
-  void DEBUG && debugWarn(`[ScanJournal] Forcing clean slate for wallet ${walletAddress.substring(0, 16)}...`);
+  DEBUG && debugWarn(`[ScanJournal] Forcing clean slate for wallet ${walletAddress.substring(0, 16)}...`);
 
   const tx = await openJournalTransaction([JOURNAL_STORE, CHECKPOINT_STORE], 'readwrite');
 
@@ -1072,7 +1072,7 @@ export async function forceCleanSlate(walletAddress: string): Promise<void> {
       resolve();
     };
     tx.onerror = () => {
-      void DEBUG && console.error('[ScanJournal] Failed to force clean slate:', tx.error);
+      DEBUG && console.error('[ScanJournal] Failed to force clean slate:', tx.error);
       reject(tx.error);
     };
   });
