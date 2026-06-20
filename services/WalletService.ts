@@ -6039,20 +6039,40 @@ export class WalletService {
 
     try {
 
-      const response = await fetch('/api/wallet/get_output_distribution', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          amounts: [0],
-          cumulative: true,
-          from_height: 0,
-          to_height: 0,
-          asset_type: distributionAssetType
-        })
-      });
+      // Transient daemon/seed flap (read ECONNRESET / socket hang up) made a single
+      // distribution fetch miss, leaving the WASM without a distribution; the stake/
+      // send/sweep build then failed with "failed to get output distribution" and gave
+      // up (the per-build retry loops only re-fetch decoys, never the distribution).
+      // Retry the fetch with backoff before falling through to the swallowed failure.
+      const DISTRIBUTION_FETCH_ATTEMPTS = 3;
+      let response: Response | undefined;
+      let resultData: any = null;
+      for (let attempt = 1; attempt <= DISTRIBUTION_FETCH_ATTEMPTS; attempt++) {
+        try {
+          response = await fetch('/api/wallet/get_output_distribution', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              amounts: [0],
+              cumulative: true,
+              from_height: 0,
+              to_height: 0,
+              asset_type: distributionAssetType
+            })
+          });
+          if (response.ok) {
+            resultData = await response.json();
+            if (resultData?.distributions?.length > 0) break;
+          }
+        } catch (distFetchError) {
+          if (attempt >= DISTRIBUTION_FETCH_ATTEMPTS) throw distFetchError;
+        }
+        if (attempt < DISTRIBUTION_FETCH_ATTEMPTS) {
+          await new Promise(resolve => setTimeout(resolve, 600 * attempt));
+        }
+      }
 
-      if (response.ok) {
-        const resultData = await response.json();
+      if (response && response.ok) {
 
         if (resultData.distributions?.length > 0) {
           this.cacheOutputDistributionCount(
@@ -6191,9 +6211,9 @@ export class WalletService {
       } else {
         reportAssetDiagnostic('asset.send_output_distribution_failed', {
           tokenShape: getTokenShape(distributionAssetType),
-          httpStatus: response.status,
+          httpStatus: response?.status,
           result: 'failed',
-          reason: response.ok ? 'empty_distribution' : 'http_error',
+          reason: response?.ok ? 'empty_distribution' : 'http_error',
           sendStage: 'output_distribution_fetch',
         }, 'warn');
       }
