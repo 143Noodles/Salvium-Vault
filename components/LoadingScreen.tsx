@@ -56,6 +56,29 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
     return () => clearInterval(interval);
   }, [tips.length]);
 
+  const [scanInitiated, setScanInitiated] = useState(false);
+  const scanStartRequestedAtRef = useRef(0);
+
+  const [maxProgress, setMaxProgress] = useState(0);
+  // Desktop Fast Sync: download/extract the prebuilt CSP bundle + indexes before
+  // the scan, shown as a "Downloading scan data" phase on THIS screen (no separate
+  // wizard). Inert on web (isDesktopApp() === false).
+  const [dlPct, setDlPct] = useState(0);
+  const [dlReady, setDlReady] = useState(false);
+  const dlStartedRef = useRef(false);
+
+  const progress = wallet.scanProgress;
+  const isScanning = wallet.isScanning;
+  // Raw scan-session note: telemetry/diagnostics ONLY — the rendered status derives
+  // exclusively from enum phase keys (utils/scanUiPhase).
+  const rawScanSessionNote = wallet.scanSession?.note ?? '';
+  const vaultRestorePending = typeof window !== 'undefined'
+    ? window.localStorage.getItem(VAULT_RESTORE_PENDING_KEY) === 'true'
+    : false;
+  const downloadPhaseActive = isDesktopApp() && vaultRestorePending && !dlReady;
+
+  // Desktop restore: drive the "Downloading scan data" phase. Declared below its
+  // state (vaultRestorePending/dlReady/dlStartedRef) so the deps array does not hit a TDZ.
   useEffect(() => {
     if (!isDesktopApp() || !vaultRestorePending || dlReady) return;
     let cancelled = false;
@@ -82,27 +105,6 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vaultRestorePending, dlReady]);
-
-  const [scanInitiated, setScanInitiated] = useState(false);
-  const scanStartRequestedAtRef = useRef(0);
-
-  const [maxProgress, setMaxProgress] = useState(0);
-  // Desktop Fast Sync: download/extract the prebuilt CSP bundle + indexes before
-  // the scan, shown as a "Downloading scan data" phase on THIS screen (no separate
-  // wizard). Inert on web (isDesktopApp() === false).
-  const [dlPct, setDlPct] = useState(0);
-  const [dlReady, setDlReady] = useState(false);
-  const dlStartedRef = useRef(false);
-
-  const progress = wallet.scanProgress;
-  const isScanning = wallet.isScanning;
-  // Raw scan-session note: telemetry/diagnostics ONLY — the rendered status derives
-  // exclusively from enum phase keys (utils/scanUiPhase).
-  const rawScanSessionNote = wallet.scanSession?.note ?? '';
-  const vaultRestorePending = typeof window !== 'undefined'
-    ? window.localStorage.getItem(VAULT_RESTORE_PENDING_KEY) === 'true'
-    : false;
-  const downloadPhaseActive = isDesktopApp() && vaultRestorePending && !dlReady;
   const vaultRestoreStartedAtRef = useRef(readVaultRestoreStartedAt());
   const loadingTelemetryStartedAtRef = useRef(Date.now());
   const firstProgressReportedRef = useRef(false);
