@@ -376,20 +376,25 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     if (isNativeApp) {
       return (
         <div
-          className="flex h-full min-h-0 items-start justify-center overflow-y-auto overflow-x-hidden bg-[#0f0f1a] px-3 py-4 relative mobile-scroll-page"
-          style={{ paddingTop: 'calc(var(--safe-area-top) + 0.75rem)' }}
+          className="flex flex-col h-full min-h-0 items-center overflow-y-auto overflow-x-hidden bg-[#0f0f1a] px-3 relative"
+          style={{
+            paddingTop: 'calc(var(--safe-area-top) + 1rem)',
+            paddingBottom: 'calc(var(--safe-area-bottom) + 1rem)',
+          }}
         >
-          <div
-            className="absolute inset-0 pointer-events-none opacity-20"
-            style={{
-              backgroundImage: 'linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px)',
-              backgroundSize: '40px 40px'
-            }}
-          ></div>
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-[400px] bg-accent-primary/10 blur-[120px] rounded-full pointer-events-none opacity-60"></div>
-          <div className="absolute -bottom-32 -right-32 w-[400px] h-[400px] bg-accent-secondary/5 blur-[100px] rounded-full pointer-events-none"></div>
+          <div className="absolute inset-0 overflow-hidden pointer-events-none">
+            <div
+              className="absolute inset-0 pointer-events-none opacity-20"
+              style={{
+                backgroundImage: 'linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px)',
+                backgroundSize: '40px 40px'
+              }}
+            ></div>
+            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-[400px] bg-accent-primary/10 blur-[120px] rounded-full pointer-events-none opacity-60"></div>
+            <div className="absolute -bottom-32 -right-32 w-[400px] h-[400px] bg-accent-secondary/5 blur-[100px] rounded-full pointer-events-none"></div>
+          </div>
 
-          <div className="w-full max-w-2xl flex flex-col items-center text-center z-10 animate-fade-in relative gap-4 sm:gap-6 pb-4">
+          <div className="w-full max-w-2xl flex flex-col items-center text-center z-10 animate-fade-in relative gap-4 sm:gap-6 my-auto">
             <div className="flex flex-col items-center text-center">
               <h1 className="text-2xl sm:text-3xl md:text-5xl font-bold text-white mb-3 tracking-tight drop-shadow-lg">
                 {t('onboarding.hero.title')}
