@@ -6807,7 +6807,15 @@ const getDeviceMemoryBucket = (): string => {
         setIsScanning(false);
         setScanProgress(null);
 
-        clearStoredWalletData();
+        // A manual rescan (preserveSeedInMemory) re-derives the SAME wallet from the
+        // in-memory seed and overwrites the stored record in finalizeSeedRestore. Wiping
+        // the encrypted blob + wallet-created marker here makes the app shell briefly see
+        // "no wallet" (the re-init sets isInitialized=true before the record is rewritten)
+        // and drop the user to onboarding mid-rescan. Keep stored wallet data for a rescan;
+        // only a true reset clears it. Volatile caches/IndexedDB are still cleared below.
+        if (!preserveSeedInMemory) {
+            clearStoredWalletData();
+        }
         localStorage.removeItem(RESTORE_SCAN_SESSION_STORAGE_KEY);
         localStorage.removeItem('salvium_restore_scan_finished');
         localStorage.removeItem('salvium_vault_restore_pending');
