@@ -35,8 +35,11 @@ self.onmessage = async (e) => {
 async function initWasm(basePath) {
     if (Module) return;
 
-    const jsUrl = basePath ? `${basePath}/SalviumWallet.js` : '/vault/wallet/SalviumWallet.js';
-    const wasmUrl = basePath ? `${basePath}/SalviumWallet.wasm` : '/vault/wallet/SalviumWallet.wasm';
+    if (!basePath) {
+        throw new Error('WASM base path missing');
+    }
+    const jsUrl = `${basePath}/SalviumWallet.js`;
+    const wasmUrl = `${basePath}/SalviumWallet.wasm`;
 
     // Disable pthreads: WASM spawns workers via URL.createObjectURL, which fails in nested workers.
     const origWorker = self.Worker;

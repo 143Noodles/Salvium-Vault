@@ -65,6 +65,12 @@ function getWorkerDefaultOrigin() {
     return '';
 }
 
+// Direct-origin failover: Cloudflare (proxying vault.salvium.tools) can 403 a client
+// mid-restore (WAF/anti-bot scoring); the vault server never returns 403 for scan
+// endpoints. After the first such 403, bulk scan fetches route via the DNS-only cdn
+// origin for the rest of the session.
+let bulkOriginFailoverActive = false;
+
 function resolveFetchUrl(pathOrUrl) {
     if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
     if (isExtensionProtocol() && /^\/?vault\/wallet\//.test(String(pathOrUrl).replace(/^\//, ''))) {
@@ -72,14 +78,15 @@ function resolveFetchUrl(pathOrUrl) {
     }
 
     let baseUrl = apiBaseUrl || getWorkerDefaultOrigin();
-    // Bulk chunk data (csp-batch/csp-cached) via cdn.salvium.tools to bypass the Cloudflare
-    // throttle (also used by the Android webview, which scans in batch mode).
+    // Bulk chunk data (csp-batch/csp-cached) via the DNS-only cdn origin. Caddy proxies
+    // cdn.salvium.tools to the PROD vault container (salvium-vault:3000, re-verified
+    // 2026-07-02), so this is version-safe for both hosts. vault-test always uses it
+    // (Cloudflare bundle throttle); prod fails over to it after a Cloudflare 403.
     try {
         const h = (self.location && self.location.hostname) || '';
-        // vault-test ONLY: cdn.salvium.tools proxies to the TEST container; a cdn-routed prod
-        // build would fetch version-skewed scan data (the 2026-06-10 rollback root cause).
-        if (h === 'vault-test.salvium.tools' &&
-            /^\/?api\/csp-(batch|cached)/.test(pathOrUrl)) {
+        if (/^\/?api\/csp-(batch|cached)/.test(pathOrUrl) &&
+            (h === 'vault-test.salvium.tools' ||
+             (h === 'vault.salvium.tools' && bulkOriginFailoverActive))) {
             baseUrl = 'https://cdn.salvium.tools';
         }
     } catch (_) {}
@@ -293,13 +300,10 @@ async function handleLoadWasm(msg) {
 
         let jsCode = patchedJsCode;
         if (!jsCode && isExtensionProtocol()) {
-            importScripts(resolveFetchUrl('/vault/wallet/SalviumWallet.js'));
+            importScripts('SalviumWallet.js');
         } else {
             if (!jsCode) {
-                const jsResponse = await fetch(resolveFetchUrl('/vault/wallet/SalviumWallet.js'));
-                jsCode = await jsResponse.text();
-                jsCode = jsCode.replace(/PThread\.init\(\);/g, '/* disabled */');
-                jsCode = jsCode.replace(/var pthreadPoolSize = \\d+;/g, 'var pthreadPoolSize = 0;');
+                throw new Error('Patched WASM JS code missing');
             }
 
             const indirectEval = eval;
@@ -318,7 +322,7 @@ async function handleLoadWasm(msg) {
                 });
                 return {};
             },
-            locateFile: (path) => '/vault/wallet/' + path
+            locateFile: (path) => path
         });
 
         isReady = true;
@@ -697,6 +701,9 @@ async function handleScanCspBatch(msg) {
         }
 
         if (!response.ok) {
+            // CF 403: retryable ('fetch failed' matches the retry classifier); the requeued
+            // task re-resolves its URL and goes via the direct origin.
+            if (response.status === 403) bulkOriginFailoverActive = true;
             throw new Error(`CSP batch fetch failed: ${response.status}`);
         }
 
@@ -905,6 +912,7 @@ async function handleScanKeyImagesOnly(msg) {
             throw new Error(`CSP key-image batch 404 (${reason404})`);
         }
         if (!response.ok) {
+            if (response.status === 403) bulkOriginFailoverActive = true;
             throw new Error(`CSP key-image batch fetch failed: ${response.status}`);
         }
 

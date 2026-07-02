@@ -153,6 +153,32 @@ class CSPScanner {
         }
     }
 
+    recoverServiceWorkerControlledScanFailure(reason, context = {}) {
+        if (this._serviceWorkerScanRecoveryTriggered) return;
+        if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
+        if (!navigator.serviceWorker?.controller) return;
+        // A hidden/offline page fails fetches by design (the scan is paused, not broken);
+        // reloading a backgrounded restore would destroy its progress for nothing.
+        if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+        if (navigator.onLine === false) return;
+
+        this._serviceWorkerScanRecoveryTriggered = true;
+        this.emitTelemetry('scan.service_worker_recovery_reload', {
+            reason,
+            serviceWorkerControlled: true,
+            ...context
+        }, 'warn', 'Service-worker controlled scan fetch failed; reloading without service worker');
+
+        try { window.sessionStorage.setItem('salvium_disable_sw', '1'); } catch (_) {}
+        try {
+            window.dispatchEvent(new CustomEvent('salvium:force-reload', {
+                detail: { reason: 'scan-service-worker-fetch-failed' }
+            }));
+        } catch (_) {
+            try { window.location.reload(); } catch (_) {}
+        }
+    }
+
     getWorkerControlTimeoutMs(operation = 'control') {
         const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '';
         const isMobile = /iPhone|iPad|iPod|Android/i.test(ua);
@@ -381,7 +407,7 @@ class CSPScanner {
         }
     }
 
-    static WASM_VERSION = '8.2.16-20260612';
+    static WASM_VERSION = '8.2.18-20260702';
 
     // fetch() with a hard timeout so a stuck/half-open connection can't hang init/scan forever.
     static async fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
@@ -421,15 +447,17 @@ class CSPScanner {
     }
 
     getBulkBaseUrl() {
-        // Bulk data (271MB bundle) served from cdn.salvium.tools to bypass the Cloudflare
-        // throttle. Same-origin fallback for localhost/dev.
-        // DEPLOY HAZARD GUARD: cdn.salvium.tools reverse-proxies to the salvium-vault-TEST
-        // container (Caddyfile), so ONLY vault-test may use it. Routing prod through it served a
-        // version-skewed scanner WASM to prod clients (the 2026-06-10 rollback). Before re-adding
-        // prod here, point a dedicated host at the prod container.
+        // Bulk data (271MB bundle) served from cdn.salvium.tools (DNS-only, no Cloudflare)
+        // to bypass the CF bundle throttle. Caddy now proxies cdn.salvium.tools to the PROD
+        // vault container (salvium-vault:3000, re-verified 2026-07-02), so the 2026-06-10
+        // version-skew hazard (cdn -> TEST container) no longer applies. vault-test always
+        // uses it; prod uses it only after a Cloudflare 403 failover. Same-origin for dev.
         try {
             const h = (typeof window !== 'undefined' && window.location && window.location.hostname) || '';
             if (h === 'vault-test.salvium.tools') {
+                return 'https://cdn.salvium.tools';
+            }
+            if (h === 'vault.salvium.tools' && CSPScanner.bulkOriginFailoverActive) {
                 return 'https://cdn.salvium.tools';
             }
         } catch (_) {}
@@ -526,27 +554,66 @@ class CSPScanner {
     }
 
 
-    static bulkWasmUrl(file) {
-        if (isExtensionProtocol()) return extensionAssetUrl('wallet/' + file);
+    static wasmAssetVersionPromise = null;
 
-        // Scanner WASM via cdn.salvium.tools to bypass the Cloudflare throttle (plain fetch,
-        // no Worker, so cross-origin is fine). Same-origin for dev.
-        // vault-test ONLY -- see getBulkBaseUrl() deploy-hazard note (cdn proxies to the TEST
-        // container; a cdn-routed prod build fetches version-skewed wasm = the rollback cause).
+    // Direct-origin failover for bulk scan data: Cloudflare (which proxies
+    // vault.salvium.tools) can 403 a client mid-restore (WAF/anti-bot scoring); the
+    // vault server itself never returns 403 for scan endpoints. After the first such
+    // 403, bulk scan data routes via the DNS-only cdn origin for the session.
+    static bulkOriginFailoverActive = false;
+
+    static noteBulkFetchBlocked(httpStatus) {
+        if (httpStatus !== 403 || CSPScanner.bulkOriginFailoverActive) return false;
+        let h = '';
         try {
-            const h = (typeof location !== 'undefined' && location.hostname) ||
-                      (typeof self !== 'undefined' && self.location && self.location.hostname) || '';
-            if (h === 'vault-test.salvium.tools') {
-                return 'https://cdn.salvium.tools/api/wasm/' + encodeURIComponent(CSPScanner.WASM_VERSION) + '/' + file;
-            }
-        } catch (e) {}
-        return '/vault/api/wasm/' + encodeURIComponent(CSPScanner.WASM_VERSION) + '/' + file;
+            h = (typeof location !== 'undefined' && location.hostname) || '';
+        } catch (_) {}
+        if (h !== 'vault.salvium.tools' && h !== 'vault-test.salvium.tools') return false;
+        CSPScanner.bulkOriginFailoverActive = true;
+        return true;
+    }
+
+    static async canonicalWasmAssetVersion() {
+        if (isExtensionProtocol()) return CSPScanner.WASM_VERSION;
+        if (!CSPScanner.wasmAssetVersionPromise) {
+            CSPScanner.wasmAssetVersionPromise = fetch('/api/wasm-info?_vault_wasm_check=' + Date.now(), {
+                cache: 'no-store',
+                credentials: 'same-origin',
+                headers: { 'Cache-Control': 'no-cache' }
+            })
+                .then(response => {
+                    if (!response.ok) throw new Error('wasm-info HTTP ' + response.status);
+                    return response.json();
+                })
+                .then(info => {
+                    const assetVersion = info && typeof info.assetVersion === 'string'
+                        ? info.assetVersion.trim()
+                        : '';
+                    if (!assetVersion) {
+                        throw new Error('wasm-info missing assetVersion');
+                    }
+                    return assetVersion;
+                })
+                .catch((error) => {
+                    // A cached rejection would break every WASM fetch for the rest of the
+                    // session; drop it so the next call retries.
+                    CSPScanner.wasmAssetVersionPromise = null;
+                    throw error;
+                });
+        }
+        return CSPScanner.wasmAssetVersionPromise;
+    }
+
+    static async bulkWasmUrl(file) {
+        if (isExtensionProtocol()) return extensionAssetUrl('wallet/' + file);
+        const version = encodeURIComponent(await CSPScanner.canonicalWasmAssetVersion());
+        return '/api/wasm/' + version + '/' + file;
     }
 
     async fetchWasmBinary() {
         if (this.wasmBinary) return this.wasmBinary;
 
-        const response = await CSPScanner.fetchWithTimeout(CSPScanner.bulkWasmUrl('SalviumWallet.wasm'), {}, 90000);
+        const response = await CSPScanner.fetchWithTimeout(await CSPScanner.bulkWasmUrl('SalviumWallet.wasm'), {}, 90000);
         if (!response.ok) {
             throw new Error(`Failed to fetch WASM: ${response.status}`);
         }
@@ -558,7 +625,7 @@ class CSPScanner {
         if (isExtensionProtocol()) return null;
         if (this.patchedJsCode) return this.patchedJsCode;
 
-        const response = await CSPScanner.fetchWithTimeout(CSPScanner.bulkWasmUrl('SalviumWallet.js'), {}, 90000);
+        const response = await CSPScanner.fetchWithTimeout(await CSPScanner.bulkWasmUrl('SalviumWallet.js'), {}, 90000);
         if (!response.ok) {
             throw new Error(`Failed to fetch JS: ${response.status}`);
         }
@@ -776,6 +843,13 @@ class CSPScanner {
                 this.emitTelemetry('scan.scanner_bundle_stream_unavailable', {
                     httpStatus: response.status
                 }, 'warn', `Bundle unavailable: HTTP ${response.status}`);
+                if (CSPScanner.noteBulkFetchBlocked(response.status)) {
+                    this.emitTelemetry('scan.bulk_origin_failover_activated', {
+                        httpStatus: response.status
+                    }, 'warn', 'Cloudflare 403 on bulk scan data; failing over to direct origin');
+                }
+                // An HTTP status (incl. the cache-rebuild 503) means the request REACHED the
+                // server — the SW path works. SW recovery is only for failed/aborted fetches.
                 return null;
             }
 
@@ -956,6 +1030,14 @@ class CSPScanner {
                 reason: err?.message || String(err),
                 bytesReceived: this.stats?.bytesReceived || 0
             }, 'warn', err?.message || String(err));
+            const failureReason = err?.message || String(err || '');
+            if (/failed to fetch|networkerror|abort|timeout/i.test(failureReason)) {
+                this.recoverServiceWorkerControlledScanFailure('bundle_fetch_failed', {
+                    reason: failureReason,
+                    scanWindowStart: this.stats.startHeight || 0,
+                    scanWindowEnd: this.stats.endHeight || 0
+                });
+            }
             return null;
         } finally {
             if (managesDispatchState) this.streamDispatchInProgress = false;
@@ -1039,15 +1121,23 @@ class CSPScanner {
         if (!this.useBatchMode) return false;
 
         try {
-            const response = await CSPScanner.fetchWithTimeout(`${this.apiBaseUrl}/api/csp-batch?start_height=0&chunks=1`, {
+            const response = await CSPScanner.fetchWithTimeout(`${this.getBulkBaseUrl()}/api/csp-batch?start_height=0&chunks=1`, {
                 method: 'GET'
             }, 30000);
 
             if (response.ok) {
                 return true;
-            } else {
-                return false;
             }
+            if (CSPScanner.noteBulkFetchBlocked(response.status)) {
+                this.emitTelemetry('scan.bulk_origin_failover_activated', {
+                    httpStatus: response.status
+                }, 'warn', 'Cloudflare 403 on batch probe; failing over to direct origin');
+                const retry = await CSPScanner.fetchWithTimeout(`${this.getBulkBaseUrl()}/api/csp-batch?start_height=0&chunks=1`, {
+                    method: 'GET'
+                }, 30000);
+                return retry.ok;
+            }
+            return false;
         } catch (err) {
             return false;
         }
@@ -2033,6 +2123,12 @@ class CSPScanner {
         this.retryCount = this.retryCount || {};
         const currentRetries = this.retryCount[retryKey] || 0;
         const MAX_RETRIES = 3;
+        // While the page is backgrounded or the device is offline the scan is PAUSED: a
+        // transient retryable failure is the expected, resume-able state. Requeue it WITHOUT
+        // consuming the retry budget so a long background period cannot exhaust retries and
+        // strand chunks, and never surface it as an error.
+        const scanPaused = (typeof document !== 'undefined' && document.visibilityState === 'hidden') ||
+            (typeof navigator !== 'undefined' && navigator.onLine === false);
 
         // Transient node/proxy conditions; skipping any would leave a silent gap, so always retry these.
         const isRetryable = error && (
@@ -2057,7 +2153,22 @@ class CSPScanner {
             requestKind: failedTask?.isBatch ? 'batch' : 'single',
             reason: error || 'worker scan error',
             scanIssueCount: currentRetries + 1,
-        }, isRetryable && currentRetries < MAX_RETRIES ? 'warn' : 'error', error || 'worker scan error');
+        }, (isRetryable && (scanPaused || currentRetries < MAX_RETRIES)) ? 'warn' : 'error', error || 'worker scan error');
+
+        if (
+            error &&
+            // 503s excluded: an HTTP response proves the SW-to-server path works (a
+            // cache-rebuild 503 would otherwise trigger a pointless SW-disable reload).
+            /failed to fetch|networkerror/i.test(error) &&
+            (failedTask?.isBatch || failedTask?.useBundle || error.includes('CSP fetch failed'))
+        ) {
+            this.recoverServiceWorkerControlledScanFailure('worker_scan_fetch_failed', {
+                requestHeight: startHeight,
+                responseItems: chunkCount || failedTask?.chunkCount || 0,
+                requestKind: failedTask?.isBatch ? 'batch' : 'single',
+                reason: error
+            });
+        }
 
         let workerWasTracked = false;
         if (workerState) {
@@ -2075,10 +2186,11 @@ class CSPScanner {
             this.pendingTasks--;
         }
 
-        if (isRetryable && currentRetries < MAX_RETRIES && failedTask) {
-            this.retryCount[retryKey] = currentRetries + 1;
+        if (isRetryable && failedTask && (scanPaused || currentRetries < MAX_RETRIES)) {
+            // Paused (hidden/offline) requeues must not consume the retry budget.
+            if (!scanPaused) this.retryCount[retryKey] = currentRetries + 1;
 
-            const delay = Math.min(1000 * Math.pow(2, currentRetries), 10000);
+            const delay = scanPaused ? 5000 : Math.min(1000 * Math.pow(2, currentRetries), 10000);
             this.emitTelemetry('scan.worker_task_retry_scheduled', {
                 requestHeight: startHeight,
                 responseItems: failedTask.chunkCount || this.batchSize,
