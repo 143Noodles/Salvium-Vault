@@ -16,7 +16,7 @@ import * as tar from 'tar';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..', '..');           // repo root
-const OWNER = '143Noodles', NAME = 'Salvium-Vault-Web-Wallet';
+const OWNER = '143Noodles', NAME = 'Salvium-Vault';
 
 const version = process.argv[2];
 if (!version) { console.error('usage: publish-content.mjs <version>'); process.exit(1); }

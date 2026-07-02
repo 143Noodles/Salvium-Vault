@@ -22,7 +22,7 @@ MCowBQYDK2VwAyEAVQ+q5oKmQSAJxrGzgW3wo2LLexXtQ9nws//5kD/LGYg=
 -----END PUBLIC KEY-----`;
 
 const MANIFEST_URL = process.env.SALVIUM_CONTENT_MANIFEST_URL
-  || 'https://github.com/143Noodles/Salvium-Vault-Web-Wallet/releases/latest/download/content-manifest.json';
+  || 'https://github.com/143Noodles/Salvium-Vault/releases/latest/download/content-manifest.json';
 
 function log(...a) { console.log('[content-update]', ...a); }
 

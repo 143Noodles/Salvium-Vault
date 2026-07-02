@@ -6,8 +6,8 @@ Categories:
 License: MIT
 AuthorName: Salvium
 WebSite: https://vault.salvium.tools
-SourceCode: https://github.com/143Noodles/Salvium-Vault-Web-Wallet
-IssueTracker: https://github.com/143Noodles/Salvium-Vault-Web-Wallet/issues
+SourceCode: https://github.com/143Noodles/Salvium-Vault
+IssueTracker: https://github.com/143Noodles/Salvium-Vault/issues
 
 AutoName: Salvium Vault
 Summary: Non-custodial wallet for Salvium
@@ -23,7 +23,7 @@ Description: |-
   and meaningful Git tags.
 
 RepoType: git
-Repo: https://github.com/143Noodles/Salvium-Vault-Web-Wallet.git
+Repo: https://github.com/143Noodles/Salvium-Vault.git
 
 Builds:
   - versionName: 1.0.1
