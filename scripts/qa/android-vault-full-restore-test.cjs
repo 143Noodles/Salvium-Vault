@@ -9,7 +9,11 @@ const EXPECTED_ORIGIN = process.env.ANDROID_EXPECTED_ORIGIN || (ANDROID_URL ? ne
 const CLEAR_PACKAGE = process.env.ANDROID_CLEAR_PACKAGE || PACKAGE;
 const CDP_PORT = Number(process.env.CDP_PORT || 9230);
 const PASSWORD = process.env.VAULT_PASSWORD || 'PerfTest1234!';
-const SEED = 'REDACTED-TEST-SEED';
+const SEED = process.env.VAULT_TEST_SEED || '';
+if (!SEED) {
+  console.error('Set VAULT_TEST_SEED to a 25-word test mnemonic (use a throwaway wallet).');
+  process.exit(1);
+}
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

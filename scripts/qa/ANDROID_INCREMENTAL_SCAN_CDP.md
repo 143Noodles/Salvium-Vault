@@ -17,7 +17,7 @@ Use an emulator serial explicitly. Example:
 
 ```bash
 SERIAL=emulator-5584
-/home/jack/Android/Sdk/emulator/emulator \
+$ANDROID_HOME/emulator/emulator \
   -avd salvium_api36_high \
   -port 5584 \
   -no-window \
@@ -48,14 +48,14 @@ curl http://127.0.0.1:9333/json/version
 Open the test-container tunnel from the machine running the verifier:
 
 ```bash
-ssh -N -L 13000:10.0.1.26:3000 salvium
+ssh -N -L 13000:<vault-host-internal-ip>:3000 <vault-host>
 curl -I http://127.0.0.1:13000/
 ```
 
 If the emulator profile does not already contain the synced test wallet, copy only the wallet origin storage from the desktop profile:
 
 ```bash
-ssh salvium 'cd /tmp/inc-fullstate/Default && tar -czf /tmp/android-webview-storage.tgz IndexedDB "Local Storage"'
+ssh <vault-host> 'cd /tmp/inc-fullstate/Default && tar -czf /tmp/android-webview-storage.tgz IndexedDB "Local Storage"'
 scp salvium:/tmp/android-webview-storage.tgz /tmp/android-webview-storage.tgz
 adb -s "$SERIAL" shell am force-stop tools.salvium.harness
 adb -s "$SERIAL" push /tmp/android-webview-storage.tgz /data/local/tmp/android-webview-storage.tgz

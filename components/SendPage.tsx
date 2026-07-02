@@ -1240,8 +1240,8 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
                 <p className="text-xs text-text-muted uppercase tracking-wider mb-1">{t('send.amountToSend')}</p>
                 <p className={`${isMobileOrTablet ? 'text-xl' : 'text-2xl'} font-bold text-white font-mono`}>
                   {validationState?.type === 'warning' && actualSendAmount !== null
-                    ? actualSendAmount.toLocaleString()
-                    : parseFloat(amount).toLocaleString()
+                    ? actualSendAmount.toLocaleString(undefined, { maximumFractionDigits: 8 })
+                    : amount
                   } {displayAssetLabel}
                 </p>
               </div>

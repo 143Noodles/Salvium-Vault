@@ -75,8 +75,14 @@ export const redactSensitiveText = (value: string): string => {
   return value
     .replace(/https?:\/\/[^\s"'<>]+/gi, '[redacted-url]')
     .replace(/\b[0-9a-fA-F]{32,}\b/g, '[redacted-hex]')
-    .replace(/\b(?:sal|svm|s)[1-9A-HJ-NP-Za-km-z]{35,}\b/g, '[redacted-address]')
-    .replace(/\b(balance|unlockedBalance|balanceSAL|unlockedBalanceSAL|amount|stake|snapshot|lifecycle|atomic|payment_id|paymentId)\s*[:=]\s*-?\w+(?:\.\w+)?\b/gi, '$1=[redacted]')
+    // Addresses are case-insensitive: real Salvium addresses start with 'SC1' (uppercase),
+    // which a lowercase-only pattern let through.
+    .replace(/\b(?:sc1|sal|svm|s)[1-9A-HJ-NP-Za-km-z]{35,}\b/gi, '[redacted-address]')
+    // Redact numeric values assigned to any money-ish key, including compound keys like
+    // snapshot_balance / display_unlocked / locked_coins_total / suspect_tx_output_atomic
+    // that the previous word-boundary pattern missed.
+    .replace(/\b([\w.]*(?:balance|unlocked|locked_coins|coins_total|atomic|snapshot|amount|stake|lifecycle)[\w.]*)\s*[:=]\s*-?\d[\d.,eE+-]*/gi, '$1=[redacted]')
+    .replace(/\b(payment_id|paymentId)\s*[:=]\s*-?\w+(?:\.\w+)?\b/gi, '$1=[redacted]')
     .replace(/\b(?:seed|mnemonic|private[_ -]?key|secret[_ -]?key|spend[_ -]?key|view[_ -]?key)\b\s*[:=]?\s*[^\n,;)]+/gi, '[redacted-sensitive]')
     .replace(/\b(?:address|txid|tx_hash|key_image|payment_id)\b\s*[:=]\s*[^\n,;)]+/gi, '[redacted-sensitive]')
     .slice(0, MAX_MESSAGE_LENGTH);

@@ -83,7 +83,10 @@ function resolveFetchUrl(pathOrUrl) {
     // 2026-07-02), so this is version-safe for both hosts. vault-test always uses it
     // (Cloudflare bundle throttle); prod fails over to it after a Cloudflare 403.
     try {
-        const h = (self.location && self.location.hostname) || '';
+        // Workers are spawned from blob: URLs, where self.location.hostname is the
+        // EMPTY string — derive the host from the effective API base instead, or the
+        // cdn rerouting below can never trigger inside workers.
+        const h = baseUrl ? new URL(baseUrl).hostname : '';
         if (/^\/?api\/csp-(batch|cached)/.test(pathOrUrl) &&
             (h === 'vault-test.salvium.tools' ||
              (h === 'vault.salvium.tools' && bulkOriginFailoverActive))) {

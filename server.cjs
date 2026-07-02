@@ -764,7 +764,12 @@ function recordClientTelemetryEvent(event) {
     clientTelemetryStats.accepted += 1;
     clientTelemetryStats.firstSeen = clientTelemetryStats.firstSeen || event.at;
     clientTelemetryStats.lastSeen = event.at;
-    clientTelemetryStats.byType[event.type] = (clientTelemetryStats.byType[event.type] || 0) + 1;
+    if (Object.prototype.hasOwnProperty.call(clientTelemetryStats.byType, event.type)
+        || Object.keys(clientTelemetryStats.byType).length < 200) {
+        clientTelemetryStats.byType[event.type] = (clientTelemetryStats.byType[event.type] || 0) + 1;
+    } else {
+        clientTelemetryStats.byType['other'] = (clientTelemetryStats.byType['other'] || 0) + 1;
+    }
     clientTelemetryStats.byLevel[event.level] = (clientTelemetryStats.byLevel[event.level] || 0) + 1;
     if (event.level === 'error') {
         clientTelemetryStats.lastError = event;
@@ -4535,11 +4540,6 @@ async function extractSparseTxsFast(startHeight, endHeight, txIndices, preloaded
         console.warn(`[Fast Sparse] TXI index incomplete/stale for ${startHeight}-${endHeight}; requested tx index ${invalidTxIndex} (max ${txi.entries.length - 1})`);
         return null;
     }
-    if (startHeight === 22000) {
-        console.log(`[extractSparseTxsFast] Chunk 22000: requested ${txIndices.length} indices`);
-        console.log(`  Has 2621: ${txIndices.includes(2621)}, Has 3131: ${txIndices.includes(3131)}`);
-        console.log(`  TXI entries count: ${txi.entries.length}`);
-    }
     try {
         const extractStart = Date.now();
         const txBuffers = [];
@@ -5202,7 +5202,7 @@ function parseCookieHeader(cookieHeader) {
         const key = part.slice(0, separatorIndex).trim();
         const value = part.slice(separatorIndex + 1).trim();
         if (!key) continue;
-        parsed[key] = decodeURIComponent(value);
+        try { parsed[key] = decodeURIComponent(value); } catch { parsed[key] = value; }
     }
     return parsed;
 }
@@ -6619,6 +6619,7 @@ async function getScanCacheHealthSnapshot() {
 }
 
 app.get(['/api/debug/cache-health', '/vault/api/debug/cache-health'], noCacheHeaders, async (req, res) => {
+    if (blockIfNotAdmin(req, res)) return;
     try {
         const snapshot = await getScanCacheHealthSnapshot();
         snapshot.ready = !!snapshot.wasmReady
@@ -7763,15 +7764,6 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
             bodyType: Array.isArray(req.body) ? 'array' : typeof req.body
         });
         return res.status(400).json({ error: 'get_outs.bin expects binary request body' });
-    }
-    if (String(process.env.SALVIUM_CAPTURE_GET_OUTS || '').toLowerCase() === 'true') {
-        try {
-            const capturePath = '/tmp/latest-get-outs-body.bin';
-            fsSync.writeFileSync(capturePath, bodyBuffer);
-            emitExactOutsLog('captured_body', { capturePath, requestBytes: bodyBuffer.length });
-        } catch (captureError) {
-            emitExactOutsLog('capture_failed', { reason: String(captureError.message || captureError).slice(0, 160) });
-        }
     }
     const outputs = parseEpeeOutputIndices(bodyBuffer);
     const parsedAssetType = normalizeDaemonAssetTypeForServer(parseEpeeAssetType(bodyBuffer));
@@ -9448,11 +9440,11 @@ app.get(['/api/csp-batch', '/vault/api/csp-batch'], async (req, res) => {
         try {
             const resolvedHeight = Number(await getCurrentChainHeightForCache());
             if (Number.isFinite(resolvedHeight) && resolvedHeight > 0) {
+                // Local tip estimate only. Do NOT advance the shared lastKnownHeight here:
+                // the realtime watcher regenerates on currentHeight > lastKnownHeight and only
+                // touches the current chunk, so bumping it from a read path made it skip
+                // regeneration and permanently drop blocks in the prior chunk.
                 batchKnownHeight = Math.max(batchKnownHeight, resolvedHeight);
-                if (batchKnownHeight > lastKnownHeight) {
-                    lastKnownHeight = batchKnownHeight;
-                    realtimeWatcherStatus.lastHeight = batchKnownHeight;
-                }
             }
         } catch {
             // Use the realtime watcher's last height if daemon height refresh fails.
@@ -10092,13 +10084,6 @@ app.post(['/api/wallet-rpc/getblocks.bin', '/api/wallet-rpc/gethashes.bin', '/ge
 
     console.log(`[Binary Proxy POST] ${endpoint} - Method: ${req.method}, Path: ${req.path}`);
     console.log(`[Binary Proxy POST] Request ID: ${requestId}`);
-    console.log(`[Binary Proxy POST] Headers:`, {
-        'content-type': req.headers['content-type'],
-        'content-length': req.headers['content-length'],
-        'user-agent': req.headers['user-agent']?.substring(0, 50),
-        'x-request-id': req.headers['x-request-id']
-    });
-    console.log(`[Binary Proxy POST] Body type: ${typeof req.body}, Body length: ${req.body?.length || 0}, IsBuffer: ${Buffer.isBuffer(req.body)}`);
 
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -10165,133 +10150,6 @@ app.post(['/api/wallet-rpc/getblocks.bin', '/api/wallet-rpc/gethashes.bin', '/ge
             const requestPreview = requestBody.slice(0, Math.min(128, requestBody.length));
             console.log(`[Binary Proxy POST] Request ID: ${requestId} - Request hex (first 128 bytes): ${requestPreview.toString('hex')}`);
         }
-
-        try {
-            const bytes = Array.from(requestBody);
-            let pos = 9;
-            if (bytes[pos] === 0x0e) pos++;
-            pos++;
-            for (let i = 0; i < 5 && pos < bytes.length; i++) {
-                const nameLen = (bytes[pos] >> 2);
-                pos++;
-                const name = String.fromCharCode(...bytes.slice(pos, pos + nameLen));
-                pos += nameLen;
-                const type = bytes[pos++];
-                if (name === 'block_ids' && type === 0x0a) {
-                    const len = (bytes[pos] >> 2);
-                    pos++;
-                    if (len === 64) {
-                        const hashBytes = bytes.slice(pos, pos + 64);
-                        const firstHash = hashBytes.slice(0, 32);
-                        const secondHash = hashBytes.slice(32, 64);
-                        console.log(`[Binary Proxy POST] Request ID: ${requestId} - First hash (first 8 bytes): ${firstHash.slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-                        console.log(`[Binary Proxy POST] Request ID: ${requestId} - Second hash (first 8 bytes): ${secondHash.slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-                    }
-                    break;
-                }
-                if (type === 0x0a) { const len = (bytes[pos] >> 2); pos++; pos += len; }
-                else if (type === 0x05) { pos += 8; }
-                else if (type === 0x0b) { pos += 1; }
-                else if (type === 0x08) { pos += 1; }
-            }
-        } catch (e) {
-            console.log(`[Binary Proxy POST] Request ID: ${requestId} - Could not parse block_ids: ${e.message}`);
-        }
-        try {
-            const bytes = Array.from(requestBody);
-            let pos = 9;
-            if (bytes[pos] === 0x0e) pos++;
-            const fieldCount = (bytes[pos] >> 2);
-            console.log(`[Binary Proxy POST] Request ID: ${requestId} - Field count: ${fieldCount}`);
-            pos++;
-            const fields = [];
-            for (let i = 0; i < fieldCount && pos < bytes.length; i++) {
-                const nameLen = (bytes[pos] >> 2);
-                pos++;
-                const name = String.fromCharCode(...bytes.slice(pos, pos + nameLen));
-                pos += nameLen;
-                const type = bytes[pos++];
-                fields.push({ name, type: `0x${type.toString(16).padStart(2, '0')}` });
-                if (type === 0x0a) {
-                    const len = (bytes[pos] >> 2);
-                    pos++;
-                    pos += len;
-                } else if (type === 0x05) {
-                    pos += 8;
-                } else if (type === 0x0b) {
-                    pos += 1;
-                } else if (type === 0x08) {
-                    pos += 1;
-                }
-            }
-            console.log(`[Binary Proxy POST] Request ID: ${requestId} - Field order: ${fields.map(f => f.name).join(', ')}`);
-            console.log(`[Binary Proxy POST] Request ID: ${requestId} - Field types: ${fields.map(f => `${f.name}=${f.type}`).join(', ')}`);
-        } catch (e) {
-            console.log(`[Binary Proxy POST] Request ID: ${requestId} - Could not decode field order: ${e.message}`);
-        }
-
-        function compareHexDumps(clientHex, serverHex, reqId) {
-            if (!clientHex || !serverHex) {
-                console.log(`[Hex Comparison] Request ${reqId}: Cannot compare - missing hex dump(s)`);
-                return false;
-            }
-
-            if (clientHex === serverHex) {
-                console.log(`[Hex Comparison] Request ${reqId}: MATCH - Client and server hex dumps are identical`);
-                console.log(`   This means the issue is in the request format (field order, type tags, or hash format), not data corruption`);
-                return true;
-            }
-
-            const minLen = Math.min(clientHex.length, serverHex.length);
-            let firstDiff = -1;
-            for (let i = 0; i < minLen; i += 2) {
-                const clientByte = clientHex.substring(i, i + 2);
-                const serverByte = serverHex.substring(i, i + 2);
-                if (clientByte !== serverByte) {
-                    firstDiff = i / 2;
-                    const bytePos = i / 2;
-                    console.error(`[Hex Comparison] Request ${reqId}: MISMATCH at byte ${bytePos} (offset 0x${bytePos.toString(16)})`);
-                    console.error(`   Client byte: ${clientByte} (0x${clientByte}), Server byte: ${serverByte} (0x${serverByte})`);
-                    const contextStart = Math.max(0, i - 32);
-                    const contextEnd = Math.min(clientHex.length, i + 32);
-                    const clientContext = clientHex.substring(contextStart, contextEnd);
-                    const serverContext = serverHex.substring(contextStart, contextEnd);
-                    console.error(`   Client context (bytes ${contextStart / 2}-${contextEnd / 2}): ${clientContext}`);
-                    console.error(`   Server context (bytes ${contextStart / 2}-${contextEnd / 2}): ${serverContext}`);
-
-                    if (bytePos < 9) {
-                        console.error(`   Location: Signature/version bytes (bytes 0-8)`);
-                    } else if (bytePos >= 9 && bytePos < 25) {
-                        console.error(`   Location: Field header area (likely field count or field name)`);
-                    } else {
-                        console.error(`   Location: Field data area (could be block_ids hash, start_height, or other field value)`);
-                    }
-                    break;
-                }
-            }
-
-            if (firstDiff === -1 && clientHex.length !== serverHex.length) {
-                console.error(`[Hex Comparison] Request ${reqId}: Length mismatch`);
-                console.error(`   Client length: ${clientHex.length / 2} bytes, Server length: ${serverHex.length / 2} bytes`);
-                console.error(`   Difference: ${Math.abs(clientHex.length - serverHex.length) / 2} bytes`);
-                if (clientHex.length > serverHex.length) {
-                    console.error(`   Client has ${(clientHex.length - serverHex.length) / 2} extra bytes at the end`);
-                } else {
-                    console.error(`   Server has ${(serverHex.length - clientHex.length) / 2} extra bytes at the end`);
-                }
-            }
-
-            console.error(`[Hex Comparison] Request ${reqId}: Data corruption detected during transmission`);
-            console.error(`   This suggests an issue with Blob/ArrayBuffer conversion, HTTP body encoding, or Express middleware`);
-            return false;
-        }
-
-        console.log(`[Hex Comparison] Request ID: ${requestId} - To compare with client hex dump:`);
-        console.log(`   1. Find the client log with the same Request ID: ${requestId}`);
-        console.log(`   2. Copy the client hex dump from: "[DEBUG] Request ID: ${requestId} - Full request hex (all X bytes): ..."`);
-        console.log(`   3. Compare with server hex above`);
-        console.log(`   4. If they match: Issue is in request format (field order, type tags, hash format)`);
-        console.log(`   5. If they don't match: Issue is data corruption during transmission`);
 
         if (endpoint === '/getblocks.bin' && CACHE_ENABLED) {
             try {
@@ -12075,15 +11933,12 @@ app.post(['/api/wallet-rpc', '/api/wallet-rpc/json_rpc'], async (req, res) => {
             result: result
         };
 
-        console.log('Sending response:', JSON.stringify(response).substring(0, 500));
         res.json(response);
     } catch (error) {
         console.error('Wallet RPC proxy error:', {
             error: error.message,
-            stack: error.stack,
-            request: req.body,
-            errorCode: error.code,
-            errorResponse: error.response?.data
+            method: req.body && req.body.method,
+            errorCode: error.code
         });
 
         const errorResponse = {

@@ -3978,6 +3978,9 @@ class CSPScanService {
     this.stakeReturnRepairNoopUntilByKey.clear();
     this.currentWalletAddress = null;
     this.currentRecoveryAction = 'continue';
+    // Cleared on reset so a subsequent wallet never POSTs the previous wallet's
+    // spending txids (cross-wallet correlation) and the set cannot grow unbounded.
+    this.outgoingSpendingTxids.clear();
   }
 
   setRecoveryAction(action: RecoveryAction): void {

@@ -1733,11 +1733,15 @@ const getDeviceMemoryBucket = (): string => {
 
         lastNativeSnapshotRef.current = snapshot;
 
-        const globalWindow = window as typeof window & {
-            __walletStateSnapshots?: typeof payload[];
-        };
-        const existing = globalWindow.__walletStateSnapshots || [];
-        globalWindow.__walletStateSnapshots = [...existing.slice(-9), payload];
+        // Only expose snapshots on window when native-audit debugging is enabled — otherwise
+        // exact balances/heights would sit on window for any injected script to read.
+        if (nativeAuditEnabledRef.current) {
+            const globalWindow = window as typeof window & {
+                __walletStateSnapshots?: typeof payload[];
+            };
+            const existing = globalWindow.__walletStateSnapshots || [];
+            globalWindow.__walletStateSnapshots = [...existing.slice(-9), payload];
+        }
 
         if (nativeAuditEnabledRef.current) {
             debugWarn('[WalletContext] Native wallet snapshot', payload);
@@ -7367,6 +7371,9 @@ const getDeviceMemoryBucket = (): string => {
         localStorage.removeItem('salvium_vault_restore_started_at');
         localStorage.removeItem('salvium_scan_returned_transfers');
         localStorage.removeItem('salvium_initial_scan_complete');
+        // Contacts are a single global key (not wallet-scoped); clear on reset so the
+        // next wallet on a shared device does not inherit the previous owner's contacts.
+        localStorage.removeItem('salvium_contacts');
         activeScanSessionRef.current = null;
         setScanSession(null);
 

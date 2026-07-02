@@ -1395,6 +1395,12 @@ class CSPScanner {
                             returnAddressesCsv: this.returnAddressesCsv,
                             debug: this.DEBUG
                         });
+                        // INIT resets returnMatchOnly to false in the worker; a worker
+                        // created mid returned-transfer pass (watchdog replacement) must
+                        // inherit the current mode or it scans in full-ownership mode.
+                        if (this.returnMatchOnly) {
+                            worker.postMessage({ type: 'SET_RETURN_MATCH_ONLY', value: true });
+                        }
                     } catch (err) {
                         failInit(err);
                     }
@@ -1462,6 +1468,12 @@ class CSPScanner {
         }
         if (typeof stakeReturnHeightsStr === 'string') {
             this.stakeReturnHeightsStr = stakeReturnHeightsStr;
+            // Keep the array form in sync too: workers created LATER (autoTune ramp,
+            // watchdog replacement) initialize from this.stakeReturnHeights, so a stale
+            // array would make those workers classify stake returns against old heights.
+            this.stakeReturnHeights = stakeReturnHeightsStr
+                ? stakeReturnHeightsStr.split(',').map((n) => parseInt(n, 10)).filter((n) => Number.isFinite(n))
+                : [];
         }
 
         const workers = (this.workers || []).filter((w) => w && w.worker);
