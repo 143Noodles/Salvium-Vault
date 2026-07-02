@@ -41,7 +41,13 @@ const INCLUDE = ['dist', 'server.cjs', 'server-csp-worker.cjs', 'wallet', 'utils
 for (const item of INCLUDE) {
   const src = path.join(REPO, item);
   if (!fs.existsSync(src)) { console.warn('[publish] skip missing', item); continue; }
-  fs.cpSync(src, path.join(STAGE, item), { recursive: true });
+  // Local working artifacts (pre-change snapshots, backup dirs) live inside these
+  // trees but must never ship in the OTA bundle.
+  const isLocalArtifact = (p) => {
+    const rel = path.relative(REPO, p);
+    return rel.split(path.sep).some((seg) => /^backups?([-.]|$)/.test(seg)) || rel.includes(".before-");
+  };
+  fs.cpSync(src, path.join(STAGE, item), { recursive: true, filter: (s) => !isLocalArtifact(s) });
 }
 fs.writeFileSync(path.join(STAGE, 'content-version.json'),
   JSON.stringify({ version, channel: 'content', builtAt: new Date().toISOString() }, null, 2));
