@@ -90,7 +90,7 @@ function recordRateLimited(scope, key) {
     else { rateLimitStats.recentKeys.set(key, { scope, count: 1, firstAt: now, lastAt: now }); }
 }
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute window
-const RATE_LIMIT_MAX_REQUESTS = 300; // 300 requests per minute for general endpoints
+const RATE_LIMIT_MAX_REQUESTS = String(process.env.SALVIUM_DEPLOYMENT_CHANNEL || '').toLowerCase() === 'vault-test' ? 20000 : 300; // vault-test may raise this for asset-index repair diagnostics
 const DAEMON_INFO_RATE_MAX = 1200; // 20/s per client — far above any legit poll, but a ceiling for cold-cache stampede
 const SCAN_READ_RATE_MAX = Math.max(1, Number.parseInt(process.env.SCAN_READ_RATE_LIMIT_MAX || '3000', 10) || 3000); // per-IP/min ceiling for bulk scan reads (csp/sparse/bulk). ~10-25x a real restore burst; env-overridable so prod can raise without redeploy.
 const RATE_LIMIT_TX_MAX = 500; // 500 transaction broadcasts per minute
@@ -223,7 +223,19 @@ function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
                     path.startsWith('/api/wallet/protocol-token-txs') ||
                     path.startsWith('/vault/api/wallet/protocol-token-txs') ||
                     path.startsWith('/api/wallet/get-transactions-by-hash') ||
-                    path.startsWith('/vault/api/wallet/get-transactions-by-hash')
+                    path.startsWith('/vault/api/wallet/get-transactions-by-hash') ||
+                    path.startsWith('/api/wallet/get_outs') ||
+                    path.startsWith('/vault/api/wallet/get_outs') ||
+                    path.startsWith('/api/wallet/get_o_indexes') ||
+                    path.startsWith('/vault/api/wallet/get_o_indexes') ||
+                    path.startsWith('/api/wallet/get_output_distribution') ||
+                    path.startsWith('/vault/api/wallet/get_output_distribution') ||
+                    path.startsWith('/api/wallet/get_output_count') ||
+                    path.startsWith('/vault/api/wallet/get_output_count') ||
+                    path.startsWith('/api/wallet/get-spent-index') ||
+                    path.startsWith('/vault/api/wallet/get-spent-index') ||
+                    path.startsWith('/api/wasm-info') ||
+                    path.startsWith('/vault/api/wasm-info')
                 )
                 : false;
         // Cached daemon status poll (10s server cache, singleflight-coalesced
@@ -667,9 +679,39 @@ function sanitizeClientTelemetryContext(context) {
         'ingestMs', 'chunkCount', 'bytes', 'deferred', 'firstHeight', 'kind',
         'sendStage', 'sendKind', 'sweepAll', 'hasPaymentId', 'requireTxKey',
         'candidateIndex', 'sweepRetry',
+        'isLocked', 'coldStartSettled', 'syncIsSyncing', 'displayBalancePositive',
+        'displayUnlockedPositive', 'exactSal1BalanceHit', 'exactSal1UnlockedPositive',
+        'biometricAvailable', 'biometricEnabled', 'hasBioPassword', 'pageHidden',
+        'unlockSuccess', 'hasStoredWallet', 'isVaultRestore',
         // wallet.state_diag field diagnostics
         'optimisticSpentCount', 'pendingRows', 'totalRows', 'snapshotHeight', 'assets',
-        'candidates', 'released'
+        'candidates', 'released',
+        // staking SAL1 spendability diagnostics (sanitized client-side; no txids/keys)
+        'diagRequestedAmount', 'diagWalletHeight',
+        'diagSnapshotBalance', 'diagSnapshotUnlocked', 'diagSnapshotLockedStake',
+        'diagSnapshotTransfers', 'diagOfficialBalance', 'diagOfficialUnlocked',
+        'diagConfirmedBalance', 'diagConfirmedUnlocked', 'diagConfirmedSkippedType',
+        'diagTransferTotal', 'diagSal1Count', 'diagSal1Spendable',
+        'diagSal1Account0', 'diagSal1Account0Spendable', 'diagSpent',
+        'diagFrozen', 'diagLocked', 'diagNoKeyImage', 'diagPartialKeyImage',
+        'diagOpenChecked', 'diagOpenSpendable', 'diagOpenFailures',
+        'diagFirstOpenPath', 'diagFirstOpenTxType', 'diagFirstOpenReturnMapHit',
+        'diagFirstOpenReturnMapSpendable', 'diagFirstOpenMetadataHit',
+        'diagFirstOpenMetadataComplete', 'diagFirstOpenPersistedMapHit',
+        'diagFirstOpenPersistedMapSpendable',
+        'diagSweepSelectedCount', 'diagSweepSelectedTotal', 'diagSweepLargestInput',
+        'diagSweepTransferCount', 'diagSweepTransferTotal',
+        'diagSweepSpentCount', 'diagSweepSpentTotal',
+        'diagSweepFrozenCount', 'diagSweepFrozenTotal',
+        'diagSweepLockedCount', 'diagSweepLockedTotal',
+        'diagSweepNoKeyImageCount', 'diagSweepNoKeyImageTotal',
+        'diagSweepPartialKeyImageCount', 'diagSweepPartialKeyImageTotal',
+        'diagSweepSubaddrCount', 'diagSweepSubaddrTotal',
+        'diagSweepAuditLockedCount', 'diagSweepAuditLockedTotal',
+        'diagSweepInvalidAmountCount', 'diagSweepInvalidAmountTotal',
+        'diagSweepUnburnedMismatchCount', 'diagSweepUnburnedMismatchTotal',
+        'diagSweepEligiblePreKiCount', 'diagSweepEligiblePreKiTotal',
+        'diagError'
     ]);
     const safe = {};
     if (!context || typeof context !== 'object' || Array.isArray(context)) return safe;
@@ -815,7 +857,9 @@ const CSP_BUNDLE_FILE = path.join(CSP_CACHE_DIR, `csp-bundle-v${CSP_CACHE_SCHEMA
 const CSP_BUNDLE_VERSION = 1;
 const CSP_BUNDLE_AUTOBUILD = String(process.env.SALVIUM_CSP_BUNDLE_AUTOBUILD || 'false').toLowerCase() === 'true';
 const CSP_BUNDLE_PRELOAD = String(process.env.SALVIUM_CSP_BUNDLE_PRELOAD || 'false').toLowerCase() === 'true';
-const STARTUP_BACKGROUND_GRACE_MS = Math.max(0, parseInt(process.env.SALVIUM_STARTUP_BACKGROUND_GRACE_MS || '180000', 10) || 180000);
+const ASSET_INDEX_CACHE_EPOCH = String(process.env.SALVIUM_ASSET_INDEX_CACHE_EPOCH || 'hf13-v1.1.3b-asset-index-20260701');
+const ASSET_INDEX_CACHE_EPOCH_FILE = path.join(CACHE_DIR, '.asset-index-cache-epoch');
+const STARTUP_BACKGROUND_GRACE_MS = Math.max(0, parseInt(process.env.SALVIUM_STARTUP_BACKGROUND_GRACE_MS || '0', 10) || 0);
 const startupBackgroundWorkReadyAt = Date.now() + STARTUP_BACKGROUND_GRACE_MS;
 const maintenanceJobs = new Map();
 let maintenanceJobSeq = 0;
@@ -926,6 +970,26 @@ async function getCurrentChainHeightForCache() {
     }
     return chainHeight;
 }
+
+function getTopBlockHeightFromChainHeight(chainHeight) {
+    const height = Number(chainHeight || 0);
+    if (!Number.isFinite(height) || height <= 0) return 0;
+    return Math.max(0, Math.floor(height) - 1);
+}
+
+function capHeightToKnownChainTop(height, chainHeight) {
+    const parsed = Number(height || 0);
+    if (!Number.isFinite(parsed)) return 0;
+    const topHeight = getTopBlockHeightFromChainHeight(chainHeight);
+    return topHeight > 0 ? Math.min(parsed, topHeight) : 0;
+}
+
+function getTailChunkStartForHeight(height) {
+    const parsed = Number(height || 0);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.floor(parsed / BLOCK_CHUNK_SIZE) * BLOCK_CHUNK_SIZE;
+}
+
 async function getUsableCspBundleChunks({ includeData = false } = {}) {
     const chainHeight = await getCurrentChainHeightForCache();
     const stableTip = chainHeight > 0
@@ -1063,6 +1127,8 @@ const TESTNET_VAULT_PROXY_URL = (process.env.SALVIUM_TESTNET_VAULT_URL || 'http:
 const TESTNET_SAFE_MODE = String(process.env.SALVIUM_TESTNET_SAFE_MODE || '').toLowerCase() === 'true';
 const DISABLE_STAKE_FILTER = String(process.env.SALVIUM_DISABLE_STAKE_FILTER || '').toLowerCase() === 'true' || TESTNET_SAFE_MODE;
 const FORCE_SINGLE_CHUNK_SCAN = String(process.env.SALVIUM_FORCE_SINGLE_CHUNK_SCAN || '').toLowerCase() === 'true' || TESTNET_SAFE_MODE;
+const DISABLE_TX_BROADCAST = ['1', 'true', 'yes'].includes(String(process.env.SALVIUM_DISABLE_TX_BROADCAST || '').toLowerCase()) ||
+    SALVIUM_DEPLOYMENT_CHANNEL === 'vault-test';
 function assertDeploymentSafety() {
     if (SALVIUM_DEPLOYMENT_CHANNEL === 'vault-test') {
         if (SALVIUM_NETWORK !== 'testnet') {
@@ -1090,6 +1156,7 @@ function assertDeploymentSafety() {
         const unsafeFlags = [];
         if (TESTNET_SAFE_MODE) unsafeFlags.push('SALVIUM_TESTNET_SAFE_MODE=true');
         if (String(process.env.SALVIUM_DISABLE_STAKE_FILTER || '').toLowerCase() === 'true') unsafeFlags.push('SALVIUM_DISABLE_STAKE_FILTER=true');
+        if (DISABLE_TX_BROADCAST) unsafeFlags.push('SALVIUM_DISABLE_TX_BROADCAST=true');
         if (String(process.env.SALVIUM_FORCE_SINGLE_CHUNK_SCAN || '').toLowerCase() === 'true') unsafeFlags.push('SALVIUM_FORCE_SINGLE_CHUNK_SCAN=true');
         if (String(process.env.SALVIUM_REBUILD_CSP_CACHE_ON_START || '').toLowerCase() === 'true') unsafeFlags.push('SALVIUM_REBUILD_CSP_CACHE_ON_START=true');
         if (SALVIUM_WASM_BASENAME !== DEFAULT_WASM_BASENAME) unsafeFlags.push(`SALVIUM_WASM_BASENAME=${SALVIUM_WASM_BASENAME}`);
@@ -1368,7 +1435,7 @@ function getStakeCacheChainHeightSnapshot() {
     const cachedHeight = Math.max(
         Number(stakeCacheChainHeight || 0),
         Number(cacheStats?.chainHeight || 0),
-        Number(stakeCache.lastScannedHeight || 0)
+        Number(lastKnownHeight || 0)
     );
     if (Date.now() - stakeCacheChainHeightAt > 30000) {
         refreshStakeCacheChainHeightInBackground();
@@ -1471,6 +1538,8 @@ function getStakeReturnHeightsCache() {
 }
 
 function getAdaptiveSparseConcurrency(defaultConcurrency = 4) {
+    const configuredMax = Math.max(1, Number.parseInt(process.env.SALVIUM_SPARSE_CONCURRENCY_MAX || '1', 10) || 1);
+    defaultConcurrency = Math.max(1, Math.min(defaultConcurrency, configuredMax));
     const lagStats = serverRuntimeStats.eventLoopLagMs || { max: 0, p95: 0, p99: 0 };
     const lagMax = Number(lagStats.max || 0);
     const lagP95 = Number(lagStats.p95 || 0);
@@ -1516,9 +1585,17 @@ async function loadStakeCache() {
 
 async function saveStakeCache() {
     try {
+        const chainHeight = await getCurrentChainHeightForCache().catch(() => 0);
+        const persistedLastScannedHeight = chainHeight > 0
+            ? capHeightToKnownChainTop(stakeCache.lastScannedHeight, chainHeight)
+            : Number(stakeCache.lastScannedHeight || 0);
+        if (chainHeight > 0 && persistedLastScannedHeight !== stakeCache.lastScannedHeight) {
+            console.warn(`[Stake Cache] Persisting capped lastScannedHeight ${persistedLastScannedHeight} instead of ${stakeCache.lastScannedHeight}`);
+            stakeCache.lastScannedHeight = persistedLastScannedHeight;
+        }
         const data = JSON.stringify({
             version: stakeCache.version,
-            lastScannedHeight: stakeCache.lastScannedHeight,
+            lastScannedHeight: persistedLastScannedHeight,
             stakes: stakeCache.stakes
         });
         await atomicWriteFile(STAKE_CACHE_FILE, data, 'utf8');
@@ -1526,6 +1603,37 @@ async function saveStakeCache() {
     } catch (err) {
         console.error('[Stake Cache] Error saving cache:', err.message);
     }
+}
+
+function getStakeCacheEntryHeight(stake) {
+    const height = Number(stake?.block_height ?? stake?.height ?? 0);
+    return Number.isFinite(height) ? height : 0;
+}
+
+function rebuildStakeCacheMaps() {
+    stakeCache.returnAddressMap.clear();
+    for (const stake of (stakeCache.stakes || [])) {
+        const key = stake.tx_hash || stake.return_address;
+        if (key) stakeCache.returnAddressMap.set(key, stake);
+    }
+}
+
+function rollbackStakeCacheFromHeight(fromHeight) {
+    const cutoff = Math.max(0, Math.floor(Number(fromHeight || 0)));
+    const before = Array.isArray(stakeCache.stakes) ? stakeCache.stakes.length : 0;
+    stakeCache.stakes = (stakeCache.stakes || []).filter((stake) => getStakeCacheEntryHeight(stake) < cutoff);
+    rebuildStakeCacheMaps();
+    if (stakeCache.lastScannedHeight >= cutoff) {
+        stakeCache.lastScannedHeight = Math.max(0, cutoff - 1);
+    }
+    const removed = before - stakeCache.stakes.length;
+    if (removed > 0) {
+        console.log(`[REORG] Rolled back ${removed} stake cache entr${removed === 1 ? 'y' : 'ies'} at/above height ${cutoff}`);
+    }
+    if (removed > 0 || before !== stakeCache.stakes.length) {
+        markStakeCacheChanged();
+    }
+    return removed;
 }
 
 async function updateStakeCache() {
@@ -1540,14 +1648,34 @@ async function updateStakeCache() {
     }
 
     try {
+        const chainHeight = await getCurrentChainHeightForCache().catch(() => 0);
+        const chainTopHeight = getTopBlockHeightFromChainHeight(chainHeight);
+        const tailRefresh = await refreshTailBlockCacheFromDaemon(chainHeight, 'stake-cache-scan');
+        const rollbackFrom = getTailChunkStartForHeight(chainTopHeight);
+        const shouldRollbackTail = chainTopHeight > 0 &&
+            Number(stakeCache.lastScannedHeight || 0) >= rollbackFrom &&
+            (Number(stakeCache.lastScannedHeight || 0) > chainTopHeight || !!tailRefresh.changed);
+        if (shouldRollbackTail) {
+            console.warn(`[Stake Cache] Rolling back tail from ${rollbackFrom} before rescan (lastScannedHeight=${stakeCache.lastScannedHeight}, daemonTop=${chainTopHeight}, tailChanged=${!!tailRefresh.changed})`);
+            rollbackStakeCacheFromHeight(rollbackFrom);
+            markStakeCacheChanged();
+            await saveStakeCache();
+        }
+
         const files = await fs.readdir(CACHE_DIR).catch(() => []);
         const binFiles = files
             .filter(f => f.match(/blocks-(\d+)-(\d+)\.bin$/))
             .map(f => {
                 const m = f.match(/blocks-(\d+)-(\d+)\.bin$/);
-                return { file: f, start: parseInt(m[1]), end: parseInt(m[2]) };
+                const end = parseInt(m[2]);
+                return {
+                    file: f,
+                    start: parseInt(m[1]),
+                    end,
+                    scanEnd: capHeightToKnownChainTop(end, chainHeight)
+                };
             })
-            .filter(f => f.end > stakeCache.lastScannedHeight)
+            .filter(f => f.scanEnd > stakeCache.lastScannedHeight)
             .sort((a, b) => a.start - b.start);
 
         if (binFiles.length === 0) {
@@ -1575,7 +1703,7 @@ async function updateStakeCache() {
                 }
             }
 
-            maxHeight = Math.max(maxHeight, binFile.end);
+            maxHeight = Math.max(maxHeight, binFile.scanEnd);
             await new Promise(resolve => setImmediate(resolve));
         }
 
@@ -1888,7 +2016,8 @@ function sendConfiguredWasmAsset(req, res, requestedFilename) {
     // check here once classified every fresh fetch as legacy and served the old engine
     // to new code — fail-current, never fail-legacy.
     try {
-        const requestedVersion = typeof req.query?.v === 'string' ? decodeURIComponent(req.query.v) : '';
+        const queryVersion = typeof req.query?.v === 'string' ? decodeURIComponent(req.query.v) : '';
+        const requestedVersion = queryVersion;
         if (requestedVersion && /^(SalviumWallet\.(js|wasm))$/.test(requestedFilename)) {
             const legacyPath = path.join(__dirname, 'wallet-legacy', requestedFilename);
             if (fsSync.existsSync(legacyPath)) {
@@ -1919,10 +2048,12 @@ function sendConfiguredWasmAsset(req, res, requestedFilename) {
             '.wasm': 'application/wasm',
             '.js': 'application/javascript'
         };
-        const hasVersion = typeof req.query?.v === 'string' && req.query.v.length > 0;
+        const hasQueryVersion = typeof req.query?.v === 'string' && req.query.v.length > 0;
+        const hasPathVersion = typeof req.params?.version === 'string' && req.params.version.length > 0;
+        const hasVersion = hasQueryVersion || hasPathVersion;
         const cacheControl = hasVersion
             ? 'public, max-age=31536000, immutable'
-            : 'public, max-age=3600, must-revalidate';
+            : 'no-store, no-cache, must-revalidate, max-age=0';
         const headers = {
             'Content-Type': contentTypes[ext] || 'application/octet-stream',
             'Cache-Control': cacheControl,
@@ -1961,11 +2092,16 @@ function getConfiguredWasmAssetInfo(requestedFilename) {
         return null;
     }
     const stat = fsSync.statSync(resolved.fullPath);
+    const sha256 = crypto
+        .createHash('sha256')
+        .update(fsSync.readFileSync(resolved.fullPath))
+        .digest('hex');
     return {
         filename: resolved.actualFilename || requestedFilename,
         size: stat.size,
         modified: stat.mtime.toISOString(),
-        etag: `"${stat.size}-${stat.mtimeMs}"`
+        sha256,
+        etag: `"sha256-${sha256}"`
     };
 }
 function getConfiguredWasmAssetVersion() {
@@ -1976,7 +2112,7 @@ function getConfiguredWasmAssetVersion() {
     ];
     return descriptors
         .filter(([, asset]) => !!asset)
-        .map(([label, asset]) => `${label}:${asset.filename}:${asset.etag || `${asset.size}-${asset.modified}`}`)
+        .map(([label, asset]) => `${label}:${asset.filename}:sha256:${asset.sha256}`)
         .join('|');
 }
 
@@ -2356,6 +2492,15 @@ async function checkForNewBlocks() {
         }
 
         if (currentHeight > lastKnownHeight) {
+            if (lastKnownHeight === 0) {
+                // First successful height fetch (the boot get_info failed): adopt the tip
+                // as the baseline. Treating the whole chain as new blocks would
+                // regenerate every CSP chunk from genesis.
+                console.log(`[Realtime-Watcher] Baseline height adopted: ${currentHeight}`);
+                lastKnownHeight = currentHeight;
+                realtimeWatcherStatus.lastHeight = currentHeight;
+                return;
+            }
             const newBlocks = currentHeight - lastKnownHeight;
             const prevHeight = lastKnownHeight;
             console.log(`[Realtime-Watcher] ${newBlocks} new block(s) found! Height: ${prevHeight} → ${currentHeight}`);
@@ -2471,7 +2616,13 @@ async function invalidateCspChunksFromHeight(fromHeight) {
                 }
             }
         } catch (e) { console.error('[REORG] Epee .bin invalidation error:', e.message); }
-        try { rollbackKeyImageCacheFromHeight(fromHeight); } catch (e) { console.error('[REORG] spent rollback error:', e.message); }
+        try {
+            if (rollbackKeyImageCacheFromHeight(fromHeight)) await saveKeyImageCache();
+        } catch (e) { console.error('[REORG] spent rollback error:', e.message); }
+        try {
+            const removedStakes = rollbackStakeCacheFromHeight(fromHeight);
+            if (removedStakes > 0 || stakeCache.lastScannedHeight >= fromHeight - 1) await saveStakeCache();
+        } catch (e) { console.error('[REORG] stake rollback error:', e.message); }
 
         if (deletedCount > 0) {
             cspCacheStats.files = Math.max(0, cspCacheStats.files - deletedCount);
@@ -2502,6 +2653,7 @@ async function updateLatestCspChunk(fromHeight, toHeight) {
                     console.warn(`[Realtime-Watcher] No data for blocks ${regenerateStart}-${regenerateEnd}`);
                     continue;
                 }
+                await saveBlocksToCache(chunkStart, chunkEnd, epeeBuffer);
                 // Conversion runs in the worker thread (in-process WASM fallback inside).
                 const { result, cspBuffer, txiBuffer } =
                     await convertEpeeToCspOffloaded('convert_epee_to_csp_with_index', epeeBuffer, regenerateStart);
@@ -3545,6 +3697,38 @@ async function periodicBundleCheck() {
     }
 }
 
+async function enforceAssetIndexCacheEpoch() {
+    if (!CACHE_ENABLED) return;
+    let existingEpoch = null;
+    try {
+        existingEpoch = (await fs.readFile(ASSET_INDEX_CACHE_EPOCH_FILE, 'utf8')).trim();
+    } catch (err) {
+        if (err.code !== 'ENOENT') console.warn('[Cache Epoch] Could not read epoch file:', err.message);
+    }
+    if (existingEpoch === ASSET_INDEX_CACHE_EPOCH) return;
+
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+    const quarantineRoot = path.join(path.dirname(CACHE_DIR), 'asset-index-cache-quarantine-' + stamp);
+    console.warn('[Cache Epoch] Resetting scan caches for epoch ' + ASSET_INDEX_CACHE_EPOCH + ' (previous=' + (existingEpoch || 'none') + ')');
+
+    for (const dir of [CACHE_DIR, CSP_CACHE_DIR]) {
+        try {
+            if (!fsSync.existsSync(dir)) continue;
+            const rel = path.relative(path.dirname(CACHE_DIR), dir) || path.basename(dir);
+            const dest = path.join(quarantineRoot, rel);
+            await fs.mkdir(path.dirname(dest), { recursive: true });
+            await fs.rename(dir, dest);
+            console.warn('[Cache Epoch] Quarantined ' + dir + ' -> ' + dest);
+        } catch (err) {
+            if (err.code !== 'ENOENT') console.warn('[Cache Epoch] Failed to quarantine ' + dir + ': ' + err.message);
+        }
+    }
+
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+    await fs.mkdir(CSP_CACHE_DIR, { recursive: true });
+    await fs.writeFile(ASSET_INDEX_CACHE_EPOCH_FILE, ASSET_INDEX_CACHE_EPOCH + '\n');
+}
+
 async function initBlockCache() {
     if (!CACHE_ENABLED) {
         console.log('Block cache disabled (ENABLE_BLOCK_CACHE=false)');
@@ -3552,6 +3736,7 @@ async function initBlockCache() {
     }
 
     try {
+        await enforceAssetIndexCacheEpoch();
         await fs.mkdir(CACHE_DIR, { recursive: true });
         console.log(`Block cache initialized: ${CACHE_DIR}`);
 
@@ -3738,6 +3923,77 @@ async function saveBlocksToCache(startHeight, endHeight, data) {
         console.error(`Cache write error for ${startHeight}-${endHeight}:`, err.message);
         cacheStats.errors++;
     }
+}
+
+let tailBlockCacheRefresh = { chainHeight: 0, at: 0, promise: null };
+async function getDaemonBlockHashForHeight(height) {
+    try {
+        const response = await axiosInstance.post(`${pickDaemonNode()}/json_rpc`, {
+            jsonrpc: '2.0',
+            id: '0',
+            method: 'get_block_header_by_height',
+            params: { height }
+        }, { timeout: 10000 });
+        const hash = response.data?.result?.block_header?.hash;
+        return typeof hash === 'string' && hash.length > 0 ? hash : null;
+    } catch (err) {
+        console.warn(`[Block Cache] Could not resolve block hash at ${height}: ${err.message}`);
+        return null;
+    }
+}
+
+async function refreshTailBlockCacheFromDaemon(chainHeight, reason = 'tail-refresh') {
+    const topHeight = getTopBlockHeightFromChainHeight(chainHeight);
+    if (!CACHE_ENABLED || topHeight <= 0) return { ok: false, changed: false, topHeight };
+
+    if (tailBlockCacheRefresh.promise) {
+        return tailBlockCacheRefresh.promise;
+    }
+
+    const tailStart = getTailChunkStartForHeight(topHeight);
+    const tailEnd = tailStart + BLOCK_CHUNK_SIZE - 1;
+    const tailFilename = getCacheFilename(tailStart, tailEnd);
+    const tailMetaFilename = `${tailFilename}.top.json`;
+    tailBlockCacheRefresh.promise = (async () => {
+        try {
+            const topHash = await getDaemonBlockHashForHeight(topHeight);
+            let changed = true;
+            if (topHash && fsSync.existsSync(tailFilename)) {
+                try {
+                    const meta = JSON.parse(await fs.readFile(tailMetaFilename, 'utf8'));
+                    changed = !(Number(meta?.topHeight || 0) === topHeight && meta?.topHash === topHash);
+                } catch (_) {
+                    changed = true;
+                }
+            }
+
+            const blocks = await fetchBlocksFromDaemon(tailStart, topHeight);
+            if (!blocks || blocks.length === 0) {
+                tailBlockCacheRefresh = { chainHeight: 0, at: 0, promise: null };
+                return { ok: false, changed: false, tailStart, tailEnd, topHeight };
+            }
+            if (changed) {
+                await saveBlocksToCache(tailStart, tailEnd, blocks);
+                if (topHash) {
+                    await atomicWriteFile(tailMetaFilename, JSON.stringify({
+                        topHeight,
+                        topHash,
+                        chainHeight,
+                        bytes: blocks.length,
+                        refreshedAt: new Date().toISOString()
+                    }), 'utf8');
+                }
+            }
+            tailBlockCacheRefresh = { chainHeight, at: Date.now(), promise: null };
+            console.log(`[Block Cache] Refreshed canonical tail ${tailStart}-${tailEnd} for ${reason} (top=${topHeight}, ${blocks.length} bytes, changed=${changed})`);
+            return { ok: true, changed, tailStart, tailEnd, topHeight };
+        } catch (err) {
+            tailBlockCacheRefresh = { chainHeight: 0, at: 0, promise: null };
+            console.warn(`[Block Cache] Tail refresh failed for ${reason}: ${err.message}`);
+            return { ok: false, changed: false, tailStart, tailEnd, topHeight, error: err.message };
+        }
+    })();
+    return tailBlockCacheRefresh.promise;
 }
 
 
@@ -4697,6 +4953,7 @@ async function syncBlockCache() {
         console.log(`Sync: Chain height ${chainHeight}, highest cached ${highestCached}`);
 
         let fetchedBatches = 0;
+        await refreshTailBlockCacheFromDaemon(chainHeight, 'block-cache-sync');
 
         const { chunkStart: nextChunkStart } = getChunkBoundaries(highestCached + 1);
 
@@ -4901,6 +5158,30 @@ function startBlockCacheSync() {
 }
 
 const app = express();
+const CACHE_REBUILD_LOCK_FILE = path.join(CACHE_DIR, '.cache-rebuild-lock');
+app.use((req, res, next) => {
+    if (!fsSync.existsSync(CACHE_REBUILD_LOCK_FILE)) return next();
+    const p = req.path;
+    const isCspBundle = p.startsWith('/api/csp-bundle') || p.startsWith('/vault/api/csp-bundle');
+    const isCspScan = !isCspBundle && (p.startsWith('/api/csp') || p.startsWith('/vault/api/csp'));
+    const isWalletScan = p.startsWith('/api/wallet/') || p.startsWith('/vault/api/wallet/');
+    const allowedWalletDuringRebuild = [
+        '/api/wallet/get_outs', '/vault/api/wallet/get_outs',
+        '/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin',
+        '/api/wallet/get_o_indexes.bin', '/vault/api/wallet/get_o_indexes.bin',
+        '/api/wallet/get_output_distribution', '/vault/api/wallet/get_output_distribution',
+        '/api/wallet/get_output_distribution.bin', '/vault/api/wallet/get_output_distribution.bin',
+        '/api/wallet/get_output_count', '/vault/api/wallet/get_output_count',
+        '/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs',
+        '/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransaction',
+        '/api/wallet/stake-cache/status', '/vault/api/wallet/stake-cache/status',
+        '/api/wallet/key-image-cache-status', '/vault/api/wallet/key-image-cache-status'
+    ].some((prefix) => p === prefix || p.startsWith(prefix + '/'));
+    if (!isCspScan && (!isWalletScan || allowedWalletDuringRebuild)) return next();
+    res.setHeader('Retry-After', '120');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(503).json({ error: 'Cache rebuild in progress', retryAfterSeconds: 120 });
+});
 // Trust the first proxy hop so req.ip is the real client from X-Forwarded-For; bump if a CDN adds hops.
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
@@ -5048,11 +5329,14 @@ async function proxyVaultRequest(req, res, next) {
     }
 }
 app.use(proxyVaultRequest);
-const SALVIUM_SEED_RPC_NODES = [
+// getoutsfix5: a patched WASM must only ever hit a patched daemon. The stock
+// Salvium seed nodes are OPT-IN (default OFF) so the vault uses only the
+// configured salvium:19081 unless SALVIUM_ALLOW_SEED_FALLBACK=1 is set.
+const SALVIUM_SEED_RPC_NODES = (process.env.SALVIUM_ALLOW_SEED_FALLBACK === '1') ? [
     'http://seed01.salvium.io:19081',
     'http://seed02.salvium.io:19081',
     'http://seed03.salvium.io:19081',
-];
+] : [];
 // Local daemon is always tried first (privacy + speed); the three official
 // Salvium seed nodes are ALWAYS kept as automatic RPC fallback, even when a
 // primary node is pinned via SALVIUM_RPC_URL.
@@ -5075,6 +5359,7 @@ const DAEMON_RPC_DENY_METHODS = new Set([
     'get_mining_status', 'save_bc', 'update', 'pop_blocks', 'prune_blockchain',
     'set_bans', 'get_bans', 'banned', 'relay_tx', 'generateblocks',
     'submit_block', 'getblocktemplate', 'get_block_template',
+    'sendrawtransaction', 'send_raw_transaction', 'submit_transfer',
 ]);
 // Known-good read/needed methods the wallet/server legitimately uses (allowed silently).
 const DAEMON_RPC_ALLOW_METHODS = new Set([
@@ -5163,12 +5448,30 @@ const netmod = require('node:net');
 const nodeContext = new AsyncLocalStorage();
 const VAULT_NODE_COOKIE = 'salvium_node';
 const HOSTED_DAEMON_URL = (process.env.SALVIUM_RPC_URL || 'http://salvium:19081').replace(/\/$/, '');
-const NODE_PRESETS = {
-    local: HOSTED_DAEMON_URL,
+const ALLOW_OFFICIAL_SEED_PRESETS =
+    process.env.SALVIUM_ALLOW_SEED_PRESETS === '1' ||
+    process.env.SALVIUM_ALLOW_SEED_FALLBACK === '1' ||
+    // Desktop sidecar: a locally-run vault talking straight to an official seed
+    // is legitimate (same rationale as SALVIUM_ALLOW_PRIVATE_NODES).
+    process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1';
+const OFFICIAL_SEED_NODE_PRESETS = {
     seed1: 'http://seed01.salvium.io:19081',
     seed2: 'http://seed02.salvium.io:19081',
     seed3: 'http://seed03.salvium.io:19081',
 };
+const NODE_PRESETS = {
+    local: HOSTED_DAEMON_URL,
+    ...(ALLOW_OFFICIAL_SEED_PRESETS ? OFFICIAL_SEED_NODE_PRESETS : {}),
+};
+
+function isOfficialSeedNodeUrl(urlStr) {
+    try {
+        const origin = new URL(String(urlStr || '').replace(/\/$/, '')).origin;
+        return Object.values(OFFICIAL_SEED_NODE_PRESETS).some((seedUrl) => new URL(seedUrl).origin === origin);
+    } catch (e) {
+        return false;
+    }
+}
 
 // SSRF guard: reject private / loopback / link-local / ULA / multicast / reserved.
 function ipIsPrivate(ip) {
@@ -5269,6 +5572,13 @@ async function doValidateCustomNode(base) {
 
 async function validateCustomNode(rawUrl) {
     const base = String(rawUrl || '').trim().replace(/\/$/, '');
+    if (!ALLOW_OFFICIAL_SEED_PRESETS && isOfficialSeedNodeUrl(base)) {
+        return {
+            ok: false,
+            error: 'official_seed_disabled',
+            exp: Date.now() + CUSTOM_NODE_TTL_MS,
+        };
+    }
     const now = Date.now();
     const cached = customNodeCache.get(base);
     if (cached && cached.exp > now) return cached;
@@ -5331,11 +5641,17 @@ function resolveRequestNodeOrder(req) {
         choice = String(cookies[VAULT_NODE_COOKIE] || 'auto').trim() || 'auto';
     } catch (e) { /* ignore */ }
     if (choice === 'auto') return null;
+    if (!ALLOW_OFFICIAL_SEED_PRESETS && Object.prototype.hasOwnProperty.call(OFFICIAL_SEED_NODE_PRESETS, choice)) {
+        return null;
+    }
     let primary = null;
     if (Object.prototype.hasOwnProperty.call(NODE_PRESETS, choice)) {
         primary = NODE_PRESETS[choice];
     } else if (/^https?:\/\//i.test(choice)) {
         const base = choice.replace(/\/$/, '');
+        if (!ALLOW_OFFICIAL_SEED_PRESETS && isOfficialSeedNodeUrl(base)) {
+            return null;
+        }
         const v = customNodeCache.get(base);
         if (v && v.ok && v.exp > Date.now()) primary = base;
         if (!v || v.exp <= Date.now()) scheduleCustomNodeRevalidation(base); // serve-stale + revalidate (singleflight + global cap, no per-req bucket)
@@ -5357,14 +5673,21 @@ app.get('/api/nodes', (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
     let selected = 'auto';
     try { selected = String(parseCookieHeader(req.headers.cookie)[VAULT_NODE_COOKIE] || 'auto').trim() || 'auto'; } catch (e) {}
+    if (!ALLOW_OFFICIAL_SEED_PRESETS && Object.prototype.hasOwnProperty.call(OFFICIAL_SEED_NODE_PRESETS, selected)) {
+        selected = 'auto';
+    }
     const tip = Math.max(0, ...RPC_NODES.map(n => nodeHeight[n] || 0));
     const presets = [
         { id: 'auto',  label: 'Automatic (recommended)', kind: 'auto' },
         { id: 'local', label: 'Salvium Tools',  kind: 'hosted', height: nodeHeight[HOSTED_DAEMON_URL] || 0 },
-        { id: 'seed1', label: 'Official seed 1', kind: 'seed', height: nodeHeight[NODE_PRESETS.seed1] || 0 },
-        { id: 'seed2', label: 'Official seed 2', kind: 'seed', height: nodeHeight[NODE_PRESETS.seed2] || 0 },
-        { id: 'seed3', label: 'Official seed 3', kind: 'seed', height: nodeHeight[NODE_PRESETS.seed3] || 0 },
     ];
+    if (ALLOW_OFFICIAL_SEED_PRESETS) {
+        presets.push(
+            { id: 'seed1', label: 'Official seed 1', kind: 'seed', height: nodeHeight[OFFICIAL_SEED_NODE_PRESETS.seed1] || 0 },
+            { id: 'seed2', label: 'Official seed 2', kind: 'seed', height: nodeHeight[OFFICIAL_SEED_NODE_PRESETS.seed2] || 0 },
+            { id: 'seed3', label: 'Official seed 3', kind: 'seed', height: nodeHeight[OFFICIAL_SEED_NODE_PRESETS.seed3] || 0 },
+        );
+    }
     res.json({ selected, tip, presets });
 });
 
@@ -5725,6 +6048,9 @@ app.post(['/api/client-events', '/vault/api/client-events'], clientTelemetryRate
     }
 });
 app.use((req, res, next) => {
+    if (req.url.startsWith('/vault/api/wasm/')) {
+        return rejectNonCanonicalWasmAsset(req, res);
+    }
     if (req.url.startsWith('/vault/api/')) {
         req.url = req.url.replace('/vault/api/', '/api/');
     } else if (req.url.startsWith('/vault/')) {
@@ -5988,31 +6314,333 @@ async function getPrepareChainTip() {
     if (h > 0) prepareTipCache = { value: h, at: now };
     return prepareTipCache.value || h || 0;
 }
-let cspCoverageCache = { height: 0, at: 0 };
-async function getCspCoverageHeight() {
-    const now = Date.now();
-    if (now - cspCoverageCache.at < 3000) return cspCoverageCache.height;
-    let maxEnd = 0;
-    try {
-        const files = await fs.readdir(CSP_CACHE_DIR).catch(() => []);
-        for (const file of files) {
-            if (!file.endsWith('.csp')) continue;
-            const parsed = parseCspChunkFilename(file);
-            if (parsed && parsed.end > maxEnd) maxEnd = parsed.end;
+function computeChunkRangeCoverage(ranges, targetHeight = 0, maxGapSamples = 5) {
+    const targetTopHeight = targetHeight > 0
+        ? getTopBlockHeightFromChainHeight(targetHeight)
+        : -1;
+    const validRanges = Array.isArray(ranges)
+        ? ranges
+            .map((r) => ({
+                ...r,
+                end: Math.min(r.end, targetTopHeight)
+            }))
+            .filter(r => Number.isFinite(r.start) && Number.isFinite(r.end) && r.start >= 0 && r.end >= r.start)
+            .sort((a, b) => a.start - b.start || a.end - b.end)
+        : [];
+    let cursor = 0;
+    let contiguousCursor = 0;
+    let firstGapStart = null;
+    let gapCount = 0;
+    const gaps = [];
+    let maxHeight = 0;
+
+    for (const range of validRanges) {
+        maxHeight = Math.max(maxHeight, range.end);
+        if (range.end < cursor) continue;
+        if (range.start > cursor) {
+            gapCount++;
+            if (gaps.length < maxGapSamples) gaps.push({ start: cursor, end: range.start - 1 });
+            if (firstGapStart === null) firstGapStart = cursor;
+            cursor = range.end + 1;
+            continue;
         }
-    } catch (_) { /* dir may not exist yet */ }
-    cspCoverageCache = { height: maxEnd, at: now };
-    return maxEnd;
+        cursor = Math.max(cursor, range.end + 1);
+        if (firstGapStart === null) contiguousCursor = cursor;
+    }
+
+    if (targetHeight > 0 && cursor < targetHeight) {
+        gapCount++;
+        if (gaps.length < maxGapSamples) gaps.push({ start: cursor, end: targetHeight - 1 });
+        if (firstGapStart === null) firstGapStart = cursor;
+    }
+
+    return {
+        count: validRanges.length,
+        firstHeight: validRanges.length ? validRanges[0].start : null,
+        maxHeight,
+        contiguousHeight: contiguousCursor > 0 ? contiguousCursor - 1 : 0,
+        gapCount,
+        gaps,
+        completeToTarget: targetHeight > 0 ? contiguousCursor >= targetHeight : gapCount === 0,
+    };
 }
+
+function parseBlockCacheChunkFilename(filename, ext) {
+    const escapedExt = String(ext || 'bin').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = filename.match(new RegExp(`^blocks-(\\d+)-(\\d+)\\.${escapedExt}$`));
+    if (!match) return null;
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    return { start, end };
+}
+
+function isAlignedFullChunkRange(range) {
+    return !!range
+        && Number.isFinite(range.start)
+        && Number.isFinite(range.end)
+        && range.start >= 0
+        && range.end >= range.start
+        && range.start % BLOCK_CHUNK_SIZE === 0
+        && range.end - range.start + 1 === BLOCK_CHUNK_SIZE;
+}
+
+async function getBlockFileCoverage(dir, ext, options = {}) {
+    const files = await fs.readdir(dir).catch(() => []);
+    const ranges = [];
+    let invalid = 0;
+    let tooSmall = 0;
+    let badMagic = 0;
+    const minSize = Number(options.minSize || 1);
+    const expectedMagic = options.expectedMagic || null;
+    for (const file of files) {
+        const parsed = parseBlockCacheChunkFilename(file, ext);
+        if (!parsed) continue;
+        if (!isAlignedFullChunkRange(parsed)) {
+            invalid++;
+            continue;
+        }
+        const fullPath = path.join(dir, file);
+        try {
+            const stat = await fs.stat(fullPath);
+            if (stat.size < minSize) {
+                tooSmall++;
+                continue;
+            }
+            if (expectedMagic) {
+                const fh = await fs.open(fullPath, 'r');
+                try {
+                    const magic = Buffer.alloc(expectedMagic.length);
+                    const { bytesRead } = await fh.read(magic, 0, expectedMagic.length, 0);
+                    if (bytesRead < expectedMagic.length || !magic.equals(expectedMagic)) {
+                        badMagic++;
+                        continue;
+                    }
+                } finally {
+                    await fh.close();
+                }
+            }
+            ranges.push({ start: parsed.start, end: parsed.end, file, size: stat.size, mtimeMs: stat.mtimeMs || 0 });
+        } catch (_) {
+            invalid++;
+        }
+    }
+    const coverage = computeChunkRangeCoverage(ranges, options.targetHeight || 0, options.maxGapSamples || 5);
+    return { ...coverage, invalid, tooSmall, badMagic };
+}
+
+async function getCspDiskCoverage(targetHeight = 0) {
+    const files = await fs.readdir(CSP_CACHE_DIR).catch(() => []);
+    const ranges = [];
+    let invalid = 0;
+    let skippedSchema = 0;
+    let tooSmall = 0;
+    let badMagic = 0;
+    for (const file of files) {
+        if (!file.endsWith('.csp')) continue;
+        const parsed = parseCspChunkFilename(file);
+        if (!parsed) {
+            invalid++;
+            continue;
+        }
+        if (parsed.schema !== CSP_CACHE_SCHEMA_VERSION) {
+            skippedSchema++;
+            continue;
+        }
+        if (!isAlignedFullChunkRange(parsed)) {
+            invalid++;
+            continue;
+        }
+        const fullPath = path.join(CSP_CACHE_DIR, file);
+        try {
+            const stat = await fs.stat(fullPath);
+            if (stat.size < 12) {
+                tooSmall++;
+                continue;
+            }
+            const fh = await fs.open(fullPath, 'r');
+            let header;
+            try {
+                header = Buffer.alloc(12);
+                const { bytesRead } = await fh.read(header, 0, 12, 0);
+                if (bytesRead < 12) {
+                    tooSmall++;
+                    continue;
+                }
+            } finally {
+                await fh.close();
+            }
+            const magicOk = header[0] === 0x43 && header[1] === 0x53 && header[2] === 0x50;
+            const version = header[3];
+            if (!magicOk || version < 6) {
+                badMagic++;
+                continue;
+            }
+            ranges.push({ start: parsed.start, end: parsed.end, file, size: stat.size, mtimeMs: stat.mtimeMs || 0 });
+        } catch (_) {
+            invalid++;
+        }
+    }
+    const coverage = computeChunkRangeCoverage(ranges, targetHeight, 5);
+    return { ...coverage, invalid, skippedSchema, tooSmall, badMagic, schema: CSP_CACHE_SCHEMA_VERSION };
+}
+
+function getCspBundleCoverage() {
+    const firstHeight = Number(cspBundleStats.firstHeight || 0);
+    const lastHeight = Number(cspBundleStats.lastHeight || 0);
+    const chunks = Number(cspBundleStats.chunks || 0);
+    return {
+        available: fsSync.existsSync(CSP_BUNDLE_FILE),
+        chunks,
+        firstHeight: chunks > 0 ? firstHeight : null,
+        lastHeight,
+        contiguousHeight: chunks > 0 && firstHeight === 0 ? lastHeight : 0,
+        size: Number(cspBundleStats.size || 0),
+        gzipSize: Number(cspBundleStats.gzipSize || 0),
+        lastBuild: cspBundleStats.lastBuild,
+        buildInProgress: !!cspBundleStats.buildInProgress,
+        hits: Number(cspBundleStats.hits || 0),
+    };
+}
+
+let cspCoverageCache = { height: 0, health: null, at: 0 };
+async function getCspCoverageHealth(targetHeight = 0) {
+    const now = Date.now();
+    if (cspCoverageCache.health && now - cspCoverageCache.at < 3000) return cspCoverageCache.health;
+    const disk = await getCspDiskCoverage(targetHeight);
+    const bundle = getCspBundleCoverage();
+    const effectiveHeight = capHeightToKnownChainTop(
+        Math.max(bundle.contiguousHeight || 0, disk.contiguousHeight || 0),
+        targetHeight
+    );
+    const health = {
+        disk,
+        bundle,
+        effectiveHeight,
+        completeToTarget: targetHeight > 0 ? effectiveHeight >= targetHeight - 1 : disk.completeToTarget || bundle.contiguousHeight > 0,
+    };
+    cspCoverageCache = { height: effectiveHeight, health, at: now };
+    return health;
+}
+
+async function getCspCoverageHeight(targetHeight = 0) {
+    const health = await getCspCoverageHealth(targetHeight);
+    return health.effectiveHeight || 0;
+}
+
+function getReturnOutputIndexStatus() {
+    const filePath = path.join(CSP_CACHE_DIR, 'return-output-index.tsv');
+    try {
+        const stat = fsSync.statSync(filePath);
+        return {
+            available: true,
+            size: stat.size,
+            modified: stat.mtime.toISOString(),
+            loaded: !!__returnIndexMap,
+            entries: __returnIndexMap ? __returnIndexMap.size : null,
+        };
+    } catch (_) {
+        return {
+            available: false,
+            size: 0,
+            modified: null,
+            loaded: !!__returnIndexMap,
+            entries: __returnIndexMap ? __returnIndexMap.size : null,
+        };
+    }
+}
+
+async function getScanCacheHealthSnapshot() {
+    const chainTip = await getPrepareChainTip();
+    const targetHeight = chainTip > 0 ? chainTip : 0;
+    const spendCacheHeight = capHeightToKnownChainTop(keyImageCache.lastScannedHeight || 0, targetHeight);
+    const stakeCacheHeight = capHeightToKnownChainTop(stakeCache.lastScannedHeight || 0, targetHeight);
+    const [cspCoverage, blockCoverage, txiCoverage] = await Promise.all([
+        getCspCoverageHealth(targetHeight),
+        getBlockFileCoverage(CACHE_DIR, 'bin', { targetHeight, minSize: 1 }),
+        getBlockFileCoverage(CACHE_DIR, 'txi', { targetHeight, minSize: TXI_HEADER_SIZE, expectedMagic: TXI_MAGIC_V4 }),
+    ]);
+    const GRACE = (typeof CSP_BUNDLE_STABLE_DEPTH === 'number' ? CSP_BUNDLE_STABLE_DEPTH : 3) + 2;
+    const readyAt = targetHeight > 0 ? Math.max(0, targetHeight - GRACE) : 0;
+    const txiExtracted = fsSync.existsSync(TXI_BUNDLE_FILE + '.extracted');
+    return {
+        time: new Date().toISOString(),
+        serverVersion: SERVER_VERSION,
+        buildTime: SERVER_BUILD_TIME,
+        chainTip,
+        readyAt,
+        wasmReady: wasmModuleReady,
+        receives: {
+            ready: targetHeight > 0 && (cspCoverage.effectiveHeight || 0) >= readyAt,
+            effectiveHeight: cspCoverage.effectiveHeight,
+            cspDisk: cspCoverage.disk,
+            cspBundle: cspCoverage.bundle,
+            cspCacheStats: {
+                files: cspCacheStats.files,
+                hits: cspCacheStats.hits,
+                misses: cspCacheStats.misses,
+                generates: cspCacheStats.generates,
+                errors: cspCacheStats.errors,
+                lastGenerate: cspCacheStats.lastGenerate,
+            },
+        },
+        blocks: {
+            ready: targetHeight > 0 && (blockCoverage.contiguousHeight || 0) >= readyAt,
+            ...blockCoverage,
+            cacheStats: {
+                cachedBlocks: cacheStats.cachedBlocks,
+                hits: cacheStats.hits,
+                misses: cacheStats.misses,
+                writes: cacheStats.writes,
+                errors: cacheStats.errors,
+                lastSync: cacheStats.lastSync,
+            },
+        },
+        txi: {
+            ready: targetHeight > 0 && ((txiCoverage.contiguousHeight || 0) >= readyAt || txiExtracted),
+            ...txiCoverage,
+            bundleFileAvailable: fsSync.existsSync(TXI_BUNDLE_FILE),
+            extractedMarker: txiExtracted,
+        },
+        spends: {
+            ready: targetHeight > 0 && Number(spendCacheHeight || 0) >= readyAt,
+            height: spendCacheHeight,
+            entries: keyImageCache.spends ? keyImageCache.spends.size : 0,
+            binEntries: typeof spentIndexBinCount === 'function' ? spentIndexBinCount() : null,
+        },
+        stakes: {
+            ready: targetHeight > 0 && Number(stakeCacheHeight || 0) >= readyAt,
+            height: stakeCacheHeight,
+            entries: Array.isArray(stakeCache.stakes) ? stakeCache.stakes.length : 0,
+            rebuilding: !!stakeCacheRebuildInProgress,
+            revision: stakeCacheRevision,
+        },
+        returnIndex: getReturnOutputIndexStatus(),
+    };
+}
+
+app.get(['/api/debug/cache-health', '/vault/api/debug/cache-health'], noCacheHeaders, async (req, res) => {
+    try {
+        const snapshot = await getScanCacheHealthSnapshot();
+        snapshot.ready = !!snapshot.wasmReady
+            && !!snapshot.receives.ready
+            && !!snapshot.spends.ready
+            && !!snapshot.stakes.ready;
+        res.json(snapshot);
+    } catch (e) {
+        res.status(500).json({ ready: false, error: e.message });
+    }
+});
+
 app.get(['/api/prepare/status', '/vault/api/prepare/status'], noCacheHeaders, async (req, res) => {
     try {
         const tip = await getPrepareChainTip();
         const safeTip = Math.max(1, tip);
         // Receive index covers the chain through whichever is further: the loaded
-        // bundle's last height or the highest on-disk CSP chunk (the live tail).
-        const receivesHeight = Math.max(cspBundleStats.lastHeight || 0, await getCspCoverageHeight());
+        // bundle's contiguous last height or the on-disk CSP chunks' contiguous range.
+        const cspCoverage = await getCspCoverageHealth(tip);
+        const receivesHeight = cspCoverage.effectiveHeight || 0;
         const components = [
-            { key: 'receives', label: 'Receive index', height: receivesHeight },
+            { key: 'receives', label: 'Receive index', height: receivesHeight, coverage: cspCoverage },
             { key: 'spends',   label: 'Spend index',   height: keyImageCache.lastScannedHeight || 0 },
             { key: 'stakes',   label: 'Stake index',   height: stakeCache.lastScannedHeight || 0 },
         ];
@@ -6091,10 +6719,11 @@ app.get(['/api/cache-export/manifest.json', '/vault/api/cache-export/manifest.js
             try { const st = fsSync.statSync(p); files.push({ name, size: st.size, mtimeMs: Math.round(st.mtimeMs) }); }
             catch (_) { /* not built on this instance */ }
         }
+        const chainHeight = await getPrepareChainTip();
         res.json({
-            chainHeight: await getPrepareChainTip(),
-            spendIndexHeight: keyImageCache.lastScannedHeight || 0,
-            stakeIndexHeight: stakeCache.lastScannedHeight || 0,
+            chainHeight,
+            spendIndexHeight: capHeightToKnownChainTop(keyImageCache.lastScannedHeight || 0, chainHeight),
+            stakeIndexHeight: capHeightToKnownChainTop(stakeCache.lastScannedHeight || 0, chainHeight),
             files,
         });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -6256,12 +6885,14 @@ async function ensureTxiBundleFresh() {
     try {
         const all = await fs.readdir(CACHE_DIR).catch(() => []);
         const chunks = [];
+        let newestChunkMtimeMs = 0;
         for (const f of all) {
             const m = f.match(/^blocks-(\d+)-(\d+)\.txi$/);
             if (!m) continue;
             const fp = path.join(CACHE_DIR, f);
             let cst; try { cst = await fs.stat(fp); } catch (_) { continue; }
             if (cst.size < 4) continue;
+            newestChunkMtimeMs = Math.max(newestChunkMtimeMs, Number(cst.mtimeMs || 0));
             chunks.push({ start: +m[1], end: +m[2], size: cst.size, file: fp });
         }
         if (chunks.length === 0) return;
@@ -6274,7 +6905,15 @@ async function ensureTxiBundleFresh() {
                 try {
                     const hdr = Buffer.alloc(20);
                     await fh.read(hdr, 0, 20, 0);
-                    if (hdr.readUInt32LE(0) === TXI_BUNDLE_MAGIC && hdr.readUInt32LE(8) === chunks.length && hdr.readUInt32LE(16) === lastEnd) return;
+                    if (
+                        hdr.readUInt32LE(0) === TXI_BUNDLE_MAGIC &&
+                        hdr.readUInt32LE(8) === chunks.length &&
+                        hdr.readUInt32LE(16) === lastEnd &&
+                        Number(bst.mtimeMs || 0) > newestChunkMtimeMs
+                    ) return;
+                    if (Number(bst.mtimeMs || 0) <= newestChunkMtimeMs) {
+                        console.log('[TXI bundle] Rebuild needed: TXI chunks newer than bundle (' + new Date(bst.mtimeMs || 0).toISOString() + ')');
+                    }
                 } finally { await fh.close(); }
             }
         } catch (_) {}
@@ -6562,14 +7201,31 @@ app.get('/api/network', noCacheHeaders, (req, res) => {
 // remote-clearing mechanism). Path-versioned URLs are a fresh address space per
 // release; only current-build clients construct them, so they always get the
 // current matched pair.
-app.get(['/api/wasm/:version/:filename', '/vault/api/wasm/:version/:filename'], (req, res) => {
+function rejectNonCanonicalWasmAsset(_req, res) {
+    res.set({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+    });
+    return res.status(410).type('text/plain').send('Canonical WASM route is /api/wasm/:assetVersion/:filename');
+}
+function redirectToCanonicalWasmAsset(req, res, filename) {
+    const canonicalPath = `/api/wasm/${encodeURIComponent(getConfiguredWasmAssetVersion())}/${encodeURIComponent(filename)}`;
+    res.set({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+    });
+    return res.redirect(307, canonicalPath);
+}
+app.get('/api/wasm/:version/:filename', (req, res) => {
+    if (String(req.params.version || '') !== getConfiguredWasmAssetVersion()) {
+        return redirectToCanonicalWasmAsset(req, res, req.params.filename);
+    }
     return sendConfiguredWasmAsset(req, res, req.params.filename);
 });
-app.get(['/api/wasm/:filename', '/vault/api/wasm/:filename'], (req, res) => {
-    const filename = req.params.filename;
-    return sendConfiguredWasmAsset(req, res, filename);
-});
-app.get(['/api/wasm-info', '/vault/api/wasm-info'], noCacheHeaders, (req, res) => {
+app.get(['/api/wasm/:filename', '/vault/api/wasm/:version/:filename', '/vault/api/wasm/:filename'], rejectNonCanonicalWasmAsset);
+app.get('/api/wasm-info', noCacheHeaders, (req, res) => {
     try {
         const wasmInfo = getConfiguredWasmAssetInfo('SalviumWallet.wasm');
         const jsInfo = getConfiguredWasmAssetInfo('SalviumWallet.js');
@@ -6754,6 +7410,7 @@ function normalizeDaemonAssetTypeForServer(assetType) {
     return raw;
 }
 function getServerOutputIndexBucket(outputs) {
+    try { var ix = (outputs||[]).map(function(o){return Number(o&&o.index);}).filter(function(n){return Number.isFinite(n);}); if(ix.length){ var mx=Math.max.apply(null,ix), mn=Math.min.apply(null,ix); var over=ix.filter(function(n){return n>2070000;}).length; return 'n='+ix.length+' min='+mn+' max='+mx+' over2.07M='+over; } } catch(e){}
     if (!Array.isArray(outputs) || outputs.length === 0) return 'empty';
     const indexes = outputs
         .map(o => Number(o?.index))
@@ -6775,33 +7432,314 @@ function getServerCountBucket(count) {
     if (value <= 50000) return '5001-50000';
     return '50000+';
 }
+function readEpeeIntegerField(buffer, typeOffset) {
+    if (!Buffer.isBuffer(buffer) || typeOffset < 0 || typeOffset >= buffer.length) return null;
+    const typeByte = buffer[typeOffset];
+    const sizes = {
+        1: 8, // int64
+        2: 4, // int32
+        3: 2, // int16
+        4: 1, // int8
+        5: 8, // uint64
+        6: 4, // uint32
+        7: 2, // uint16
+        8: 1, // uint8
+    };
+    const size = sizes[typeByte];
+    if (!size || typeOffset + 1 + size > buffer.length) return null;
+    let value = 0n;
+    for (let b = 0; b < size; b++) {
+        value |= BigInt(buffer[typeOffset + 1 + b]) << BigInt(8 * b);
+    }
+    if (typeByte >= 1 && typeByte <= 4) {
+        const bits = BigInt(size * 8);
+        const sign = 1n << (bits - 1n);
+        if (value & sign) value -= 1n << bits;
+    }
+    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(value);
+}
+
+function readEpeeBoolField(buffer, typeOffset) {
+    if (!Buffer.isBuffer(buffer) || typeOffset < 0 || typeOffset + 1 >= buffer.length) return null;
+    const typeByte = buffer[typeOffset];
+    // epee portable_storage bool is type 11 followed by one byte.
+    if (typeByte !== 11) return null;
+    return buffer[typeOffset + 1] !== 0;
+}
+
+function readEpeeCompactSize(buffer, offset) {
+    if (!Buffer.isBuffer(buffer) || offset < 0 || offset >= buffer.length) return null;
+    const first = buffer[offset];
+    const tag = first & 0x03;
+    if (tag === 0) return { value: first >> 2, offset: offset + 1 };
+    if (tag === 1) {
+        if (offset + 2 > buffer.length) return null;
+        return { value: buffer.readUInt16LE(offset) >> 2, offset: offset + 2 };
+    }
+    if (tag === 2) {
+        if (offset + 4 > buffer.length) return null;
+        return { value: buffer.readUInt32LE(offset) >>> 2, offset: offset + 4 };
+    }
+    const bytes = first >> 2;
+    if (bytes <= 0 || bytes > 6 || offset + 1 + bytes > buffer.length) return null;
+    let value = 0n;
+    for (let i = 0; i < bytes; i++) value |= BigInt(buffer[offset + 1 + i]) << BigInt(8 * i);
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return { value: Number(value), offset: offset + 1 + bytes };
+}
+
+function readEpeeBlobField(buffer, typeOffset) {
+    if (!Buffer.isBuffer(buffer) || typeOffset < 0 || typeOffset + 2 >= buffer.length) return null;
+    if (buffer[typeOffset] !== 10) return null;
+    const size = readEpeeCompactSize(buffer, typeOffset + 1);
+    if (!size || size.value < 0 || size.offset + size.value > buffer.length) return null;
+    return buffer.subarray(size.offset, size.offset + size.value);
+}
+
 function parseEpeeOutputIndices(buffer) {
     const outputs = [];
     try {
-        for (let i = 0; i < buffer.length - 6; i++) {
-            if (buffer[i] === 5 && buffer.toString('latin1', i + 1, i + 6) === 'index') {
-                const typeOffset = i + 6;
-                if (typeOffset + 9 <= buffer.length) {
-                    const indexLow = buffer.readUInt32LE(typeOffset + 1);
-                    const indexHigh = buffer.readUInt32LE(typeOffset + 5);
-                    if (indexHigh === 0 && indexLow < 500000000) {
-                        outputs.push({ amount: 0, index: indexLow });
+        const indexSig = Buffer.from([0x05, 0x69, 0x6e, 0x64, 0x65, 0x78]); // "\x05index"
+        const globalSig = Buffer.from([0x0d, 0x69, 0x73, 0x5f, 0x67, 0x6c, 0x6f, 0x62, 0x61, 0x6c, 0x5f, 0x6f, 0x75, 0x74]); // "\ris_global_out"
+        const keySig = Buffer.from([0x03, 0x6b, 0x65, 0x79]); // "\x03key"
+        const indexOffsets = [];
+        for (let i = 0; i + indexSig.length + 2 <= buffer.length; i++) {
+            if (!buffer.subarray(i, i + indexSig.length).equals(indexSig)) continue;
+            indexOffsets.push(i);
+        }
+        for (let n = 0; n < indexOffsets.length; n++) {
+            const i = indexOffsets[n];
+            const typeOffset = i + indexSig.length;
+            const index = readEpeeIntegerField(buffer, typeOffset);
+            if (Number.isSafeInteger(index) && index >= 0 && index < 500000000) {
+                const output = { amount: 0, index };
+                const nextIndexOffset = indexOffsets[n + 1] ?? buffer.length;
+                for (let j = typeOffset + 1; j + globalSig.length + 2 <= nextIndexOffset; j++) {
+                    if (!buffer.subarray(j, j + globalSig.length).equals(globalSig)) continue;
+                    const isGlobalOut = readEpeeBoolField(buffer, j + globalSig.length);
+                    if (isGlobalOut !== null) {
+                        output.is_global_out = isGlobalOut;
+                        break;
                     }
                 }
+                for (let j = typeOffset + 1; j + keySig.length + 2 <= nextIndexOffset; j++) {
+                    if (!buffer.subarray(j, j + keySig.length).equals(keySig)) continue;
+                    const key = readEpeeBlobField(buffer, j + keySig.length);
+                    if (key && key.length === 32) {
+                        output.key = key.toString('hex');
+                        break;
+                    }
+                }
+                outputs.push(output);
             }
         }
-        const seen = new Set();
-        return outputs.filter(o => {
-            const key = o.index;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
+        return outputs;
     } catch (e) {
         console.error('[Epee Parser] Error:', e.message);
         return [];
     }
 }
+
+const getOutsKeyTxiCache = new Map();
+const getOutsKeyAssetIndexCache = new Map();
+const GET_OUTS_KEY_CACHE_MAX = 5000;
+
+function boundKeyCache(cache) {
+    // FIFO eviction is enough here: entries are immutable chain facts and the caches
+    // exist only to spare repeated TXI scans within a burst of requests.
+    while (cache.size > GET_OUTS_KEY_CACHE_MAX) {
+        cache.delete(cache.keys().next().value);
+    }
+}
+
+async function findTxiEntryForOutputKey(outputKeyHex) {
+    if (!/^[0-9a-f]{64}$/i.test(String(outputKeyHex || ''))) return null;
+    const cacheKey = outputKeyHex.toLowerCase();
+    if (getOutsKeyTxiCache.has(cacheKey)) return getOutsKeyTxiCache.get(cacheKey);
+    const keyBuffer = Buffer.from(cacheKey, 'hex');
+    const files = await fs.readdir(CACHE_DIR).catch(() => []);
+    const txiFiles = files
+        .map((file) => {
+            const match = file.match(/^blocks-(\d+)-(\d+)\.txi$/);
+            return match ? { file, start: Number(match[1]), end: Number(match[2]) } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.start - a.start);
+    for (const txiFile of txiFiles) {
+        const fullPath = path.join(CACHE_DIR, txiFile.file);
+        let data;
+        try {
+            data = await fs.readFile(fullPath);
+        } catch (_) {
+            continue;
+        }
+        if (data.indexOf(keyBuffer) === -1) continue;
+        let parsed;
+        try {
+            parsed = parseTxiBuffer(data, txiFile.file);
+        } catch (_) {
+            continue;
+        }
+        for (const entry of parsed.entries || []) {
+            const blob = data.subarray(entry.blobOffset, entry.blobOffset + entry.blobSize);
+            if (blob.indexOf(keyBuffer) === -1) continue;
+            const result = {
+                height: entry.blockHeight,
+                txHash: Buffer.isBuffer(entry.txHash) ? entry.txHash.toString('hex') : null,
+                outputIndices: entry.outputIndices || [],
+                assetTypeOutputIndices: entry.assetTypeOutputIndices || [],
+                file: txiFile.file
+            };
+            getOutsKeyTxiCache.set(cacheKey, result);
+            boundKeyCache(getOutsKeyTxiCache);
+            return result;
+        }
+    }
+    getOutsKeyTxiCache.set(cacheKey, null);
+    boundKeyCache(getOutsKeyTxiCache);
+    return null;
+}
+
+async function resolveCurrentAssetOutputIndexByKey(targetUrl, assetType, outputKeyHex, dist, timeoutMs) {
+    const key = String(outputKeyHex || '').toLowerCase();
+    const cacheKey = `${assetType}:${key}`;
+    if (getOutsKeyAssetIndexCache.has(cacheKey)) return getOutsKeyAssetIndexCache.get(cacheKey);
+    const txiEntry = await findTxiEntryForOutputKey(key);
+    const distribution = Array.isArray(dist?.distribution) ? dist.distribution : [];
+    const startHeight = Number(dist?.start_height || 0);
+    const height = Number(txiEntry?.height || 0);
+    if (!txiEntry || !Number.isInteger(height) || height < startHeight || height - startHeight >= distribution.length) {
+        getOutsKeyAssetIndexCache.set(cacheKey, null);
+        boundKeyCache(getOutsKeyAssetIndexCache);
+        return null;
+    }
+    let firstIndex = 0;
+    for (let h = startHeight; h < height; h++) firstIndex += Number(distribution[h - startHeight] || 0);
+    const heightOutputCount = Number(distribution[height - startHeight] || 0);
+    if (!Number.isInteger(firstIndex) || !Number.isInteger(heightOutputCount) || heightOutputCount <= 0 || heightOutputCount > 10000) {
+        getOutsKeyAssetIndexCache.set(cacheKey, null);
+        boundKeyCache(getOutsKeyAssetIndexCache);
+        return null;
+    }
+    const chunkSize = 500;
+    for (let offset = 0; offset < heightOutputCount; offset += chunkSize) {
+        const outputs = [];
+        const end = Math.min(heightOutputCount, offset + chunkSize);
+        for (let n = offset; n < end; n++) outputs.push({ amount: 0, index: firstIndex + n });
+        const response = await axiosInstance.post(targetUrl, {
+            outputs,
+            get_txid: false,
+            asset_type: assetType
+        }, { timeout: Math.max(1000, Math.min(timeoutMs, 20000)) });
+        const outs = Array.isArray(response.data?.outs) ? response.data.outs : [];
+        for (let n = 0; n < outs.length; n++) {
+            if (String(outs[n]?.key || '').toLowerCase() === key) {
+                const result = {
+                    index: firstIndex + offset + n,
+                    height,
+                    mask: outs[n]?.mask || null,
+                    txHash: txiEntry.txHash,
+                    source: 'distribution_height_scan'
+                };
+                getOutsKeyAssetIndexCache.set(cacheKey, result);
+                boundKeyCache(getOutsKeyAssetIndexCache);
+                return result;
+            }
+        }
+    }
+    getOutsKeyAssetIndexCache.set(cacheKey, null);
+    boundKeyCache(getOutsKeyAssetIndexCache);
+    return null;
+}
+
+function isOkGetOutsResponse(data, expectedCount) {
+    return data &&
+        data.status === 'OK' &&
+        Array.isArray(data.outs) &&
+        (expectedCount == null || data.outs.length === expectedCount);
+}
+
+function describeGetOutsDaemonFailure(err, data) {
+    if (err) return String(err.message || err).slice(0, 220);
+    if (!data) return 'empty daemon response';
+    return JSON.stringify({
+        status: data.status || null,
+        reason: data.reason || data.error || null,
+        outs: Array.isArray(data.outs) ? data.outs.length : null,
+    }).slice(0, 220);
+}
+
+async function fetchExactGetOutsChunked(targetUrl, lookupOutputs, assetType, timeoutMs, emitExactOutsLog) {
+    const CHUNK_SIZE = 128;
+    const MAX_ATTEMPTS = 2;
+    const chunkTimeoutMs = Math.max(1000, Math.min(timeoutMs, 45000));
+    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    const fetchOneList = async (outputs, depth) => {
+        if (outputs.length === 0) return [];
+        let lastError = null;
+        let lastData = null;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                const requestBody = {
+                    outputs,
+                    get_txid: false,
+                    ...(getServerTokenShape(assetType) === 'base' ? {} : { asset_type: assetType })
+                };
+                const response = await axiosInstance.post(targetUrl, requestBody, { timeout: chunkTimeoutMs });
+                lastData = response.data;
+                if (isOkGetOutsResponse(lastData, outputs.length)) {
+                    return lastData.outs;
+                }
+                lastError = new Error(describeGetOutsDaemonFailure(null, lastData));
+            } catch (err) {
+                lastError = err;
+                lastData = err.response?.data || null;
+            }
+            if (attempt < MAX_ATTEMPTS) await delay(150 * attempt);
+        }
+
+        if (outputs.length > 1) {
+            const mid = Math.ceil(outputs.length / 2);
+            emitExactOutsLog('node_chunk_split', {
+                tokenShape: getServerTokenShape(assetType),
+                requestedOutputs: outputs.length,
+                depth,
+                outputIndexBucket: getServerOutputIndexBucket(outputs),
+                reason: describeGetOutsDaemonFailure(lastError, lastData)
+            });
+            const left = await fetchOneList(outputs.slice(0, mid), depth + 1);
+            const right = await fetchOneList(outputs.slice(mid), depth + 1);
+            return left.concat(right);
+        }
+
+        const err = lastError || new Error('get_outs failed for single output');
+        err.daemonData = lastData;
+        err.failedOutput = outputs[0] || null;
+        throw err;
+    };
+
+    const allOuts = [];
+    for (let offset = 0; offset < lookupOutputs.length; offset += CHUNK_SIZE) {
+        const chunk = lookupOutputs.slice(offset, offset + CHUNK_SIZE);
+        emitExactOutsLog('node_chunk_started', {
+            tokenShape: getServerTokenShape(assetType),
+            requestedOutputs: chunk.length,
+            chunkOffset: offset,
+            outputIndexBucket: getServerOutputIndexBucket(chunk),
+        });
+        const chunkOuts = await fetchOneList(chunk, 0);
+        allOuts.push(...chunkOuts);
+    }
+    return {
+        status: 'OK',
+        untrusted: false,
+        outs: allOuts,
+        asset_type: assetType,
+    };
+}
+
 app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express.raw({ limit: '10mb', type: '*/*' }), async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -6826,6 +7764,15 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
         });
         return res.status(400).json({ error: 'get_outs.bin expects binary request body' });
     }
+    if (String(process.env.SALVIUM_CAPTURE_GET_OUTS || '').toLowerCase() === 'true') {
+        try {
+            const capturePath = '/tmp/latest-get-outs-body.bin';
+            fsSync.writeFileSync(capturePath, bodyBuffer);
+            emitExactOutsLog('captured_body', { capturePath, requestBytes: bodyBuffer.length });
+        } catch (captureError) {
+            emitExactOutsLog('capture_failed', { reason: String(captureError.message || captureError).slice(0, 160) });
+        }
+    }
     const outputs = parseEpeeOutputIndices(bodyBuffer);
     const parsedAssetType = normalizeDaemonAssetTypeForServer(parseEpeeAssetType(bodyBuffer));
     const fallbackAssetType = normalizeDaemonAssetTypeForServer(String(req.headers['x-asset-type'] || ''));
@@ -6839,11 +7786,16 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
         ? 'parsed_request'
         : 'fallback_header';
     emitExactOutsLog('started', {
+        ASSET_DBG_assetType: assetType,
+        ASSET_DBG_parsed: parsedAssetType,
+        ASSET_DBG_fallback: fallbackAssetType,
+        ASSET_DBG_rawEpee: parseEpeeAssetType(bodyBuffer),
         tokenShape,
         parsedTokenShape,
         fallbackTokenShape,
         selectedAssetSource,
         requestedOutputs: outputs.length,
+        globalOutputs: outputs.filter(output => output?.is_global_out === true).length,
         outputIndexBucket: getServerOutputIndexBucket(outputs),
         requestBytes: bodyBuffer.length
     });
@@ -6916,25 +7868,87 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
                     outputs
                 });
                 if (Number.isFinite(tokenOutputCount) && tokenOutputCount > 0) {
-                    lookupOutputs = outputs.filter(o => Number.isInteger(o.index) && o.index >= 0 && o.index < tokenOutputCount);
-                    if (lookupOutputs.length !== outputs.length) {
-                        emitExactOutsLog('filtered_indices', {
+                    const usedOutputIndexes = new Set();
+                    let repairedOutputCount = 0;
+                    let repairedGlobalRealOutputCount = 0;
+                    lookupOutputs = [];
+                    for (let outputOffset = 0; outputOffset < outputs.length; outputOffset++) {
+                        const output = outputs[outputOffset];
+                        const requestedIndex = Number(output?.index);
+                        if (output?.is_global_out === true && output?.key) {
+                            const resolved = await resolveCurrentAssetOutputIndexByKey(targetUrl, assetType, output.key, dist, distTimeoutMs);
+                            if (resolved && Number.isInteger(resolved.index) && resolved.index >= 0 && resolved.index < tokenOutputCount) {
+                                usedOutputIndexes.add(resolved.index);
+                                repairedGlobalRealOutputCount += 1;
+                                lookupOutputs.push({
+                                    amount: 0,
+                                    index: resolved.index,
+                                    key: output.key,
+                                    is_global_out: false,
+                                    repaired_from_global_index: Number.isFinite(requestedIndex) ? requestedIndex : null,
+                                    repaired_by_key: true
+                                });
+                                continue;
+                            }
+                            lookupOutputs.push(output);
+                            continue;
+                        }
+                        if (output?.is_global_out === true) {
+                            lookupOutputs.push(output);
+                            continue;
+                        }
+                        if (Number.isInteger(requestedIndex) && requestedIndex >= 0 && requestedIndex < tokenOutputCount) {
+                            usedOutputIndexes.add(requestedIndex);
+                            lookupOutputs.push(output);
+                            continue;
+                        }
+
+                        repairedOutputCount += 1;
+                        let replacementIndex = Number.isFinite(requestedIndex)
+                            ? Math.abs(Math.trunc(requestedIndex)) % tokenOutputCount
+                            : outputOffset % tokenOutputCount;
+                        // Keep the repaired decoy list stable while avoiding duplicates where practical.
+                        for (let probe = 0; probe < Math.min(tokenOutputCount, outputs.length + 16) && usedOutputIndexes.has(replacementIndex); probe += 1) {
+                            replacementIndex = (replacementIndex + 1) % tokenOutputCount;
+                        }
+                        usedOutputIndexes.add(replacementIndex);
+                        lookupOutputs.push({
+                            ...output,
+                            index: replacementIndex,
+                            repaired_from_index: Number.isFinite(requestedIndex) ? requestedIndex : null
+                        });
+                    }
+                    if (repairedGlobalRealOutputCount > 0) {
+                        emitExactOutsLog('repaired_global_real_outputs', {
                             tokenShape,
                             requestedOutputs: outputs.length,
-                            filteredOutputs: lookupOutputs.length,
-                            filteredOutputCount: lookupOutputs.length,
+                            repairedOutputs: repairedGlobalRealOutputCount,
                             outputCount: tokenOutputCount,
                             outputCountBucket: getServerCountBucket(tokenOutputCount),
-                            outputIndexBucket: getServerOutputIndexBucket(outputs),
+                            originalOutputIndexBucket: getServerOutputIndexBucket(outputs),
+                            repairedOutputIndexBucket: getServerOutputIndexBucket(lookupOutputs),
+                            reason: 'key_height_distribution'
+                        });
+                    }
+                    if (repairedOutputCount > 0) {
+                        emitExactOutsLog('repaired_indices', {
+                            tokenShape,
+                            requestedOutputs: outputs.length,
+                            repairedOutputs: repairedOutputCount,
+                            outputCount: tokenOutputCount,
+                            outputCountBucket: getServerCountBucket(tokenOutputCount),
+                            originalOutputIndexBucket: getServerOutputIndexBucket(outputs),
+                            repairedOutputIndexBucket: getServerOutputIndexBucket(lookupOutputs),
                             reason: 'token_index_range'
                         });
                         writeTargetedAssetSendDebug(req, 'asset.send_server_get_outs', {
                             requestId,
-                            stage: 'filtered_indices',
+                            stage: 'repaired_indices',
                             durationMs: Date.now() - routeStartedAt,
                             tokenShape,
                             assetType,
                             tokenOutputCount,
+                            repairedOutputCount,
                             originalOutputs: outputs,
                             lookupOutputs
                         });
@@ -6986,6 +8000,7 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
             }
         }
         emitExactOutsLog('node_started', {
+            ASSET_DBG_target: targetUrl,
             tokenShape,
             requestedOutputs: lookupOutputs.length,
             outputIndexBucket: getServerOutputIndexBucket(lookupOutputs),
@@ -7001,18 +8016,14 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
             timeoutMs: outsTimeoutMs
         });
         try {
-            const jsonResponse = await axiosInstance.post(targetUrl, {
-                outputs: lookupOutputs,
-                get_txid: false,
-                asset_type: assetType
-            }, { timeout: outsTimeoutMs });
-            if (jsonResponse.data && jsonResponse.data.status === 'OK' && jsonResponse.data.outs) {
-                const responseOuts = jsonResponse.data.outs;
+            const jsonData = await fetchExactGetOutsChunked(targetUrl, lookupOutputs, assetType, outsTimeoutMs, emitExactOutsLog);
+            if (jsonData && jsonData.status === 'OK' && Array.isArray(jsonData.outs)) {
+                const responseOuts = jsonData.outs;
                 for (let i = 0; i < responseOuts.length && i < lookupOutputs.length; i++) {
-                    responseOuts[i].index = lookupOutputs[i].index;
+                    responseOuts[i].index = outputs[i]?.index ?? lookupOutputs[i].index;
                     responseOuts[i].output_id = lookupOutputs[i].index;
                 }
-                jsonResponse.data.asset_type = assetType;
+                jsonData.asset_type = assetType;
                 emitExactOutsLog('completed', {
                     tokenShape,
                     requestedOutputs: lookupOutputs.length,
@@ -7030,10 +8041,14 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
                     responseOuts: responseOuts.map((out, index) => summarizeGetOutsResponseOut(out, lookupOutputs[index]?.index ?? null))
                 });
                 res.set('Content-Type', 'application/json');
-                return res.json(jsonResponse.data);
+                return res.json(jsonData);
             } else {
                 lastError = new Error('Invalid response from daemon');
                 emitExactOutsLog('node_failed', {
+                    ASSET_DBG_target: targetUrl,
+                    ASSET_DBG_nodeStatus: (jsonData && jsonData.status) || 'NONE',
+                    ASSET_DBG_nodeOuts: (jsonData && jsonData.outs && jsonData.outs.length) || -1,
+                    ASSET_DBG_body: JSON.stringify(jsonData || {}).slice(0,200),
                     tokenShape,
                     requestedOutputs: lookupOutputs.length,
                     reason: 'invalid_daemon_response'
@@ -7046,8 +8061,8 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
                     assetType,
                     requestedOutputs: lookupOutputs,
                     reason: 'invalid_daemon_response',
-                    responseStatus: jsonResponse.data?.status || null,
-                    responseKeys: jsonResponse.data && typeof jsonResponse.data === 'object' ? Object.keys(jsonResponse.data).slice(0, 20) : []
+                    responseStatus: jsonData?.status || null,
+                    responseKeys: jsonData && typeof jsonData === 'object' ? Object.keys(jsonData).slice(0, 20) : []
                 });
                 continue;
             }
@@ -7055,7 +8070,8 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
             timedOut = timedOut || err.code === 'ECONNABORTED' || /timeout/i.test(err.message || '');
             emitExactOutsLog('node_failed', {
                 tokenShape,
-                requestedOutputs: outputs.length,
+                requestedOutputs: lookupOutputs.length,
+                failedOutput: err.failedOutput || null,
                 httpStatus: err.response?.status || null,
                 reason: timedOut ? 'timeout' : 'error',
                 error: String(err.message || err).slice(0, 160)
@@ -7067,12 +8083,13 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
                 tokenShape,
                 assetType,
                 requestedOutputs: lookupOutputs,
+                failedOutput: err.failedOutput || null,
                 httpStatus: err.response?.status || null,
                 reason: timedOut ? 'timeout' : 'error',
                 error: String(err.message || err).slice(0, 500),
                 responseBody: typeof err.response?.data === 'string'
                     ? err.response.data.slice(0, 500)
-                    : JSON.stringify(err.response?.data || {}).slice(0, 500)
+                    : JSON.stringify(err.response?.data || err.daemonData || {}).slice(0, 500)
             });
             lastError = err;
             continue;
@@ -7102,6 +8119,66 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
         reason,
         error: timedOut ? 'Exact output lookup timed out before the edge timeout' : (lastError?.message || 'All nodes failed')
     });
+});
+
+
+
+app.post(['/api/wallet/get_o_indexes.bin', '/vault/api/wallet/get_o_indexes.bin'], express.raw({ limit: '2mb', type: '*/*' }), async (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    const requestId = generateSecureId(12);
+    const routeStartedAt = Date.now();
+    const bodyBuffer = Buffer.isBuffer(req.body) ? Buffer.from(req.body) : Buffer.from(req.body || []);
+    if (!bodyBuffer.length) {
+        return res.status(400).json({ error: 'get_o_indexes.bin expects binary request body' });
+    }
+    try {
+        const DAEMON_URL = pickDaemonNode();
+        const targetUrl = DAEMON_URL.replace(/\/$/, '') + '/get_o_indexes.bin';
+        const response = await axiosInstance({
+            method: 'POST',
+            url: targetUrl,
+            data: bodyBuffer,
+            responseType: 'arraybuffer',
+            timeout: 45000,
+            headers: {
+                'Content-Type': 'application/octet-stream',
+                'Accept': 'application/octet-stream'
+            }
+        });
+        writeTargetedAssetSendDebug(req, 'asset.send_server_get_o_indexes', {
+            requestId,
+            stage: 'completed',
+            durationMs: Date.now() - routeStartedAt,
+            requestBytes: bodyBuffer.length,
+            responseBytes: Buffer.byteLength(Buffer.from(response.data))
+        });
+        res.set('Content-Type', 'application/octet-stream');
+        res.send(Buffer.from(response.data));
+    } catch (error) {
+        const responseData = error.response?.data;
+        const responseBody = Buffer.isBuffer(responseData)
+            ? responseData.toString('utf8').slice(0, 500)
+            : (typeof responseData === 'string'
+                ? responseData.slice(0, 500)
+                : JSON.stringify(responseData || {}).slice(0, 500));
+        console.error(`[Wallet API] /get_o_indexes.bin failed:`, error.message);
+        writeTargetedAssetSendDebug(req, 'asset.send_server_get_o_indexes', {
+            requestId,
+            stage: 'failed',
+            durationMs: Date.now() - routeStartedAt,
+            requestBytes: bodyBuffer.length,
+            httpStatus: error.response?.status || null,
+            reason: error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '') ? 'timeout' : 'error',
+            error: String(error.message || error).slice(0, 500),
+            responseBody
+        });
+        res.status(error.response?.status || 500).json({
+            error: error.message || 'Failed to fetch output indexes',
+            responseBody
+        });
+    }
 });
 
 app.post(['/api/wallet/get_output_distribution.bin', '/vault/api/wallet/get_output_distribution.bin'], express.raw({ limit: '50mb', type: '*/*' }), async (req, res) => {
@@ -7180,7 +8257,7 @@ app.post(['/api/wallet/get_output_distribution.bin', '/vault/api/wallet/get_outp
     }
 });
 
-app.options(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin', '/api/wallet/get_output_distribution.bin', '/vault/api/wallet/get_output_distribution.bin'], (req, res) => {
+app.options(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin', '/api/wallet/get_o_indexes.bin', '/vault/api/wallet/get_o_indexes.bin', '/api/wallet/get_output_distribution.bin', '/vault/api/wallet/get_output_distribution.bin'], (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -8269,19 +9346,10 @@ app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
                     const fetchMs = Date.now() - fetchStart;
                     console.log(`[CSP-Cached] Fetched ${epeeData.length} bytes from daemon in ${fetchMs}ms`);
 
-                    const epeePtr = wasmModule.allocate_binary_buffer(epeeData.length);
-                    if (epeePtr) {
-                        wasmModule.HEAPU8.set(epeeData, epeePtr);
-                        const resultJson = wasmModule.convert_epee_to_csp(epeePtr, epeeData.length, alignedStart);
-                        wasmModule.free_binary_buffer(epeePtr);
-
-                        const result = JSON.parse(resultJson);
-                        if (typeof result.blocks_count === 'number') generatedBlockCount = result.blocks_count;
-                        if (result.success) {
-                            cspBuffer = Buffer.from(wasmModule.HEAPU8.slice(result.ptr, result.ptr + result.size));
-                            wasmModule.free_binary_buffer(result.ptr);
-                            console.log(`[CSP-Cached] Generated ${cspBuffer.length} bytes CSP from daemon data`);
-                        }
+                    await saveBlocksToCache(alignedStart, alignedEnd, epeeData);
+                    cspBuffer = await generateCspForChunk(alignedStart, alignedEnd, epeeData);
+                    if (cspBuffer) {
+                        console.log('[CSP-Cached] Generated ' + cspBuffer.length + ' bytes indexed CSP from daemon data');
                     }
                 }
             } catch (err) {
@@ -9543,6 +10611,10 @@ function serveIndexHtml(req, res) {
     }
 }
 app.get(['/', '/index.html', '/vault', '/vault/', '/vault/index.html'], serveIndexHtml);
+app.get([
+    '/SalviumWallet.js', '/SalviumWallet.wasm', '/SalviumWallet.worker.js',
+    '/vault/SalviumWallet.js', '/vault/SalviumWallet.wasm', '/vault/SalviumWallet.worker.js'
+], rejectNonCanonicalWasmAsset);
 app.use(express.static(path.join(__dirname, 'dist'), distStaticOptions));
 app.use('/vault', express.static(path.join(__dirname, 'dist'), distStaticOptions));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
@@ -9600,12 +10672,10 @@ app.get(['/privacy', '/vault/privacy'], (_req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=300');
     return res.sendFile(privacyPath);
 });
-app.get(['/wallet/SalviumWallet.js', '/wallet/SalviumWallet.wasm', '/wallet/SalviumWallet.worker.js'], (req, res) => {
-    return sendConfiguredWasmAsset(req, res, path.basename(req.path));
-});
-app.get(['/vault/wallet/SalviumWallet.js', '/vault/wallet/SalviumWallet.wasm', '/vault/wallet/SalviumWallet.worker.js'], (req, res) => {
-    return sendConfiguredWasmAsset(req, res, path.basename(req.path));
-});
+app.get([
+    '/wallet/SalviumWallet.js', '/wallet/SalviumWallet.wasm', '/wallet/SalviumWallet.worker.js',
+    '/vault/wallet/SalviumWallet.js', '/vault/wallet/SalviumWallet.wasm', '/vault/wallet/SalviumWallet.worker.js'
+], rejectNonCanonicalWasmAsset);
 // Mirrors sendConfiguredWasmAsset: versioned (?v=) requests (e.g. CSPScanner.js?v=..., csp-scanner.worker.js?v=...) are immutable-cacheable; unversioned stay no-store.
 function walletStaticSetHeaders(res, filePath) {
     if (filePath.endsWith('.wasm')) {
@@ -9613,6 +10683,19 @@ function walletStaticSetHeaders(res, filePath) {
     } else if (filePath.endsWith('.js')) {
         res.setHeader('Content-Type', 'application/javascript');
     } else {
+        return;
+    }
+    // App-spawned worker scripts (wallet-host.worker.js, seed-validator.worker.js, ...) must
+    // NEVER be immutable: the ?v= key is derived from WASM_CACHE_VERSION + the wasm asset hash,
+    // which do not change every release, so an immutable response pins a stale (and, if it was
+    // ever obtained through a COEP:credentialless service worker, tainted) worker in the browser
+    // HTTP cache that survives SW unregistration -- the exact '?v= + immutable = poisonable' trap
+    // the wasm glue/binary were already moved off. Always revalidate; the worker is a few KB.
+    if (filePath.endsWith('.worker.js')) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Surrogate-Control', 'no-store');
         return;
     }
     const v = res.req && res.req.query ? res.req.query.v : undefined;
@@ -10550,7 +11633,7 @@ function readOutputDistributionCount(resultData) {
 function getServerTokenShape(assetType) {
     const value = String(assetType || '').trim();
     if (!value) return 'empty';
-    if (value.toUpperCase() === 'SAL' || value.toUpperCase() === 'SAL1') return 'base';
+    if (value.toUpperCase() === 'SAL') return 'base';
     if (/^sal[A-Z0-9]{4}$/i.test(value)) return 'sal_upper_4';
     if (/^[A-Z0-9]{4}$/i.test(value)) return 'ticker_upper_4';
     return 'other';
@@ -10563,6 +11646,11 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
     const routeStartedAt = Date.now();
     const deadlineAt = routeStartedAt + RANDOM_OUTS_ROUTE_TIMEOUT_MS;
     const { count = 160, amount = 0, asset_type } = req.body;
+    const requestedAmountSlots = Array.isArray(req.body?.amounts) && req.body.amounts.length > 0
+        ? req.body.amounts.length
+        : 1;
+    const ringOutputCount = Math.max(0, Number(count) || 0);
+    const requestedReturnCount = Math.min(2048, ringOutputCount * requestedAmountSlots);
     const effectiveAssetType = asset_type || 'SAL1';
     const tokenShape = getServerTokenShape(effectiveAssetType);
     const emitRandomOutsLog = (stage, extra = {}) => {
@@ -10570,7 +11658,9 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
             requestId,
             stage,
             tokenShape,
-            count: Number(count) || 0,
+            count: ringOutputCount,
+            amountSlots: requestedAmountSlots,
+            requestedReturnCount,
             durationMs: Date.now() - routeStartedAt,
             ...extra
         }));
@@ -10634,14 +11724,14 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
                 });
                 continue;
             }
-            const requestedRandomOutputCount = Math.min(Number(count) + 50, totalOutputs);
-            if (requestedRandomOutputCount < Number(count)) {
+            const requestedRandomOutputCount = Math.min(requestedReturnCount + 50, totalOutputs);
+            if (requestedRandomOutputCount < requestedReturnCount) {
                 insufficientOutputs = true;
                 lastError = new Error('Insufficient outputs available for requested ring size');
                 emitRandomOutsLog('distribution_failed', {
                     reason: 'insufficient_outputs',
                     outputCount: totalOutputs,
-                    requestedOutputs: Number(count) || 0
+                    requestedOutputs: requestedReturnCount
                 });
                 continue;
             }
@@ -10720,7 +11810,7 @@ app.post(['/api/wallet/get_random_outs', '/vault/api/wallet/get_random_outs'], e
                 responseItems: validOuts.length,
                 status: 'success'
             });
-            return res.json({ outs: validOuts.slice(0, count), status: 'OK' });
+            return res.json({ outs: validOuts.slice(0, requestedReturnCount), status: "OK", requested_outputs: requestedReturnCount });
         } catch (error) {
             timedOut = timedOut || /timeout|deadline/i.test(error.message || '');
             emitRandomOutsLog('node_failed', {
@@ -10805,6 +11895,14 @@ app.post(['/api/wallet/get_output_count', '/vault/api/wallet/get_output_count'],
 
 app.post(['/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransaction'], txRateLimit, async (req, res) => {
     const requestId = generateSecureId(16);
+    if (DISABLE_TX_BROADCAST) {
+        console.warn(`[Wallet API] broadcast blocked requestId=${requestId} channel=${SALVIUM_DEPLOYMENT_CHANNEL} txBlobChars=${req.body?.tx_as_hex?.length || 0}`);
+        return res.status(409).json({
+            status: 'Failed',
+            reason: 'tx_broadcast_disabled',
+            error: `Transaction broadcast is disabled for ${SALVIUM_DEPLOYMENT_CHANNEL}`
+        });
+    }
     try {
         const DAEMON_URL = pickDaemonNode();
         const targetUrl = DAEMON_URL.replace(/\/$/, '') + '/sendrawtransaction';
@@ -10863,7 +11961,7 @@ app.post(['/api/wallet/sendrawtransaction', '/vault/api/wallet/sendrawtransactio
     }
 });
 
-app.options(['/api/wallet/get_outs', '/api/wallet/get_outs.bin', '/api/wallet/get_output_distribution', '/api/wallet/get_output_count', '/api/wallet/get_output_distribution.bin', '/api/wallet/sendrawtransaction'], cors(corsOptions));
+app.options(['/api/wallet/get_outs', '/api/wallet/get_outs.bin', '/api/wallet/get_o_indexes.bin', '/api/wallet/get_output_distribution', '/api/wallet/get_output_count', '/api/wallet/get_output_distribution.bin', '/api/wallet/sendrawtransaction'], cors(corsOptions));
 
 
 app.options(['/api/wallet-rpc', '/api/wallet-rpc/json_rpc', '/api/wallet-rpc/getblocks.bin', '/api/wallet-rpc/gethashes.bin'], cors(corsOptions));
@@ -12064,6 +13162,8 @@ setTimeout(prewarmProtocolTokenMintIndex, 1500);
 app.get(['/api/wallet/stake-cache/status', '/vault/api/wallet/stake-cache/status'], async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
 
+    const chainHeight = await getPrepareChainTip();
+    const cappedLastScannedHeight = capHeightToKnownChainTop(stakeCache.lastScannedHeight, chainHeight);
     const hasExtractFn = wasmModule && typeof wasmModule.extract_stake_info === 'function';
     const hasExtractAllFn = wasmModule && typeof wasmModule.extract_all_stakes === 'function';
     const validAddresses = stakeCache.stakes.filter(s =>
@@ -12083,7 +13183,7 @@ app.get(['/api/wallet/stake-cache/status', '/vault/api/wallet/stake-cache/status
         registrationCount: registration.count,
         registrationCsvBytes: registration.csvBuffer.length,
         registrationJsonBytes: registration.compactJsonBuffer.length,
-        lastScannedHeight: stakeCache.lastScannedHeight,
+        lastScannedHeight: cappedLastScannedHeight,
         needsRebuild: invalidAddresses > 0 && hasExtractAllFn,
         message: !hasExtractAllFn
             ? 'WASM does not have extract_all_stakes - cannot scan BIN files for stakes'
@@ -12401,6 +13501,9 @@ let keyImageCache = {
     lastScannedHeight: 0,
     spends: new Map()
 };
+let keyImageCacheSaveInProgress = false;
+let keyImageCacheSaveAgain = false;
+let keyImageCacheSavePromise = null;
 
 // --- Precomputed binary spent-index (zero-CPU serving for /get-spent-index.bin) ---
 // One contiguous Buffer holding all records in the exact wire format the .bin endpoint
@@ -12508,7 +13611,6 @@ async function loadKeyImageCache() {
         console.error('[Key Image Cache] Load Error:', error.message);
     }
 }
-loadKeyImageCache();
 
 async function updateKeyImageCache() {
     if (!wasmModule || typeof wasmModule.extract_key_images !== 'function') {
@@ -12516,19 +13618,39 @@ async function updateKeyImageCache() {
     }
 
     try {
+        const chainHeight = await getCurrentChainHeightForCache().catch(() => 0);
+        const chainTopHeight = getTopBlockHeightFromChainHeight(chainHeight);
+        const tailRefresh = await refreshTailBlockCacheFromDaemon(chainHeight, 'key-image-cache-scan');
+        const rollbackFrom = getTailChunkStartForHeight(chainTopHeight);
+        const shouldRollbackTail = chainTopHeight > 0 &&
+            Number(keyImageCache.lastScannedHeight || 0) >= rollbackFrom &&
+            (Number(keyImageCache.lastScannedHeight || 0) > chainTopHeight || !!tailRefresh.changed);
+        if (shouldRollbackTail) {
+            console.warn(`[Key Image Cache] Rolling back tail from ${rollbackFrom} before rescan (lastScannedHeight=${keyImageCache.lastScannedHeight}, daemonTop=${chainTopHeight}, tailChanged=${!!tailRefresh.changed})`);
+            rollbackKeyImageCacheFromHeight(rollbackFrom);
+            await saveKeyImageCache();
+        }
+
         const files = await fs.readdir(CACHE_DIR).catch(() => []);
         const binFiles = files
             .filter(f => f.match(/blocks-(\d+)-(\d+)\.bin$/))
             .map(f => {
                 const m = f.match(/blocks-(\d+)-(\d+)\.bin$/);
-                return { file: f, start: parseInt(m[1]), end: parseInt(m[2]) };
+                const end = parseInt(m[2]);
+                return {
+                    file: f,
+                    start: parseInt(m[1]),
+                    end,
+                    scanEnd: capHeightToKnownChainTop(end, chainHeight)
+                };
             })
-            .filter(f => f.end > keyImageCache.lastScannedHeight)
+            .filter(f => f.scanEnd > keyImageCache.lastScannedHeight)
             .sort((a, b) => a.start - b.start);
 
         if (binFiles.length === 0) return;
 
         console.log(`[Key Image Cache] Scanning ${binFiles.length} new block files...`);
+        const previousLastScannedHeight = keyImageCache.lastScannedHeight || 0;
         let newSpends = 0;
         const addedEntries = [];
 
@@ -12570,8 +13692,8 @@ async function updateKeyImageCache() {
                     console.error(`[Key Image Cache] Parse error for ${binFile.file}:`, e.message);
                 }
             }
-            if (binFile.end > keyImageCache.lastScannedHeight) {
-                keyImageCache.lastScannedHeight = binFile.end;
+            if (binFile.scanEnd > keyImageCache.lastScannedHeight) {
+                keyImageCache.lastScannedHeight = binFile.scanEnd;
             }
         }
 
@@ -12589,7 +13711,13 @@ async function updateKeyImageCache() {
                 rebuildSpentIndexBin();
             }
             console.log(`[Key Image Cache] Added ${newSpends} new key images. Total: ${keyImageCache.spends.size}`);
-            saveKeyImageCache();
+        }
+        const heightAdvanced = (keyImageCache.lastScannedHeight || 0) > previousLastScannedHeight;
+        if (heightAdvanced || newSpends > 0) {
+            if (heightAdvanced && newSpends === 0) {
+                console.log(`[Key Image Cache] Advanced scanned height to ${keyImageCache.lastScannedHeight} (no new key images)`);
+            }
+            await saveKeyImageCache();
         }
 
     } catch (e) {
@@ -12598,15 +13726,73 @@ async function updateKeyImageCache() {
 }
 
 async function saveKeyImageCache() {
+    if (keyImageCacheSaveInProgress) {
+        keyImageCacheSaveAgain = true;
+        return keyImageCacheSavePromise;
+    }
+    keyImageCacheSaveInProgress = true;
+    keyImageCacheSavePromise = (async () => {
+        do {
+            keyImageCacheSaveAgain = false;
+            await saveKeyImageCacheOnce();
+        } while (keyImageCacheSaveAgain);
+    })();
     try {
-        const data = {
-            version: keyImageCache.version,
-            lastScannedHeight: keyImageCache.lastScannedHeight,
-            spends: Array.from(keyImageCache.spends.entries())
+        return await keyImageCacheSavePromise;
+    } finally {
+        keyImageCacheSaveInProgress = false;
+        keyImageCacheSavePromise = null;
+    }
+}
+
+async function saveKeyImageCacheOnce() {
+    const writeChunk = (stream, chunk) => new Promise((resolve, reject) => {
+        const onError = (err) => {
+            stream.off('drain', onDrain);
+            reject(err);
         };
-        await atomicWriteFile(KEY_IMAGE_CACHE_FILE, JSON.stringify(data));
+        const onDrain = () => {
+            stream.off('error', onError);
+            resolve();
+        };
+        stream.once('error', onError);
+        if (stream.write(chunk)) {
+            stream.off('error', onError);
+            resolve();
+        } else {
+            stream.once('drain', onDrain);
+        }
+    });
+
+    const endStream = (stream) => new Promise((resolve, reject) => {
+        stream.once('error', reject);
+        stream.end(resolve);
+    });
+
+    let tempFilename = null;
+    try {
+        const chainHeight = await getCurrentChainHeightForCache().catch(() => 0);
+        const persistedLastScannedHeight = chainHeight > 0
+            ? capHeightToKnownChainTop(keyImageCache.lastScannedHeight, chainHeight)
+            : Number(keyImageCache.lastScannedHeight || 0);
+        if (chainHeight > 0 && persistedLastScannedHeight !== keyImageCache.lastScannedHeight) {
+            console.warn(`[Key Image Cache] Persisting capped lastScannedHeight ${persistedLastScannedHeight} instead of ${keyImageCache.lastScannedHeight}`);
+            keyImageCache.lastScannedHeight = persistedLastScannedHeight;
+        }
+        tempFilename = `${KEY_IMAGE_CACHE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+        const stream = fsSync.createWriteStream(tempFilename, { encoding: 'utf8' });
+        await writeChunk(stream, `{"version":${JSON.stringify(keyImageCache.version)},"lastScannedHeight":${JSON.stringify(persistedLastScannedHeight)},"spends":[`);
+        let first = true;
+        for (const entry of keyImageCache.spends.entries()) {
+            await writeChunk(stream, (first ? '' : ',') + JSON.stringify(entry));
+            first = false;
+        }
+        await writeChunk(stream, ']}');
+        await endStream(stream);
+        await fs.rename(tempFilename, KEY_IMAGE_CACHE_FILE);
         console.log(`[Key Image Cache] Saved ${keyImageCache.spends.size} entries to disk.`);
     } catch (e) {
+        if (tempFilename) await fs.unlink(tempFilename).catch(() => {});
         console.error('[Key Image Cache] Save error:', e.message);
     }
 }
@@ -12614,6 +13800,7 @@ async function saveKeyImageCache() {
 function rollbackKeyImageCacheFromHeight(fromHeight) {
     const cutoff = Math.max(0, Math.floor(fromHeight));
     let removed = 0;
+    const previousLastScannedHeight = keyImageCache.lastScannedHeight;
     for (const [ki, v] of keyImageCache.spends.entries()) {
         if ((v.h || 0) >= cutoff) { keyImageCache.spends.delete(ki); removed++; }
     }
@@ -12625,10 +13812,11 @@ function rollbackKeyImageCacheFromHeight(fromHeight) {
     if (keyImageCache.lastScannedHeight >= cutoff) {
         keyImageCache.lastScannedHeight = Math.max(0, cutoff - 1);
     }
-    if (removed > 0) {
-        console.log('[REORG] Rolled back ' + removed + ' spent key image(s) at/above height ' + cutoff);
-        saveKeyImageCache();
+    if (removed > 0 || keyImageCache.lastScannedHeight !== previousLastScannedHeight) {
+        console.log('[REORG] Rolled back ' + removed + ' spent key image(s) at/above height ' + cutoff + '; lastScannedHeight=' + keyImageCache.lastScannedHeight);
+        return true;
     }
+    return false;
 }
 
 function getSpentIndexSource() {
@@ -12844,19 +14032,20 @@ app.post(['/api/wallet/get-spent-index.bin', '/vault/api/wallet/get-spent-index.
 });
 
 // Returns lastScannedHeight so the client knows which outputs still need realtime spent checks.
-app.get(['/api/wallet/key-image-cache-status', '/vault/api/wallet/key-image-cache-status'], (req, res) => {
+app.get(['/api/wallet/key-image-cache-status', '/vault/api/wallet/key-image-cache-status'], async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
 
     try {
-        const lastCompleteChunk = keyImageCache.lastScannedHeight;
+        const chainHeight = await getPrepareChainTip();
+        const lastCompleteChunk = capHeightToKnownChainTop(keyImageCache.lastScannedHeight, chainHeight);
         const lastCompleteChunkStart = Math.floor(lastCompleteChunk / 1000) * 1000;
 
         res.json({
             status: 'OK',
-            lastScannedHeight: keyImageCache.lastScannedHeight,
+            lastScannedHeight: lastCompleteChunk,
             lastCompleteChunkEnd: lastCompleteChunk,
             realtimeCheckThreshold: lastCompleteChunk + 1,
-            chainHeight: lastKnownHeight,
+            chainHeight,
             cacheSize: keyImageCache.spends.size
         });
     } catch (e) {
@@ -13274,14 +14463,15 @@ if (true) {
                 } else {
                     void loadCspBundle();
                 }
-
                 await loadStakeCache();
+                await loadKeyImageCache();
 
                 await loadTimestampCache();
 
                 migrateTxiCacheToV4().catch(err => console.warn('[TXI v4] Background migration failed:', err.message));
 
                 updateStakeCache().catch(err => console.warn('[Stake Cache] Initial update failed:', err.message));
+                updateKeyImageCache().catch(err => console.warn('[Key Image Cache] Initial update failed:', err.message));
 
                 startBlockCacheSync();
 
