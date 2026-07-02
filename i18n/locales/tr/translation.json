@@ -615,7 +615,7 @@
       "welcome": {
         "title": "Salvium Vault'unuza hoş geldiniz",
         "subtitle": "Cüzdanınızın nasıl bağlanıp senkronize olacağını ayarlayalım.",
-        "privacyNote": "Anahtarlarınız bu cihazdan asla ayrılmaz. Tarama tamamen yerel olarak yapılır."
+        "privacyNote": "Kurulum ve tarama bu cihazda yerel olarak yapılır."
       },
       "node": {
         "title": "Bir düğüme bağlanın",

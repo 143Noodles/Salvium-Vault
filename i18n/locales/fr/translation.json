@@ -615,7 +615,7 @@
       "welcome": {
         "title": "Bienvenue dans votre Salvium Vault",
         "subtitle": "Configurons la façon dont votre portefeuille se connecte et se synchronise.",
-        "privacyNote": "Vos clés ne quittent jamais cet appareil. L'analyse est entièrement locale."
+        "privacyNote": "La configuration et l'analyse s'effectuent localement sur cet appareil."
       },
       "node": {
         "title": "Se connecter à un nœud",

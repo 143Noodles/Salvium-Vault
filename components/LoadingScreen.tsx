@@ -31,7 +31,7 @@ const getTips = () => {
   const tips = [
     "Salvium Vault does all scanning locally on your device. Expect up to 15 minutes when scanning from 0.",
     "Download an encrypted salvium.vault backup file from the settings page to restore your wallet without having to rescan the entire blockchain.",
-    "Both your private and public keys never leave your device. Salvium Vault is fully non-custodial and private.",
+    "Salvium Vault is non-custodial. You hold your own keys.",
     "The auto-lock feature automatically secures your wallet after inactivity. Customize the timeout in Settings.",
     "Use the address book to save frequently used addresses for quick access. Download the encrypted salvium.vault file from the settings page to back them up.",
   ];

@@ -615,7 +615,7 @@
       "welcome": {
         "title": "Bem-vindo à sua Salvium Vault",
         "subtitle": "Vamos configurar como a sua carteira se conecta e sincroniza.",
-        "privacyNote": "As suas chaves nunca saem deste dispositivo. A verificação é totalmente local."
+        "privacyNote": "A configuração e a verificação são feitas localmente neste dispositivo."
       },
       "node": {
         "title": "Conectar a um nó",

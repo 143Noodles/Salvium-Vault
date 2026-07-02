@@ -615,7 +615,7 @@
       "welcome": {
         "title": "Välkommen till din Salvium Vault",
         "subtitle": "Låt oss ställa in hur din plånbok ansluter och synkroniserar.",
-        "privacyNote": "Dina nycklar lämnar aldrig den här enheten. Skanningen sker helt lokalt."
+        "privacyNote": "Installation och skanning sker lokalt på den här enheten."
       },
       "node": {
         "title": "Anslut till en nod",

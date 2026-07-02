@@ -615,7 +615,7 @@
       "welcome": {
         "title": "Witaj w swoim Salvium Vault",
         "subtitle": "Skonfigurujmy sposób łączenia i synchronizacji Twojego portfela.",
-        "privacyNote": "Twoje klucze nigdy nie opuszczają tego urządzenia. Skanowanie odbywa się w pełni lokalnie."
+        "privacyNote": "Konfiguracja i skanowanie odbywają się lokalnie na tym urządzeniu."
       },
       "node": {
         "title": "Połącz z węzłem",
