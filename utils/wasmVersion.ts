@@ -1,4 +1,4 @@
-export const WASM_CACHE_VERSION = '8.2.18-cf403-failover-20260702T0005Z';
+export const WASM_CACHE_VERSION = '8.2.20-wasmbust-atpolyfill-20260702';
 
 type WasmAssetDescriptor = {
   filename?: string;
