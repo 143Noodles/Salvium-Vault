@@ -8,7 +8,7 @@
 // ADDITIVE ONLY: this file does not modify server.cjs in any way.
 // ---------------------------------------------------------------------------
 
-const { app, BrowserWindow, dialog, Tray, Menu, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, dialog, Tray, Menu, nativeImage, shell, session } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
@@ -441,9 +441,10 @@ async function createMainWindow(port) {
 }
 
 // ---------------------------------------------------------------------------
-// Probe for a local salviumd (most-private node choice on desktop). Returns the
-// first candidate whose get_info responds with a height, else null. Fast-fails on
-// connection-refused, so no local daemon costs ~nothing.
+// Probe for a local salviumd (most-private node choice on desktop). Returns
+// {url, height, targetHeight} for the first candidate whose get_info responds
+// with a height, else null. Fast-fails on connection-refused, so no local
+// daemon costs ~nothing.
 // ---------------------------------------------------------------------------
 function probeNode(baseUrl, timeoutMs) {
   return new Promise((resolve) => {
@@ -457,7 +458,13 @@ function probeNode(baseUrl, timeoutMs) {
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, (res) => {
         let data = '';
         res.on('data', (c) => (data += c));
-        res.on('end', () => { try { done(Number(JSON.parse(data)?.result?.height) > 0 ? baseUrl : null); } catch (_) { done(null); } });
+        res.on('end', () => {
+          try {
+            const r = JSON.parse(data)?.result;
+            const height = Number(r?.height) || 0;
+            done(height > 0 ? { url: baseUrl, height, targetHeight: Number(r?.target_height) || 0 } : null);
+          } catch (_) { done(null); }
+        });
       });
       req.on('error', () => done(null));
       req.on('timeout', () => { req.destroy(); done(null); });
@@ -466,12 +473,51 @@ function probeNode(baseUrl, timeoutMs) {
   });
 }
 
+// How far a local daemon may trail the network tip and still be adopted.
+// Matches the sidecar's runtime staleness window (NODE_STALE_BLOCKS).
+const LOCAL_NODE_MAX_LAG_BLOCKS = 4;
+const SEED_NODES_FOR_TIP = [
+  'http://seed01.salvium.io:19081',
+  'http://seed02.salvium.io:19081',
+  'http://seed03.salvium.io:19081',
+];
+
+// A local daemon is only auto-adopted when it is CONFIRMED functional: fully
+// synced by its own account (target_height) AND at the network tip per the seed
+// nodes. If no seed answers, its own sync state alone decides (best effort).
 async function detectLocalNode() {
-  for (const url of LOCAL_NODE_CANDIDATES) {
-    const ok = await probeNode(url, 1500);
-    if (ok) return ok;
+  // Locals first (fast-fail keeps no-daemon boots at ~no cost); seeds are only
+  // probed once a local daemon actually answered and needs its height verified.
+  const locals = (await Promise.all(LOCAL_NODE_CANDIDATES.map((url) => probeNode(url, 1500)))).filter(Boolean);
+  if (locals.length === 0) return null;
+  const seeds = (await Promise.all(SEED_NODES_FOR_TIP.map((url) => probeNode(url, 2500)))).filter(Boolean);
+  const seedTip = Math.max(0, ...seeds.map((p) => p.height));
+  for (const local of locals) {
+    if (local.targetHeight > local.height + LOCAL_NODE_MAX_LAG_BLOCKS) {
+      log('Local daemon at', local.url, 'is still syncing (' + local.height + '/' + local.targetHeight + ') — not adopting');
+      continue;
+    }
+    if (seedTip > 0 && local.height < seedTip - LOCAL_NODE_MAX_LAG_BLOCKS) {
+      log('Local daemon at', local.url, 'is behind the network tip (' + local.height + ' vs ' + seedTip + ') — not adopting');
+      continue;
+    }
+    if (seedTip === 0) log('No seed node answered; adopting local daemon on its own sync state');
+    return local.url;
   }
   return null;
+}
+
+// The user's node choice lives in the salvium_node cookie on the sidecar
+// origin (see utils/vaultNode.ts). Read it from the persisted Electron session
+// so boot can respect an explicit (non-Automatic) selection.
+async function getSelectedNodeChoice(port) {
+  try {
+    const cookies = await session.defaultSession.cookies.get({
+      url: 'http://127.0.0.1:' + port, name: 'salvium_node',
+    });
+    const raw = cookies && cookies[0] && cookies[0].value ? decodeURIComponent(cookies[0].value) : '';
+    return raw || 'auto';
+  } catch (_) { return 'auto'; }
 }
 
 async function boot() {
@@ -480,8 +526,15 @@ async function boot() {
   log('Sidecar port:', port);
   log('Data dir:', DATA_DIR);
   if (!RPC_URL_FROM_ENV) {
-    const local = await detectLocalNode();
-    if (local) { resolvedRpcUrl = local; log('Detected local daemon; using it as the default node:', local); }
+    // Auto-adopt a local daemon ONLY while the node choice is Automatic — an
+    // explicit preset/custom selection must never be silently overridden.
+    const choice = await getSelectedNodeChoice(port);
+    if (choice === 'auto') {
+      const local = await detectLocalNode();
+      if (local) { resolvedRpcUrl = local; log('Detected synced local daemon; using it as the default node:', local); }
+    } else {
+      log('Node choice is "' + choice + '" (not Automatic) — skipping local daemon auto-detect');
+    }
   }
   log('RPC URL:', resolvedRpcUrl);
 
