@@ -51,6 +51,10 @@ for (const item of INCLUDE) {
 }
 fs.writeFileSync(path.join(STAGE, 'content-version.json'),
   JSON.stringify({ version, channel: 'content', builtAt: new Date().toISOString() }, null, 2));
+// Stamp the repo floor copy too, so installers built from this tree ship an
+// accurate content version (a floor that understates its version re-downloads
+// the same content as an update on first launch).
+fs.copyFileSync(path.join(STAGE, 'content-version.json'), path.join(REPO, 'content-version.json'));
 
 const archiveName = 'content-' + version + '.tar.gz';
 const archivePath = path.join(OUT, archiveName);
