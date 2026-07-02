@@ -1,0 +1,12 @@
+#!/bin/sh
+# Hard guardrail: never allow co-author attribution (Claude or otherwise) in a
+# commit message on this repo. The user has repeatedly, explicitly forbidden it.
+if grep -iqE "co-?author" "$1"; then
+  echo "" >&2
+  echo "COMMIT REJECTED by .githooks/commit-msg" >&2
+  echo "  The commit message contains \"co-author\". This repo forbids" >&2
+  echo "  Co-Authored-By / co-author trailers. Remove it and commit again." >&2
+  echo "" >&2
+  exit 1
+fi
+exit 0
