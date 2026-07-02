@@ -38,6 +38,11 @@ const { resolveActiveContentDir, checkForContentUpdate, applyContentUpdate, setS
 // ---------------------------------------------------------------------------
 const SALVIUM_NETWORK = 'mainnet';
 const RPC_URL = process.env.SALVIUM_RPC_URL || 'http://seed01.salvium.io:19081';
+// When the user hasn't pinned a node via env, the shell auto-detects a local daemon
+// at boot and prefers it (the most private option), falling back to RPC_URL.
+const RPC_URL_FROM_ENV = !!process.env.SALVIUM_RPC_URL;
+const LOCAL_NODE_CANDIDATES = ['http://127.0.0.1:19081', 'http://127.0.0.1:19091'];
+let resolvedRpcUrl = RPC_URL;
 const HEALTH_TIMEOUT_MS = 90_000;
 // Fast-Sync source: the CSP scan-index bundle CDN.
 const CDN_BUNDLE_URL = process.env.SALVIUM_CSP_CDN_URL || 'https://cdn.salvium.tools/api/csp-bundle';
@@ -86,6 +91,20 @@ function manualUpdateCheck() {
     .catch((e) => log('manual update check failed:', e && e.message));
 }
 
+// Version legibility: the shell (installer) version and the active OTA content
+// version are independent axes; show both in one place so the version story is clear.
+function showAbout() {
+  let shellVer = app.getVersion();
+  let contentVer = 'unknown';
+  try { contentVer = resolveActiveContentDir(REPO_ROOT).version; } catch (_) {}
+  const win = BrowserWindow.getAllWindows()[0] || null;
+  const o = { type: 'info', buttons: ['OK'], title: 'About Salvium Vault',
+    message: 'Salvium Vault',
+    detail: 'App (installer): ' + shellVer + '\nWallet (content): ' + contentVer
+      + '\nNode: ' + resolvedRpcUrl + '\nElectron: ' + process.versions.electron };
+  (win ? dialog.showMessageBox(win, o) : dialog.showMessageBox(o)).catch(() => {});
+}
+
 // --- Application menu (replaces Electron's generic default) -----------------
 function buildAppMenu() {
   const isMac = process.platform === 'darwin';
@@ -117,6 +136,8 @@ function buildAppMenu() {
     {
       role: 'help',
       submenu: [
+        { label: 'About Salvium Vault', click: () => showAbout() },
+        { type: 'separator' },
         { label: 'Salvium Website', click: () => shell.openExternal('https://salvium.io') },
         { label: 'Block Explorer', click: () => shell.openExternal('https://explorer.salvium.tools') },
       ],
@@ -247,7 +268,7 @@ function startSidecar(port, contentDir) {
   const serverEntry = path.join(contentDir, 'server.cjs');
   const env = Object.assign({}, process.env, {
     PORT: String(port),
-    SALVIUM_RPC_URL: RPC_URL,
+    SALVIUM_RPC_URL: resolvedRpcUrl,
     SALVIUM_DATA_DIR: DATA_DIR,
     SALVIUM_NETWORK: SALVIUM_NETWORK,
     ENABLE_CSP_CACHE: '1',
@@ -390,12 +411,50 @@ async function createMainWindow(port) {
   buildAppMenu();
 }
 
+// ---------------------------------------------------------------------------
+// Probe for a local salviumd (most-private node choice on desktop). Returns the
+// first candidate whose get_info responds with a height, else null. Fast-fails on
+// connection-refused, so no local daemon costs ~nothing.
+// ---------------------------------------------------------------------------
+function probeNode(baseUrl, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    try {
+      const u = new URL('/json_rpc', baseUrl);
+      const client = u.protocol === 'https:' ? https : http;
+      const body = JSON.stringify({ jsonrpc: '2.0', id: '0', method: 'get_info' });
+      const req = client.request(u, { method: 'POST', timeout: timeoutMs,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => { try { done(Number(JSON.parse(data)?.result?.height) > 0 ? baseUrl : null); } catch (_) { done(null); } });
+      });
+      req.on('error', () => done(null));
+      req.on('timeout', () => { req.destroy(); done(null); });
+      req.end(body);
+    } catch (_) { done(null); }
+  });
+}
+
+async function detectLocalNode() {
+  for (const url of LOCAL_NODE_CANDIDATES) {
+    const ok = await probeNode(url, 1500);
+    if (ok) return ok;
+  }
+  return null;
+}
+
 async function boot() {
   const bootStart = Date.now();
   const port = await resolveStablePort();
   log('Sidecar port:', port);
   log('Data dir:', DATA_DIR);
-  log('RPC URL:', RPC_URL);
+  if (!RPC_URL_FROM_ENV) {
+    const local = await detectLocalNode();
+    if (local) { resolvedRpcUrl = local; log('Detected local daemon; using it as the default node:', local); }
+  }
+  log('RPC URL:', resolvedRpcUrl);
 
   const active = resolveActiveContentDir(REPO_ROOT);
   activeContentDir = active.dir;
