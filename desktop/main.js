@@ -604,9 +604,19 @@ if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
   app.on('second-instance', () => showMainWindow());
-  app.whenReady().then(boot).catch((err) => {
+  app.whenReady().then(boot).catch(async (err) => {
     console.error('[desktop] boot failed:', err);
     killSidecar();
+    // Don't vanish silently on a boot failure — tell the user what happened.
+    try {
+      await dialog.showMessageBox({
+        type: 'error', buttons: ['Quit'], defaultId: 0,
+        title: 'Salvium Vault could not start',
+        message: 'Salvium Vault could not start its wallet backend.',
+        detail: 'Please try opening it again. If this keeps happening, restart your '
+          + 'computer or reinstall.\n\n(' + (err && err.message ? err.message : String(err)) + ')',
+      });
+    } catch (_) {}
     app.exit(1);
   });
 }
