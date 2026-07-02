@@ -27,7 +27,7 @@ const REPO_ROOT = fs.existsSync(path.join(DEV_REPO_ROOT, 'server.cjs'))
   ? DEV_REPO_ROOT
   : PACKAGED_REPO_ROOT;
 const SERVER_ENTRY = path.join(REPO_ROOT, 'server.cjs');
-const { resolveActiveContentDir, checkForContentUpdate, applyContentUpdate, setSkippedVersion } = require('./content-update');
+const { resolveActiveContentDir, checkForContentUpdate, applyContentUpdate, setSkippedVersion, pruneOldContent } = require('./content-update');
 
 // ---------------------------------------------------------------------------
 // Default sidecar configuration. The first-run wizard (in the SPA) lets the
@@ -47,6 +47,12 @@ const DATA_DIR = path.join(userDataDir, 'salvium-data');
 let sidecar = null;
 let mainWindow = null;
 let currentPort = 0;
+let activeContentDir = null;      // resolved content dir the sidecar runs from (for restart)
+let sidecarRestarting = false;    // guards against overlapping supervised restarts
+let sidecarRestartTimes = [];     // timestamps of recent restarts (windowed crash-loop cap)
+let sidecarGaveUp = false;        // true once the crash-loop cap is hit (stop trying)
+const SIDECAR_RESTART_WINDOW_MS = 60000;
+const SIDECAR_MAX_RESTARTS_PER_WINDOW = 3;
 let tray = null;
 let isQuitting = false;
 let lastPromptedVersion = null; // avoid re-prompting the same version every hourly check
@@ -269,8 +275,56 @@ function startSidecar(port, contentDir) {
   });
   child.stdout.on('data', (d) => process.stdout.write('[sidecar] ' + d));
   child.stderr.on('data', (d) => process.stderr.write('[sidecar:err] ' + d));
-  child.on('exit', (code, sig) => log('Sidecar exited code=' + code + ' sig=' + sig));
+  child.on('exit', (code, sig) => {
+    log('Sidecar exited code=' + code + ' sig=' + sig);
+    // Supervise: an unexpected exit (not a quit, not a restart we initiated) leaves the
+    // window pointed at a dead backend. Auto-restart on the SAME port so the origin —
+    // and therefore all wallet storage — is preserved, then reload the window.
+    if (isQuitting || sidecarRestarting || child !== sidecar) return;
+    restartSidecar().catch((e) => log('sidecar restart error:', e && e.message));
+  });
   return child;
+}
+
+// ---------------------------------------------------------------------------
+// Supervised restart of a crashed sidecar. Same port (origin/storage stability),
+// bounded by a crash-loop cap; on repeated failure we surface a dialog instead of
+// spinning. Reloads the window once the fresh sidecar is healthy.
+// ---------------------------------------------------------------------------
+async function restartSidecar() {
+  if (isQuitting || sidecarRestarting || sidecarGaveUp) return;
+  sidecarRestarting = true;
+  try {
+    const now = Date.now();
+    sidecarRestartTimes = sidecarRestartTimes.filter((t) => now - t < SIDECAR_RESTART_WINDOW_MS);
+    if (sidecarRestartTimes.length >= SIDECAR_MAX_RESTARTS_PER_WINDOW) {
+      sidecarGaveUp = true;
+      log('sidecar crash-loop cap reached; not restarting again');
+      const win = BrowserWindow.getAllWindows()[0] || null;
+      const o = { type: 'error', buttons: ['Quit'], defaultId: 0,
+        title: 'Salvium Vault stopped',
+        message: 'The wallet backend stopped unexpectedly and could not recover.',
+        detail: 'Please reopen Salvium Vault. Your wallet data is safe on disk.' };
+      try { await (win ? dialog.showMessageBox(win, o) : dialog.showMessageBox(o)); } catch (_) {}
+      isQuitting = true; app.quit();
+      return;
+    }
+    sidecarRestartTimes.push(now);
+    if (!currentPort || !activeContentDir) { log('cannot restart sidecar: port/content not resolved yet'); return; }
+    await new Promise((r) => setTimeout(r, 1000));
+    if (isQuitting) return;
+    log('restarting sidecar on port', currentPort, '(attempt', sidecarRestartTimes.length + ')');
+    sidecar = startSidecar(currentPort, activeContentDir);
+    try {
+      const ms = await waitForHealth(currentPort, HEALTH_TIMEOUT_MS);
+      log('sidecar healthy again after', ms, 'ms; reloading window');
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+    } catch (e) {
+      log('sidecar did not become healthy after restart:', e && e.message);
+    }
+  } finally {
+    sidecarRestarting = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +398,7 @@ async function boot() {
   log('RPC URL:', RPC_URL);
 
   const active = resolveActiveContentDir(REPO_ROOT);
+  activeContentDir = active.dir;
   log('Active content: v' + active.version + ' @ ' + active.dir);
   sidecar = startSidecar(port, active.dir);
   const healthMs = await waitForHealth(port, HEALTH_TIMEOUT_MS);
@@ -351,6 +406,10 @@ async function boot() {
 
   await createMainWindow(port);
   log('Total boot to window:', Date.now() - bootStart, 'ms');
+
+  // Reclaim disk from superseded OTA content (keeps running + any pending version).
+  try { const n = pruneOldContent(active.version); if (n) log('pruned', n, 'old content version(s)'); }
+  catch (e) { log('content prune skipped:', e && e.message); }
 
   // OTA content update: detect at launch and then hourly, letting the USER
   // decide whether to download each one. Nothing downloads until they opt in,
@@ -408,6 +467,7 @@ async function promptUpdateDecision(manifest, version) {
 // (the app closes and never reopens — observed). Relaunch via the real AppImage
 // path in $APPIMAGE instead. macOS/Windows/dev relaunch normally.
 function relaunchApp() {
+  isQuitting = true; // an intentional relaunch — do not supervise the sidecar's exit
   const appImagePath = process.env.APPIMAGE;
   try {
     if (appImagePath) {
