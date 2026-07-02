@@ -17,6 +17,7 @@ import { useWallet, ChartDataPoint } from '../services/WalletContext';
 import { useCurrency } from '../services/CurrencyContext';
 
 type TimeFrame = '1D' | '1W' | '1M' | '1Y' | 'ALL';
+type ChartPoint = ChartDataPoint & { time: number };
 
 const getCachedHistoryValueDivisor = (latestValue: number, currentValue: number): number => {
   if (!Number.isFinite(latestValue) || !Number.isFinite(currentValue) || currentValue <= 0) {
@@ -72,10 +73,14 @@ const BalanceChart: React.FC = () => {
     // Sanitize: a corrupt upstream state once produced an inverted axis in the
     // field — non-finite/negative values must never reach the renderer.
     const sane = (v: number) => (Number.isFinite(v) && v >= 0 ? v : 0);
-    if (divisor === 1) return data.map(point => ({ ...point, value: sane(point.value) }));
+    const withTime = (point: ChartDataPoint): ChartPoint => ({
+      ...point,
+      time: new Date(point.date).getTime(),
+    });
+    if (divisor === 1) return data.map(point => ({ ...withTime(point), value: sane(point.value) }));
 
     return data.map(point => ({
-      ...point,
+      ...withTime(point),
       value: sane(point.value / divisor),
     }));
   }, [wallet.walletHistory, wallet.stats.balanceUsd]);
@@ -108,7 +113,7 @@ const BalanceChart: React.FC = () => {
         break;
     }
 
-    const inRange = data.filter(point => new Date(point.date).getTime() >= cutoffTime);
+    const inRange = data.filter(point => Number.isFinite(point.time) && point.time >= cutoffTime);
 
     // Downsample for display: walletHistory is one point per hour since the first tx, so "ALL" on
     // an old wallet is many thousands of points -- every redraw reconciled an SVG path of that
@@ -138,8 +143,8 @@ const BalanceChart: React.FC = () => {
     return sampled;
   }, [chartData, timeFrame]);
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
+  const formatDate = (dateValue: string | number) => {
+    const date = new Date(dateValue);
     const locale = i18n.language;
     switch (timeFrame) {
       case '1D':
@@ -156,8 +161,8 @@ const BalanceChart: React.FC = () => {
     }
   };
 
-  const formatTooltipDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleString('default', {
+  const formatTooltipDate = (dateValue: string | number) => {
+    return new Date(dateValue).toLocaleString('default', {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
@@ -197,39 +202,11 @@ const BalanceChart: React.FC = () => {
   }, [filteredData]);
 
   const xAxisTicks = useMemo(() => {
-    if (filteredData.length < 2) return filteredData.map(d => d.date);
-    // Even TIME spacing: divide the visible range into equal quarters and pick the
-    // data point nearest each boundary (category axis requires existing points).
-    const t0 = new Date(filteredData[0].date).getTime();
-    const t1 = new Date(filteredData[filteredData.length - 1].date).getTime();
-    const targets = [0, 0.25, 0.5, 0.75, 1].map(f => t0 + (t1 - t0) * f);
-    const nearestIdx = (target: number) => {
-      let best = 0, bestD = Infinity;
-      for (let i = 0; i < filteredData.length; i++) {
-        const d = Math.abs(new Date(filteredData[i].date).getTime() - target);
-        if (d < bestD) { bestD = d; best = i; }
-      }
-      return best;
-    };
-    const uniqueIndices = Array.from(new Set(targets.map(nearestIdx))).sort((a, b) => a - b);
-    // Bucket-sampled data can place chosen ticks on near-identical timestamps,
-    // rendering colliding labels ("11 ThuThu"). Enforce a minimum time separation
-    // (an eighth of the visible range) between ticks; the last tick always wins.
-    const times = uniqueIndices.map(idx => new Date(filteredData[idx].date).getTime());
-    const range = times[times.length - 1] - times[0];
-    const minGap = range / 8;
-    const picked: number[] = [];
-    for (let i = 0; i < uniqueIndices.length; i++) {
-      const isLast = i === uniqueIndices.length - 1;
-      if (picked.length === 0) { picked.push(uniqueIndices[i]); continue; }
-      const prevT = new Date(filteredData[picked[picked.length - 1]].date).getTime();
-      if (times[i] - prevT >= minGap) {
-        picked.push(uniqueIndices[i]);
-      } else if (isLast) {
-        picked[picked.length - 1] = uniqueIndices[i];
-      }
-    }
-    return picked.map(idx => filteredData[idx].date);
+    if (filteredData.length < 2) return filteredData.map(d => d.time);
+    const t0 = filteredData[0].time;
+    const t1 = filteredData[filteredData.length - 1].time;
+    const tickFractions = isMobileOrTablet ? [0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1];
+    return tickFractions.map(f => t0 + (t1 - t0) * f);
   }, [filteredData]);
 
   // Stable identities for everything passed into recharts: with fresh closures each render,
@@ -242,22 +219,18 @@ const BalanceChart: React.FC = () => {
     if (index === 0) textAnchor = "start";
     if (index === visibleTicksCount - 1) textAnchor = "end";
 
-    const labelText = index === visibleTicksCount - 1
-      ? formatDate(payload.value) + "   "
-      : formatDate(payload.value);
-
     return (
       <g transform={`translate(${x},${y})`}>
         <text
           x={0}
           y={0}
-          dy={15}
+          dy={isMobileOrTablet ? 12 : 15}
           textAnchor={textAnchor}
           fill="#64748b"
-          fontSize={10}
+          fontSize={isMobileOrTablet ? 9 : 10}
           fontFamily="JetBrains Mono"
         >
-          {labelText}
+          {formatDate(payload.value)}
         </text>
       </g>
     );
@@ -291,7 +264,7 @@ const BalanceChart: React.FC = () => {
           }}
         >
           <div style={{ color: '#94a3b8', fontSize: '12px', marginBottom: '4px' }}>
-            {formatTooltipDate(String(label ?? ''))}
+            {formatTooltipDate(label ?? '')}
           </div>
           <div style={{ color: '#8b5cf6', fontSize: '13px', whiteSpace: 'nowrap' }}>
             {t('chart.walletValue')}: {Number.isFinite(value) ? formatFiat(value) : '-'}
@@ -308,7 +281,7 @@ const BalanceChart: React.FC = () => {
   );
 
   const chartMargin = useMemo(
-    () => ({ top: 10, right: isMobileOrTablet ? 0 : 5, left: isMobileOrTablet ? 2 : 4, bottom: isMobileOrTablet ? 0 : 20 }),
+    () => ({ top: 10, right: isMobileOrTablet ? 6 : 5, left: isMobileOrTablet ? 2 : 4, bottom: isMobileOrTablet ? 6 : 20 }),
     []
   );
 
@@ -332,7 +305,7 @@ const BalanceChart: React.FC = () => {
         </div>
       </div>
 
-      <div className={`${isMobileOrTablet ? 'min-h-[4.5rem]' : 'min-h-[200px]'} flex-1 w-full relative`} ref={containerRef}>
+      <div className={`${isMobileOrTablet ? 'min-h-[4.5rem]' : 'min-h-0'} flex-1 w-full relative`} ref={containerRef}>
         {/* Tapping the chart on mobile focused the recharts wrapper/svg (its
             accessibility layer is intentionally KEPT so keyboard users can tab in
             and arrow through values) and drew the browser focus ring — a second,
@@ -351,7 +324,7 @@ const BalanceChart: React.FC = () => {
               <p className={isMobileOrTablet ? 'text-xs leading-tight' : ''}>{t('common.loading', 'Loading...')}</p>
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height="100%" minHeight={isMobileOrTablet ? 72 : 200}>
+            <ResponsiveContainer width="100%" height="100%" minHeight={isMobileOrTablet ? 72 : undefined}>
               <AreaChart
                 data={filteredData}
                 margin={chartMargin}
@@ -372,12 +345,16 @@ const BalanceChart: React.FC = () => {
                   stroke="rgba(255, 255, 255, 0.03)"
                 />
                 <XAxis
-                  dataKey="date"
+                  dataKey="time"
+                  type="number"
+                  scale="time"
+                  domain={['dataMin', 'dataMax']}
                   axisLine={false}
                   tickLine={false}
                   tick={renderCustomAxisTick}
                   ticks={xAxisTicks}
                   interval={0}
+                  height={isMobileOrTablet ? 24 : 30}
                 />
                 <YAxis
                   axisLine={false}

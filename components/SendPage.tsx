@@ -40,14 +40,15 @@ function normalizeWalletAddress(address?: string): string {
 }
 
 function getSendAssetShape(assetType?: string): string {
-  const trimmed = String(assetType || '').trim();
-  if (/^[A-Z0-9]{4}$/.test(trimmed)) return 'ticker_upper_4';
-  if (/^[a-z0-9]{4}$/.test(trimmed)) return 'ticker_lower_4';
-  if (/^sal[A-Z0-9]{4}$/.test(trimmed)) return 'sal_upper_4';
-  if (/^sal[a-z0-9]{4}$/.test(trimmed)) return 'sal_lower_4';
-  if (trimmed.toUpperCase() === 'SAL' || trimmed.toUpperCase() === 'SAL1') return 'base';
-  if (!trimmed) return 'empty';
-  return 'other';
+  const trimmed = String(assetType || "").trim();
+  if (!trimmed) return "empty";
+  const upper = trimmed.toUpperCase();
+  if (upper === "SAL" || upper === "SAL1") return "base";
+  if (/^sal[A-Z0-9]{4}$/.test(trimmed)) return "sal_upper_4";
+  if (/^sal[a-z0-9]{4}$/.test(trimmed)) return "sal_lower_4";
+  if (/^[A-Z0-9]{4}$/.test(trimmed)) return "ticker_upper_4";
+  if (/^[a-z0-9]{4}$/.test(trimmed)) return "ticker_lower_4";
+  return "other";
 }
 
 function isKnownWalletAddress(address: string, ownAddresses: Array<string | undefined>): boolean {
@@ -215,13 +216,18 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
     };
   }, [enableAssetSend, initialParams]);
 
-  const baseUnlockedBalance = wallet.balance.unlockedBalanceSAL || wallet.balance.unlockedBalance / 1e8;
   const isSalPayPayment = !!salPayRequest;
   const showAssetSelector = enableAssetSend || isSalPayPayment;
-  const selectedAssetBalance = showAssetSelector ? walletService.getAssetBalance(selectedAssetType) : null;
-  const availableUnlocked = showAssetSelector && selectedAssetType !== 'SAL1' && selectedAssetType !== 'SAL'
-    ? (selectedAssetBalance?.unlockedBalanceSAL || 0)
-    : baseUnlockedBalance;
+  const normalizedSelectedAssetType = selectedAssetType.trim().toUpperCase();
+  const sal1Balance = walletService.getExactAssetBalance('SAL1');
+  const selectedAssetBalance = showAssetSelector
+    ? (
+        normalizedSelectedAssetType === 'SAL1' || normalizedSelectedAssetType === 'SAL'
+          ? walletService.getExactAssetBalance(normalizedSelectedAssetType)
+          : walletService.getAssetBalance(selectedAssetType)
+      )
+    : sal1Balance;
+  const availableUnlocked = selectedAssetBalance?.unlockedBalanceSAL || 0;
   const displayAssetLabel = showAssetSelector ? selectedAssetType : t('common.sal');
   const sentAmountDisplay = validationState?.type === 'warning' && actualSendAmount !== null
     ? actualSendAmount.toString()

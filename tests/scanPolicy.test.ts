@@ -10,6 +10,7 @@ import {
   resolveIncrementalScanPlan,
   resolveScanResumeHeight,
   resolveUnlockScheduledScanFromHeight,
+  shouldForceFullScanForMissingWalletCache,
   shouldRunCompletedChunkGapCheck,
   shouldSchedulePostScanFollowup,
   shouldUseNarrowPhase3IncrementalWindow,
@@ -17,6 +18,36 @@ import {
 import { getSyncWatchdogDecision } from '../utils/syncWatchdog';
 
 describe('scanPolicy', () => {
+  describe('shouldForceFullScanForMissingWalletCache', () => {
+    it('forces a clean scan when the cached outputs are gone but a stored wallet height survives', () => {
+      expect(shouldForceFullScanForMissingWalletCache({
+        cacheMissing: true,
+        hadCachedWalletData: false,
+        walletHeight: 264000,
+      })).toBe(true);
+    });
+
+    it('keeps legacy cached-data loss and safe empty-wallet cases distinct', () => {
+      expect(shouldForceFullScanForMissingWalletCache({
+        cacheMissing: true,
+        hadCachedWalletData: true,
+        walletHeight: 0,
+      })).toBe(true);
+
+      expect(shouldForceFullScanForMissingWalletCache({
+        cacheMissing: true,
+        hadCachedWalletData: false,
+        walletHeight: 0,
+      })).toBe(false);
+
+      expect(shouldForceFullScanForMissingWalletCache({
+        cacheMissing: false,
+        hadCachedWalletData: true,
+        walletHeight: 264000,
+      })).toBe(false);
+    });
+  });
+
   describe('computeIncrementalScanStartHeight', () => {
     it('uses a small fixed overlap for routine incremental scans', () => {
       expect(computeIncrementalScanStartHeight(456372, 1000)).toBe(454000);

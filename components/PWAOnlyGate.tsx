@@ -171,9 +171,11 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         const timeoutId = setTimeout(() => {
             if (!deferredPromptRef.current && !globalDeferredPrompt) {
                 setPromptTimedOut(true);
+                // The browser simply not offering an install prompt is expected on
+                // most visits (already installed / unsupported UA) — info, not warn.
                 reportTaskEvent('timeout', 'pwa.install_prompt', 'unavailable', 'PWAOnlyGate', {
                     reason: 'prompt_unavailable',
-                });
+                }, 'info');
             }
         }, 5000);
 

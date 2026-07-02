@@ -69,13 +69,15 @@ function reportAssetDiagnostic(
 }
 
 function getTokenShape(assetType: string): string {
-  const trimmed = String(assetType || '').trim();
-  if (/^[A-Z0-9]{4}$/.test(trimmed)) return 'ticker_upper_4';
-  if (/^[a-z0-9]{4}$/.test(trimmed)) return 'ticker_lower_4';
-  if (/^sal[A-Z0-9]{4}$/.test(trimmed)) return 'sal_upper_4';
-  if (/^sal[a-z0-9]{4}$/.test(trimmed)) return 'sal_lower_4';
-  if (trimmed.length === 0) return 'empty';
-  return 'other';
+  const trimmed = String(assetType || "").trim();
+  if (trimmed.length === 0) return "empty";
+  const upper = trimmed.toUpperCase();
+  if (upper === "SAL" || upper === "SAL1") return "base";
+  if (/^sal[A-Z0-9]{4}$/.test(trimmed)) return "sal_upper_4";
+  if (/^sal[a-z0-9]{4}$/.test(trimmed)) return "sal_lower_4";
+  if (/^[A-Z0-9]{4}$/.test(trimmed)) return "ticker_upper_4";
+  if (/^[a-z0-9]{4}$/.test(trimmed)) return "ticker_lower_4";
+  return "other";
 }
 
 function getTokenSizeBucket(tokenSize: number): string {
@@ -386,7 +388,9 @@ export interface WalletStakeLifecycle {
 const BASE_ASSET_TYPES = new Set(['SAL', 'SAL1']);
 const MINER_TX_TYPE = 1;
 const PROTOCOL_TX_TYPE = 2;
+const STAKE_TX_TYPE = 6;
 const RETURN_TX_TYPE = 7;
+const RETURN_OR_STAKE_RELATED_TX_TYPES = new Set([PROTOCOL_TX_TYPE, STAKE_TX_TYPE, RETURN_TX_TYPE]);
 const SPEND_LIKE_OUTGOING_TX_TYPES = new Set([0, 3, 4, 5, 6, 8, 9, 10]);
 
 type RawWalletTransfer = Record<string, any>;
@@ -1109,6 +1113,10 @@ interface WasmModule {
   has_pending_get_outs_request?(): boolean;
   get_pending_get_outs_request?(): string;
   clear_pending_get_outs_request?(): void;
+  has_pending_get_o_indexes_request?(): boolean;
+  get_pending_get_o_indexes_request?(): string;
+  clear_pending_get_o_indexes_request?(): void;
+  inject_get_o_indexes_response_base64?(data: string): void;
 
   inject_fee_estimate?(fee: number, fees_json: string, quantization_mask: number): void;
   inject_hardfork_info?(version: number, earliest_height: number): void;
@@ -1126,6 +1134,7 @@ declare global {
     __salviumExpectedWasmAssetVersion?: string;
     __salviumWasmAssetVersion?: string;
     __salviumWasmRuntimeVersion?: string;
+    __salviumRuntimeStale?: boolean;
   }
 }
 
@@ -1171,6 +1180,79 @@ function atomicStringToDisplayAmountOrZero(amountAtomic: string): number {
   return atomicStringToDisplayAmount(amountAtomic);
 }
 
+type DiagnosticTelemetryContext = Record<string, string | number | boolean | null | undefined>;
+
+function atomicValueToBigInt(value: unknown): bigint | null {
+  if (typeof value === 'bigint') {
+    return value >= 0n ? value : null;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+      return null;
+    }
+    return BigInt(value);
+  }
+  const text = String(value ?? '').trim();
+  if (!/^[0-9]+$/.test(text)) {
+    return null;
+  }
+  return BigInt(text);
+}
+
+function atomicValueToDisplayAmount(value: unknown): number | null {
+  const atomic = atomicValueToBigInt(value);
+  if (atomic === null) {
+    return null;
+  }
+  return Number(atomic / ATOMIC_UNITS_BIGINT) +
+    Number(atomic % ATOMIC_UNITS_BIGINT) / ATOMIC_UNITS;
+}
+
+function finiteDiagnosticNumber(value: unknown): number | null {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function diagnosticRecord(value: unknown): Record<string, any> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, any>
+    : null;
+}
+
+function diagnosticArray(value: unknown): Record<string, any>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, any> => !!diagnosticRecord(item))
+    : [];
+}
+
+function sumAtomicDiagnosticField(items: Record<string, any>[], field: string): number | null {
+  let total = 0n;
+  let found = false;
+  for (const item of items) {
+    const amount = atomicValueToBigInt(item[field]);
+    if (amount === null) {
+      continue;
+    }
+    total += amount;
+    found = true;
+  }
+  return found ? atomicValueToDisplayAmount(total) : null;
+}
+
+function maxAtomicDiagnosticField(items: Record<string, any>[], field: string): number | null {
+  let maxAmount: bigint | null = null;
+  for (const item of items) {
+    const amount = atomicValueToBigInt(item[field]);
+    if (amount === null) {
+      continue;
+    }
+    if (maxAmount === null || amount > maxAmount) {
+      maxAmount = amount;
+    }
+  }
+  return maxAmount === null ? null : atomicValueToDisplayAmount(maxAmount);
+}
+
 function getCreatedTransactionAmountAtomic(tx: Record<string, unknown>): string {
   for (const field of ['amount', 'amount_atomic', 'sweep_amount', 'sweep_amount_atomic', 'transfer_amount', 'destination_amount']) {
     const amountAtomic = normalizeOptionalAtomicAmountString(tx[field]);
@@ -1179,6 +1261,35 @@ function getCreatedTransactionAmountAtomic(tx: Record<string, unknown>): string 
     }
   }
   return '0';
+}
+
+function sumAtomicAmountsFromItems(items: unknown): string {
+  if (!Array.isArray(items)) {
+    return '0';
+  }
+
+  let total = 0n;
+  for (const item of items) {
+    const amount = normalizeOptionalAtomicAmountString((item as Record<string, unknown> | null)?.amount);
+    if (amount !== '0') {
+      total += BigInt(amount);
+    }
+  }
+  return total.toString();
+}
+
+function getSweepTransactionAmountAtomic(tx: Record<string, unknown>, debugContext: Record<string, unknown> | null): string {
+  const selectedInputTotal = normalizeOptionalAtomicAmountString(debugContext?.selected_input_total_atomic);
+  if (selectedInputTotal !== '0') {
+    const fee = BigInt(normalizeOptionalAtomicAmountString(tx.fee));
+    const selected = BigInt(selectedInputTotal);
+    if (selected > fee) {
+      return (selected - fee).toString();
+    }
+    return selected.toString();
+  }
+
+  return getCreatedTransactionAmountAtomic(tx);
 }
 
 export type NewBlockCallback = (fromHeight: number, toHeight: number, chunkStart: number, chunkEnd: number) => void;
@@ -1387,6 +1498,72 @@ export class WalletService {
     }).catch(() => { });
   }
 
+  private async assertFreshRuntimeForTransaction(task: string): Promise<void> {
+    const staleError = 'Vault update required. Reloading to apply the latest wallet engine before sending.';
+    const markStaleAndReload = (reason: string, latest?: string, loaded?: string) => {
+      window.__salviumRuntimeStale = true;
+      reportClientEvent('frontend.stale_wasm_transaction_blocked', {
+        level: 'warn',
+        message: staleError,
+        context: {
+          task,
+          reason,
+          latest: latest || '',
+          loaded: loaded || '',
+        },
+      });
+      try {
+        window.dispatchEvent(new CustomEvent('salvium:force-reload', { detail: { reason } }));
+      } catch {
+      }
+      throw new Error(staleError);
+    };
+
+    if (isExtensionRuntime()) return;
+
+    const flagWasSet = window.__salviumRuntimeStale === true;
+
+    // Bound the whole gate so a slow server cannot stall a send indefinitely.
+    const withGateTimeout = <T,>(promise: Promise<T>): Promise<T> =>
+      Promise.race([
+        promise,
+        new Promise<T>((_, reject) =>
+          window.setTimeout(() => reject(new Error('runtime freshness check timed out')), 8000)
+        ),
+      ]);
+
+    let latest = '';
+    try {
+      latest = await withGateTimeout(fetchLatestWasmAssetVersion().then((value) => value || ''));
+    } catch {
+      // Unverifiable. A set flag means a reload is genuinely pending (the flag is
+      // only set when a reload is committed), so fail closed; otherwise allow.
+      if (flagWasSet) {
+        markStaleAndReload('runtime_stale_flag_unverified');
+      }
+      return;
+    }
+
+    const loaded = window.__salviumWasmAssetVersion || this.wasmAssetVersion || '';
+    if (latest && loaded && latest !== loaded) {
+      markStaleAndReload(
+        flagWasSet ? 'runtime_stale_flag_confirmed' : 'wasm_mismatch_transaction_gate',
+        latest,
+        loaded
+      );
+    }
+
+    if (flagWasSet) {
+      // The loaded engine matches the server: the flag is a leftover from a reload
+      // path that never navigated. Clear it so sends are not blocked forever.
+      window.__salviumRuntimeStale = false;
+      reportClientEvent('frontend.stale_runtime_flag_cleared', {
+        level: 'info',
+        context: { task, latest, loaded },
+      });
+    }
+  }
+
   private async hasPendingGetOutsRequest(): Promise<boolean> {
     return !!(await this.engineCallOptional<boolean>('has_pending_get_outs_request'));
   }
@@ -1399,13 +1576,31 @@ export class WalletService {
     await this.engineCallOptional('clear_pending_get_outs_request');
   }
 
+  private async hasPendingGetOIndexesRequest(): Promise<boolean> {
+    return !!(await this.engineCallOptional<boolean>('has_pending_get_o_indexes_request'));
+  }
+
+  private async getPendingGetOIndexesRequest(): Promise<string> {
+    return (await this.engineCallOptional<string>('get_pending_get_o_indexes_request')) || '';
+  }
+
+  private async clearPendingGetOIndexesRequest(): Promise<void> {
+    await this.engineCallOptional('clear_pending_get_o_indexes_request');
+  }
+
   async init(): Promise<void> {
     if (this.engine) return;
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
-      await this.loadNetworkConfig();
-      await this.startWorkerEngine();
+      try {
+        await this.loadNetworkConfig();
+        await this.startWorkerEngine();
+      } catch (error) {
+        this.engine = null;
+        this.initPromise = null;
+        throw error;
+      }
     })();
     return this.initPromise;
   }
@@ -1433,7 +1628,7 @@ export class WalletService {
 
   private async loadNetworkConfig(): Promise<void> {
     try {
-      const resp = await fetch('/api/network', { method: 'GET' });
+      const resp = await fetchWithTimeout('/api/network', { method: 'GET' }, 5000);
       if (!resp.ok) return;
       const data = await resp.json();
       const net = String(data?.network || '').toLowerCase();
@@ -1458,6 +1653,7 @@ export class WalletService {
         this.wasmAssetVersion = latestAssetVersion;
         return latestAssetVersion;
       }
+      throw new Error('wasm info missing assetVersion');
     } catch (error) {
       reportClientEvent('wasm.asset_version_check_failed', {
         level: 'warn',
@@ -1468,11 +1664,10 @@ export class WalletService {
           errorName: error instanceof Error ? error.name : typeof error,
         },
       });
+      throw error instanceof Error
+        ? error
+        : new Error(String(error || 'wasm asset version check failed'));
     }
-
-    window.__salviumExpectedWasmAssetVersion = WASM_CACHE_VERSION;
-    this.wasmAssetVersion = WASM_CACHE_VERSION;
-    return WASM_CACHE_VERSION;
   }
 
   /**
@@ -1484,11 +1679,11 @@ export class WalletService {
     const wasmAssetVersion = await this.resolveWasmAssetVersion();
     // Path-versioned (no query): query-keyed wasm URLs were cache-poisonable with
     // mismatched pairs — versioned paths are a pristine address space per release.
+    const version = encodeURIComponent(wasmAssetVersion || WASM_CACHE_VERSION);
     const glueUrl = isExtensionRuntime()
       ? getExtensionAssetUrl('wallet/SalviumWallet.js')
-      : '/api/wasm/' + encodeURIComponent(WASM_CACHE_VERSION) + '/SalviumWallet.js';
+      : '/api/wasm/' + version + '/SalviumWallet.js';
 
-    const version = encodeURIComponent(wasmAssetVersion);
     // The WASM binary is VERSION-COUPLED to the worker/glue of this exact build, so it
     // must always load same-origin: serving it via the shared cdn host is what caused
     // the 2026-06-10 prod rollback (cdn backed by a different container's build). The
@@ -1497,7 +1692,7 @@ export class WalletService {
     // 285MB chunk bundle.
     const wasmUrl = isExtensionRuntime()
       ? getExtensionAssetUrl('wallet/SalviumWallet.wasm')
-      : '/api/wasm/' + encodeURIComponent(WASM_CACHE_VERSION) + '/SalviumWallet.wasm';
+      : '/api/wasm/' + version + '/SalviumWallet.wasm';
 
     reportClientEvent('wasm.script_load_started', {
       level: 'info',
@@ -1505,8 +1700,33 @@ export class WalletService {
     });
 
     try {
-      const engine = guardEngineSurface(new WorkerEngine());
-      await engine.init({ wasmAssetVersion, glueUrl, wasmUrl, network: this.network, appBuildVersion: WASM_CACHE_VERSION });
+      // Transient mobile network blips ("Load failed"/NetworkError on the wasm fetch,
+      // observed on iOS Safari) previously surfaced as a hard init failure + 60s worker
+      // timeout. Retry the whole worker init up to twice with a short backoff before
+      // treating the failure as real.
+      const initWithRetry = async (): Promise<WorkerEngine> => {
+        let lastInitError: unknown = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const candidate = guardEngineSurface(new WorkerEngine());
+            await candidate.init({ wasmAssetVersion, glueUrl, wasmUrl, network: this.network, appBuildVersion: WASM_CACHE_VERSION });
+            return candidate;
+          } catch (initError) {
+            lastInitError = initError;
+            const initMessage = initError instanceof Error ? initError.message : String(initError);
+            const transient = /load failed|networkerror|network error|failed to fetch|timed? ?out/i.test(initMessage);
+            if (!transient || attempt >= 3) throw initError;
+            reportClientEvent('wasm.script_load_retry', {
+              level: 'warn',
+              message: initMessage,
+              context: { endpoint: '/api/wasm/SalviumWallet.js', count: attempt },
+            });
+            await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+          }
+        }
+        throw lastInitError;
+      };
+      const engine = await initWithRetry();
       this.engine = engine;
 
       // Worker crash = the in-memory wallet is gone (secrets only cross at unlock, so no
@@ -1552,6 +1772,33 @@ export class WalletService {
         message,
         context: { endpoint: '/api/wasm/SalviumWallet.js', errorName: e instanceof Error ? e.name : typeof e },
       });
+      // Self-heal stuck clients: when a Service Worker is actively controlling the page, a
+      // wedged worker-init is almost always the SW serving the worker script through its Cache
+      // pipeline (Firefox COEP:credentialless aborts that -> 60s timeout). Unregister the SW +
+      // clear caches + reload ONCE (clearVaultCachesAndReload is guarded to a single reload per
+      // reason+build, so a genuinely-broken build still falls through to the error UI instead of
+      // looping). After the reload no SW controls the first load, so the worker script loads
+      // straight from the network and inits cleanly.
+      try {
+        if (typeof navigator !== 'undefined' && navigator.serviceWorker && typeof window !== 'undefined') {
+          // Fire when a SW is controlling OR merely registered (a wedged SW that won't update
+          // still owns the worker fetch). Set the SW-less recovery flag first, then force a
+          // reload: index.tsx unregisters every SW and skips re-registration for this session,
+          // so the worker loads straight from the network. clearVaultCachesAndReload is guarded
+          // to one reload per build, so a genuinely-unsupported browser falls through to the
+          // error UI instead of looping.
+          void (async () => {
+            try {
+              const hasController = !!navigator.serviceWorker.controller;
+              const reg = hasController ? true : await navigator.serviceWorker.getRegistration().catch(() => null);
+              if (hasController || reg) {
+                try { window.sessionStorage.setItem('salvium_disable_sw', '1'); } catch {}
+                window.dispatchEvent(new CustomEvent('salvium:force-reload', { detail: { reason: 'wasm-worker-init-failed' } }));
+              }
+            } catch {}
+          })();
+        }
+      } catch {}
       throw new Error(`Failed to initialize WASM: ${e}`);
     }
   }
@@ -1781,9 +2028,7 @@ export class WalletService {
 
     try {
       const snapshot = this.getStateSnapshot();
-      const snapshotBalance =
-        getBaseAssetAtomicFromSnapshot(snapshot, assetType) ||
-        getExactAssetAtomicFromSnapshot(snapshot, assetType);
+      const snapshotBalance = getExactAssetAtomicFromSnapshot(snapshot, assetType);
       if (snapshotBalance) {
         return balanceInfoFromAtomicStrings(
           snapshotBalance.balanceAtomic,
@@ -1796,7 +2041,7 @@ export class WalletService {
       return null;
     } catch (error: any) {
       this.lastAssetBalanceErrors.set(assetType, error?.message || String(error));
-      return this.lastKnownAssetBalances.get(assetType) || null;
+      return null;
     }
   }
 
@@ -2390,7 +2635,7 @@ export class WalletService {
     const raw = String(assetType || '').trim();
     if (!raw) return ['SAL1'];
     const upper = raw.toUpperCase();
-    if (upper === 'SAL' || upper === 'SAL1') return ['SAL1', 'SAL'];
+    if (upper === 'SAL' || upper === 'SAL1') return [upper];
 
     const daemon = this.toDaemonAssetType(raw);
     const suffix = daemon.toLowerCase().startsWith('sal')
@@ -2410,7 +2655,8 @@ export class WalletService {
   }
 
   private buildExactOutputCacheAliases(assetType: string): string[] {
-    // never cache token outputs under SAL/SAL1 or the fee leg reads wrong cache
+    // HF13 remaps SAL and SAL1 independently. Do not cross-alias them or a
+    // transaction can satisfy one asset's ring from the other asset's cache.
     return this.buildAssetCacheAliases(assetType);
   }
 
@@ -2424,6 +2670,24 @@ export class WalletService {
       normalized.includes('unknown asset type') ||
       normalized.includes('no unlocked balance for asset') ||
       normalized.includes('insufficient unlocked balance for asset');
+  }
+
+  private describeWasmResultError(result: any): string {
+    const base = String(result?.error || 'Unknown error');
+    const reason = result?.reason ? String(result.reason) : '';
+    const detail = result?.detail ? String(result.detail).slice(0, 900) : '';
+    const debugSummary = summarizeAssetSendWasmDebug(result?.debug);
+    let message = base;
+    if (reason && !message.toLowerCase().includes(reason.toLowerCase())) {
+      message += ` [${reason}]`;
+    }
+    if (debugSummary) {
+      message += `: ${debugSummary}`;
+    }
+    if (detail) {
+      message += `: ${detail}`;
+    }
+    return message;
   }
 
   private buildWasmAssetSendCandidates(assetType: string): string[] {
@@ -2742,6 +3006,7 @@ export class WalletService {
       }, 'warn');
       throw new Error('Wallet not initialized');
     }
+    await this.assertFreshRuntimeForTransaction('send.transaction');
 
     if (typeof _paymentId === 'string' && _paymentId.trim().length > 0) {
       const pid = _paymentId.trim();
@@ -2777,10 +3042,11 @@ export class WalletService {
       } catch (e: any) {
         const errorMsg = e?.message || String(e);
 
-        const isInsufficientFunds = errorMsg.includes('not enough money') ||
-          errorMsg.includes('enough money to fund') ||
-          errorMsg.includes('insufficient') ||
-          errorMsg.includes('No single allowed subset');
+        const normalizedErrorMsg = errorMsg.toLowerCase();
+        const isInsufficientFunds = normalizedErrorMsg.includes('not enough money') ||
+          (normalizedErrorMsg.includes('enough money') && normalizedErrorMsg.includes('fund')) ||
+          normalizedErrorMsg.includes('insufficient') ||
+          normalizedErrorMsg.includes('no single allowed subset');
 
         if (sweepAll && isInsufficientFunds && sweepRetry < MAX_SWEEP_RETRIES) {
           sweepRetry++;
@@ -2994,7 +3260,7 @@ export class WalletService {
       const sendTokenShape = getTokenShape(requestedAssetType || 'SAL1');
       const decoyAssetType = requestedAssetType ? this.toDaemonAssetType(requestedAssetType) : 'SAL1';
       const isTokenAssetSend = !!requestedAssetType && !this.isBaseAssetType(decoyAssetType);
-      const wasmAssetCandidates = requestedAssetType
+      const wasmAssetCandidates = isTokenAssetSend
         ? this.buildWasmAssetSendCandidates(requestedAssetType)
         : ['SAL1'];
       reportAssetDiagnostic('asset.send_build_started', {
@@ -3200,7 +3466,7 @@ export class WalletService {
         }
 
         try {
-          const wasmAssetType = requestedAssetType
+          const wasmAssetType = isTokenAssetSend
             ? wasmAssetCandidates[wasmAssetCandidateIndex] || requestedAssetType
             : '';
           reportAssetDiagnostic('asset.send_wasm_attempt_started', {
@@ -3212,7 +3478,7 @@ export class WalletService {
             sendStage: 'wasm_create',
           });
           const paymentIdHex = (paymentId || '').trim();
-          const resultJson = requestedAssetType
+          const resultJson = isTokenAssetSend
             ? await this.engine!.call<string>('create_transaction_with_asset_json', [
                 address,
                 amountAtomic,
@@ -3251,7 +3517,7 @@ export class WalletService {
           }, result.status === 'error' ? 'warn' : 'info', wasmDebugSummary);
 
           if (result.status === 'error') {
-            lastError = result.error || 'Unknown error';
+            lastError = this.describeWasmResultError(result);
 
             if (await this.hasPendingGetOutsRequest()) {
                 const requestBase64 = await this.getPendingGetOutsRequest();
@@ -3284,23 +3550,22 @@ export class WalletService {
                   sendStage: 'wasm_pending_outs_after_inject',
                 });
                 markSendStage('outs_reprime_round' + fetchRound);
-                await this.clearPendingGetOutsRequest();
-                markSendStage('outs_clear_round' + fetchRound);
-                reportAssetDiagnostic('asset.send_pending_outs_after_clear', {
+                markSendStage('outs_pending_queue_round' + fetchRound);
+                reportAssetDiagnostic('asset.send_pending_outs_after_queue_pop', {
                   tokenShape: getTokenShape(wasmAssetType || requestedAssetType || 'SAL1'),
                   assetCandidateCount: wasmAssetCandidates.length,
                   candidateIndex: wasmAssetCandidateIndex,
                   fetchRound,
                   pendingOutsRoundCount,
                   count: (await this.hasPendingGetOutsRequest()) ? 1 : 0,
-                  sendStage: 'wasm_pending_outs_after_clear',
+                  sendStage: 'wasm_pending_outs_after_queue_pop',
                 });
                 continue;
               }
             }
 
             if (
-              requestedAssetType &&
+              isTokenAssetSend &&
               this.shouldRetryAssetCandidate(lastError) &&
               wasmAssetCandidateIndex < wasmAssetCandidates.length - 1
             ) {
@@ -3327,7 +3592,7 @@ export class WalletService {
 
           // Former synchronous capability pre-check: the worker reports a missing
           // create_transaction_with_asset_json as an unknown-method error.
-          if (requestedAssetType && WalletService.isUnknownMethodError(attemptError, 'create_transaction_with_asset_json')) {
+          if (isTokenAssetSend && WalletService.isUnknownMethodError(attemptError, 'create_transaction_with_asset_json')) {
             reportAssetDiagnostic('asset.send_build_failed', {
               tokenShape: getTokenShape(requestedAssetType),
               reason: 'wasm_missing_asset_send',
@@ -3348,7 +3613,7 @@ export class WalletService {
                 pendingOutsRoundCount,
                 sendStage: 'wasm_pending_outs',
               });
-              const wasmAssetType = requestedAssetType
+              const wasmAssetType = isTokenAssetSend
                 ? wasmAssetCandidates[wasmAssetCandidateIndex] || requestedAssetType
                 : '';
               const fetchedAssetType = await this.fetchAndInjectExactOutputs(requestBase64, wasmAssetType || decoyAssetType);
@@ -3367,22 +3632,21 @@ export class WalletService {
                 count: (await this.hasPendingGetOutsRequest()) ? 1 : 0,
                 sendStage: 'wasm_pending_outs_after_inject',
               });
-              await this.clearPendingGetOutsRequest();
-              reportAssetDiagnostic('asset.send_pending_outs_after_clear', {
+              reportAssetDiagnostic('asset.send_pending_outs_after_queue_pop', {
                 tokenShape: getTokenShape(wasmAssetType || requestedAssetType || 'SAL1'),
                 assetCandidateCount: wasmAssetCandidates.length,
                 candidateIndex: wasmAssetCandidateIndex,
                 fetchRound,
                 pendingOutsRoundCount,
                 count: (await this.hasPendingGetOutsRequest()) ? 1 : 0,
-                sendStage: 'wasm_pending_outs_after_clear',
+                sendStage: 'wasm_pending_outs_after_queue_pop',
               });
               continue;
             }
           }
 
           if (
-            requestedAssetType &&
+            isTokenAssetSend &&
             this.shouldRetryAssetCandidate(lastError) &&
             wasmAssetCandidateIndex < wasmAssetCandidates.length - 1
           ) {
@@ -3454,7 +3718,7 @@ export class WalletService {
       const createdTxs = result.transactions as Array<Record<string, unknown>>;
       const resultAssetType = String(result.asset_type || requestedAssetType || decoyAssetType || 'SAL1');
       const sendSourceAssetType = this.toSafeDaemonAssetType(resultAssetType, decoyAssetType || 'SAL1');
-      const tokenAssetSend = Boolean(requestedAssetType && !this.isBaseAssetType(requestedAssetType));
+      const tokenAssetSend = isTokenAssetSend;
       const primaryTxIndex = tokenAssetSend && createdTxs.length > 1 ? 1 : 0;
       const broadcastTxs = createdTxs.map((tx, txIndex) => {
         const txBlob = String(tx.tx_blob || '');
@@ -3736,6 +4000,146 @@ export class WalletService {
     }
   }
 
+  private async readWalletDebugJson(
+    method: string,
+    args: unknown[] = []
+  ): Promise<Record<string, any> | null> {
+    const raw = await this.engineCallOptional<string>(method, args, { timeoutMs: 60000 });
+    if (!raw) {
+      return null;
+    }
+    return diagnosticRecord(safeJsonParse<Record<string, any>>(raw, {}, `WalletService.${method}`));
+  }
+
+  private async collectSal1SpendabilityDiagnostic(
+    requestedAmount: number
+  ): Promise<{ balance: DiagnosticTelemetryContext; sweep: DiagnosticTelemetryContext }> {
+    const snapshot = this.getStateSnapshot();
+    const sal1Asset = Array.isArray(snapshot?.assets)
+      ? snapshot.assets.find((asset) => asset?.asset_type === 'SAL1')
+      : null;
+
+    const contributors = await this.readWalletDebugJson('debug_balance_contributors', ['SAL1', 1]);
+    const candidates = await this.readWalletDebugJson('debug_input_candidates');
+    const openings = await this.readWalletDebugJson('debug_spend_openings', ['SAL1', 1]);
+    const sweepInputs = await this.readWalletDebugJson('debug_sweep_inputs', ['SAL1']);
+
+    const candidateSummary = diagnosticRecord(candidates?.summary);
+    const openingFailures = diagnosticArray(openings?.failures);
+    const firstOpeningFailure = openingFailures[0] || null;
+    const selectedInputs = diagnosticArray(sweepInputs?.selected_inputs);
+
+    const balance: DiagnosticTelemetryContext = {
+      diagRequestedAmount: Number.isFinite(requestedAmount) ? requestedAmount : null,
+      diagWalletHeight: finiteDiagnosticNumber(snapshot?.wallet_height ?? openings?.wallet_height ?? sweepInputs?.wallet_height),
+      diagSnapshotBalance: atomicValueToDisplayAmount(sal1Asset?.balance),
+      diagSnapshotUnlocked: atomicValueToDisplayAmount(sal1Asset?.unlocked_balance),
+      diagSnapshotLockedStake: atomicValueToDisplayAmount(sal1Asset?.locked_stake),
+      diagSnapshotTransfers: finiteDiagnosticNumber(sal1Asset?.transfer_index_count),
+      diagOfficialBalance: atomicValueToDisplayAmount(contributors?.official_balance),
+      diagOfficialUnlocked: atomicValueToDisplayAmount(contributors?.official_unlocked),
+      diagConfirmedBalance: atomicValueToDisplayAmount(contributors?.confirmed_balance_total),
+      diagConfirmedUnlocked: atomicValueToDisplayAmount(contributors?.confirmed_unlocked_total),
+      diagConfirmedSkippedType: atomicValueToDisplayAmount(contributors?.confirmed_skipped_type_total),
+      diagTransferTotal: finiteDiagnosticNumber(candidateSummary?.total),
+      diagSal1Count: finiteDiagnosticNumber(candidateSummary?.sal1_count),
+      diagSal1Spendable: finiteDiagnosticNumber(candidateSummary?.sal1_spendable),
+      diagSal1Account0: finiteDiagnosticNumber(candidateSummary?.sal1_account0),
+      diagSal1Account0Spendable: finiteDiagnosticNumber(candidateSummary?.sal1_account0_spendable),
+      diagSpent: finiteDiagnosticNumber(candidateSummary?.spent),
+      diagFrozen: finiteDiagnosticNumber(candidateSummary?.frozen),
+      diagLocked: finiteDiagnosticNumber(candidateSummary?.locked),
+      diagNoKeyImage: finiteDiagnosticNumber(candidateSummary?.no_key_image),
+      diagPartialKeyImage: finiteDiagnosticNumber(candidateSummary?.partial_key_image),
+      diagOpenChecked: finiteDiagnosticNumber(openings?.checked_count),
+      diagOpenSpendable: finiteDiagnosticNumber(openings?.spendable_count),
+      diagOpenFailures: finiteDiagnosticNumber(openings?.failure_count),
+      diagFirstOpenPath: typeof firstOpeningFailure?.path === 'string' ? firstOpeningFailure.path : null,
+      diagFirstOpenTxType: finiteDiagnosticNumber(firstOpeningFailure?.tx_type),
+      diagFirstOpenReturnMapHit: typeof firstOpeningFailure?.return_map_hit === 'boolean' ? firstOpeningFailure.return_map_hit : null,
+      diagFirstOpenReturnMapSpendable: typeof firstOpeningFailure?.return_map_spendable === 'boolean' ? firstOpeningFailure.return_map_spendable : null,
+      diagFirstOpenMetadataHit: typeof firstOpeningFailure?.spend_metadata_hit === 'boolean' ? firstOpeningFailure.spend_metadata_hit : null,
+      diagFirstOpenMetadataComplete: typeof firstOpeningFailure?.spend_metadata_complete === 'boolean' ? firstOpeningFailure.spend_metadata_complete : null,
+      diagFirstOpenPersistedMapHit: typeof firstOpeningFailure?.persisted_map_hit === 'boolean' ? firstOpeningFailure.persisted_map_hit : null,
+      diagFirstOpenPersistedMapSpendable: typeof firstOpeningFailure?.persisted_map_spendable === 'boolean' ? firstOpeningFailure.persisted_map_spendable : null,
+    };
+
+    const sweep: DiagnosticTelemetryContext = {
+      diagSweepSelectedCount: finiteDiagnosticNumber(sweepInputs?.selected_count),
+      diagSweepSelectedTotal: atomicValueToDisplayAmount(sweepInputs?.selected_total) ??
+        sumAtomicDiagnosticField(selectedInputs, 'amount'),
+      diagSweepLargestInput: atomicValueToDisplayAmount(sweepInputs?.selected_largest) ??
+        maxAtomicDiagnosticField(selectedInputs, 'amount'),
+      diagSweepTransferCount: finiteDiagnosticNumber(sweepInputs?.transfer_count),
+      diagSweepTransferTotal: atomicValueToDisplayAmount(sweepInputs?.transfer_total),
+      diagSweepSpentCount: finiteDiagnosticNumber(sweepInputs?.rejected_spent_count),
+      diagSweepSpentTotal: atomicValueToDisplayAmount(sweepInputs?.rejected_spent_total),
+      diagSweepFrozenCount: finiteDiagnosticNumber(sweepInputs?.rejected_frozen_count),
+      diagSweepFrozenTotal: atomicValueToDisplayAmount(sweepInputs?.rejected_frozen_total),
+      diagSweepLockedCount: finiteDiagnosticNumber(sweepInputs?.rejected_locked_count),
+      diagSweepLockedTotal: atomicValueToDisplayAmount(sweepInputs?.rejected_locked_total),
+      diagSweepNoKeyImageCount: finiteDiagnosticNumber(sweepInputs?.rejected_no_key_image_count),
+      diagSweepNoKeyImageTotal: atomicValueToDisplayAmount(sweepInputs?.rejected_no_key_image_total),
+      diagSweepPartialKeyImageCount: finiteDiagnosticNumber(sweepInputs?.rejected_partial_key_image_count),
+      diagSweepPartialKeyImageTotal: atomicValueToDisplayAmount(sweepInputs?.rejected_partial_key_image_total),
+      diagSweepSubaddrCount: finiteDiagnosticNumber(sweepInputs?.rejected_subaddr_count),
+      diagSweepSubaddrTotal: atomicValueToDisplayAmount(sweepInputs?.rejected_subaddr_total),
+      diagSweepAuditLockedCount: finiteDiagnosticNumber(sweepInputs?.rejected_audit_locked_count),
+      diagSweepAuditLockedTotal: atomicValueToDisplayAmount(sweepInputs?.rejected_audit_locked_total),
+      diagSweepInvalidAmountCount: finiteDiagnosticNumber(sweepInputs?.rejected_invalid_amount_count),
+      diagSweepInvalidAmountTotal: atomicValueToDisplayAmount(sweepInputs?.rejected_invalid_amount_total),
+      diagSweepUnburnedMismatchCount: finiteDiagnosticNumber(sweepInputs?.rejected_unburned_mismatch_count),
+      diagSweepUnburnedMismatchTotal: atomicValueToDisplayAmount(sweepInputs?.rejected_unburned_mismatch_total),
+      diagSweepEligiblePreKiCount: finiteDiagnosticNumber(sweepInputs?.eligible_pre_key_image_count),
+      diagSweepEligiblePreKiTotal: atomicValueToDisplayAmount(sweepInputs?.eligible_pre_key_image_total),
+    };
+
+    return { balance, sweep };
+  }
+
+  private async reportSal1SpendabilityDiagnostic(
+    requestedAmount: number,
+    message: string,
+    stage: string = 'insufficient_funds_diag'
+  ): Promise<void> {
+    try {
+      const diagnostic = await this.collectSal1SpendabilityDiagnostic(requestedAmount);
+      // Routine status snapshots (unlock/balance-ready/scan-complete) are info-level;
+      // only a real send/stake failure diagnostic warrants warn.
+      const diagLevel = stage === 'insufficient_funds_diag' ? 'warn' : 'info';
+      reportAssetDiagnostic('staking.spendability_diag', {
+        task: 'staking.transaction',
+        stage,
+        component: 'WalletService',
+        ...diagnostic.balance,
+      }, diagLevel, message);
+      reportAssetDiagnostic('staking.sweep_selector_diag', {
+        task: 'staking.transaction',
+        stage,
+        component: 'WalletService',
+        ...diagnostic.sweep,
+      }, diagLevel, message);
+    } catch (diagnosticError) {
+      reportAssetDiagnostic('staking.spendability_diag_failed', {
+        task: 'staking.transaction',
+        stage,
+        component: 'WalletService',
+        diagError: diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError),
+      }, 'warn', message);
+    }
+  }
+
+  async reportSal1SpendabilityStatus(
+    requestedAmount: number = 0,
+    stage: string = 'balance_ready_diag'
+  ): Promise<void> {
+    await this.reportSal1SpendabilityDiagnostic(
+      requestedAmount,
+      'SAL1 spendability status diagnostic',
+      stage
+    );
+  }
+
   async stakeTransaction(
     amount: number,
     priority: number = 1,
@@ -3759,21 +4163,29 @@ export class WalletService {
       }, 'warn');
       throw new Error('Wallet not initialized');
     }
+    await this.assertFreshRuntimeForTransaction('staking.transaction');
 
     let currentAmount = amount;
     const MAX_SWEEP_RETRIES = 10;
     let sweepRetry = 0;
+    let insufficientFundsDiagReported = false;
 
     while (true) {
       try {
         return await this._createAndBroadcastStakeTransaction(currentAmount, priority);
       } catch (e: any) {
         const errorMsg = e?.message || String(e);
+        const normalizedErrorMsg = errorMsg.toLowerCase();
 
-        const isInsufficientFunds = errorMsg.includes('not enough money') ||
-          errorMsg.includes('enough money to fund') ||
-          errorMsg.includes('insufficient') ||
+        const isInsufficientFunds = normalizedErrorMsg.includes('not enough money') ||
+          normalizedErrorMsg.includes('enough money to fund') ||
+          normalizedErrorMsg.includes('insufficient') ||
           errorMsg.includes('No single allowed subset');
+
+        if (isInsufficientFunds && !insufficientFundsDiagReported) {
+          insufficientFundsDiagReported = true;
+          await this.reportSal1SpendabilityDiagnostic(currentAmount, errorMsg);
+        }
 
         if (sweepAll && isInsufficientFunds && sweepRetry < MAX_SWEEP_RETRIES) {
           sweepRetry++;
@@ -3872,7 +4284,10 @@ export class WalletService {
       outsData.asset_type = 'SAL1';
       await this.engineCallOptional('inject_decoy_outputs_from_json', [JSON.stringify(outsData)]);
 
-      const MAX_FETCH_ROUNDS = 15;
+      // Stake builds may request one exact output per retry while hydrating
+      // Carrot rings. Keep this aligned with sweep-all so large SAL1 stakes do
+      // not stop while the daemon is still successfully serving exact outputs.
+      const MAX_FETCH_ROUNDS = 100;
       let result: any = null;
       let lastError: string = '';
       let fetchRound = 0;
@@ -3904,6 +4319,13 @@ export class WalletService {
           if (result.status === 'error') {
             lastError = result.error || 'Unknown error';
 
+            {
+              const indexFetchCount = await this.drainPendingGetOIndexesRequests('staking.transaction', fetchRound);
+              if (indexFetchCount > 0) {
+                continue;
+              }
+            }
+
             if (await this.hasPendingGetOutsRequest()) {
               const requestBase64 = await this.getPendingGetOutsRequest();
               if (requestBase64) {
@@ -3914,7 +4336,6 @@ export class WalletService {
                   fetchRound,
                 });
                 await this.fetchAndInjectExactOutputs(requestBase64);
-                await this.clearPendingGetOutsRequest();
                 continue;
               }
             }
@@ -3932,6 +4353,13 @@ export class WalletService {
             lastError = 'WASM create_stake_transaction_json not available - please update WASM';
           }
 
+          {
+            const indexFetchCount = await this.drainPendingGetOIndexesRequests('staking.transaction', fetchRound);
+            if (indexFetchCount > 0) {
+              continue;
+            }
+          }
+
           if (await this.hasPendingGetOutsRequest()) {
             const requestBase64 = await this.getPendingGetOutsRequest();
             if (requestBase64) {
@@ -3942,7 +4370,6 @@ export class WalletService {
                 fetchRound,
               });
               await this.fetchAndInjectExactOutputs(requestBase64);
-              await this.clearPendingGetOutsRequest();
               continue;
             }
           }
@@ -4135,6 +4562,7 @@ export class WalletService {
     if (!this.isWalletReadySync()) {
       throw new Error('Wallet not initialized');
     }
+    await this.assertFreshRuntimeForTransaction('send.sweep_all');
 
     await this.engineCallOptional('clear_http_cache');
 
@@ -4171,17 +4599,52 @@ export class WalletService {
       let lastError: string = '';
       let fetchRound = 0;
 
-      // save/restore RNG state across retries so decoy indices stay identical
-      const savedRngState: string | null = await this.engineCallOptional<string>('get_random_state');
+      // Reuse the same RNG state after a successful exact-output injection so the
+      // next WASM round asks for the same outputs now in cache. If the exact fetch
+      // itself fails, clear this state so the retry redraws the ring.
+      let retryRngState: string | null = await this.engineCallOptional<string>('get_random_state');
+
+      const drainPendingExactOutputs = async (roundRngState: string | null): Promise<'none' | 'retry' | 'redraw'> => {
+        if (!(await this.hasPendingGetOutsRequest())) {
+          return 'none';
+        }
+
+        let fetchCount = 0;
+        while (true) {
+          const requestBase64 = await this.getPendingGetOutsRequest();
+          if (!requestBase64) break;
+          fetchCount++;
+          try {
+            await this.fetchAndInjectExactOutputs(requestBase64);
+            retryRngState = roundRngState || retryRngState;
+          } catch (exactError: any) {
+            lastError = exactError?.message || String(exactError);
+            retryRngState = null;
+            await this.clearPendingGetOutsRequest();
+            reportAssetDiagnostic('task.stage', {
+              task: 'sweep_all.transaction',
+              stage: 'pending_outs_retry_redraw',
+              component: 'WalletService',
+              fetchRound,
+              reason: 'exact_outs_fetch_failed',
+            }, 'warn', lastError);
+            return 'redraw';
+          }
+        }
+
+        return fetchCount > 0 ? 'retry' : 'none';
+      };
 
       while (fetchRound < MAX_FETCH_ROUNDS) {
         fetchRound++;
 
-        if (fetchRound > 1 && savedRngState) {
-          await this.engineCallOptional('set_random_state', [savedRngState]);
+        if (fetchRound > 1 && retryRngState) {
+          await this.engineCallOptional('set_random_state', [retryRngState]);
         }
 
+        let roundRngState: string | null = null;
         try {
+          roundRngState = await this.engineCallOptional<string>('get_random_state');
           const resultJson = await this.engine!.call<string>('create_sweep_all_transaction_json', [
             address,
             MIXIN,
@@ -4190,22 +4653,38 @@ export class WalletService {
           result = JSON.parse(resultJson);
 
           if (result.status === 'error') {
-            lastError = result.error || 'Unknown error';
+            lastError = this.describeWasmResultError(result);
 
-            if (await this.hasPendingGetOutsRequest()) {
-              let fetchCount = 0;
-              while (true) {
-                const requestBase64 = await this.getPendingGetOutsRequest();
-                if (!requestBase64) break;
-                fetchCount++;
-                await this.fetchAndInjectExactOutputs(requestBase64);
-              }
-              if (fetchCount > 0) {
+            {
+              const indexFetchCount = await this.drainPendingGetOIndexesRequests('sweep_all.transaction', fetchRound);
+              if (indexFetchCount > 0) {
+                retryRngState = roundRngState || retryRngState;
                 continue;
               }
             }
 
+            const exactOutputDrain = await drainPendingExactOutputs(roundRngState);
+            if (exactOutputDrain === 'retry' || (exactOutputDrain === 'redraw' && fetchRound < MAX_FETCH_ROUNDS)) {
+              continue;
+            }
+
             throw new Error(lastError);
+          }
+
+          {
+            const indexFetchCount = await this.drainPendingGetOIndexesRequests('sweep_all.transaction', fetchRound);
+            if (indexFetchCount > 0) {
+              retryRngState = roundRngState || retryRngState;
+              continue;
+            }
+          }
+
+          const exactOutputDrain = await drainPendingExactOutputs(roundRngState);
+          if (exactOutputDrain === 'retry' || (exactOutputDrain === 'redraw' && fetchRound < MAX_FETCH_ROUNDS)) {
+            continue;
+          }
+          if (exactOutputDrain === 'redraw') {
+            throw new Error(lastError || 'Failed to fetch exact outputs for sweep');
           }
 
           break;
@@ -4218,17 +4697,17 @@ export class WalletService {
             throw new Error('WASM create_sweep_all_transaction_json not available - please update WASM');
           }
 
-          if (await this.hasPendingGetOutsRequest()) {
-            let fetchCount = 0;
-            while (true) {
-              const requestBase64 = await this.getPendingGetOutsRequest();
-              if (!requestBase64) break;
-              fetchCount++;
-              await this.fetchAndInjectExactOutputs(requestBase64);
-            }
-            if (fetchCount > 0) {
+          {
+            const indexFetchCount = await this.drainPendingGetOIndexesRequests('sweep_all.transaction', fetchRound);
+            if (indexFetchCount > 0) {
+              retryRngState = roundRngState || retryRngState;
               continue;
             }
+          }
+
+          const exactOutputDrain = await drainPendingExactOutputs(roundRngState);
+          if (exactOutputDrain === 'retry' || (exactOutputDrain === 'redraw' && fetchRound < MAX_FETCH_ROUNDS)) {
+            continue;
           }
 
           throw innerError;
@@ -4262,6 +4741,7 @@ export class WalletService {
                 tx_hash: tx?.tx_hash || null,
                 debug_tx_index: index,
                 selected_transfer_count: selectedTransfers.length,
+                selected_input_total_atomic: sumAtomicAmountsFromItems(selectedTransfers),
                 non_standard_inputs: nonStandardInputs,
                 vin_key_images: Array.isArray(tx?.vin_key_images) ? tx.vin_key_images : []
               };
@@ -4304,6 +4784,9 @@ export class WalletService {
                 selected_transfer_count: Array.isArray(sweepInputsDebug.selected_inputs)
                   ? sweepInputsDebug.selected_inputs.length
                   : 0,
+                selected_input_total_atomic: result.transactions.length === 1 && Array.isArray(sweepInputsDebug.selected_inputs)
+                  ? sumAtomicAmountsFromItems(sweepInputsDebug.selected_inputs)
+                  : '0',
                 non_standard_inputs: Array.isArray(sweepInputsDebug.selected_inputs)
                   ? sweepInputsDebug.selected_inputs.filter((input: any) => input?.tx_type !== 3)
                   : [],
@@ -4311,13 +4794,14 @@ export class WalletService {
                 sweep_inputs_debug: sweepInputsDebug
               }
             : {
-                tx_hash: txHash,
-                debug_tx_index: txIndex,
-                debug_source: 'missing',
-                selected_transfer_count: 0,
-                non_standard_inputs: [],
-                vin_key_images: []
-              };
+	                tx_hash: txHash,
+	                debug_tx_index: txIndex,
+	                debug_source: 'missing',
+	                selected_transfer_count: 0,
+	                selected_input_total_atomic: '0',
+	                non_standard_inputs: [],
+	                vin_key_images: []
+	              };
 
         for (let attempt = 1; attempt <= MAX_BROADCAST_RETRIES; attempt++) {
           try {
@@ -4347,14 +4831,23 @@ export class WalletService {
             }
 
             if (!broadcastResponse.ok) {
-              throw new Error(`Sweep broadcast failed: HTTP ${broadcastResponse.status}`);
+              let rejectionReason = '';
+              try {
+                const rejection = await broadcastResponse.json();
+                rejectionReason = String(rejection?.reason || rejection?.error || rejection?.daemon_status || '');
+              } catch {
+                rejectionReason = '';
+              }
+              throw new Error(rejectionReason
+                ? `Sweep broadcast failed: HTTP ${broadcastResponse.status} (${rejectionReason})`
+                : `Sweep broadcast failed: HTTP ${broadcastResponse.status}`);
             }
 
             const broadcastResult = await broadcastResponse.json();
 
             if (broadcastResult.status === 'OK') {
               this.storePendingTransaction(txHash, txBlob, 'broadcast');
-              const amountAtomic = getCreatedTransactionAmountAtomic(tx);
+              const amountAtomic = getSweepTransactionAmountAtomic(tx, debugContext);
               const feeAtomic = normalizeOptionalAtomicAmountString(tx.fee);
               txDetails.push({
                 txHash,
@@ -4837,7 +5330,6 @@ export class WalletService {
                 pendingOutsRoundCount,
               });
               await this.fetchAndInjectExactOutputs(requestBase64);
-              await this.clearPendingGetOutsRequest();
               continue;
             }
           }
@@ -4867,7 +5359,6 @@ export class WalletService {
               pendingOutsRoundCount,
             });
             await this.fetchAndInjectExactOutputs(requestBase64);
-            await this.clearPendingGetOutsRequest();
             continue;
           }
         }
@@ -5081,6 +5572,17 @@ export class WalletService {
     // save/restore RNG state across retries so decoy indices stay identical
     const savedRngState: string | null = await this.engineCallOptional<string>('get_random_state');
 
+    const drainPendingNativeExactOutputs = async (): Promise<boolean> => {
+      let fetched = false;
+      while (await this.hasPendingGetOutsRequest()) {
+        const requestBase64 = await this.getPendingGetOutsRequest();
+        if (!requestBase64) break;
+        await this.fetchAndInjectExactOutputs(requestBase64, normalizedFallbackAssetType);
+        fetched = true;
+      }
+      return fetched;
+    };
+
     while (fetchRound < MAX_FETCH_ROUNDS) {
       fetchRound++;
       if (fetchRound > 1 && savedRngState) {
@@ -5092,26 +5594,19 @@ export class WalletService {
         result = safeJsonParse<any>(resultJson, {}, `${task}.wasm_create`);
         if (result.status === 'error') {
           lastError = result.error || 'Unknown error';
-          if (await this.hasPendingGetOutsRequest()) {
-            const requestBase64 = await this.getPendingGetOutsRequest();
-            if (requestBase64) {
-              await this.fetchAndInjectExactOutputs(requestBase64, normalizedFallbackAssetType);
-              await this.clearPendingGetOutsRequest();
-              continue;
-            }
+          if (await drainPendingNativeExactOutputs()) {
+            continue;
           }
           throw new Error(lastError);
+        }
+        if (await drainPendingNativeExactOutputs()) {
+          continue;
         }
         break;
       } catch (e: any) {
         lastError = e?.message || String(e);
-        if (await this.hasPendingGetOutsRequest()) {
-          const requestBase64 = await this.getPendingGetOutsRequest();
-          if (requestBase64) {
-            await this.fetchAndInjectExactOutputs(requestBase64, normalizedFallbackAssetType);
-            await this.clearPendingGetOutsRequest();
-            continue;
-          }
+        if (await drainPendingNativeExactOutputs()) {
+          continue;
         }
         throw new Error(lastError);
       }
@@ -5304,6 +5799,96 @@ export class WalletService {
     }
   }
 
+
+
+  private async fetchAndInjectOutputIndexes(
+    requestBase64: string,
+    context: { task?: string; fetchRound?: number; count?: number } = {}
+  ): Promise<void> {
+    const startedAt = performance.now();
+    const binaryStr = atob(requestBase64);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+
+    const response = await fetch('/api/wallet/get_o_indexes.bin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: bytes,
+    });
+    if (!response.ok) {
+      const { error: serverError, reason: serverReason } = await this.readSafeErrorPayload(response);
+      reportAssetDiagnostic('asset.send_output_indexes_fetch_failed', {
+        task: context.task,
+        stage: 'pending_output_indexes_fetch',
+        component: 'WalletService',
+        fetchRound: context.fetchRound,
+        count: context.count,
+        endpoint: '/api/wallet/get_o_indexes.bin',
+        httpStatus: response.status,
+        durationMs: Math.round(performance.now() - startedAt),
+        reason: serverReason || (response.status === 504 ? 'timeout' : 'http_error'),
+      }, 'warn', serverError || serverReason || response.statusText);
+      throw new Error(`Failed to fetch output indexes: ${serverError || serverReason || `HTTP ${response.status}`}`);
+    }
+
+    const responseBuffer = await response.arrayBuffer();
+    const responseBytes = new Uint8Array(responseBuffer);
+    let binaryResponse = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < responseBytes.length; i += chunkSize) {
+      const chunk = responseBytes.slice(i, i + chunkSize);
+      binaryResponse += String.fromCharCode.apply(null, Array.from(chunk));
+    }
+    await this.engine!.call('inject_get_o_indexes_response_base64', [btoa(binaryResponse)]);
+    reportAssetDiagnostic('asset.send_output_indexes_fetch_completed', {
+      task: context.task,
+      stage: 'pending_output_indexes_fetch',
+      component: 'WalletService',
+      fetchRound: context.fetchRound,
+      count: context.count,
+      endpoint: '/api/wallet/get_o_indexes.bin',
+      responseBytes: responseBytes.length,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+  }
+
+  private async drainPendingGetOIndexesRequests(task: string, fetchRound: number): Promise<number> {
+    if (!(await this.hasPendingGetOIndexesRequest())) return 0;
+    let fetchCount = 0;
+    try {
+      while (true) {
+        const requestBase64 = await this.getPendingGetOIndexesRequest();
+        if (!requestBase64) break;
+        fetchCount++;
+        reportAssetDiagnostic('task.stage', {
+          task,
+          stage: 'pending_output_indexes_fetch',
+          component: 'WalletService',
+          fetchRound,
+          count: fetchCount,
+        });
+        await this.fetchAndInjectOutputIndexes(requestBase64, {
+          task,
+          fetchRound,
+          count: fetchCount,
+        });
+      }
+    } catch (error) {
+      await this.clearPendingGetOIndexesRequest();
+      throw error;
+    }
+    reportAssetDiagnostic('task.stage', {
+      task,
+      stage: 'pending_output_indexes_fetch_completed',
+      component: 'WalletService',
+      fetchRound,
+      count: fetchCount,
+    });
+    return fetchCount;
+  }
+
   private async fetchAndInjectExactOutputs(requestBase64: string, fallbackAssetType: string = 'SAL1'): Promise<string> {
     const startedAt = performance.now();
     const binaryStr = atob(requestBase64);
@@ -5311,6 +5896,7 @@ export class WalletService {
     for (let i = 0; i < binaryStr.length; i++) {
       bytes[i] = binaryStr.charCodeAt(i);
     }
+    const requestIndices = this.extractEpeeOutputIndices(bytes);
     const parsedAssetType = this.extractEpeeStringField(bytes, 'asset_type');
     const requestAssetType = await this.inferExactOutputAssetType(bytes, parsedAssetType, fallbackAssetType);
     reportAssetDiagnostic('asset.send_pending_outs_fetch_started', {
@@ -5364,9 +5950,29 @@ export class WalletService {
     }
 
     const contentType = response.headers.get('Content-Type') || '';
+    const responseBuffer = await response.arrayBuffer();
+    const responseBytes = new Uint8Array(responseBuffer);
+    let jsonData: any = null;
+    let jsonParseError = '';
+    const responseText = (() => {
+      try {
+        return new TextDecoder().decode(responseBytes);
+      } catch {
+        return '';
+      }
+    })();
+    const trimmedResponseText = responseText.trim();
+    if (contentType.toLowerCase().includes('json') ||
+        trimmedResponseText.startsWith('{') ||
+        trimmedResponseText.startsWith('[')) {
+      try {
+        jsonData = JSON.parse(trimmedResponseText);
+      } catch (error: any) {
+        jsonParseError = error?.message || String(error);
+      }
+    }
 
-    if (contentType.includes('application/json')) {
-      const jsonData = await response.json();
+    if (jsonData && typeof jsonData === 'object') {
       const responseItems = Array.isArray(jsonData.outs) ? jsonData.outs.length : 0;
       const responseTokenShape = getTokenShape(jsonData.asset_type || '');
       const cacheAliases = this.buildExactOutputCacheAliases(jsonData.asset_type || requestAssetType);
@@ -5381,6 +5987,7 @@ export class WalletService {
         endpoint: '/api/wallet/get_outs.bin',
         fallbackToJson: true,
         responseItems,
+        responseBytes: responseBytes.length,
         outputCountBucket: getCountBucket(responseItems),
         lookupAttemptCount: cacheAliases.length,
         injectionMethod: 'json',
@@ -5438,7 +6045,64 @@ export class WalletService {
           }, 'warn');
           throw new Error('WASM inject_decoy_outputs_from_json not available');
         }
-        if (success) {
+          if (success) {
+          const sampleIndices = requestIndices.slice(0, 32);
+          let cacheProbeFound = 0;
+          let cacheProbeMissing = 0;
+          let responseIndexMismatchCount = 0;
+          const outs = Array.isArray(jsonData.outs) ? jsonData.outs : [];
+          for (let i = 0; i < outs.length && i < requestIndices.length; i++) {
+            const out = outs[i] || {};
+            const responseIndex = Number(
+              out.index ?? out.global_index ?? out.output_id
+            );
+            if (Number.isFinite(responseIndex) && responseIndex !== requestIndices[i]) {
+              responseIndexMismatchCount++;
+            }
+          }
+          const probeAliases = cacheAliases.length > 0 ? cacheAliases : [requestAssetType];
+          for (const index of sampleIndices) {
+            let foundForIndex = false;
+            for (const cacheAssetType of probeAliases) {
+              try {
+                foundForIndex = !!(await this.engine!.call('has_cached_output', [cacheAssetType, index]));
+              } catch {
+                foundForIndex = false;
+              }
+              if (foundForIndex) break;
+            }
+            if (foundForIndex) cacheProbeFound++;
+            else cacheProbeMissing++;
+          }
+          const cachedOutputCount = Number(await this.engineCallOptional('get_cached_output_count') || 0);
+          reportAssetDiagnostic('asset.send_pending_outs_cache_verify', {
+            tokenShape: getTokenShape(requestAssetType),
+            fallbackTokenShape: getTokenShape(fallbackAssetType),
+            parsedTokenShape: getTokenShape(requestAssetType),
+            endpoint: '/api/wallet/get_outs.bin',
+            fallbackToJson: true,
+            responseItems,
+            requestIndexCount: requestIndices.length,
+            checkedCount: sampleIndices.length,
+            cacheProbeFound,
+            cacheProbeMissing,
+            cachedOutputCount,
+            aliasSuccessCount,
+            responseIndexMismatchCount,
+            sendStage: 'pending_outs_cache_verify',
+          }, cacheProbeMissing > 0 || responseIndexMismatchCount > 0 ? 'warn' : 'info');
+          if (responseIndexMismatchCount > 0) {
+            await this.reprimeOutputDistributionAfterExactOutputs(requestAssetType, {
+              pendingOutsRoundCount: responseIndexMismatchCount,
+            });
+            throw new Error('Daemon returned repaired exact output indexes; redraw required');
+          }
+          if (sampleIndices.length > 0 && cacheProbeMissing > 0) {
+            await this.reprimeOutputDistributionAfterExactOutputs(requestAssetType, {
+              pendingOutsRoundCount: cacheProbeMissing,
+            });
+            throw new Error('WASM exact output cache verification failed');
+          }
           reportAssetDiagnostic('asset.send_pending_outs_fetch_completed', {
             tokenShape: getTokenShape(requestAssetType),
             fallbackTokenShape: getTokenShape(fallbackAssetType),
@@ -5469,9 +6133,6 @@ export class WalletService {
         }
       }
     } else {
-      const responseBuffer = await response.arrayBuffer();
-      const responseBytes = new Uint8Array(responseBuffer);
-
       let base64Response = '';
       const chunkSize = 8192;
       for (let i = 0; i < responseBytes.length; i += chunkSize) {
@@ -5500,6 +6161,7 @@ export class WalletService {
           endpoint: '/api/wallet/get_outs.bin',
           fallbackToJson: false,
           responseBytes: responseBytes.length,
+          reason: jsonParseError || 'non_json_response',
           durationMs: Math.round(performance.now() - startedAt),
           sendStage: 'pending_outs_injected',
         });
@@ -5508,13 +6170,13 @@ export class WalletService {
           tokenShape: getTokenShape(requestAssetType),
           fallbackTokenShape: getTokenShape(fallbackAssetType),
           parsedTokenShape: getTokenShape(requestAssetType),
-          endpoint: '/api/wallet/get_outs.bin',
-          fallbackToJson: false,
-          responseBytes: responseBytes.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          reason: 'inject_binary_missing',
-          sendStage: 'pending_outs_inject',
-        }, 'warn');
+            endpoint: '/api/wallet/get_outs.bin',
+            fallbackToJson: false,
+            responseBytes: responseBytes.length,
+            durationMs: Math.round(performance.now() - startedAt),
+            reason: jsonParseError || 'inject_binary_missing',
+            sendStage: 'pending_outs_inject',
+          }, 'warn');
         throw new Error('WASM inject_decoy_outputs_base64 not available');
       }
     }
@@ -5647,6 +6309,9 @@ export class WalletService {
   // in send timing). Build the JSON once with a placeholder and derive aliases by string
   // replacement; cache briefly so the same send's reprime reuses the prep's work.
   private _distAliasCache: { key: string; builtAt: number; map: Map<string, string> } | null = null;
+  // getoutsfix5: last poison-decoy set seen from a real daemon distribution, reused
+  // by the synthetic compact-distribution injection (which never fetches the daemon).
+  private _lastSal1PoisonedDecoys: number[] = [];
 
   private buildAliasedDistributionResponses(
     cacheKey: string,
@@ -5662,12 +6327,22 @@ export class WalletService {
     ) {
       return this._distAliasCache.map;
     }
+    const __pd = Array.isArray(resultData?.sal1_poisoned_decoys)
+      ? resultData.sal1_poisoned_decoys
+      : (Array.isArray(resultData?.poisoned_decoys) ? resultData.poisoned_decoys : null);
+    if (__pd && __pd.length) {
+      this._lastSal1PoisonedDecoys = __pd.map((v: any) => Number(v)).filter((v: number) => Number.isFinite(v));
+    }
     const PLACEHOLDER = '__SALVIUM_ASSET_ALIAS_PH__';
     const base = JSON.stringify({
       jsonrpc: '2.0',
       id: '0',
       result: {
         ...resultData,
+        // getoutsfix5: pass the daemon poison-decoy set through verbatim so the
+        // patched WASM inject path can arm the SAL1 gamma-picker skip.
+        ...(Array.isArray(resultData?.sal1_poisoned_decoys) ? { sal1_poisoned_decoys: resultData.sal1_poisoned_decoys } : {}),
+        ...(Array.isArray(resultData?.poisoned_decoys) ? { poisoned_decoys: resultData.poisoned_decoys } : {}),
         asset_type: PLACEHOLDER,
         rct_asset_type: PLACEHOLDER,
         distributions: (resultData.distributions || []).map((entry: any) => ({
@@ -5916,6 +6591,9 @@ export class WalletService {
           asset_type: cacheAssetType,
           rct_asset_type: cacheAssetType,
         }],
+        // getoutsfix5: carry any known poison-decoy set into the synthetic compact
+        // distribution too (the compact path never fetches the daemon itself).
+        ...(this._lastSal1PoisonedDecoys.length ? { sal1_poisoned_decoys: this._lastSal1PoisonedDecoys, poisoned_decoys: this._lastSal1PoisonedDecoys } : {}),
       },
     });
 
@@ -6344,6 +7022,7 @@ export class WalletService {
     failureCount?: number;
     unresolvedReturnedOutputCount?: number;
     missingRuntimeTxContextCount?: number;
+    ignoredGenericValidationFailureCount?: number;
     runtimeTxCandidates?: number;
     runtimeTxRequested?: number;
     runtimeTxHydrated?: number;
@@ -6353,7 +7032,7 @@ export class WalletService {
       return { valid: false, needsRefresh: true, error: 'Wallet not initialized' };
     }
     try {
-      const resultJson = await this.engineCallOptional<string>('validate_outputs_for_send');
+      const resultJson = await this.engineCallOptional<string>('validate_outputs_for_send', [], { timeoutMs: 120000 });
       if (resultJson !== null) {
         const result = JSON.parse(resultJson);
         let error: string | undefined = result.error;
@@ -6362,9 +7041,41 @@ export class WalletService {
         let failureCount = 0;
         let unresolvedReturnedOutputCount = 0;
         let missingRuntimeTxContextCount = 0;
+        let ignoredGenericValidationFailureCount = 0;
         if (!error && result.valid === false && Array.isArray(result.failures) && result.failures.length > 0) {
-          failureCount = result.failures.length;
-          unresolvedReturnedOutputCount = result.failures.filter((failure: any) => {
+	          const isNonActionableGenericOpenFailure = (failure: any): boolean => {
+	            const diagnosticFlagSet = (value: any): boolean =>
+	              value === true || value === 1 || value === '1' || value === 'true';
+            const txTypeIsReturnOrStakeRelated = (value: any): boolean => {
+              const txType = Number(value);
+              return Number.isInteger(txType) && RETURN_OR_STAKE_RELATED_TX_TYPES.has(txType);
+            };
+            const hasReturnRepairContext =
+              diagnosticFlagSet(failure?.return_map_hit) ||
+              diagnosticFlagSet(failure?.return_map_spendable) ||
+              diagnosticFlagSet(failure?.persisted_map_hit) ||
+              diagnosticFlagSet(failure?.persisted_map_spendable) ||
+              diagnosticFlagSet(failure?.spend_metadata_hit) ||
+              (typeof failure?.scan_hint_ko === 'string' && failure.scan_hint_ko.length > 0) ||
+              (typeof failure?.transfer_candidate_ko === 'string' && failure.transfer_candidate_ko.length > 0) ||
+              (typeof failure?.persisted_roi_sum_g_prefix === 'string' && failure.persisted_roi_sum_g_prefix !== 'none') ||
+              (typeof failure?.persisted_roi_sender_t_prefix === 'string' && failure.persisted_roi_sender_t_prefix !== 'none');
+	            const hasReturnOrStakeOriginContext =
+	              txTypeIsReturnOrStakeRelated(failure?.origin_tx_type) ||
+	              txTypeIsReturnOrStakeRelated(failure?.own_tx_type) ||
+	              txTypeIsReturnOrStakeRelated(failure?.scan_hint_origin_tx_type) ||
+	              txTypeIsReturnOrStakeRelated(failure?.scan_hint_ko_origin_tx_type) ||
+	              txTypeIsReturnOrStakeRelated(failure?.transfer_candidate_origin_tx_type);
+	            return diagnosticFlagSet(failure?.non_actionable_open_probe_miss) &&
+	              failure?.runtime_full_tx_cached === true &&
+	              !hasReturnRepairContext &&
+	              !hasReturnOrStakeOriginContext &&
+	              failure?.path === 'generic_failed';
+	          };
+          const actionableFailures = result.failures.filter((failure: any) => !isNonActionableGenericOpenFailure(failure));
+          ignoredGenericValidationFailureCount = result.failures.length - actionableFailures.length;
+          failureCount = actionableFailures.length;
+          unresolvedReturnedOutputCount = actionableFailures.filter((failure: any) => {
             const returnMapHit = failure?.return_map_hit === true;
             const returnMapSpendable = failure?.return_map_spendable === true;
             const spendMetadataReady = failure?.spend_metadata_hit === true && failure?.spend_metadata_complete === true && failure?.spend_metadata_semantically_valid === true && failure?.spend_metadata_can_open === true;
@@ -6374,14 +7085,14 @@ export class WalletService {
             }
             return false;
           }).length;
-          missingRuntimeTxContextCount = result.failures.filter((failure: any) => failure?.runtime_full_tx_cached !== true).length;
+          missingRuntimeTxContextCount = actionableFailures.filter((failure: any) => failure?.runtime_full_tx_cached !== true).length;
           unresolvedReturnedOutputs = unresolvedReturnedOutputCount > 0;
           missingRuntimeTxContext = missingRuntimeTxContextCount > 0;
 
-          const preview = result.failures
-            .slice(0, 3)
+          const preview = actionableFailures
+            .slice(0, 20)
             .map((failure: any) => {
-              const txid = typeof failure?.txid === 'string' ? failure.txid.slice(0, 12) : 'unknown';
+              const txid = typeof failure?.txid === 'string' ? failure.txid : 'unknown';
               const path = typeof failure?.path === 'string' ? failure.path : 'unknown';
               const originTxType =
                 typeof failure?.origin_tx_type === 'number' ? failure.origin_tx_type : -1;
@@ -6466,25 +7177,48 @@ export class WalletService {
                 typeof failure?.spend_metadata_sender_t_prefix === 'string'
                   ? failure.spend_metadata_sender_t_prefix
                   : 'none';
-              return `${txid} (${path}, origin=${originTxType}, hint_origin=${scanHintOriginTxType}, ko=${scanHintKo}, ko_idx=${scanHintKoOriginIdx}, ko_origin=${scanHintKoOriginTxType}, return_map=${returnMapHit}, return_spendable=${returnMapSpendable}, spend_meta=${spendMetadataHit}, spend_meta_complete=${spendMetadataComplete}, spend_meta_valid=${spendMetadataSemanticallyValid}, spend_meta_open=${spendMetadataCanOpen}, roi_g=${roiSumGPrefix}, roi_t=${roiSenderTPrefix}, proi_g=${persistedRoiSumGPrefix}, proi_t=${persistedRoiSenderTPrefix}, meta_g=${spendMetadataSumGPrefix}, meta_t=${spendMetadataSenderTPrefix}, cand_ko=${transferCandidateKo}, cand_idx=${transferCandidateOriginIdx}, cand_origin=${transferCandidateOriginTxType}, runtime_tx=${runtimeFullTxCached})`;
+              return `${txid} (${path}, origin=${originTxType}, own_tx_type=${typeof failure?.own_tx_type === 'number' ? failure.own_tx_type : -1}, hint_origin=${scanHintOriginTxType}, ko=${scanHintKo}, ko_idx=${scanHintKoOriginIdx}, ko_origin=${scanHintKoOriginTxType}, return_map=${returnMapHit}, return_spendable=${returnMapSpendable}, spend_meta=${spendMetadataHit}, spend_meta_complete=${spendMetadataComplete}, spend_meta_valid=${spendMetadataSemanticallyValid}, spend_meta_open=${spendMetadataCanOpen}, roi_g=${roiSumGPrefix}, roi_t=${roiSenderTPrefix}, proi_g=${persistedRoiSumGPrefix}, proi_t=${persistedRoiSenderTPrefix}, meta_g=${spendMetadataSumGPrefix}, meta_t=${spendMetadataSenderTPrefix}, cand_ko=${transferCandidateKo}, cand_idx=${transferCandidateOriginIdx}, cand_origin=${transferCandidateOriginTxType}, runtime_tx=${runtimeFullTxCached})`;
             })
             .join(', ');
-          const suffix = result.failures.length > 3 ? ` +${result.failures.length - 3} more` : '';
-          const hydration = this.lastRuntimeFullTxHydration;
-          error =
-            `Output validation failed for ${result.failures.length} input(s): ${preview}${suffix}` +
-            ` [rtx_candidates=${hydration.candidateCount}, rtx_requested=${hydration.requested},` +
-            ` rtx_hydrated=${hydration.hydrated}, rtx_error=${hydration.error ?? 'none'}]`;
+          if (actionableFailures.length > 0) {
+            const suffix = actionableFailures.length > 3 ? ` +${actionableFailures.length - 3} more` : '';
+            const ignoredSuffix = ignoredGenericValidationFailureCount > 0
+              ? `; ignored ${ignoredGenericValidationFailureCount} hydrated generic open-probe miss(es)`
+              : '';
+            const hydration = this.lastRuntimeFullTxHydration;
+            error =
+              `Output validation failed for ${actionableFailures.length} input(s): ${preview}${suffix}${ignoredSuffix}` +
+              ` [rtx_candidates=${hydration.candidateCount}, rtx_requested=${hydration.requested},` +
+              ` rtx_hydrated=${hydration.hydrated}, rtx_error=${hydration.error ?? 'none'}]`;
+          }
+          if (actionableFailures.length === 0 && ignoredGenericValidationFailureCount > 0) {
+            const hydration = this.lastRuntimeFullTxHydration;
+            reportClientEvent('wallet.validation_ignored_generic_open_probe_misses', {
+              level: 'warn',
+              message: 'Ignored hydrated generic open-probe validation misses',
+              context: {
+                ignoredGenericValidationFailureCount,
+                checkedOutputs: Number(result.checked_outputs || 0),
+                failedOutputs: Number(result.failed_outputs || result.failures.length || 0),
+                runtimeTxCandidates: hydration.candidateCount,
+                runtimeTxRequested: hydration.requested,
+                runtimeTxHydrated: hydration.hydrated,
+                runtimeTxError: hydration.error || '',
+              },
+            });
+          }
         }
+        const validationValid = result.valid !== false || (!error && ignoredGenericValidationFailureCount > 0 && failureCount === 0);
 	        return {
-	          valid: result.valid !== false,
-	          needsRefresh: result.needs_refresh === true,
+	          valid: validationValid,
+	          needsRefresh: validationValid ? false : result.needs_refresh === true,
 	          error,
 	          ...(unresolvedReturnedOutputs ? { unresolvedReturnedOutputs } : {}),
 	          ...(missingRuntimeTxContext ? { missingRuntimeTxContext } : {}),
 	          failureCount,
 	          unresolvedReturnedOutputCount,
 	          missingRuntimeTxContextCount,
+	          ignoredGenericValidationFailureCount,
 	          runtimeTxCandidates: this.lastRuntimeFullTxHydration.candidateCount,
 	          runtimeTxRequested: this.lastRuntimeFullTxHydration.requested,
 	          runtimeTxHydrated: this.lastRuntimeFullTxHydration.hydrated,
@@ -7143,9 +7877,12 @@ export class WalletService {
       const seedWorkerUrl = isExtensionRuntime()
         ? getExtensionAssetUrl('wallet/seed-validator.worker.js')
         : '/wallet/seed-validator.worker.js';
+      const seedWasmVersion = isExtensionRuntime()
+        ? ''
+        : encodeURIComponent((await this.resolveWasmAssetVersion()) || WASM_CACHE_VERSION);
       const seedWasmPath = isExtensionRuntime()
         ? getExtensionAssetUrl('wallet')
-        : '/wallet';
+        : '/api/wasm/' + seedWasmVersion;
 
       try {
         const response = await fetch(seedWorkerUrl, { method: 'HEAD' });

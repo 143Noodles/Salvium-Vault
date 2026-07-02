@@ -7,6 +7,7 @@ const isMobileOrTablet = isMobile || isTabletDevice;
 import { Card, Button, Input, Badge, Overlay } from './UIComponents';
 import { Layers, TrendingUp, History, CheckCircle2, Clock, AlertCircle, Loader2 } from './Icons';
 import { useWallet } from '../services/WalletContext';
+import { walletService } from '../services/WalletService';
 import { formatSAL, formatSAL3, formatSALCompact } from '../utils/format';
 import { startTaskTelemetry } from '../utils/clientTelemetry';
 
@@ -31,6 +32,7 @@ const StakingPage: React.FC = () => {
 
    const cachedHistorySignatureRef = useRef<string>('');
    const cachedHistoryRef = useRef<typeof wallet.stakes>([]);
+   const sal1SpendabilityDiagKeyRef = useRef<string>('');
 
    const [stakingStats, setStakingStats] = useState<{
       totalStaked: number;
@@ -182,6 +184,29 @@ const StakingPage: React.FC = () => {
      () => simulateReturns(numericAmount).toFixed(2),
      [numericAmount, stakingStats]
    );
+   const stakeableSal1Balance = walletService.getExactAssetBalance('SAL1');
+   const stakeableUnlockedBalance = stakeableSal1Balance?.unlockedBalanceSAL || 0;
+
+   useEffect(() => {
+      if (wallet.isScanning || !Number.isFinite(stakeableUnlockedBalance) || stakeableUnlockedBalance <= 0) {
+         return;
+      }
+
+      const unlockedAtomic = stakeableSal1Balance?.unlockedBalance;
+      const diagnosticKey = unlockedAtomic !== undefined && unlockedAtomic !== null
+         ? String(unlockedAtomic)
+         : stakeableUnlockedBalance.toFixed(8);
+
+      if (sal1SpendabilityDiagKeyRef.current === diagnosticKey) {
+         return;
+      }
+
+      sal1SpendabilityDiagKeyRef.current = diagnosticKey;
+      void walletService.reportSal1SpendabilityStatus(
+         stakeableUnlockedBalance,
+         'staking_page_balance_ready'
+      );
+   }, [stakeableSal1Balance?.unlockedBalance, stakeableUnlockedBalance, wallet.isScanning]);
 
    useEffect(() => {
       const validate = async () => {
@@ -191,7 +216,7 @@ const StakingPage: React.FC = () => {
          }
 
          const amount = parseFloat(stakeAmount);
-         const available = wallet.balance.unlockedBalanceSAL || 0;
+         const available = stakeableUnlockedBalance;
 
          if (amount > available) {
             setValidationState({
@@ -221,7 +246,7 @@ const StakingPage: React.FC = () => {
 
       const timer = setTimeout(validate, 500);
       return () => clearTimeout(timer);
-   }, [stakeAmount, wallet.balance.unlockedBalanceSAL]);
+   }, [stakeAmount, stakeableUnlockedBalance]);
 
    const activeStakes = useMemo(() =>
       wallet.stakes.filter(s => s.status === 'active'),
@@ -265,7 +290,7 @@ const StakingPage: React.FC = () => {
    );
 
    const handleMax = () => {
-      const maxAmount = wallet.balance.unlockedBalanceSAL;
+      const maxAmount = stakeableUnlockedBalance;
       setStakeAmount(maxAmount > 0 ? maxAmount.toString() : '');
       setStakeError(null);
    };
@@ -617,7 +642,7 @@ const StakingPage: React.FC = () => {
                   <div className={isMobileOrTablet ? 'space-y-[calc(var(--stake-gap)*1.05)]' : 'space-y-3'}>
                      <div className={`${isMobileOrTablet ? 'text-[clamp(11px,calc(var(--stake-body-text)*0.86),13px)]' : 'text-sm'} flex justify-between gap-2 font-medium min-w-0`}>
                         <span className="text-text-secondary uppercase tracking-wider">{t('staking.amount')}</span>
-                        <span className="text-text-muted whitespace-nowrap min-w-0 truncate">{t('send.available')}: <span className="text-white font-mono">{isMobileOrTablet ? formatSALCompact(wallet.balance.unlockedBalanceSAL) : formatSAL(wallet.balance.unlockedBalanceSAL)} SAL</span></span>
+                        <span className="text-text-muted whitespace-nowrap min-w-0 truncate">{t('send.available')}: <span className="text-white font-mono">{isMobileOrTablet ? formatSALCompact(stakeableUnlockedBalance) : formatSAL(stakeableUnlockedBalance)} SAL</span></span>
                      </div>
                      <div className="relative">
                         <Input

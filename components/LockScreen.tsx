@@ -20,34 +20,65 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
   const [isBioAvailable, setIsBioAvailable] = useState(false);
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetConfirmed, setResetConfirmed] = useState(false);
+  const biometricAutoStartedRef = React.useRef(false);
 
   React.useEffect(() => {
     const checkBio = async () => {
       const available = await BiometricService.isAvailable();
       setIsBioAvailable(available);
 
-      if (available && BiometricService.isEnabled()) {
-        handleBiometricUnlock();
+      if (available && BiometricService.isEnabled() && !biometricAutoStartedRef.current) {
+        biometricAutoStartedRef.current = true;
+        void handleBiometricUnlock(available);
       }
     };
-    checkBio();
+    void checkBio();
   }, []);
 
-  const handleBiometricUnlock = async () => {
-    const task = startTaskTelemetry('wallet.unlock_biometric', 'LockScreen', {}, 'authenticate');
+  const handleBiometricUnlock = async (availableOverride?: boolean) => {
+    if (isLoading) return;
+    const biometricAvailable = availableOverride ?? isBioAvailable;
+    const biometricEnabled = BiometricService.isEnabled();
+    const task = startTaskTelemetry('wallet.unlock_biometric', 'LockScreen', {
+      biometricAvailable,
+      biometricEnabled,
+      pageHidden: document.visibilityState === 'hidden',
+    }, 'authenticate');
+    setIsLoading(true);
+    setError('');
     try {
+      task.stage('authenticate_prompt', {
+        biometricAvailable,
+        biometricEnabled,
+        pageHidden: document.visibilityState === 'hidden',
+      });
       const bioPassword = await BiometricService.authenticate();
+      task.stage('authenticate_result', {
+        hasBioPassword: !!bioPassword,
+        pageHidden: document.visibilityState === 'hidden',
+      });
       if (bioPassword) {
-        setIsLoading(true);
-        task.stage('unlock_wallet');
+        task.stage('unlock_wallet', {
+          hasBioPassword: true,
+          pageHidden: document.visibilityState === 'hidden',
+        });
         const success = await wallet.unlockWallet(bioPassword);
         if (success) {
-          task.completed();
+          task.completed('unlock_wallet', { unlockSuccess: true });
           onUnlock();
         } else {
-          task.failed(new Error('biometric unlock failed'), 'unlock_failed');
+          task.failed(new Error('biometric unlock failed'), 'unlock_failed', {
+            unlockSuccess: false,
+            reason: 'unlock_failed',
+          });
           setError(t('lockScreen.biometricFailed'));
         }
+      } else {
+        task.failed(new Error('biometric authentication returned no password'), 'authenticate_empty', {
+          hasBioPassword: false,
+          reason: 'authenticate_empty',
+        });
+        setError(t('lockScreen.biometricFailed'));
       }
     } catch (error) {
       task.failed(error, 'authenticate_failed');
@@ -144,7 +175,7 @@ const LockScreen: React.FC<LockScreenProps> = ({ onUnlock, onReset }) => {
                   type="button"
                   variant="secondary"
                   className="w-full"
-                  onClick={handleBiometricUnlock}
+                  onClick={() => handleBiometricUnlock()}
                   disabled={isLoading}
                 >
                   <ScanFace size={18} className="mr-2" />

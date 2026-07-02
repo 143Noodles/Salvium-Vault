@@ -601,11 +601,11 @@ describe('WalletService', () => {
       );
     });
 
-    it('keeps SAL and SAL1 aliases for base exact-output caches', () => {
+    it('keeps SAL and SAL1 exact-output caches separate (HF13 remaps them independently)', () => {
       const service = WalletService.getInstance() as any;
 
-      expect(service.buildExactOutputCacheAliases('SAL1')).toEqual(['SAL1', 'SAL']);
-      expect(service.buildExactOutputCacheAliases('SAL')).toEqual(['SAL1', 'SAL']);
+      expect(service.buildExactOutputCacheAliases('SAL1')).toEqual(['SAL1']);
+      expect(service.buildExactOutputCacheAliases('SAL')).toEqual(['SAL']);
     });
 
     it('parses the asset type from pending exact-output epee requests', () => {
@@ -1024,17 +1024,23 @@ describe('WalletService', () => {
         hydrateRuntimeFullTxContext: ReturnType<typeof vi.fn>;
       };
 
+      const makeCreateResult = (resultAssetType: string) =>
+        JSON.stringify({
+          status: 'success',
+          asset_type: resultAssetType,
+          transactions,
+        });
+
       service.walletInstance = {
         is_initialized: () => true,
         get_carrot_address: () => 'SalvSenderAddress',
         get_address: () => 'SSenderAddress',
-        create_transaction_with_asset_json: vi.fn(() =>
-          JSON.stringify({
-            status: 'success',
-            asset_type: assetType,
-            transactions,
-          })
-        ),
+        create_transaction_json: vi.fn(() => makeCreateResult('SAL1')),
+        create_transaction_with_asset_json: vi.fn((
+          _address: string,
+          _amount: string,
+          wasmAssetType: string
+        ) => makeCreateResult(wasmAssetType || assetType)),
       };
       service.wasmModule = {
         clear_http_cache: vi.fn(),
@@ -1138,13 +1144,19 @@ describe('WalletService', () => {
         'SAL1'
       );
 
-      const createTx = (service as unknown as { walletInstance: { create_transaction_with_asset_json: ReturnType<typeof vi.fn> } }).walletInstance.create_transaction_with_asset_json;
-      expect(createTx).toHaveBeenCalledWith('SalvRecipientAddress', '3', 'SAL1', 15, 1, '');
+      const wallet = (service as unknown as {
+        walletInstance: {
+          create_transaction_json: ReturnType<typeof vi.fn>;
+          create_transaction_with_asset_json: ReturnType<typeof vi.fn>;
+        };
+      }).walletInstance;
+      expect(wallet.create_transaction_json).toHaveBeenCalledWith('SalvRecipientAddress', '3', 15, 1, '');
+      expect(wallet.create_transaction_with_asset_json).not.toHaveBeenCalled();
       expect(details.amountAtomic).toBe('3');
       expect(details.amount).toBe(0.00000003);
     });
 
-    it('falls back to the SAL base bucket when SAL1 reports no unlocked stake-change liquidity', async () => {
+    it('routes explicit SAL1 sends through the native base transaction builder', async () => {
       const fetchMock = installFetchMock();
       const service = setupService({
         tx_blob: 'deadbeef',
@@ -1153,35 +1165,7 @@ describe('WalletService', () => {
         fee: 1234,
         dust: 0,
         amount: 2084408800000,
-      }, 'SAL');
-
-      const createTx = vi.fn((
-        _address: string,
-        _amount: string,
-        assetType: string,
-        _mixin: number,
-        _priority: number
-      ) => {
-        if (assetType === 'SAL1') {
-          return JSON.stringify({
-            status: 'error',
-            error: 'No unlocked balance for asset SAL1',
-          });
-        }
-        return JSON.stringify({
-          status: 'success',
-          asset_type: 'SAL',
-          transactions: [{
-            tx_blob: 'deadbeef',
-            tx_hash: txHash,
-            tx_key: txKey,
-            fee: 1234,
-            dust: 0,
-            amount: 2084408800000,
-          }],
-        });
       });
-      (service as unknown as { walletInstance: { create_transaction_with_asset_json: typeof createTx } }).walletInstance.create_transaction_with_asset_json = createTx;
 
       const details = await service.sendTransactionWithDetailsAtomic(
         'SalvRecipientAddress',
@@ -1192,10 +1176,17 @@ describe('WalletService', () => {
         'SAL1'
       );
 
-      expect(createTx.mock.calls.map((call) => call[2])).toEqual(['SAL1', 'SAL']);
-      expect(details.assetType).toBe('SAL');
+      const wallet = (service as unknown as {
+        walletInstance: {
+          create_transaction_json: ReturnType<typeof vi.fn>;
+          create_transaction_with_asset_json: ReturnType<typeof vi.fn>;
+        };
+      }).walletInstance;
+      expect(wallet.create_transaction_json).toHaveBeenCalledWith('SalvRecipientAddress', '2084408800000', 15, 1, '');
+      expect(wallet.create_transaction_with_asset_json).not.toHaveBeenCalled();
+      expect(details.assetType).toBe('SAL1');
       const broadcastBody = JSON.parse(String((fetchMock.mock.calls.find(([url]) => String(url).includes('/api/wallet/sendrawtransaction'))?.[1] as RequestInit).body));
-      expect(broadcastBody.source_asset_type).toBe('SAL');
+      expect(broadcastBody.source_asset_type).toBe('SAL1');
     });
 
     it('passes canonical sal-prefixed token asset ids to WASM before bare tickers', async () => {
@@ -1780,6 +1771,542 @@ describe('WalletService', () => {
         valid: false,
         needsRefresh: true,
         error: 'missing return spend metadata',
+      });
+    });
+
+    it('should ignore explicitly non-actionable hydrated generic open-probe misses', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 3,
+        hydrated: 3,
+        candidateCount: 0,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: 'a'.repeat(64),
+                path: 'generic_failed',
+                return_map_hit: false,
+                return_map_spendable: false,
+                spend_metadata_hit: false,
+                runtime_full_tx_cached: true,
+                non_actionable_open_probe_miss: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: true,
+        needsRefresh: false,
+        failureCount: 0,
+        ignoredGenericValidationFailureCount: 1,
+      });
+      expect(result.error).toBeUndefined();
+    });
+
+    it('should keep unmarked type-0 generic open failures actionable', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 1,
+        hydrated: 1,
+        candidateCount: 1,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: '0'.repeat(64),
+                path: 'generic_failed',
+                tx_type: 0,
+                own_tx_type: 0,
+                origin_tx_type: -1,
+                return_map_hit: false,
+                return_map_spendable: false,
+                spend_metadata_hit: false,
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        failureCount: 1,
+        ignoredGenericValidationFailureCount: 0,
+      });
+      expect(result.error).toContain('Output validation failed for 1 input');
+    });
+
+    it('should keep returned-output validation failures actionable', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 1,
+        hydrated: 1,
+        candidateCount: 0,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: 'b'.repeat(64),
+                path: 'generic_failed',
+                return_map_hit: true,
+                return_map_spendable: false,
+                spend_metadata_hit: false,
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        unresolvedReturnedOutputs: true,
+        failureCount: 1,
+        ignoredGenericValidationFailureCount: 0,
+      });
+      expect(result.error).toContain('Output validation failed for 1 input');
+    });
+
+    it('should keep generic failures actionable when runtime tx context is missing', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 1,
+        hydrated: 0,
+        candidateCount: 1,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: 'c'.repeat(64),
+                path: 'generic_failed',
+                return_map_hit: false,
+                return_map_spendable: false,
+                spend_metadata_hit: false,
+                runtime_full_tx_cached: false,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        missingRuntimeTxContext: true,
+        failureCount: 1,
+        missingRuntimeTxContextCount: 1,
+        ignoredGenericValidationFailureCount: 0,
+      });
+    });
+
+    it('should keep scan-hint and transfer-candidate failures actionable', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 2,
+        hydrated: 2,
+        candidateCount: 2,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: 'd'.repeat(64),
+                path: 'generic_failed',
+                scan_hint_ko: '1'.repeat(64),
+                runtime_full_tx_cached: true,
+              },
+              {
+                txid: 'e'.repeat(64),
+                path: 'generic_failed',
+                transfer_candidate_ko: '2'.repeat(64),
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        failureCount: 2,
+        ignoredGenericValidationFailureCount: 0,
+      });
+      expect(result.error).toContain('Output validation failed for 2 input');
+    });
+
+    it('should keep spend-metadata failures actionable even when serialized as numeric flags', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 1,
+        hydrated: 1,
+        candidateCount: 1,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: 'f'.repeat(64),
+                path: 'generic_failed',
+                spend_metadata_hit: 1,
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        failureCount: 1,
+        ignoredGenericValidationFailureCount: 0,
+      });
+    });
+
+    it('should keep persisted ROI failures actionable', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 2,
+        hydrated: 2,
+        candidateCount: 2,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: '8'.repeat(64),
+                path: 'generic_failed',
+                persisted_map_hit: true,
+                runtime_full_tx_cached: true,
+              },
+              {
+                txid: '9'.repeat(64),
+                path: 'generic_failed',
+                persisted_roi_sum_g_prefix: 'zero',
+                persisted_roi_sender_t_prefix: 'set',
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        failureCount: 2,
+        ignoredGenericValidationFailureCount: 0,
+      });
+    });
+
+    it('should keep degraded lost-ROI failures actionable without tx-type hints', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 1,
+        hydrated: 1,
+        candidateCount: 1,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: 'b'.repeat(64),
+                path: 'generic_failed',
+                tx_type: 0,
+                own_tx_type: 0,
+                origin_tx_type: -1,
+                scan_hint_origin_tx_type: -1,
+                scan_hint_ko_origin_tx_type: -1,
+                transfer_candidate_origin_tx_type: -1,
+                return_map_hit: false,
+                persisted_map_hit: false,
+                persisted_roi_sum_g_prefix: 'none',
+                persisted_roi_sender_t_prefix: 'none',
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        failureCount: 1,
+        ignoredGenericValidationFailureCount: 0,
+      });
+      expect(result.error).toContain('Output validation failed for 1 input');
+    });
+
+    it('should keep string-encoded return origin metadata actionable', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 1,
+        hydrated: 1,
+        candidateCount: 1,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: 'a'.repeat(64),
+                path: 'generic_failed',
+                origin_tx_type: '7',
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        failureCount: 1,
+        ignoredGenericValidationFailureCount: 0,
+      });
+    });
+
+    it('should report mixed ignored and actionable validation failures', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 2,
+        hydrated: 2,
+        candidateCount: 2,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: '1'.repeat(64),
+                path: 'generic_failed',
+                return_map_hit: false,
+                return_map_spendable: false,
+                spend_metadata_hit: false,
+                runtime_full_tx_cached: true,
+                non_actionable_open_probe_miss: true,
+              },
+              {
+                txid: '2'.repeat(64),
+                path: 'generic_failed',
+                return_map_hit: true,
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        unresolvedReturnedOutputs: true,
+        failureCount: 1,
+        ignoredGenericValidationFailureCount: 1,
+      });
+      expect(result.error).toContain('ignored 1 hydrated generic open-probe miss');
+    });
+
+    it('should keep missing or empty validation paths actionable', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 2,
+        hydrated: 2,
+        candidateCount: 2,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: '3'.repeat(64),
+                runtime_full_tx_cached: true,
+              },
+              {
+                txid: '4'.repeat(64),
+                path: '',
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        failureCount: 2,
+        ignoredGenericValidationFailureCount: 0,
+      });
+    });
+
+    it('should keep return, stake, and yield origin metadata actionable', async () => {
+      const service = WalletService.getInstance() as unknown as {
+        walletInstance: unknown;
+        lastRuntimeFullTxHydration: unknown;
+      };
+      service.lastRuntimeFullTxHydration = {
+        attempted: true,
+        requested: 3,
+        hydrated: 3,
+        candidateCount: 3,
+        error: null,
+      };
+      service.walletInstance = {
+        is_initialized: () => true,
+        validate_outputs_for_send: () =>
+          JSON.stringify({
+            valid: false,
+            needs_refresh: true,
+            failures: [
+              {
+                txid: '5'.repeat(64),
+                path: 'generic_failed',
+                origin_tx_type: 7,
+                runtime_full_tx_cached: true,
+              },
+              {
+                txid: '6'.repeat(64),
+                path: 'generic_failed',
+                scan_hint_origin_tx_type: 6,
+                runtime_full_tx_cached: true,
+              },
+              {
+                txid: '7'.repeat(64),
+                path: 'generic_failed',
+                transfer_candidate_origin_tx_type: 2,
+                runtime_full_tx_cached: true,
+              },
+            ],
+          }),
+      };
+
+      const result = await WalletService.getInstance().validateOutputsForSend();
+
+      expect(result).toMatchObject({
+        valid: false,
+        needsRefresh: true,
+        failureCount: 3,
+        ignoredGenericValidationFailureCount: 0,
       });
     });
   });

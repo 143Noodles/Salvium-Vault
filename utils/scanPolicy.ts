@@ -15,6 +15,20 @@ export interface ScanTriggerRequest {
   sessionId?: string;
 }
 
+export function shouldForceFullScanForMissingWalletCache({
+  cacheMissing,
+  hadCachedWalletData,
+  walletHeight,
+}: {
+  cacheMissing: boolean;
+  hadCachedWalletData: boolean;
+  walletHeight: number;
+}): boolean {
+  if (!cacheMissing) return false;
+  if (hadCachedWalletData) return true;
+  return Number.isFinite(walletHeight) && walletHeight > 0;
+}
+
 export function resolveUnlockScheduledScanFromHeight({
   preferredScanStartHeight,
   finalRestoreHeight,

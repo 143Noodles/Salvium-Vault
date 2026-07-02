@@ -6,6 +6,7 @@ import SendPage from '../components/SendPage';
 
 const mockGetTokens = vi.fn();
 const mockGetAssetBalance = vi.fn();
+const mockGetExactAssetBalance = vi.fn();
 const mockUseWallet = vi.fn();
 
 vi.mock('../services/WalletContext', () => ({
@@ -16,6 +17,7 @@ vi.mock('../services/WalletService', () => ({
   walletService: {
     getTokens: (...args: unknown[]) => mockGetTokens(...args),
     getAssetBalance: (...args: unknown[]) => mockGetAssetBalance(...args),
+    getExactAssetBalance: (...args: unknown[]) => mockGetExactAssetBalance(...args),
     getAssetBalanceAtomic: () => ({ balanceAtomic: '0', unlockedBalanceAtomic: '0' }),
   },
 }));
@@ -42,6 +44,12 @@ describe('SendPage asset gating', () => {
       unlockedBalance: 0,
       balanceSAL: 0,
       unlockedBalanceSAL: 0,
+    });
+    mockGetExactAssetBalance.mockReset().mockReturnValue({
+      balance: 500000000,
+      unlockedBalance: 200000000,
+      balanceSAL: 5,
+      unlockedBalanceSAL: 2,
     });
     mockUseWallet.mockReset().mockReturnValue({
       validateAddress: vi.fn().mockResolvedValue(false),

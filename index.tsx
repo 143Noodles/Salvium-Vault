@@ -94,7 +94,15 @@ console.error = (...args) => {
     message,
   });
   if (shouldReportConsoleTelemetry('error', message)) {
-    reportClientEvent('frontend.console_error', { level: 'error', message });
+    // Extension-caused DOM mutations (removeChild/insertBefore NotFoundError) are
+    // recovered by the boundary's one-time reload — warn, not error, so the error
+    // channel stays actionable.
+    const recoverableDomMutation =
+      /NotFoundError/.test(message) && /removeChild|insertBefore|object can not be found here/i.test(message);
+    reportClientEvent('frontend.console_error', {
+      level: recoverableDomMutation ? 'warn' : 'error',
+      message,
+    });
   }
   originalError.apply(console, args);
 };
@@ -133,7 +141,7 @@ if (typeof window !== 'undefined') {
   });
 }
 
-const clearVaultCachesAndReload = async (reason: string, _options: { force?: boolean } = {}) => {
+const clearVaultCachesAndReload = async (reason: string, options: { force?: boolean } = {}) => {
   if (typeof window === 'undefined') return;
 
   // UPDATE POLICY: any staleness reloads IMMEDIATELY. The old defer-while-scanning
@@ -143,11 +151,17 @@ const clearVaultCachesAndReload = async (reason: string, _options: { force?: boo
 
   const reloadMarker = `${reason}:${BUILD_ID}`;
   try {
-    if (window.sessionStorage.getItem('salvium_vault_forced_reload') === reloadMarker) return;
+    if (!options.force && window.sessionStorage.getItem('salvium_vault_forced_reload') === reloadMarker) return;
     window.sessionStorage.setItem('salvium_vault_forced_reload', reloadMarker);
   } catch {
     // Continue with best-effort recovery.
   }
+
+  // Only mark the runtime stale once we are committed to reloading. Setting this
+  // before the one-shot marker check poisons the session on a repeated invocation
+  // (e.g. the SW update message on every load): the early return skips the reload
+  // but the flag would block every send with "Vault update required" forever.
+  (window as typeof window & { __salviumRuntimeStale?: boolean }).__salviumRuntimeStale = true;
 
   try {
     if ('serviceWorker' in navigator) {
@@ -208,6 +222,7 @@ const checkForStaleRuntimeAssets = async (source: string, force = false): Promis
 
     const latestBundleId = extractVaultBundleIdFromHtml(await bundleResponse.text());
     if (latestBundleId && latestBundleId !== BUILD_ID) {
+      (window as typeof window & { __salviumRuntimeStale?: boolean }).__salviumRuntimeStale = true;
       reportClientEvent('frontend.stale_bundle_detected', {
         level: 'warn',
         context: {
@@ -230,6 +245,7 @@ const checkForStaleRuntimeAssets = async (source: string, force = false): Promis
       currentLoadedWasmAssetVersion &&
       latestWasmAssetVersion !== currentLoadedWasmAssetVersion
     ) {
+      (window as typeof window & { __salviumRuntimeStale?: boolean }).__salviumRuntimeStale = true;
       reportClientEvent('frontend.stale_wasm_detected', {
         level: 'warn',
         context: {
@@ -366,12 +382,18 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, AppError
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    // Extension-caused DOM mutations (Google Translate & co.) are recovered with a
+    // one-time reload — report those at warn so the error channel stays actionable.
+    const recoverableDomMutation = isRecoverableDomMutationError(error);
     reportClientEvent('frontend.react_error', {
-      level: 'error',
+      level: recoverableDomMutation ? 'warn' : 'error',
       message: error?.message || 'Unhandled startup error',
-      context: { component: errorInfo?.componentStack ? 'react-boundary' : 'unknown' },
+      context: {
+        component: errorInfo?.componentStack ? 'react-boundary' : 'unknown',
+        reason: recoverableDomMutation ? 'recoverable_dom_mutation' : 'unhandled',
+      },
     });
-    if (isRecoverableDomMutationError(error) && scheduleDomMutationRecoveryReload(error)) {
+    if (recoverableDomMutation && scheduleDomMutationRecoveryReload(error)) {
       console.warn('[AppErrorBoundary] Recovering from DOM mutation error with one-time reload', error);
       return;
     }
@@ -502,6 +524,27 @@ if (!isNativePlatform() && 'serviceWorker' in navigator) {
     });
   } else {
     window.addEventListener('load', () => {
+      // SW-less recovery mode: a prior worker-init failure with a wedged/owning service
+      // worker (Firefox 'Failed to update the ServiceWorker', or a COEP:credentialless
+      // Cache-pipeline NS_BINDING_ABORTED) set this flag. Run the session WITHOUT a SW so
+      // the worker script loads straight from the network. The flag is sessionStorage, so a
+      // fresh visit re-registers the (now worker-bypassing) SW normally.
+      let swDisabled = false;
+      try { swDisabled = window.sessionStorage.getItem('salvium_disable_sw') === '1'; } catch {}
+      if (swDisabled) {
+        (async () => {
+          try {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map((r) => r.unregister()));
+            if ('caches' in window) {
+              const keys = await caches.keys();
+              await Promise.all(keys.filter((k) => k.startsWith('salvium-')).map((k) => caches.delete(k)));
+            }
+          } catch {}
+        })();
+        swStatus.registered = false;
+        return;
+      }
       navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
       .then((registration) => {
         reportTaskEvent('completed', 'service_worker.register', 'registered', 'index', {

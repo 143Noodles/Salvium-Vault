@@ -119,6 +119,12 @@ async function loadReturnAddresses(walletAddress: string): Promise<string | null
   }
 }
 
+export async function getCachedReturnAddressCount(walletAddress: string): Promise<number> {
+  const csv = await loadReturnAddresses(walletAddress);
+  if (!csv) return 0;
+  return csv.split(',').filter((value) => value.length === 64).length;
+}
+
 async function flushDerivedStateOrThrow(wallet: any, reason: string, fields?: string[]): Promise<void> {
   const startedAt = performance.now();
   reportClientEvent('scan.flush_derived_started', {
@@ -564,11 +570,19 @@ function yieldToUI(): Promise<void> {
   });
 }
 
+function isScanPaused(): boolean {
+  // The page is backgrounded or the device is offline => the scan is PAUSED, not failing.
+  // Mobile browsers suspend network/timers in this state, so fetch timeouts and "Failed to
+  // fetch" are the expected, retried-on-resume condition, never real errors.
+  return (typeof document !== 'undefined' && document.visibilityState === 'hidden') ||
+         (typeof navigator !== 'undefined' && navigator.onLine === false);
+}
+
 function getFetchTelemetryLevel(endpoint: string, reason: string): 'info' | 'warn' | 'error' {
-  if (/\/api\/daemon\/info/i.test(endpoint)) {
-    return typeof document !== 'undefined' && document.visibilityState === 'hidden' ? 'info' : 'warn';
-  }
-  return reason === 'timeout' ? 'error' : 'error';
+  if (isScanPaused()) return 'info';
+  if (/\/api\/daemon\/info/i.test(endpoint)) return 'warn';
+  void reason;
+  return 'error';
 }
 
 function shouldReportFetchLifecycle(endpoint: string): boolean {
@@ -1051,7 +1065,7 @@ class CSPScanService {
 
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
-    script.src = `/wallet/CSPScanner.js?v=${encodeURIComponent(WASM_CACHE_VERSION)}-cdn6`;
+      script.src = `/wallet/CSPScanner.js?v=${encodeURIComponent(WASM_CACHE_VERSION)}-wasmcanon1`;
       script.async = true;
 
       // Some proxies/browsers can leave a script element with neither onload nor
@@ -1437,6 +1451,18 @@ class CSPScanService {
 
   private _stallReject: ((e: Error) => void) | null = null;
   private _activeHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  // Scan generation epoch: bumped when a scan starts and whenever scanner state is
+  // force-reset. A scan whose captured epoch is stale is a zombie (see startScanInner).
+  private scanEpoch = 0;
+  // Post-phase-1 work (sparse ingest, protocol-token recovery, spent discovery) makes no
+  // onProgress calls, so with the server's sparse concurrency throttled it could exceed the
+  // 5-min liveness window and trip a SPURIOUS stall-abort (observed 2026-07-01 22:48, cost a
+  // full-restore retry). Those loops bump this instead; the heartbeat counts it as progress.
+  private _lastAuxActivityAt = 0;
+
+  private noteScanActivity(): void {
+    this._lastAuxActivityAt = performance.now();
+  }
 
   private async startScanInner(
     startHeight: number,
@@ -1476,6 +1502,17 @@ class CSPScanService {
     this.isCancelled = false;
 
     this.currentScanId = this.generateScanId();
+    // Generation guard. A stall-abort frees the scan lock (resetScannerState) while this
+    // routine may still be unwinding; a retry scan can then start. From that moment this
+    // scan is a ZOMBIE: it must not touch shared scanner state (destroying the live scan's
+    // workers wedges it at ~1%) and must not write journal records under the live scan's
+    // id (silent chunk corruption -> completion-proof failures). Every shared-state write
+    // and journal call below is gated on scanIsCurrent(), and journal calls use the
+    // captured scanId, never this.currentScanId.
+    const scanEpoch = ++this.scanEpoch;
+    const scanId = this.currentScanId;
+    const scanIsCurrent = () => this.scanEpoch === scanEpoch;
+    this._lastAuxActivityAt = performance.now();
     this.ingestedChunksThisRestore = new Set();
     const journalRequired = startHeight === 0 || forceReturnedTransferScan;
 
@@ -1515,7 +1552,7 @@ class CSPScanService {
         await this.hydrateIncrementalState(walletAddressForJournal);
 
         await startScanJournal(
-          this.currentScanId,
+          scanId,
           walletAddressForJournal,
           startHeight,
           endHeight
@@ -1529,11 +1566,13 @@ class CSPScanService {
       if (DEBUG) debugWarn('[CSPScanService] Failed to start scan journal:', e);
       if (journalRequired) {
         // Reset here: this throw precedes the main try/finally, so without it a failed journal start leaves isScanning stuck true and bricks all future scans.
-        this.isScanning = false;
-        this.currentScanId = null;
-        releaseScanLock();
-        releaseWakeLock();
-        stopMobileScanAudio();
+        if (scanIsCurrent()) {
+          this.isScanning = false;
+          this.currentScanId = null;
+          releaseScanLock();
+          releaseWakeLock();
+          stopMobileScanAudio();
+        }
         throw e;
       }
     }
@@ -1721,10 +1760,48 @@ class CSPScanService {
       phaseKey: 'preparing'
     });
 
+    let precomputeStartedAt = performance.now();
+    let precomputeKeepaliveTick = 0;
+    let precomputeKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
     try {
+      precomputeKeepaliveTimer = setInterval(() => {
+        precomputeKeepaliveTick += 1;
+        const elapsedMs = Math.round(performance.now() - precomputeStartedAt);
+        const keepaliveProgress = Math.min(0.01, 0.001 + precomputeKeepaliveTick * 0.001);
+        reportProgress({
+          phase: '1A',
+          totalBlocks: 0,
+          scannedBlocks: 0,
+          viewTagMatches: 0,
+          blocksPerSecond: 0,
+          subaddressCount: knownSubaddressCount,
+          totalSubaddresses,
+          message: 'Generating subaddress keys...',
+          progress: keepaliveProgress,
+          completedChunks: 0,
+          totalChunks: 0,
+          bytesReceived: 0,
+          overallProgress: keepaliveProgress,
+          percentage: Math.max(0, Math.round(keepaliveProgress * 100)),
+          transactionsFound: 0,
+          statusMessage: 'Preparing wallet...',
+          phaseKey: 'preparing'
+        });
+        emitScanTelemetry('scan.precompute_subaddresses_keepalive', {
+          phase: '1A',
+          elapsedMs,
+          subaddressCount: knownSubaddressCount,
+          totalSubaddresses,
+          isAndroid,
+        }, elapsedMs > 120000 ? 'warn' : 'info');
+      }, 30000);
       await wallet.call('precompute_subaddresses', [0, totalSubaddresses]);
     } catch {
       // Unknown-method (old WASM) or transient failure: same silent skip as before.
+    } finally {
+      if (precomputeKeepaliveTimer) {
+        clearInterval(precomputeKeepaliveTimer);
+      }
     }
 
     let viewSecretKey: string = '';
@@ -1912,23 +1989,54 @@ class CSPScanService {
 
     const forceSingleChunkOnTest = forceSingleChunkScan || disableStakeFilter;
     heartbeatTimer = setInterval(() => {
-      const stalledMs = Math.round(performance.now() - lastAnyProgressAt);
+      // A zombie scan's heartbeat must never abort/reset the live scan: self-clear and exit.
+      if (!scanIsCurrent()) {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          if (this._activeHeartbeatTimer === heartbeatTimer) {
+            this._activeHeartbeatTimer = null;
+          }
+          heartbeatTimer = null;
+        }
+        return;
+      }
+      // While hidden/offline the scan is PAUSED: hold the stall window open so a backgrounded
+      // restore is never aborted. The 5-min liveness window restarts fresh on resume, and the
+      // CSPScanner keeps requeuing chunks (without burning its retry budget) so progress
+      // continues automatically once the network/foreground returns.
+      const paused = isScanPaused();
+      if (paused) {
+        lastAnyProgressAt = performance.now();
+      }
+      const lastActivityAt = Math.max(lastAnyProgressAt, this._lastAuxActivityAt);
+      const stalledMs = Math.round(performance.now() - lastActivityAt);
       emitScanTelemetry('scan.heartbeat', {
         phase: this.activePhase || 'setup',
         stalledMs,
+        paused,
         ...lastProgressSnapshot,
       }, stalledMs > 120000 ? 'warn' : 'info');
-      // Liveness enforcement: a scan that produces NO progress activity for 5 minutes is
-      // wedged (every previously-found silent hang -- untimed awaits, stranded worker
-      // queues -- presents exactly this way). Abort it and fail the scan so the journal/
-      // retry machinery recovers, instead of hanging the restore UI forever.
-      if (stalledMs > 300000) {
+      // Liveness enforcement: a scan that is visible+online yet produces NO progress for 5
+      // minutes is wedged (silent hang: untimed awaits, stranded worker queues). Abort + fail
+      // so the journal/retry machinery recovers. A paused (hidden/offline) scan is exempt.
+      if (!paused && stalledMs > 300000) {
+        // The abort breaks a wedged scan so the coordinator can retry it (cancelled_retryable);
+        // it is recoverable, so emit at warn. A truly unrecoverable scan still surfaces an error
+        // via the terminal 'failed' path once retries are exhausted.
         emitScanTelemetry('scan.stall_aborted', {
           phase: this.activePhase || 'setup',
           stalledMs,
-        }, 'error');
+        }, 'warn');
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          if (this._activeHeartbeatTimer === heartbeatTimer) {
+            this._activeHeartbeatTimer = null;
+          }
+          heartbeatTimer = null;
+        }
         this.isCancelled = true;
         try { this.scanner?.abort(); } catch {}
+        try { this.resetScannerState(); } catch {}
         const reject = this._stallReject;
         this._stallReject = null;
         if (reject) reject(new Error('scan_stalled: no progress for 5 minutes'));
@@ -1982,13 +2090,13 @@ class CSPScanService {
       // fully-scanned; unrecorded chunks resume as gaps. Scanned + matched recorded together
       // so a crash can't leave a matched chunk recorded-as-scanned-but-not-matched.
       onChunksScanned: (scannedChunkStarts: number[], matchedChunkStarts: number[]) => {
-        if (!this.currentScanId || !Array.isArray(scannedChunkStarts) || scannedChunkStarts.length === 0) {
+        if (!scanIsCurrent() || !scanId || !Array.isArray(scannedChunkStarts) || scannedChunkStarts.length === 0) {
           return;
         }
         // Fire-and-forget: recordScannedChunks batches and flushes internally; tx count is
         // added once by the bulk call at scan end to avoid double-counting.
         void recordScannedChunks(
-          this.currentScanId,
+          scanId,
           scannedChunkStarts,
           Array.isArray(matchedChunkStarts) ? matchedChunkStarts : [],
           0
@@ -2057,8 +2165,8 @@ class CSPScanService {
         onMatch?.(data);
       },
       onError: (err: any) => {
-        if (this.currentScanId) {
-          recordScanError(this.currentScanId, err?.error || err?.message || 'Unknown scan error').catch(() => {});
+        if (scanIsCurrent() && scanId) {
+          recordScanError(scanId, err?.error || err?.message || 'Unknown scan error').catch(() => {});
         }
         (() => {
           // FORCED UPDATE: a wasm-pair signature mismatch means this session's cached
@@ -2070,10 +2178,15 @@ class CSPScanService {
             }
           } catch {}
         })();
+        // A retryable transient (CSPScanner is requeuing the chunk) or a paused (hidden/offline)
+        // state is NOT a failure: emit at warn so a backgrounded restore surfaces no errors. A
+        // real, non-retried worker error stays error-level.
+        const workerErrRecoverable = (err && err.willRetry === true) || isScanPaused();
         emitScanTelemetry('scan.worker_error', {
           phase: this.activePhase || 'unknown',
           reason: err?.error || err?.message || 'Unknown scan error',
-        }, 'error', err?.error || err?.message || 'Unknown scan error');
+          willRetry: err?.willRetry === true,
+        }, workerErrRecoverable ? 'warn' : 'error', err?.error || err?.message || 'Unknown scan error');
       },
       onTelemetry: (type: string, event: { level?: 'info' | 'warn' | 'error'; message?: string; context?: Record<string, string | number | boolean | null | undefined> } = {}) => {
         emitScanTelemetry(type, event.context || {}, event.level || 'info', event.message);
@@ -2149,6 +2262,7 @@ class CSPScanService {
         endHeight,
       });
 
+      if (!scanIsCurrent()) throw new Error('scan superseded by a newer scan');
       try {
         if (this.scanner && typeof this.scanner.destroy === 'function') {
           this.scanner.destroy();
@@ -2229,6 +2343,7 @@ class CSPScanService {
           continue;
         }
 
+        if (!scanIsCurrent()) throw new Error('scan superseded by a newer scan');
         try {
           try {
             if (this.scanner && typeof this.scanner.destroy === 'function') {
@@ -2359,6 +2474,7 @@ class CSPScanService {
         }
         retriedChunkCount++;
 
+        if (!scanIsCurrent()) throw new Error('scan superseded by a newer scan');
         try {
           try {
             if (this.scanner && typeof this.scanner.destroy === 'function') {
@@ -2437,11 +2553,11 @@ class CSPScanService {
       );
     }
 
-    if (this.currentScanId && result.scannedChunks && result.scannedChunks.length > 0) {
+    if (scanIsCurrent() && scanId && result.scannedChunks && result.scannedChunks.length > 0) {
       const hasMatches = result.matchedChunks && result.matchedChunks.length > 0;
       try {
         await recordScannedChunks(
-          this.currentScanId,
+          scanId,
           result.scannedChunks,
           hasMatches ? (result.matchedChunks || []) : [],
           result.matchCount || 0
@@ -2461,8 +2577,8 @@ class CSPScanService {
         .map((batch: any) => `${batch.startHeight} (${batch.error || 'unknown error'})`)
         .join(', ');
       const error = `Phase 1 scan incomplete: ${result.failedBatches.length} batch(es) failed after retries: ${failedSummary}`;
-      if (this.currentScanId) {
-        recordScanError(this.currentScanId, error).catch(() => {});
+      if (scanIsCurrent() && scanId) {
+        recordScanError(scanId, error).catch(() => {});
         // Mark the failed chunks for a precise deferred rescan so the next resume re-targets
         // exactly them (rescan_gaps) instead of failing the whole scan into a full rescan.
         const failedChunkHeights: number[] = [];
@@ -2478,7 +2594,7 @@ class CSPScanService {
           }
         }
         if (failedChunkHeights.length > 0) {
-          recordChunksNeedRescan(this.currentScanId, failedChunkHeights, error).catch(() => {});
+          recordChunksNeedRescan(scanId, failedChunkHeights, error).catch(() => {});
         }
       }
       return {
@@ -2497,12 +2613,12 @@ class CSPScanService {
     if (missingScannedChunks.length > 0) {
       const missingSummary = missingScannedChunks.slice(0, 10).join(', ');
       const error = `Phase 1 scan incomplete: ${missingScannedChunks.length} chunk(s) were not scanned: ${missingSummary}`;
-      if (this.currentScanId) {
-        recordScanError(this.currentScanId, error).catch(() => {});
+      if (scanIsCurrent() && scanId) {
+        recordScanError(scanId, error).catch(() => {});
         // Precise deferred rescan of exactly the unscanned chunks (next resume → rescan_gaps).
         const missingInRange = missingScannedChunks.filter(h => h >= startHeight && h < endHeight);
         if (missingInRange.length > 0) {
-          recordChunksNeedRescan(this.currentScanId, missingInRange, error).catch(() => {});
+          recordChunksNeedRescan(scanId, missingInRange, error).catch(() => {});
         }
       }
       return {
@@ -2572,7 +2688,9 @@ class CSPScanService {
         isIncremental,
         this.currentRecoveryAction,
         new Set(),   // skipChunks (unchanged default)
-        true         // deferFinalFlush — coalesce phase-2 flush into protocol recovery
+        true,        // deferFinalFlush — coalesce phase-2 flush into protocol recovery
+        scanId,
+        scanEpoch
       );
       carriedPhase2Dirty = rescanResult.derivedDirty;
       carriedPhase2Fields = rescanResult.derivedFields;
@@ -2616,7 +2734,9 @@ class CSPScanService {
       endHeight,
       emitScanTelemetry,
       carriedPhase2Dirty,
-      carriedPhase2Fields
+      carriedPhase2Fields,
+      scanId,
+      scanEpoch
     );
     // Backstop: recovery absorbs the carried phase-2 flush on every internal path; if it
     // somehow did not, flush here so deferred phase-2 derived state is never left dirty.
@@ -2825,6 +2945,7 @@ class CSPScanService {
                       recordOffset += 36;
                       if ((i & 0x0fff) === 0x0fff) await yieldIfNeeded();
                     }
+                    this.noteScanActivity();
                     binaryChunksFetched += 1;
                     spentRecordsChecked += binaryHeader.count;
                     if (binaryHeader.remaining === 0) return true;
@@ -3014,8 +3135,8 @@ class CSPScanService {
 
 	    if (scanIssues.length > 0) {
 	      const error = scanIssues.join('; ');
-	      if (this.currentScanId) {
-	        recordScanError(this.currentScanId, error).catch(() => {});
+	      if (scanIsCurrent() && scanId) {
+	        recordScanError(scanId, error).catch(() => {});
 	      }
 	      return {
 	        success: false,
@@ -3254,7 +3375,9 @@ class CSPScanService {
             onBackgroundComplete,
             onProgress,
             matchedChunksForProof,
-            processedChunksForProof
+            processedChunksForProof,
+            scanId,
+            scanEpoch
           );
           phase2bSucceeded = phase2bResult.succeeded;
           phase2bNeedsRescan = phase2bResult.needsRescan;
@@ -3313,7 +3436,9 @@ class CSPScanService {
           const phase2bMessage = (phase2bFatalError as Error)?.message || String(phase2bFatalError);
           throw new Error(`Synchronous Phase 2b failed: ${phase2bMessage}`);
         }
-        this.scanner = null;
+        if (scanIsCurrent()) {
+          this.scanner = null;
+        }
       } else {
         phase2bFailure = runPhase2b ? 'phase2b-gate-skipped' : 'phase2b-not-requested';
         reportClientEvent('scan.phase2b_skipped', {
@@ -3327,7 +3452,7 @@ class CSPScanService {
             scanWindowEnd: endHeight,
           },
         });
-        if (this.scanner) {
+        if (scanIsCurrent() && this.scanner) {
           this.scanner.destroy();
           this.scanner = null;
         }
@@ -3397,8 +3522,8 @@ class CSPScanService {
         phase3Succeeded: phase3Ran ? phase3Succeeded : undefined,
         scanIssueCount: scanIssues.length,
       }, 'error', (error as Error)?.message || String(error));
-      if (this.currentScanId) {
-        recordScanError(this.currentScanId, (error as Error)?.message || String(error)).catch(() => {});
+      if (scanIsCurrent() && scanId) {
+        recordScanError(scanId, (error as Error)?.message || String(error)).catch(() => {});
       }
       throw error;
     } finally {
@@ -3406,23 +3531,30 @@ class CSPScanService {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
       }
-      this.isScanning = false;
-      releaseScanLock();
-      releaseWakeLock();
-      removeWakeLockVisibilityHandler();
-      stopMobileScanAudio();
+      // A zombie's finalizer must not release the LIVE scan's lock or destroy its
+      // workers (that is exactly the frozen-at-1% wedge). Shared state is only
+      // touched when this scan is still the current generation.
+      if (scanIsCurrent()) {
+        this.isScanning = false;
+        releaseScanLock();
+        releaseWakeLock();
+        removeWakeLockVisibilityHandler();
+        stopMobileScanAudio();
 
-      if (this.scanner && !this.isPhase2bRunning) {
-        try {
-          this.scanner.destroy();
-        } catch {
+        if (this.scanner && !this.isPhase2bRunning) {
+          try {
+            this.scanner.destroy();
+          } catch {
+          }
+          this.scanner = null;
         }
-        this.scanner = null;
       }
 
-      if (!phase2bRan && this.currentScanId) {
+      // The journal completion targets this scan's OWN id (captured), never the live
+      // scan's — completing a successor's journal mid-flight would abort its proof.
+      if (!phase2bRan && scanId && scanIsCurrent()) {
         try {
-          await completeScanJournal(this.currentScanId, endHeight, {
+          await completeScanJournal(scanId, endHeight, {
             scanSucceeded,
             matchedChunks: matchedChunksForProof,
             processedChunks: processedChunksForProof,
@@ -3465,7 +3597,11 @@ class CSPScanService {
     onComplete?: (result: { outputsFound: number; message: string; needsRescan: boolean }) => void,
     onProgress?: (progress: ScanProgress) => void,
     matchedChunksForProof: number[] = [],
-    processedChunksForProof: number[] = []
+    processedChunksForProof: number[] = [],
+    // Owning scan identity (see recoverProtocolTokenOutputs): journal completion must
+    // target the caller's scan and no-op once that scan is no longer current.
+    ownerScanId: string | null = null,
+    ownerEpoch: number | null = null
   ): Promise<{
     succeeded: boolean;
     needsRescan: boolean;
@@ -3660,7 +3796,10 @@ class CSPScanService {
           // Skip chunks already ingested by the phase-3 main pass — re-ingesting them is a no-op
           // (txid dedup) and was the redundant second reconstruction wave. Return-only chunks
           // (not in the phase-3 set) are still ingested.
-          new Set(processedChunks)
+          new Set(processedChunks),
+          false,       // deferFinalFlush
+          ownerScanId,
+          ownerEpoch
         );
         if (returnRescanResult.phase3Degraded) {
           const phase3Message = `Phase 3 post-processing incomplete during Phase 2b: ${returnRescanResult.phase3Issues.join('; ')}`;
@@ -3750,7 +3889,9 @@ class CSPScanService {
         phase2bMayCompleteJournal ? 'Scan complete' : 'Follow-up rescan required'
       );
 
-      if (this.currentScanId && !phase2bMayCompleteJournal) {
+      const phase2bJournalScanId = ownerScanId ?? this.currentScanId;
+      const phase2bJournalWriteAllowed = ownerEpoch === null || this.scanEpoch === ownerEpoch;
+      if (phase2bJournalWriteAllowed && phase2bJournalScanId && !phase2bMayCompleteJournal) {
         reportClientEvent('scan.journal_completion_deferred', {
           level: needsRescan ? 'warn' : 'error',
           message: needsRescan
@@ -3769,9 +3910,9 @@ class CSPScanService {
             scanWindowEnd: endHeight,
           },
         });
-      } else if (this.currentScanId) {
+      } else if (phase2bJournalWriteAllowed && phase2bJournalScanId) {
         try {
-          await completeScanJournal(this.currentScanId, endHeight, {
+          await completeScanJournal(phase2bJournalScanId, endHeight, {
             scanSucceeded: true,
             matchedChunks: matchedChunksForProof,
             processedChunks: processedChunksForProof,
@@ -3858,6 +3999,9 @@ class CSPScanService {
   }
 
   resetScannerState(): void {
+    // Zombify the owning scan: its still-unwinding routine must no longer touch
+    // shared state or journal records (generation guard in startScanInner).
+    this.scanEpoch += 1;
     try {
       if (this.scanner && !this.isPhase2bRunning) {
         this.scanner.destroy();
@@ -3950,8 +4094,15 @@ class CSPScanService {
     // skipped upstream and MUST be folded into this function's single coalesced flush —
     // on EVERY path (success, early-return, error). phase2Fields is its field set.
     phase2Dirty: boolean = false,
-    phase2Fields: string[] = []
+    phase2Fields: string[] = [],
+    // Owning scan identity: journal writes must target the CALLER's scan and stop once
+    // that scan is no longer current (zombie), never follow this.currentScanId at write
+    // time — a zombie would otherwise pollute the live scan's journal with false coverage.
+    ownerScanId: string | null = null,
+    ownerEpoch: number | null = null
   ): Promise<{ outputsFound: number; protocolTokenTxCount: number; rangeCapped: boolean; flushedDeferred: boolean }> {
+    const journalScanId = ownerScanId ?? this.currentScanId;
+    const journalWriteAllowed = () => ownerEpoch === null || this.scanEpoch === ownerEpoch;
     // Guarantees a carried phase-2 dirty state flushes exactly once. Used by every
     // early-return / error path so deferred phase-2 derived state is never dropped.
     const flushCarriedPhase2IfNeeded = async (extraFields: string[] = []): Promise<boolean> => {
@@ -4249,8 +4400,14 @@ class CSPScanService {
     // Safe: nothing between phase-2 ingest and the end of protocol recovery reads
     // rebuilt snapshot/syncStatus/transactions state. Callers that read derived state
     // right after targetedRescan (phase2b) leave this false so the inline flush runs.
-    deferFinalFlush: boolean = false
+    deferFinalFlush: boolean = false,
+    // Owning scan identity (see recoverProtocolTokenOutputs): journal writes must
+    // target the caller's scan and no-op once that scan is no longer current.
+    ownerScanId: string | null = null,
+    ownerEpoch: number | null = null
   ): Promise<{ outputsFound: number; successfullyProcessedChunks: number[]; minConfirmedHeight: number; phase3Degraded: boolean; phase3Issues: string[]; returnAddressSourceChunks: number[]; returnAddressesCsv: string; derivedDirty: boolean; derivedFields: string[] }> {
+    const journalScanId = ownerScanId ?? this.currentScanId;
+    const journalWriteAllowed = () => ownerEpoch === null || this.scanEpoch === ownerEpoch;
     wallet = await this.getCurrentValidWallet(wallet);
     if (!wallet) {
       return { outputsFound: 0, successfullyProcessedChunks: [], minConfirmedHeight: 0, phase3Degraded: false, phase3Issues: [], returnAddressSourceChunks: [], returnAddressesCsv: '', derivedDirty: false, derivedFields: [] };
@@ -4748,11 +4905,12 @@ class CSPScanService {
           await new Promise(r => setTimeout(r, 10));
         }
       }
+	      this.noteScanActivity();
 	      processedBatches.add(pickedStart);
 
-	      if (this.currentScanId && taskChunks.length > 0) {
+	      if (journalWriteAllowed() && journalScanId && taskChunks.length > 0) {
 	        try {
-	          await markChunksInProgress(this.currentScanId, taskChunks);
+	          await markChunksInProgress(journalScanId, taskChunks);
 	        } catch (error) {
 	          if (!isIncremental) {
 	            throw error;
@@ -4941,13 +5099,14 @@ class CSPScanService {
           phase3Issues.push(`Sparse ingest failed near chunk batch ${pickedStart}: ${(e as Error)?.message || String(e)}`);
         }
       }
+	      this.noteScanActivity();
 	      processedChunks += task.chunkCount;
 	      if (processedChunks > totalChunks) processedChunks = totalChunks;
-	      if (this.currentScanId && taskChunks.length > 0) {
+	      if (journalWriteAllowed() && journalScanId && taskChunks.length > 0) {
 	        const completedTaskChunks = taskChunks.filter((chunkStart) => successfullyIngestedChunks.has(chunkStart));
 	        if (completedTaskChunks.length > 0) {
 	          try {
-	            await markChunksCompleted(this.currentScanId, completedTaskChunks, true);
+	            await markChunksCompleted(journalScanId, completedTaskChunks, true);
 	          } catch {
 	          }
 	        }
@@ -4959,7 +5118,7 @@ class CSPScanService {
         await yieldToUI();
       }
 
-      if (this.currentScanId && processedChunks > 0 && processedChunks % 50 === 0) {
+      if (journalWriteAllowed() && journalScanId && processedChunks > 0 && processedChunks % 50 === 0) {
         try {
           let currentBalance = 0;
           let currentHeight = 0;
@@ -4988,7 +5147,7 @@ class CSPScanService {
             currentHeight = wallet.mirror.getSyncStatus().walletHeight || 0;
           } catch {
           }
-          await saveBalanceCheckpoint(this.currentScanId, currentBalance, currentHeight);
+          await saveBalanceCheckpoint(journalScanId, currentBalance, currentHeight);
         } catch {
         }
       }
@@ -5110,13 +5269,13 @@ class CSPScanService {
       }
     }
 
-    if (this.currentScanId && (successfullyIngestedChunks.size > 0 || verifiedNoOpChunks.size > 0)) {
+    if (journalWriteAllowed() && journalScanId && (successfullyIngestedChunks.size > 0 || verifiedNoOpChunks.size > 0)) {
       try {
         // Verified no-op chunks are journal-completed too: leaving them un-marked meant every
         // subsequent scan recomputed them as "still to do" and re-ran the deep chunk window
         // (observed live: recurring 504000->tip rescans on a synced wallet, multi-second
         // main-thread ingest each time). They are complete by construction -- nothing to ingest.
-        await markChunksCompleted(this.currentScanId, [...new Set([...successfullyIngestedChunks, ...verifiedNoOpChunks])], true);
+        await markChunksCompleted(journalScanId, [...new Set([...successfullyIngestedChunks, ...verifiedNoOpChunks])], true);
       } catch {
       }
     }
