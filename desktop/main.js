@@ -69,7 +69,14 @@ function log(...args) { console.log('[desktop]', ...args); }
 // ---------------------------------------------------------------------------
 function prefsFile() { return path.join(app.getPath('userData'), 'desktop-prefs.json'); }
 function readPrefs() { try { return JSON.parse(fs.readFileSync(prefsFile(), 'utf8')) || {}; } catch (_) { return {}; } }
-function writePrefs(p) { try { fs.writeFileSync(prefsFile(), JSON.stringify(p)); } catch (e) { log('prefs write error:', e && e.message); } }
+function writePrefs(p) {
+  try {
+    const f = prefsFile();
+    const tmp = f + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(p));
+    fs.renameSync(tmp, f); // atomic: a crash mid-write can't drop the persisted sidecar port
+  } catch (e) { log('prefs write error:', e && e.message); }
+}
 
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -405,6 +412,22 @@ async function createMainWindow(port) {
       log('patched user-agent to include Electron token');
     }
   } catch (e) { log('user-agent patch failed:', e && e.message); }
+
+  // Wallet hardening: the window must only ever show the local sidecar origin.
+  // Deny renderer-opened child windows (route real links to the system browser),
+  // and block any navigation away from http://127.0.0.1:<port>.
+  const allowedOrigin = 'http://127.0.0.1:' + port;
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    if (url === allowedOrigin || url === allowedOrigin + '/' || url.startsWith(allowedOrigin + '/')) return;
+    e.preventDefault();
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    log('blocked navigation to', url);
+  });
+
   await mainWindow.loadURL('http://127.0.0.1:' + port + '/');
   log('SPA window loaded.');
   mainWindow.on('close', handleWindowClose);
