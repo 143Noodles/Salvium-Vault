@@ -72,19 +72,8 @@ Installers (Linux AppImage/deb, Windows, macOS) are on the
 [GitHub Releases](https://github.com/143Noodles/Salvium-Vault-Web-Wallet/releases) page.
 The desktop app runs the same wallet fully locally (the server component runs as a
 localhost sidecar) and updates itself through Ed25519-signed over-the-air content
-bundles — installers rarely change.
-
-**macOS (Homebrew):**
-
-```bash
-brew tap 143Noodles/salvium
-brew install --cask --no-quarantine salvium-vault
-```
-
-Every release also ships `SHA256SUMS.txt` to verify downloads. The macOS and Windows
-builds are not yet notarized/signed, so a direct download shows a Gatekeeper /
-SmartScreen prompt on first launch — see [desktop/SIGNING.md](desktop/SIGNING.md).
-See [desktop/PUBLISHING.md](desktop/PUBLISHING.md) for how releases and updates work.
+bundles — installers rarely change. See [desktop/PUBLISHING.md](desktop/PUBLISHING.md)
+for how releases and updates work.
 
 ## Docker Deployment
 
