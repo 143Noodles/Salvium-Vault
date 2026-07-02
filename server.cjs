@@ -98,6 +98,11 @@ const RATE_LIMIT_SALPAY_CALLBACK_MAX = Math.max(1, Number.parseInt(process.env.S
 const RATE_LIMIT_CLEANUP_INTERVAL = 300000; // Clean up every 5 minutes
 // Verbose binary-proxy hex logging; off by default (opt-in for debugging).
 const DEBUG_BINARY_PROXY = process.env.SALVIUM_DEBUG_BINARY_PROXY === '1';
+// Desktop sidecar (Electron shell sets SALVIUM_ALLOW_PRIVATE_NODES=1): a single-user
+// localhost process. Multi-tenant defenses (rate limiting) and telemetry-to-disk are
+// pointless here, so the lean profile skips them. NEVER set on the hosted server, so
+// hosted behavior is unchanged.
+const DESKTOP_SIDECAR = process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1';
 
 setInterval(() => {
     const now = Date.now();
@@ -201,6 +206,7 @@ function checkRateLimit(req, maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'gen
 
 function rateLimitMiddleware(maxRequests = RATE_LIMIT_MAX_REQUESTS, scope = 'general') {
     return (req, res, next) => {
+        if (DESKTOP_SIDECAR) return next(); // localhost single-user: no rate limiting
         const path = req.path || req.url || '';
         const isClientTelemetryEndpoint =
             path.startsWith('/api/client-events') ||
@@ -782,7 +788,7 @@ function recordClientTelemetryEvent(event) {
         console.warn('[client-event]', JSON.stringify(event));
     }
     if (CLIENT_EVENT_LOG_ENABLED) {
-        fsSync.appendFile(CLIENT_EVENT_LOG_FILE, `${JSON.stringify(event)}\n`, () => {});
+        if (!DESKTOP_SIDECAR) fsSync.appendFile(CLIENT_EVENT_LOG_FILE, `${JSON.stringify(event)}\n`, () => {});
         maybeRotateClientEventLog();
     }
 }
