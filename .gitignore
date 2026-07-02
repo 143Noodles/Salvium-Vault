@@ -137,3 +137,11 @@ scripts/verify-protocol-mint-recovery.cjs
 
 # Android release artifacts must not be published by the web wallet
 public/*.apk
+
+# Local pre-change snapshots and working notes (never publish)
+*.before-*
+dist-backups/
+wallet/backup-*/
+wallet-legacy/backup-*/
+INVESTIGATION_BRIEF.md
+stakeable-balance-deploy-ts.txt
