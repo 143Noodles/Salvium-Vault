@@ -20,7 +20,6 @@
     "files": [
       "main.js",
       "content-update.js",
-      "updater.js",
       "package.json",
       "build/icon.png",
       "preload.js",
@@ -118,7 +117,6 @@
     }
   },
   "dependencies": {
-    "electron-updater": "^6.3.9",
     "tar": "^6.2.1"
   },
   "homepage": "https://salvium.io",
