@@ -28,7 +28,10 @@ import {
   Download,
   History,
   Cpu,
-  Database
+  Database,
+  RefreshCw,
+  AlertTriangle,
+  Loader2
 } from './components/Icons';
 
 import { MobileNavBar } from './components/MobileNavBar';
@@ -167,6 +170,9 @@ const AppContent: React.FC = () => {
       return true;
     }
   });
+  const [showRequiredRescanPrompt, setShowRequiredRescanPrompt] = useState(false);
+  const [requiredRescanError, setRequiredRescanError] = useState('');
+  const [requiredRescanStarting, setRequiredRescanStarting] = useState(false);
   const [storageDenied, setStorageDenied] = useState(false);
   const [pwaInstallDismissed, setPwaInstallDismissed] = useState(false);
   const deferredInstallPromptRef = useRef<any>(null);
@@ -472,6 +478,7 @@ const AppContent: React.FC = () => {
     const requestWakeLock = async () => {
       if (appState === 'locked') return;
       if (wakeLock !== null && !wakeLock.released) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       try {
         if ('wakeLock' in navigator) {
           wakeLock = await (navigator as any).wakeLock.request('screen');
@@ -561,11 +568,65 @@ const AppContent: React.FC = () => {
     setAppState('loading');
   }, []);
 
+  const restoreScanSessionActive =
+    wallet.scanSession?.type === 'restore-full-rescan' &&
+    wallet.scanSession.status === 'active';
+  const walletRequiresRescan =
+    wallet.scanHealth.repairRequired ||
+    wallet.scanHealth.terminalState === 'repair_required';
+  const requiredRescanIsCritical =
+    walletRequiresRescan &&
+    /native wallet state is empty/i.test(wallet.scanHealth.reason || '');
+
   useEffect(() => {
-    if (!isNativeApp) {
+    const canShowRequiredRescan =
+      appState === 'dashboard' ||
+      (requiredRescanIsCritical && appState === 'loading');
+    if (!canShowRequiredRescan || !wallet.isWalletReady || wallet.isLocked || !walletRequiresRescan) {
+      setShowRequiredRescanPrompt(false);
+      return;
+    }
+    // Hide while a rescan runs (including the one this prompt starts): scanHealth
+    // stays repair_required until the scan completes, so the modal would otherwise
+    // sit on top of its own running rescan.
+    if (wallet.isScanning || restoreScanSessionActive) {
+      setShowRequiredRescanPrompt(false);
+      return;
+    }
+    setShowRequiredRescanPrompt(true);
+  }, [appState, wallet.isWalletReady, wallet.isLocked, wallet.isScanning, restoreScanSessionActive, walletRequiresRescan, requiredRescanIsCritical, wallet.scanHealth.reason]);
+
+  const startRequiredRescan = async () => {
+    if (requiredRescanStarting) {
+      return;
+    }
+    setRequiredRescanError('');
+    if (wallet.canRescanWithoutPassword && !wallet.canRescanWithoutPassword()) {
+      setRequiredRescanError('Open Settings and run Rescan Wallet so Vault can verify your password first.');
       return;
     }
 
+    setRequiredRescanStarting(true);
+    const task = startTaskTelemetry('wallet.required_rescan', 'App', {
+      reason: wallet.scanHealth.reason || wallet.scanHealth.terminalState,
+    }, 'start');
+    try {
+      wallet.prepareManualFullRescan();
+      localStorage.setItem('salvium_initial_scan_complete', 'false');
+      localStorage.removeItem('salvium_restore_scan_finished');
+      presentRescanLoading();
+      await wallet.rescanWallet();
+      task.completed();
+    } catch (error) {
+      task.failed(error, 'rescan_failed');
+      setRequiredRescanError(error instanceof Error ? error.message : 'Failed to start rescan');
+      setAppState('dashboard');
+    } finally {
+      setRequiredRescanStarting(false);
+    }
+  };
+
+  useEffect(() => {
     const handleAutoRescan = () => {
       presentRescanLoading();
     };
@@ -621,7 +682,7 @@ const AppContent: React.FC = () => {
     return <Onboarding onComplete={handleOnboardingComplete} />;
   }
 
-  if (appState === 'loading') {
+  if (appState === 'loading' && !(walletRequiresRescan && requiredRescanIsCritical)) {
     return <LoadingScreen onComplete={handleLoadingComplete} />;
   }
 
@@ -710,6 +771,52 @@ const AppContent: React.FC = () => {
                 className="mt-5 rounded-xl bg-accent-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent-primary/20 transition-colors hover:bg-accent-primary/90"
               >
                 Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {(appState === 'dashboard' || (appState === 'loading' && requiredRescanIsCritical)) && showRequiredRescanPrompt && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-lg rounded-2xl border border-amber-400/25 bg-[#11111d] p-5 shadow-2xl shadow-black/50">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-amber-400/25 bg-amber-400/10 text-amber-300">
+                <AlertTriangle size={22} />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Wallet rescan required</h3>
+                <p className="text-xs text-text-muted">Full wallet functionality needs a fresh scan</p>
+              </div>
+            </div>
+
+            <p className="text-sm leading-6 text-text-secondary">
+              A rescan is required before this wallet can use all balance, staking, and transaction features reliably.
+              Start a rescan now to rebuild wallet state from the chain.
+            </p>
+
+            {requiredRescanError && (
+              <div className="mt-4 rounded-xl border border-red-500/25 bg-red-500/10 p-3 text-sm text-red-300">
+                {requiredRescanError}
+              </div>
+            )}
+
+            <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:justify-end">
+              <button
+                onClick={startRequiredRescan}
+                disabled={requiredRescanStarting}
+                className="inline-flex w-full items-center justify-center rounded-xl bg-accent-primary px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-accent-primary/20 transition-colors hover:bg-accent-primary/90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+              >
+                {requiredRescanStarting ? (
+                  <>
+                    <Loader2 size={16} className="mr-2 animate-spin" />
+                    Starting rescan
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw size={16} className="mr-2" />
+                    Rescan now
+                  </>
+                )}
               </button>
             </div>
           </div>

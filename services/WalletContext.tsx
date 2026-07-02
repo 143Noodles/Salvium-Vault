@@ -20,7 +20,7 @@ import {
     getBaseAssetBalanceFromSnapshot,
     getDisplayAssetBalanceFromSnapshot
 } from './WalletService';
-import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache, clearSubaddressOwnershipCache } from './CSPScanService';
+import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache, clearSubaddressOwnershipCache, getCachedReturnAddressCount } from './CSPScanService';
 import { encrypt, decrypt } from './CryptoService';
 import { initDesktopSilentAudio } from './SilentAudio';
 import { forceCleanSlate, getCheckpoint, pruneCheckpointCoverageFromHeight } from './ScanJournal';
@@ -56,11 +56,13 @@ import {
     resolveIncrementalScanPlan,
     resolveScanResumeHeight,
     resolveUnlockScheduledScanFromHeight,
+    shouldForceFullScanForMissingWalletCache,
     shouldSchedulePostScanFollowup,
     shouldRunCompletedChunkGapCheck,
     type ScanTriggerRequest,
 } from '../utils/scanPolicy';
 import {
+    buildRepairRequiredScanHealth,
     computeRestoreTerminalGates,
     createInitialScanHealth,
     type RestoreTerminalOutcome,
@@ -1223,14 +1225,15 @@ const reportRestoreDiagnostic = (
 };
 
 const getSendAssetShape = (assetType?: string): string => {
-    const trimmed = String(assetType || '').trim();
-    if (/^[A-Z0-9]{4}$/.test(trimmed)) return 'ticker_upper_4';
-    if (/^[a-z0-9]{4}$/.test(trimmed)) return 'ticker_lower_4';
-    if (/^sal[A-Z0-9]{4}$/.test(trimmed)) return 'sal_upper_4';
-    if (/^sal[a-z0-9]{4}$/.test(trimmed)) return 'sal_lower_4';
-    if (trimmed.toUpperCase() === 'SAL' || trimmed.toUpperCase() === 'SAL1') return 'base';
-    if (!trimmed) return 'empty';
-    return 'other';
+    const trimmed = String(assetType || "").trim();
+    if (!trimmed) return "empty";
+    const upper = trimmed.toUpperCase();
+    if (upper === "SAL" || upper === "SAL1") return "base";
+    if (/^sal[A-Z0-9]{4}$/.test(trimmed)) return "sal_upper_4";
+    if (/^sal[a-z0-9]{4}$/.test(trimmed)) return "sal_lower_4";
+    if (/^[A-Z0-9]{4}$/.test(trimmed)) return "ticker_upper_4";
+    if (/^[a-z0-9]{4}$/.test(trimmed)) return "ticker_lower_4";
+    return "other";
 };
 
 function atomicToAmount(value: string | undefined): number {
@@ -1310,6 +1313,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         }, 0);
     }, []);
     const balanceRef = React.useRef(balance);
+    const sal1SpendabilityDiagKeyRef = React.useRef<string>('');
+    const sal1SpendabilityDiagSkipKeyRef = React.useRef<string>('');
+    const sal1SpendabilityScanDiagKeyRef = React.useRef<string>('');
     useEffect(() => {
         balanceRef.current = balance;
     }, [balance]);
@@ -1380,6 +1386,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     useEffect(() => {
         scanHealthRef.current = scanHealth;
     }, [scanHealth]);
+    const markFullRescanRequired = useCallback((reason: string, currentHeight?: number, targetHeight?: number) => {
+        const status = syncStatusRef.current;
+        setScanHealth(buildRepairRequiredScanHealth({
+            currentHeight: currentHeight ?? status.walletHeight ?? 0,
+            targetHeight: targetHeight ?? status.daemonHeight ?? status.walletHeight ?? 0,
+            coveredAt: Date.now(),
+            reason,
+        }));
+    }, [setScanHealth]);
     const [lastSuccessfulScanAt, setLastSuccessfulScanAt] = useState(0);
     const [initLog, setInitLog] = useState<string[]>([]);
     const stakesRef = React.useRef<Stake[]>([]);
@@ -2466,14 +2481,16 @@ const getDeviceMemoryBucket = (): string => {
                     await forceWalletRehydration();
                 }
 
-                if (scanInProgressRef.current || cspScanService.isScanningInProgress() || hiddenDuration > SUSPENSION_THRESHOLD_MS || wasmStateLost) {
+                const serviceScanActiveAfterResume = cspScanService.isScanningInProgress();
+
+                if (scanInProgressRef.current || serviceScanActiveAfterResume || hiddenDuration > SUSPENSION_THRESHOLD_MS || wasmStateLost) {
                     reportClientEvent('scan.page_lifecycle', {
                         level: wasmStateLost || hiddenDuration > SUSPENSION_THRESHOLD_MS ? 'warn' : 'info',
                         context: {
                             eventName: 'visibility-visible',
                             hiddenDurationMs: hiddenDuration,
                             scanActive: scanInProgressRef.current,
-                            serviceScanActive: cspScanService.isScanningInProgress(),
+                            serviceScanActive: serviceScanActiveAfterResume,
                             wasmStateLost,
                             scanAgeMs: lastScanTimeRef.current ? Date.now() - lastScanTimeRef.current : 0,
                             walletHeight: lastKnownWasmHeightRef.current,
@@ -2487,7 +2504,38 @@ const getDeviceMemoryBucket = (): string => {
 
                 if (
                     hiddenDuration > SUSPENSION_THRESHOLD_MS &&
-                    cspScanService.isScanningInProgress()
+                    !serviceScanActiveAfterResume &&
+                    (scanInProgressRef.current || !!scanCoordinatorRef.current.activePromise)
+                ) {
+                    const scanAge = lastScanTimeRef.current ? Date.now() - lastScanTimeRef.current : hiddenDuration;
+                    reportClientEvent('scan.suspended_scan_recovered', {
+                        level: 'warn',
+                        message: 'Clearing stale scan coordinator after page suspension; coverage will be rechecked.',
+                        context: {
+                            source: 'visibility-visible-idle-service',
+                            hiddenDurationMs: hiddenDuration,
+                            scanAgeMs: scanAge,
+                            scanActive: scanInProgressRef.current,
+                            serviceScanActive: serviceScanActiveAfterResume,
+                            coordinatorActive: !!scanCoordinatorRef.current.activePromise,
+                            sessionType: activeRestoreSession?.type || 'background',
+                        },
+                    });
+                    scanVersionRef.current += 1;
+                    scanCoordinatorRef.current.serial += 1;
+                    scanCoordinatorRef.current.activePromise = undefined;
+                    scanCoordinatorRef.current.activeRequest = undefined;
+                    scanCoordinatorRef.current.pendingRequest = undefined;
+                    cspScanService.resetScannerState();
+                    scanInProgressRef.current = false;
+                    setIsScanning(false);
+                    setScanProgress(null);
+                    needsGapCheckRef.current = true;
+                }
+
+                if (
+                    hiddenDuration > SUSPENSION_THRESHOLD_MS &&
+                    serviceScanActiveAfterResume
                 ) {
                     const scanAge = lastScanTimeRef.current ? Date.now() - lastScanTimeRef.current : hiddenDuration;
                     if (scanAge > SUSPENSION_THRESHOLD_MS) {
@@ -2777,6 +2825,91 @@ const getDeviceMemoryBucket = (): string => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [stakes, syncStatus.daemonHeight, syncStatus.walletHeight, salPrice, transactions,
         nativeBalanceTrust, balance, isWalletReady, assessNativeSnapshotHealth]);
+
+    useEffect(() => {
+        const reportSpendabilityDiagSkip = (reason: string, extra: Record<string, unknown> = {}) => {
+            const skipKey = [
+                reason,
+                isWalletReady ? 'ready' : 'not-ready',
+                isLocked ? 'locked' : 'unlocked',
+                coldStartSettled ? 'cold-settled' : 'cold-start',
+                isScanning ? 'scanning' : 'idle',
+                syncStatus.isSyncing ? 'syncing' : 'synced',
+                balance.balance > 0 ? 'display-balance' : 'no-display-balance',
+                balance.unlockedBalance > 0 ? 'display-unlocked' : 'no-display-unlocked',
+            ].join(':');
+            if (sal1SpendabilityDiagSkipKeyRef.current === skipKey) {
+                return;
+            }
+            sal1SpendabilityDiagSkipKeyRef.current = skipKey;
+            reportClientEvent('staking.spendability_diag_skip', {
+                level: 'info',
+                context: {
+                    reason,
+                    component: 'WalletContext',
+                    isWalletReady,
+                    isLocked,
+                    coldStartSettled,
+                    isScanning,
+                    syncIsSyncing: syncStatus.isSyncing,
+                    displayBalancePositive: balance.balance > 0,
+                    displayUnlockedPositive: balance.unlockedBalance > 0,
+                    ...extra,
+                },
+            });
+        };
+
+        if (!isWalletReady) {
+            reportSpendabilityDiagSkip('wallet_not_ready');
+            return;
+        }
+        if (isLocked) {
+            reportSpendabilityDiagSkip('wallet_locked');
+            return;
+        }
+        if (!coldStartSettled) {
+            reportSpendabilityDiagSkip('cold_start_pending');
+            return;
+        }
+        if (isScanning) {
+            reportSpendabilityDiagSkip('scan_in_progress');
+            return;
+        }
+        if (syncStatus.isSyncing) {
+            reportSpendabilityDiagSkip('sync_in_progress');
+            return;
+        }
+
+        const sal1Balance = walletService.getExactAssetBalance('SAL1');
+        const unlockedAtomic = sal1Balance?.unlockedBalance;
+        const unlockedSal1 = sal1Balance?.unlockedBalanceSAL || 0;
+        if (unlockedAtomic === undefined || unlockedAtomic === null || !Number.isFinite(unlockedSal1) || unlockedSal1 <= 0) {
+            reportSpendabilityDiagSkip('no_positive_exact_sal1_unlocked', {
+                exactSal1BalanceHit: !!sal1Balance,
+                exactSal1UnlockedPositive: Number.isFinite(unlockedSal1) && unlockedSal1 > 0,
+            });
+            return;
+        }
+
+        const diagnosticKey = String(unlockedAtomic);
+        if (sal1SpendabilityDiagKeyRef.current === diagnosticKey) {
+            return;
+        }
+
+        sal1SpendabilityDiagKeyRef.current = diagnosticKey;
+        void walletService.reportSal1SpendabilityStatus(
+            unlockedSal1,
+            'wallet_context_balance_ready'
+        );
+    }, [
+        isWalletReady,
+        isLocked,
+        coldStartSettled,
+        isScanning,
+        syncStatus.isSyncing,
+        balance.balance,
+        balance.unlockedBalance,
+    ]);
 
     useEffect(() => {
         try {
@@ -3088,6 +3221,10 @@ const getDeviceMemoryBucket = (): string => {
         }
         let chartTipHeight = 0;
         try { chartTipHeight = await cspScanService.getNetworkHeight(); } catch {}
+        // The tip height gates out the WASM series synthetic future stake pairs
+        // (see buildExactWalletHistory); without it the chart tip plunges. Fall
+        // back to the last known daemon height rather than rendering unfiltered.
+        if (!chartTipHeight) chartTipHeight = syncStatusRef.current.daemonHeight || 0;
         const builtHistory = exactPairs
             ? buildExactWalletHistory(exactPairs, priceHistory, fallbackPrice, Date.now(), currentBalance, chartTipHeight)
             : buildWalletHistory(txs, historyStakes, priceHistory, fallbackPrice, Date.now(), currentBalance);
@@ -3454,6 +3591,16 @@ const getDeviceMemoryBucket = (): string => {
     const unlockWallet = async (password: string, isVaultRestore: boolean = false): Promise<boolean> => {
         const wallet = safeReadWallet();
         if (!wallet) {
+            reportClientEvent('wallet.unlock_flow_failed', {
+                level: 'warn',
+                message: 'No wallet found',
+                context: {
+                    component: 'WalletContext',
+                    hasStoredWallet: false,
+                    isVaultRestore,
+                    reason: 'no_stored_wallet',
+                },
+            });
             throw new Error('No wallet found');
         }
 
@@ -3525,55 +3672,220 @@ const getDeviceMemoryBucket = (): string => {
         if (cachedOutputsHex) {
         }
 
-        const hadData = (trustedCachedBalance?.balance || 0) > 0 || (wallet.cachedTransactions?.length || 0) > 0;
+        let cachedReturnAddressCount = 0;
+        if (wallet.address) {
+            try {
+                cachedReturnAddressCount = await getCachedReturnAddressCount(wallet.address);
+            } catch {
+                cachedReturnAddressCount = 0;
+            }
+        }
+        const hadData =
+            (trustedCachedBalance?.balance || 0) > 0 ||
+            (wallet.cachedTransactions?.length || 0) > 0 ||
+            cachedReturnAddressCount > 0;
         const cacheMissing = !cachedOutputsHex || cachedOutputsHex.length === 0;
-        if (cacheMissing && hadData) {
+        const cacheMissingRequiresFullScan = shouldForceFullScanForMissingWalletCache({
+            cacheMissing,
+            hadCachedWalletData: hadData,
+            walletHeight: wallet.height || 0,
+        });
+        if (cacheMissingRequiresFullScan) {
             // PERMANENT telemetry: reopening without a wallet cache forces a full rescan
             // (minutes). Field visibility for how often real users pay this cost.
             reportClientEvent('wallet.reopen_without_cache', {
                 level: 'warn',
-                context: { txCount: wallet.cachedTransactions?.length || 0 },
+                context: {
+                    txCount: wallet.cachedTransactions?.length || 0,
+                    returnAddressCount: cachedReturnAddressCount,
+                    hadData,
+                    walletHeight: wallet.height || 0,
+                    reason: hadData ? 'cached_wallet_data' : 'stored_height_without_cache',
+                },
             });
         }
 
         if (isVaultRestore) {
             reportRestoreDiagnostic('restore.vault_unlock_cache_loaded', {
                 source: 'vault-backup-restore',
-                fromHeight: cacheMissing && hadData ? 0 : wallet.height || 0,
+                fromHeight: cacheMissingRequiresFullScan ? 0 : wallet.height || 0,
                 cachePresent: !cacheMissing,
                 cacheMissing,
                 cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
                 hadData,
                 txCount: wallet.cachedTransactions?.length || 0,
+                returnAddressCount: cachedReturnAddressCount,
                 subaddressCount: wallet.cachedSubaddresses?.length || 0,
             });
         }
 
         let vaultRestoreSessionId: string | undefined;
         if (isVaultRestore) {
-            vaultRestoreSessionId = beginRestoreScanSession('vault-backup-restore', cacheMissing && hadData ? 0 : wallet.height || 0, {
+            vaultRestoreSessionId = beginRestoreScanSession('vault-backup-restore', cacheMissingRequiresFullScan ? 0 : wallet.height || 0, {
                 requiresReturnedTransferScan: false,
             });
         }
 
-        if (cacheMissing && hadData) {
+        if (cacheMissingRequiresFullScan) {
             pendingPasswordRef.current = password;
             pendingWalletRef.current = wallet;
             pendingMnemonicRef.current = mnemonic;
+            needsFullRescanRef.current = true;
+            preferredScanStartHeightRef.current = 0;
+            markFullRescanRequired(
+                hadData ? 'Stored wallet data is missing its wallet cache' : 'Stored wallet height is missing its wallet cache',
+                wallet.height || 0,
+                syncStatusRef.current.daemonHeight || wallet.height || 0
+            );
 
             cachedOutputsHex = '';
         }
 
-        await continueUnlockFlow(wallet, mnemonic, cachedOutputsHex, hadData, isVaultRestore ? {
-            scanSessionType: 'restore-full-rescan',
-            scanSessionId: vaultRestoreSessionId,
-            restoreSource: 'vault-backup-restore',
-        } : undefined);
+        const unlockFlowContext = () => ({
+            component: 'WalletContext',
+            hasStoredWallet: true,
+            isVaultRestore,
+            cachePresent: !cacheMissing,
+            cacheMissing,
+            hadData,
+            walletHeight: wallet.height || 0,
+        });
+
+        reportClientEvent('wallet.unlock_flow_started', {
+            level: 'info',
+            context: unlockFlowContext(),
+        });
+
+        try {
+            await continueUnlockFlow(wallet, mnemonic, cachedOutputsHex, hadData, isVaultRestore ? {
+                scanSessionType: 'restore-full-rescan',
+                scanSessionId: vaultRestoreSessionId,
+                restoreSource: 'vault-backup-restore',
+            } : undefined);
+        } catch (unlockError) {
+            const reason = unlockError instanceof Error ? unlockError.message : String(unlockError || 'unlock failed');
+            reportClientEvent('wallet.unlock_flow_failed', {
+                level: 'warn',
+                message: reason,
+                context: {
+                    ...unlockFlowContext(),
+                    wasmReady: walletService.isReady(),
+                    hasWallet: walletService.hasWallet(),
+                    reason,
+                },
+            });
+            throw unlockError;
+        }
 
         const wasmOk = walletService.isReady() && walletService.hasWallet();
+        reportClientEvent(wasmOk ? 'wallet.unlock_flow_completed' : 'wallet.unlock_flow_failed', {
+            level: wasmOk ? 'info' : 'warn',
+            message: wasmOk ? undefined : 'WASM wallet unavailable after unlock flow',
+            context: {
+                ...unlockFlowContext(),
+                wasmReady: walletService.isReady(),
+                hasWallet: walletService.hasWallet(),
+                reason: wasmOk ? 'ok' : 'wasm_wallet_unavailable',
+            },
+        });
         if (!wasmOk) {
             return false;
         }
+
+        try {
+            const postUnlockSnapshot = captureNativeSnapshot('post_unlock_diag_guard', {
+                walletHeight: wallet.height || 0,
+                cachePresent: !!cachedOutputsHex,
+                hadData,
+            });
+            const postUnlockBalance = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
+            const postUnlockNativeTransferCount = postUnlockSnapshot?.transfer_count || 0;
+            const postUnlockBalanceAmount = Number(postUnlockBalance.balance || 0);
+            const postUnlockUnlockedAmount = Number(postUnlockBalance.unlockedBalance || 0);
+            const postUnlockExactSal1 = walletService.getExactAssetBalance('SAL1');
+            const postUnlockExactSal1Unlocked = Number(postUnlockExactSal1?.unlockedBalanceSAL || 0);
+            const postUnlockNativeBalanceEmpty =
+                (!Number.isFinite(postUnlockBalanceAmount) || postUnlockBalanceAmount <= 0) &&
+                (!Number.isFinite(postUnlockUnlockedAmount) || postUnlockUnlockedAmount <= 0);
+            const postUnlockSpentKeyImageCount = wallet.cachedSpentKeyImages ? Object.keys(wallet.cachedSpentKeyImages).length : 0;
+            const postUnlockSubaddressCount = wallet.cachedSubaddresses?.length || 0;
+            const postUnlockHasPersistedWalletState =
+                hadData ||
+                cachedReturnAddressCount > 0 ||
+                (!!cachedOutputsHex && cachedOutputsHex.length > 0) ||
+                postUnlockSpentKeyImageCount > 0 ||
+                postUnlockSubaddressCount > 1;
+            reportClientEvent('wallet.post_unlock_state_gate', {
+                level: 'warn',
+                context: {
+                    hasPersistedWalletState: postUnlockHasPersistedWalletState,
+                    hadData,
+                    cachePresent: !!cachedOutputsHex,
+                    cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
+                    cachedTxCount: wallet.cachedTransactions?.length || 0,
+                    cachedReturnAddressCount,
+                    cachedSpentKeyImageCount: postUnlockSpentKeyImageCount,
+                    cachedSubaddressCount: postUnlockSubaddressCount,
+                    nativeTransferCount: postUnlockNativeTransferCount,
+                    nativeBalanceEmpty: postUnlockNativeBalanceEmpty,
+                    exactSal1UnlockedPositive: postUnlockExactSal1Unlocked > 0,
+                    walletHeight: wallet.height || 0,
+                },
+            });
+            // transferCount must be 0, matching the other native-state gates. An
+            // exactSal1Empty OR-clause here condemned every zero-balance wallet WITH
+            // history (all-spent, token-only) to a full rescan on every unlock.
+            if (
+                postUnlockHasPersistedWalletState &&
+                (wallet.height || 0) > 0 &&
+                postUnlockNativeBalanceEmpty &&
+                postUnlockNativeTransferCount === 0
+            ) {
+                const repairReason = 'Native wallet state is empty for an existing wallet';
+                needsFullRescanRef.current = true;
+                preferredScanStartHeightRef.current = 0;
+                markFullRescanRequired(
+                    repairReason,
+                    wallet.height || 0,
+                    syncStatusRef.current.daemonHeight || wallet.height || 0
+                );
+                setNativeBalanceTrust({
+                    trusted: false,
+                    reason: repairReason,
+                });
+                setSyncStatus(prev => ({
+                    ...prev,
+                    walletHeight: 0,
+                    isSyncing: true,
+                    scanStartHeight: 0,
+                    progress: 0,
+                }));
+                reportClientEvent('wallet.native_state_missing_requires_rescan', {
+                    level: 'warn',
+                    message: repairReason,
+                    context: {
+                        source: 'post_unlock_diag_guard',
+                        cachedTxCount: wallet.cachedTransactions?.length || 0,
+                        cachedReturnAddressCount,
+                        cachedSpentKeyImageCount: postUnlockSpentKeyImageCount,
+                        cachedSubaddressCount: postUnlockSubaddressCount,
+                        nativeTransferCount: postUnlockNativeTransferCount,
+                        nativeBalanceEmpty: postUnlockNativeBalanceEmpty,
+                        walletHeight: wallet.height || 0,
+                        cachePresent: !!cachedOutputsHex,
+                        hasPersistedWalletState: postUnlockHasPersistedWalletState,
+                    },
+                });
+            }
+        } catch {
+        }
+
+        let unlockedSal1 = 0;
+        try {
+            unlockedSal1 = walletService.getExactAssetBalance('SAL1')?.unlockedBalanceSAL || 0;
+        } catch {
+        }
+        void walletService.reportSal1SpendabilityStatus(unlockedSal1, 'unlock_wallet_diag');
 
         return true;
     };
@@ -3613,10 +3925,15 @@ const getDeviceMemoryBucket = (): string => {
         let finalRestoreHeight = wallet.height || 0;
         const cacheMissing = !cachedOutputsHex || cachedOutputsHex.length === 0;
         const trustedCachedBalance = getTrustedCachedBalance(wallet);
+        const cacheMissingRequiresFullScan = shouldForceFullScanForMissingWalletCache({
+            cacheMissing,
+            hadCachedWalletData: hadData,
+            walletHeight: wallet.height || 0,
+        });
 
         if (forceCleanRestoreScan) {
             finalRestoreHeight = 0;
-        } else if (cacheMissing && hadData) {
+        } else if (cacheMissingRequiresFullScan) {
             finalRestoreHeight = 0;
         }
         const willImportCache = !forceCleanRestoreScan && !!cachedOutputsHex && cachedOutputsHex.length > 0;
@@ -3635,6 +3952,7 @@ const getDeviceMemoryBucket = (): string => {
                 cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
                 hadData,
                 forceCleanRestoreScan,
+                cacheMissingRequiresFullScan,
             });
         }
 
@@ -3736,12 +4054,20 @@ const getDeviceMemoryBucket = (): string => {
         setNeedsRecovery(false);
 
         let persistedSubaddressCount = 0;
+        let unlockReturnAddressCount = 0;
         try {
             const persistedState = await walletStateService.load(wallet.address);
             if (persistedState.subaddresses && persistedState.subaddresses.length > 0) {
                 persistedSubaddressCount = persistedState.subaddresses.length;
             }
         } catch {
+        }
+        if (wallet.address) {
+            try {
+                unlockReturnAddressCount = await getCachedReturnAddressCount(wallet.address);
+            } catch {
+                unlockReturnAddressCount = 0;
+            }
         }
 
         if (!forceCleanRestoreScan && cachedOutputsHex && cachedOutputsHex.length > 0) {
@@ -3842,7 +4168,7 @@ const getDeviceMemoryBucket = (): string => {
         }
 
         if (restoreSessionRequested) {
-            const initialScanStartHeight = forceCleanRestoreScan || (finalRestoreHeight === 0 && hadData)
+            const initialScanStartHeight = forceCleanRestoreScan || cacheMissingRequiresFullScan
                 ? 0
                 : finalRestoreHeight;
             setRestoreScanPhase('phase1_main_scan', 'preparing wallet scan', 'preparing');
@@ -3908,23 +4234,96 @@ const getDeviceMemoryBucket = (): string => {
         const unlockNativeBalance = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
         const cachedTxCount = wallet.cachedTransactions?.length || 0;
         const nativeTransferCount = unlockSnapshot?.transfer_count || 0;
+        const nativeBalanceEmpty =
+            unlockNativeBalance.balance === 0 &&
+            unlockNativeBalance.unlockedBalance === 0;
+        const hasCachedOutputs = !!cachedOutputsHex && cachedOutputsHex.length > 0;
+        const cachedSpentKeyImageCount = wallet.cachedSpentKeyImages ? Object.keys(wallet.cachedSpentKeyImages).length : 0;
+        const cachedSubaddressCount = wallet.cachedSubaddresses?.length || 0;
+        const hasPersistedWalletState =
+            hadData ||
+            hasCachedOutputs ||
+            cachedSpentKeyImageCount > 0 ||
+            cachedSubaddressCount > 1 ||
+            persistedSubaddressCount > 1;
+        reportClientEvent('wallet.native_state_gate', {
+            level: 'info',
+            context: {
+                source: 'unlock_bootstrap_complete',
+                hasPersistedWalletState,
+                hadData,
+                cachePresent: hasCachedOutputs,
+                cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
+                cachedTxCount,
+                cachedReturnAddressCount: unlockReturnAddressCount,
+                cachedSpentKeyImageCount,
+                cachedSubaddressCount,
+                persistedSubaddressCount,
+                nativeTransferCount,
+                nativeBalanceEmpty,
+                finalRestoreHeight,
+                actualNetworkHeight,
+                forceCleanRestoreScan,
+                cacheMissingRequiresFullScan,
+                restoreSessionRequested,
+            },
+        });
+        const nativeStateMissingForExistingWallet =
+            hasPersistedWalletState &&
+            !forceCleanRestoreScan &&
+            !cacheMissingRequiresFullScan &&
+            nativeTransferCount === 0 &&
+            nativeBalanceEmpty;
         const severeRestoreMismatch =
             !!unlockSnapshot &&
-            cachedTxCount >= 200 &&
-            nativeTransferCount > 0 &&
-            nativeTransferCount < Math.floor(cachedTxCount * 0.5);
+            (
+                nativeStateMissingForExistingWallet ||
+                (
+                    cachedTxCount >= 200 &&
+                    nativeTransferCount > 0 &&
+                    nativeTransferCount < Math.floor(cachedTxCount * 0.5)
+                )
+            );
 
         if (severeRestoreMismatch) {
             debugWarn('[WalletContext] Severe native transaction history mismatch detected', {
                 cachedTxCount,
                 nativeTransferCount,
                 restoreHeight: finalRestoreHeight,
+                nativeBalanceEmpty,
+                hadData,
             });
             needsFullRescanRef.current = true;
             preferredScanStartHeightRef.current = 0;
+            const repairReason = nativeStateMissingForExistingWallet
+                ? 'Native wallet state is empty for an existing wallet'
+                : 'Native transaction history requires full repair';
+            markFullRescanRequired(
+                repairReason,
+                finalRestoreHeight,
+                actualNetworkHeight || finalRestoreHeight || 0
+            );
             setNativeBalanceTrust({
                 trusted: false,
-                reason: 'Native transaction history requires full repair',
+                reason: repairReason,
+            });
+            reportClientEvent('wallet.native_state_missing_requires_rescan', {
+                level: 'warn',
+                message: repairReason,
+                context: {
+                    cachedTxCount,
+                    cachedReturnAddressCount: unlockReturnAddressCount,
+                    cachedSpentKeyImageCount,
+                    cachedSubaddressCount,
+                    persistedSubaddressCount,
+                    nativeTransferCount,
+                    nativeBalanceEmpty,
+                    hadData,
+                    hasPersistedWalletState,
+                    finalRestoreHeight,
+                    actualNetworkHeight,
+                    cachePresent: !cacheMissing,
+                },
             });
             setSyncStatus(prev => ({
                 ...prev,
@@ -3937,7 +4336,7 @@ const getDeviceMemoryBucket = (): string => {
 
         try {
             const storedWallet = safeReadWallet();
-            if (storedWallet && walletService.hasWallet()) {
+            if (storedWallet && walletService.hasWallet() && !cacheMissingRequiresFullScan && !nativeStateMissingForExistingWallet) {
                 storedWallet.cachedBalance = { ...unlockNativeBalance };
                 storedWallet.cachedBalanceVersion = BASE_ASSET_CACHED_BALANCE_VERSION;
                 safeWriteWallet(storedWallet);
@@ -3957,6 +4356,11 @@ const getDeviceMemoryBucket = (): string => {
             : unlockBalanceTrust;
         if (wallet.scanRepairRequired) {
             needsFullRescanRef.current = true;
+            markFullRescanRequired(
+                wallet.scanRepairReason || 'Pending scan repair from a previous session',
+                finalRestoreHeight,
+                actualNetworkHeight || finalRestoreHeight || 0
+            );
             try {
                 localStorage.setItem('salvium_scan_returned_transfers', 'true');
             } catch {
@@ -4004,26 +4408,56 @@ const getDeviceMemoryBucket = (): string => {
             }
         }
 
-        if (finalRestoreHeight === 0 && hadData) {
+        if (forceCleanRestoreScan || cacheMissingRequiresFullScan) {
         } else {
             refreshData();
         }
 
         const preferredScanStartHeight =
-            forceCleanRestoreScan || (finalRestoreHeight === 0 && hadData)
+            forceCleanRestoreScan || cacheMissingRequiresFullScan
                 ? 0
                 : undefined;
         preferredScanStartHeightRef.current = preferredScanStartHeight;
-        needsGapCheckRef.current = !forceCleanRestoreScan;
+        needsGapCheckRef.current = !(forceCleanRestoreScan || cacheMissingRequiresFullScan);
 
         if (needsFullRescanRef.current && !forceCleanRestoreScan) {
+            const isNativeAutoRescan =
+                typeof window !== 'undefined' &&
+                !!(window as any)?.Capacitor?.isNativePlatform?.();
+            const canStartRequiredRescanNow =
+                cacheMissingRequiresFullScan ||
+                isNativeAutoRescan;
+            if (!canStartRequiredRescanNow) {
+                reportClientEvent('wallet.full_rescan_waiting_for_user', {
+                    level: 'warn',
+                    message: scanHealthRef.current.reason || 'Full rescan required',
+                    context: {
+                        finalRestoreHeight,
+                        actualNetworkHeight,
+                        cachePresent: !cacheMissing,
+                        cacheMissingRequiresFullScan,
+                        scanRepairRequired: !!wallet.scanRepairRequired,
+                    },
+                });
+                return;
+            }
             setTimeout(() => {
-                if (autoIntegrityRecoveryInFlightRef.current || scanInProgressRef.current || !rescanWalletRef.current) {
+                if (autoIntegrityRecoveryInFlightRef.current || !rescanWalletRef.current) {
                     return;
                 }
-                if ((window as any)?.Capacitor?.isNativePlatform?.()) {
-                    window.dispatchEvent(new CustomEvent('salvium:auto-rescan'));
-                }
+                invalidateInFlightScanState();
+                window.dispatchEvent(new CustomEvent('salvium:auto-rescan'));
+                reportClientEvent('wallet.required_rescan_auto_started', {
+                    level: 'warn',
+                    message: scanHealthRef.current.reason || 'Full rescan required',
+                    context: {
+                        cacheMissingRequiresFullScan,
+                        isNativeAutoRescan,
+                        finalRestoreHeight,
+                        actualNetworkHeight,
+                        cachePresent: !cacheMissing,
+                    },
+                });
                 needsFullRescanRef.current = false;
                 autoIntegrityRecoveryInFlightRef.current = true;
                 void rescanWalletRef.current().finally(() => {
@@ -4054,6 +4488,8 @@ const getDeviceMemoryBucket = (): string => {
                 preferredScanStartHeight: preferredScanStartHeight ?? -1,
                 scanFromHeightSource: scheduledScan.source,
                 cachePresent: !cacheMissing,
+                cacheMissing,
+                cacheMissingRequiresFullScan,
                 cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
             });
             void requestScanStart({
@@ -4145,18 +4581,36 @@ const getDeviceMemoryBucket = (): string => {
 
         restoredFromVaultRef.current = true;
 
-        const hadData = (trustedCachedBalance?.balance || 0) > 0 || (wallet.cachedTransactions?.length || 0) > 0;
+        let cachedReturnAddressCount = 0;
+        if (wallet.address) {
+            try {
+                cachedReturnAddressCount = await getCachedReturnAddressCount(wallet.address);
+            } catch {
+                cachedReturnAddressCount = 0;
+            }
+        }
+        const hadData =
+            (trustedCachedBalance?.balance || 0) > 0 ||
+            (wallet.cachedTransactions?.length || 0) > 0 ||
+            cachedReturnAddressCount > 0;
+        const cacheMissing = !cachedOutputsHex || cachedOutputsHex.length === 0;
+        const cacheMissingRequiresFullScan = shouldForceFullScanForMissingWalletCache({
+            cacheMissing,
+            hadCachedWalletData: hadData,
+            walletHeight: wallet.height || 0,
+        });
         reportRestoreDiagnostic('restore.vault_backup_loaded', {
             source: 'vault-backup-restore',
-            fromHeight: !cachedOutputsHex && hadData ? 0 : wallet.height || 0,
-            cachePresent: !!cachedOutputsHex,
-            cacheMissing: !cachedOutputsHex,
+            fromHeight: cacheMissingRequiresFullScan ? 0 : wallet.height || 0,
+            cachePresent: !cacheMissing,
+            cacheMissing,
             cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
             hadData,
             txCount: wallet.cachedTransactions?.length || 0,
+            returnAddressCount: cachedReturnAddressCount,
             subaddressCount: wallet.cachedSubaddresses?.length || 0,
         });
-        const restoreSessionId = beginRestoreScanSession('vault-backup-restore', !cachedOutputsHex && hadData ? 0 : wallet.height || 0, {
+        const restoreSessionId = beginRestoreScanSession('vault-backup-restore', cacheMissingRequiresFullScan ? 0 : wallet.height || 0, {
             requiresReturnedTransferScan: false,
         });
         await continueUnlockFlow(wallet, mnemonic, cachedOutputsHex, hadData, {
@@ -4259,7 +4713,11 @@ const getDeviceMemoryBucket = (): string => {
             setIsScanning(true);
         }
 
-        if (request?.reason === 'direct-startScan' && restoreScanSessionActive) {
+        if (
+            request?.reason === 'direct-startScan' &&
+            restoreScanSessionActive &&
+            request?.sessionType !== 'restore-full-rescan'
+        ) {
             debugWarn('[WalletContext] executeScan suppressed direct scan during active restore session', {
                 reason: request.reason,
                 fromHeight,
@@ -5295,6 +5753,9 @@ const getDeviceMemoryBucket = (): string => {
                     const newTxs = shouldUseRangeTransactions
                         ? await walletService.getTransactionsInRange(actualStartHeight, networkHeight)
                         : walletService.getTransactions();
+                    const isAuthoritativeFullRestoreScan =
+                        request?.sessionType === 'restore-full-rescan' &&
+                        actualStartHeight <= 1;
 
                     let cachedTxs: WalletTransaction[] = [];
                     let idbTxsRaw: string | null = null;
@@ -5314,10 +5775,12 @@ const getDeviceMemoryBucket = (): string => {
                     }
 
                     const inMemoryTxs = transactionsRef.current;
-                    const existingTxs = mergeTransactionsByDirection([
-                        ...cachedTxs,
-                        ...inMemoryTxs
-                    ]);
+                    const existingTxs = isAuthoritativeFullRestoreScan
+                        ? []
+                        : mergeTransactionsByDirection([
+                            ...cachedTxs,
+                            ...inMemoryTxs
+                        ]);
                     const mergedTxs = mergeTransactionsByDirection([
                         ...existingTxs,
                         ...newTxs
@@ -5755,12 +6218,18 @@ const getDeviceMemoryBucket = (): string => {
                         }
                         if (nextTransactionsJson) {
                             savePromises.push(saveToIndexedDBIfChanged(`wallet_txs_${address}`, nextTransactionsJson, idbTxsRaw));
+                        } else if (isAuthoritativeFullRestoreScan && idbTxsRaw) {
+                            savePromises.push(deleteFromIndexedDB(`wallet_txs_${address}`));
                         }
                         if (nextHistoryJson) {
                             savePromises.push(saveToIndexedDBIfChanged(`wallet_history_${address}`, nextHistoryJson, idbHistoryRaw));
+                        } else if (isAuthoritativeFullRestoreScan && idbHistoryRaw) {
+                            savePromises.push(deleteFromIndexedDB(`wallet_history_${address}`));
                         }
                         if (nextKeyImagesJson) {
                             savePromises.push(saveToIndexedDBIfChanged(`wallet_keyimages_${address}`, nextKeyImagesJson, idbKeyImagesRaw));
+                        } else if (isAuthoritativeFullRestoreScan && idbKeyImagesRaw) {
+                            savePromises.push(deleteFromIndexedDB(`wallet_keyimages_${address}`));
                         }
 
                         const saveResults = await Promise.all(savePromises);
@@ -5969,6 +6438,59 @@ const getDeviceMemoryBucket = (): string => {
                         daemonHeight: networkHeight,
                     },
                 });
+
+                try {
+                    const sal1Balance = walletService.getExactAssetBalance('SAL1');
+                    const unlockedAtomic = sal1Balance?.unlockedBalance;
+                    const unlockedSal1 = sal1Balance?.unlockedBalanceSAL || 0;
+                    if (
+                        unlockedAtomic !== undefined &&
+                        unlockedAtomic !== null &&
+                        Number.isFinite(unlockedSal1) &&
+                        unlockedSal1 > 0
+                    ) {
+                        const scanDiagnosticKey = `${networkHeight}:${String(unlockedAtomic)}`;
+                        if (sal1SpendabilityScanDiagKeyRef.current !== scanDiagnosticKey) {
+                            sal1SpendabilityScanDiagKeyRef.current = scanDiagnosticKey;
+                            void walletService.reportSal1SpendabilityStatus(
+                                unlockedSal1,
+                                'scan_complete_diag'
+                            );
+                        }
+                    } else {
+                        const skipKey = `scan_complete_diag:${networkHeight}:no_positive_exact_sal1_unlocked`;
+                        if (sal1SpendabilityDiagSkipKeyRef.current !== skipKey) {
+                            sal1SpendabilityDiagSkipKeyRef.current = skipKey;
+                            reportClientEvent('staking.spendability_diag_skip', {
+                                level: 'info',
+                                context: {
+                                    reason: 'no_positive_exact_sal1_unlocked',
+                                    stage: 'scan_complete_diag',
+                                    component: 'WalletContext',
+                                    isWalletReady,
+                                    isLocked,
+                                    coldStartSettled,
+                                    isScanning: scanInProgressRef.current || cspScanService.isScanningInProgress(),
+                                    syncIsSyncing: syncStatusRef.current.isSyncing,
+                                    walletHeight: networkHeight,
+                                    exactSal1BalanceHit: !!sal1Balance,
+                                    exactSal1UnlockedPositive: Number.isFinite(unlockedSal1) && unlockedSal1 > 0,
+                                },
+                            });
+                        }
+                    }
+                } catch (diagError) {
+                    reportClientEvent('staking.spendability_diag_failed', {
+                        level: 'warn',
+                        message: diagError instanceof Error ? diagError.message : String(diagError || 'scan_complete_diag failed'),
+                        context: {
+                            stage: 'scan_complete_diag',
+                            component: 'WalletContext',
+                            walletHeight: networkHeight,
+                            reason: diagError instanceof Error ? diagError.message : String(diagError || 'scan_complete_diag failed'),
+                        },
+                    });
+                }
             } else {
                 setSyncStatus(prev => ({
                     ...prev,
@@ -6303,6 +6825,30 @@ const getDeviceMemoryBucket = (): string => {
                 return { terminalState: 'cancelled', reason: errorMessage };
             }
 
+            // A pause-induced stall or transient network failure (a restore that was
+            // backgrounded/offline) is recoverable: keep the session active and retry from the
+            // journal instead of terminally failing. The scan no longer aborts while hidden/
+            // offline, but if one slips through (e.g. a stall that began while visible, then the
+            // tab was backgrounded) the retry resumes cleanly once the device is foreground/online.
+            const isRecoverableStall =
+                /scan_stalled: no progress/i.test(errorMessage) ||
+                /Failed to fetch|NetworkError|fetch failed/i.test(errorMessage);
+            if (isRecoverableStall) {
+                finalizeRestoreTerminalState('cancelled_retryable', {
+                    networkHeight: syncStatusRef.current.daemonHeight || syncStatusRef.current.walletHeight || 0,
+                    currentHeight: syncStatusRef.current.walletHeight || 0,
+                    isRestoreSession: request?.sessionType === 'restore-full-rescan' && !!request.sessionId,
+                    reason: errorMessage,
+                    sessionNote: 'sync paused (offline/backgrounded); retrying',
+                    retryRequest: {
+                        sessionType: request?.sessionType ?? 'background',
+                        sessionId: request?.sessionId,
+                        fromHeight,
+                    },
+                });
+                return { terminalState: 'cancelled', reason: errorMessage };
+            }
+
             console.error('[WalletContext] Scan failed:', e);
 
             finalizeRestoreTerminalState('failed', {
@@ -6347,12 +6893,11 @@ const getDeviceMemoryBucket = (): string => {
                 if (needsFullRescanRef.current) {
                     needsFullRescanRef.current = false;
                     setTimeout(() => {
-                        if (autoIntegrityRecoveryInFlightRef.current || scanInProgressRef.current || !rescanWalletRef.current) {
+                        if (autoIntegrityRecoveryInFlightRef.current || !rescanWalletRef.current) {
                             return;
                         }
-                        if ((window as any)?.Capacitor?.isNativePlatform?.()) {
-                            window.dispatchEvent(new CustomEvent('salvium:auto-rescan'));
-                        }
+                        invalidateInFlightScanState();
+                        window.dispatchEvent(new CustomEvent('salvium:auto-rescan'));
                         autoIntegrityRecoveryInFlightRef.current = true;
                         void rescanWalletRef.current().finally(() => {
                             autoIntegrityRecoveryInFlightRef.current = false;
@@ -7418,22 +7963,25 @@ const getDeviceMemoryBucket = (): string => {
                     let cachedHistoryData: ChartDataPoint[] = [];
                     let cachedOutputsHex = '';
                     let cachedSpentKeyImages: Record<string, number> = {};
+                    let cachedReturnAddressCount = 0;
                     try {
                         const encryptedWallet = safeReadWallet();
                         if (encryptedWallet) {
                             const addr = encryptedWallet.address;
 
-                            const [idbCache, idbTxs, idbHistory, idbKeyImages] = await Promise.all([
+                            const [idbCache, idbTxs, idbHistory, idbKeyImages, idbReturnAddressCount] = await Promise.all([
                                 loadFromIndexedDB(`wallet_cache_${addr}`),
                                 loadFromIndexedDB(`wallet_txs_${addr}`),
                                 loadFromIndexedDB(`wallet_history_${addr}`),
-                                loadFromIndexedDB(`wallet_keyimages_${addr}`)
+                                loadFromIndexedDB(`wallet_keyimages_${addr}`),
+                                getCachedReturnAddressCount(addr)
                             ]);
 
                             if (idbCache) cachedOutputsHex = idbCache;
                             if (idbTxs) cachedTxs = JSON.parse(idbTxs);
                             if (idbHistory) cachedHistoryData = JSON.parse(idbHistory);
                             if (idbKeyImages) cachedSpentKeyImages = JSON.parse(idbKeyImages);
+                            cachedReturnAddressCount = Number(idbReturnAddressCount || 0);
 
                             if (!cachedTxs.length && encryptedWallet.cachedTransactions?.length) {
                                 cachedTxs = encryptedWallet.cachedTransactions;
@@ -7452,7 +8000,10 @@ const getDeviceMemoryBucket = (): string => {
                             }
 
                             const trustedCachedBalance = getTrustedCachedBalance(encryptedWallet);
-                            const hadData = (trustedCachedBalance?.balance || 0) > 0 || cachedTxs.length > 0;
+                            const hadData =
+                                (trustedCachedBalance?.balance || 0) > 0 ||
+                                cachedTxs.length > 0 ||
+                                cachedReturnAddressCount > 0;
                             if ((!cachedOutputsHex || cachedOutputsHex.length === 0) && hadData) {
                                 restoreHeight = 0;
                             }
@@ -7633,20 +8184,97 @@ const getDeviceMemoryBucket = (): string => {
                         bootHeight,
                         restoreHeight,
                     });
+                    const sessionNativeBalance = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
+                    const hadDataForInit =
+                        (cachedBalance?.balance || 0) > 0 ||
+                        cachedTxs.length > 0 ||
+                        cachedReturnAddressCount > 0;
+                    const sessionNativeTransferCount = sessionRestoreSnapshot?.transfer_count || 0;
+                    const sessionNativeBalanceEmpty =
+                        sessionNativeBalance.balance === 0 &&
+                        sessionNativeBalance.unlockedBalance === 0;
+                    const hasPersistedWalletStateForInit =
+                        hadDataForInit ||
+                        !!cachedOutputsHex ||
+                        Object.keys(cachedSpentKeyImages).length > 0 ||
+                        cachedSubaddrsData.length > 1;
+                    reportClientEvent('wallet.native_state_gate', {
+                        level: 'info',
+                        context: {
+                            source: 'session_restore_complete',
+                            hasPersistedWalletState: hasPersistedWalletStateForInit,
+                            hadData: hadDataForInit,
+                            cachePresent: !!cachedOutputsHex,
+                            cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
+                            cachedTxCount: cachedTxs.length,
+                            cachedReturnAddressCount,
+                            cachedSpentKeyImageCount: Object.keys(cachedSpentKeyImages).length,
+                            cachedSubaddressCount: cachedSubaddrsData.length,
+                            nativeTransferCount: sessionNativeTransferCount,
+                            nativeBalanceEmpty: sessionNativeBalanceEmpty,
+                            restoreHeight,
+                            actualNetworkHeight,
+                        },
+                    });
+                    const sessionNativeStateMissing =
+                        hasPersistedWalletStateForInit &&
+                        restoreHeight > 0 &&
+                        sessionNativeTransferCount === 0 &&
+                        sessionNativeBalanceEmpty;
+                    if (sessionNativeStateMissing) {
+                        const repairReason = 'Native wallet state is empty for an existing wallet';
+                        needsFullRescanRef.current = true;
+                        preferredScanStartHeightRef.current = 0;
+                        needsGapCheckRef.current = false;
+                        markFullRescanRequired(
+                            repairReason,
+                            restoreHeight,
+                            actualNetworkHeight || restoreHeight || 0
+                        );
+                        setNativeBalanceTrust({
+                            trusted: false,
+                            reason: repairReason,
+                        });
+                        setSyncStatus(prev => ({
+                            ...prev,
+                            walletHeight: 0,
+                            daemonHeight: actualNetworkHeight || prev.daemonHeight || restoreHeight,
+                            isSyncing: true,
+                            scanStartHeight: 0,
+                            progress: 0,
+                        }));
+                        reportClientEvent('wallet.native_state_missing_requires_rescan', {
+                            level: 'warn',
+                            message: repairReason,
+                            context: {
+                                source: 'session_restore_complete',
+                                cachedTxCount: cachedTxs.length,
+                                cachedReturnAddressCount,
+                                cachedSpentKeyImageCount: Object.keys(cachedSpentKeyImages).length,
+                                cachedSubaddressCount: cachedSubaddrsData.length,
+                                nativeTransferCount: sessionNativeTransferCount,
+                                nativeBalanceEmpty: sessionNativeBalanceEmpty,
+                                restoreHeight,
+                                actualNetworkHeight,
+                                cachePresent: !!cachedOutputsHex,
+                                hadData: hadDataForInit,
+                                hasPersistedWalletState: hasPersistedWalletStateForInit,
+                            },
+                        });
+                    }
                     void recordNativeSnapshotHealth(
                         'session_restore_complete',
                         sessionRestoreSnapshot,
-                        getAuthoritativeNativeBalance(walletService.getBalance()).balance
+                        sessionNativeBalance
                     );
                     scheduleNativeIntegrityRecovery(
                         'session_restore_complete',
                         sessionRestoreSnapshot,
-                        getAuthoritativeNativeBalance(walletService.getBalance()).balance
+                        sessionNativeBalance
                     );
 
-                    const hadDataForInit = (cachedBalance?.balance || 0) > 0 || cachedTxs.length > 0;
-                    needsGapCheckRef.current = true;
-                    if (!(restoreHeight === 0 && hadDataForInit)) {
+                    needsGapCheckRef.current = !sessionNativeStateMissing;
+                    if (!sessionNativeStateMissing && !(restoreHeight === 0 && hadDataForInit)) {
                         refreshData();
                     }
 

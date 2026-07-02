@@ -3,7 +3,7 @@
 // same-origin request); the vault server reads it per-request and routes the
 // wallet's daemon traffic accordingly (see resolveRequestNodeOrder in server.cjs).
 export type NodeKind = 'auto' | 'hosted' | 'seed' | 'custom';
-export type NodeChoice = string; // 'auto' | 'local' | 'seed1' | 'seed2' | 'seed3' | <custom https? URL>
+export type NodeChoice = string; // 'auto' | 'local' | <custom https? URL>
 
 export const VAULT_NODE_COOKIE = 'salvium_node';
 export const CUSTOM_NODES_STORAGE_KEY = 'salvium_custom_nodes';
@@ -17,9 +17,6 @@ export interface NodePreset {
 export const NODE_PRESETS: NodePreset[] = [
   { id: 'auto', label: 'Automatic', kind: 'auto' },
   { id: 'local', label: 'Salvium Tools', kind: 'hosted' },
-  { id: 'seed1', label: 'Official seed 1', kind: 'seed' },
-  { id: 'seed2', label: 'Official seed 2', kind: 'seed' },
-  { id: 'seed3', label: 'Official seed 3', kind: 'seed' },
 ];
 
 export function getNodeFromCookie(cookieHeader: string): NodeChoice {
@@ -161,6 +158,8 @@ export function validationErrorMessage(error?: string): string {
       return 'Enter a node address, e.g. node.example.com:19081';
     case 'nettype_mismatch':
       return 'That node is on a different network than your wallet. Switch networks or use a matching node.';
+    case 'official_seed_disabled':
+      return 'Official seed nodes are temporarily unavailable from the hosted vault. Use Automatic, Salvium Tools, or another public node.';
     case 'unreachable':
     default:
       return 'Could not reach that node. Check the URL and that it is online.';

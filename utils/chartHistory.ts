@@ -56,6 +56,27 @@ function isNativeAsset(assetType: string | undefined): boolean {
   return upper === '' || upper === 'SAL' || upper === 'SAL1';
 }
 
+function balancesClose(a: number, b: number): boolean {
+  return Math.abs(a - b) <= Math.max(0.000001, Math.max(Math.abs(a), Math.abs(b)) * 0.000001);
+}
+
+function upsertHistoryPoint(history: ChartHistoryPoint[], point: ChartHistoryPoint): void {
+  const pointTime = new Date(point.date).getTime();
+  if (!Number.isFinite(pointTime)) return;
+
+  const existingIndex = history.findIndex((entry) => {
+    const entryTime = new Date(entry.date).getTime();
+    return Number.isFinite(entryTime) && Math.abs(entryTime - pointTime) < 60 * 1000;
+  });
+  if (existingIndex >= 0) {
+    history[existingIndex] = point;
+    return;
+  }
+
+  history.push(point);
+  history.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+}
+
 export function buildWalletHistory(
   allTxs: WalletTransaction[],
   allHistoryStakes: Stake[],
@@ -216,25 +237,20 @@ export function buildWalletHistory(
     txIndex++;
   }
 
-  // Pin the LATEST point to the wallet's actual balance, not the replayed
-  // reconstruction: the chart's tip must equal the balance card by construction
-  // (historical points remain best-effort estimates of the trajectory).
   const fallbackTipSal = currentBalance > 0 ? currentBalance : Math.max(0, simBalance);
-  const currentPoint = {
-    date: new Date(now).toISOString(),
-    value: fallbackTipSal * fallbackPrice,
+  const latestEventTime = events.length > 0 ? events[events.length - 1].timestamp : now;
+  const tipTime = balancesClose(fallbackTipSal, simBalance) ? now : latestEventTime;
+  const tipPrice = tipTime === now ? fallbackPrice : getPriceAtTime(priceHistory, tipTime, fallbackPrice);
+  const tipPoint = {
+    date: new Date(tipTime).toISOString(),
+    value: fallbackTipSal * tipPrice,
     sal: fallbackTipSal,
   };
 
-  const lastTimestamp = history.length > 0
-    ? new Date(history[history.length - 1].date).getTime()
-    : 0;
   if (history.length === 0) {
-    history.push(currentPoint);
-  } else if (now - lastTimestamp > 60 * 1000) {
-    history.push(currentPoint);
+    history.push(tipPoint);
   } else {
-    history[history.length - 1] = currentPoint;
+    upsertHistoryPoint(history, tipPoint);
   }
 
   return history;
@@ -268,26 +284,39 @@ export function buildExactWalletHistory(
 ): ChartHistoryPoint[] {
   if (!Array.isArray(pairs) || pairs.length === 0) return [];
   const ATOMIC = 1e8;
-  const lastPairHeight = Number(pairs[pairs.length - 1][0]);
+  // The WASM series contains SYNTHETIC FUTURE events: stake compensation removes the
+  // staked principal again at stake_height + STAKE_LOCK_PERIOD, which for an active
+  // stake is BEYOND the chain tip. Those trailing pairs all clamp to "now" on the
+  // time axis and plunge by the locked principal (to $0 on a mostly-staked wallet) —
+  // the recurring fake spike/dip pinned to the right edge of the chart. Render only
+  // pairs at or below the live tip; the real unlock event enters the series on-chain
+  // when it actually happens.
+  const renderablePairs = tipHeight > 0
+    ? pairs.filter((pair) => Number(pair[0]) <= tipHeight)
+    : pairs;
+  if (renderablePairs.length === 0) return [];
+  const lastPairHeight = Number(renderablePairs[renderablePairs.length - 1][0]);
   const heightToTime = makeHeightToTime(tipHeight > 0 ? tipHeight : lastPairHeight, now);
   const history: ChartHistoryPoint[] = [];
-  for (const [h, atomic] of pairs) {
+  for (const [h, atomic] of renderablePairs) {
     const t = Math.min(now, heightToTime(Number(h)));
     const bal = Math.max(0, Number(atomic)) / ATOMIC;
     const price = getPriceAtTime(priceHistory, t, fallbackPrice);
     history.push({ date: new Date(t).toISOString(), value: bal * price, sal: bal });
   }
-  // Pin the live tip to the actual balance x current price (card parity).
-  const tipSal = currentBalance > 0 ? currentBalance : Math.max(0, Number(pairs[pairs.length - 1][1]) / ATOMIC);
-  const tip = {
-    date: new Date(now).toISOString(),
-    value: tipSal * fallbackPrice,
+  const tipSal = currentBalance > 0 ? currentBalance : Math.max(0, Number(renderablePairs[renderablePairs.length - 1][1]) / ATOMIC);
+  const lastPairBalance = Math.max(0, Number(renderablePairs[renderablePairs.length - 1][1]) / ATOMIC);
+  const lastPairTime = Math.min(now, heightToTime(lastPairHeight));
+  // If the native balance has moved but the exact transfer-table series has not
+  // caught the latest event yet, do not draw the correction at refresh time. Put
+  // it at the latest known balance-event height so the 1D chart does not show a
+  // fake vertical spike at "now".
+  const tipTime = balancesClose(tipSal, lastPairBalance) ? now : lastPairTime;
+  const tipPrice = tipTime === now ? fallbackPrice : getPriceAtTime(priceHistory, tipTime, fallbackPrice);
+  upsertHistoryPoint(history, {
+    date: new Date(tipTime).toISOString(),
+    value: tipSal * tipPrice,
     sal: tipSal,
-  };
-  if (history.length > 0 && now - new Date(history[history.length - 1].date).getTime() < 60 * 1000) {
-    history[history.length - 1] = tip;
-  } else {
-    history.push(tip);
-  }
+  });
   return history;
 }

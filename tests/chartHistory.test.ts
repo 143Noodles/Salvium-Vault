@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { WalletTransaction } from '../services/WalletService';
 import type { Stake } from '../services/WalletContext';
-import { buildWalletHistory } from '../utils/chartHistory';
+import { buildExactWalletHistory, buildWalletHistory } from '../utils/chartHistory';
 
 function makeTx(overrides: Partial<WalletTransaction>): WalletTransaction {
   return {
@@ -277,5 +277,43 @@ describe('wallet performance correctness (SAL1-only, card parity)', () => {
     const history = buildWalletHistory(txs, [], [], 0.5, now, 23.893);
     const tip = history[history.length - 1];
     expect(tip.value).toBeCloseTo(23.893 * 0.5, 10);
+  });
+});
+
+describe('buildExactWalletHistory', () => {
+  it('drops synthetic future stake-decompensation pairs so the chart tip never plunges', () => {
+    const now = Date.now();
+    const tipHeight = 500000;
+    const ATOMIC = 1e8;
+    // Real series: steady 13000 SAL balance up to the tip, then the WASM's synthetic
+    // stake decompensation at stake_height + STAKE_LOCK_PERIOD (beyond the tip)
+    // dropping the series to 0.
+    const pairs: Array<[number, number]> = [
+      [490000, 13000 * ATOMIC],
+      [495000, 13000 * ATOMIC],
+      [500000, 13000 * ATOMIC],
+      [530000, 0],
+    ];
+    const history = buildExactWalletHistory(pairs, [], 1, now, 13000, tipHeight);
+
+    expect(history.length).toBeGreaterThan(0);
+    for (const point of history) {
+      expect(point.sal).toBeCloseTo(13000, 6);
+    }
+    const lastPoint = history[history.length - 1];
+    expect(new Date(lastPoint.date).getTime()).toBeLessThanOrEqual(now);
+    expect(lastPoint.value).toBeCloseTo(13000, 6);
+  });
+
+  it('keeps the full series when no tip height is available', () => {
+    const now = Date.now();
+    const ATOMIC = 1e8;
+    const pairs: Array<[number, number]> = [
+      [490000, 10 * ATOMIC],
+      [500000, 12 * ATOMIC],
+    ];
+    const history = buildExactWalletHistory(pairs, [], 1, now, 12, 0);
+    expect(history.length).toBeGreaterThanOrEqual(2);
+    expect(history[history.length - 1].sal).toBeCloseTo(12, 6);
   });
 });

@@ -390,7 +390,9 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ onComplete }) => {
         if (stalledForMs >= thresholdMs && !stallThresholdsReportedRef.current.has(thresholdMs)) {
           stallThresholdsReportedRef.current.add(thresholdMs);
           reportClientEvent('restore.stalled', {
-            level: thresholdMs >= 300000 && document.visibilityState === 'visible' ? 'error' : 'warn',
+            // Stalls are recoverable: the scan watchdog aborts + the coordinator retries (and a
+            // backgrounded/offline scan no longer aborts at all). Report as warn, never error.
+            level: 'warn',
             message: `Restore progress stalled for ${Math.round(thresholdMs / 1000)}s`,
             context: {
               progress: percentage,

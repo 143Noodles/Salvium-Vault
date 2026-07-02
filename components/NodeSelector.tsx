@@ -342,10 +342,11 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
             className="w-full appearance-none rounded-lg bg-black/30 border border-white/10 pl-3 pr-9 py-2 text-sm text-white focus:outline-none focus:border-accent-primary/60 cursor-pointer"
           >
             <option value="auto">Automatic (recommended)</option>
-            <option value="local">Salvium Tools</option>
-            <option value="seed1">Official seed 1</option>
-            <option value="seed2">Official seed 2</option>
-            <option value="seed3">Official seed 3</option>
+            {NODE_PRESETS.filter((preset) => preset.id !== 'auto').map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
             {customNodes.length > 0 && (
               <optgroup label="Custom nodes">
                 {customNodes.map((url) => (

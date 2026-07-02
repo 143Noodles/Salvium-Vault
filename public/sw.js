@@ -23,12 +23,10 @@ const PRECACHE_ASSETS = [
   '/vault/salvium-icon.png',
 ];
 
-// Versioned WASM assets can be reused safely until WASM_VERSION changes.
-const WASM_ASSETS = [
-  `/api/wasm/SalviumWallet.js?v=${encodeURIComponent(WASM_VERSION)}`,
-  `/api/wasm/SalviumWallet.wasm?v=${encodeURIComponent(WASM_VERSION)}`,
-  `/api/wasm/SalviumWallet.worker.js?v=${encodeURIComponent(WASM_VERSION)}`,
-];
+// WASM assets are served only through /api/wasm/:assetVersion/:filename.
+// The assetVersion is discovered at runtime from /api/wasm-info, so the
+// service worker must not precache legacy unversioned WASM URLs.
+const WASM_ASSETS = [];
 
 // Install event - precache critical assets
 self.addEventListener('install', (event) => {
@@ -105,7 +103,7 @@ self.addEventListener('fetch', (event) => {
   // Scanner worker and high-volume scan endpoints must stay on the raw network
   // path. During restores these requests can be multi-megabyte and latency
   // sensitive; caching/intercepting them in the SW can delay worker startup.
-  if (isScannerWorkerScript(url) || isLiveScanRequest(url)) {
+  if (isWalletEngineWorkerScript(url) || isScannerWorkerScript(url) || isLiveScanRequest(url)) {
     return;
   }
 
@@ -276,8 +274,22 @@ function normalizedPathname(url) {
   return url.pathname.replace(/^\/vault(?=\/)/, '');
 }
 
+// App-spawned classic workers (wallet-host, seed-validator) are instantiated with
+// `new Worker()`. Under
+// COEP:credentialless, Firefox aborts a worker script served through the
+// service-worker Cache pipeline (NS_BINDING_ABORTED) — the worker never reaches its
+// init handshake and the client times out after 60s ("Failed to Initialize"). It must
+// load straight from the network, where the response carries the correct COEP headers.
+function isWalletEngineWorkerScript(url) {
+  const path = normalizedPathname(url);
+  // Any app-spawned classic worker under /wallet/ (wallet-host, seed-validator, ...).
+  return path.startsWith('/wallet/') && path.endsWith('.worker.js');
+}
+
 function isScannerWorkerScript(url) {
-  return normalizedPathname(url).includes('/wallet/csp-scanner.worker.js');
+  const path = normalizedPathname(url);
+  return path.includes('/wallet/csp-scanner.worker.js') ||
+         path.includes('/wallet/CSPScanner.js');
 }
 
 function isLiveScanRequest(url) {
@@ -287,6 +299,7 @@ function isLiveScanRequest(url) {
     '/api/csp-bundle',
     '/api/csp-cached',
     '/api/csp-wasm',
+    '/api/wasm-info',
     '/api/wallet/batch-sparse-txs',
     '/api/wallet/get-spent-index.bin',
     '/api/wallet/get-transactions-by-hash',

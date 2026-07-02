@@ -1,4 +1,4 @@
-export const WASM_CACHE_VERSION = '8.2.16-sync-latch-20260617T051300Z';
+export const WASM_CACHE_VERSION = '8.2.18-cf403-failover-20260702T0005Z';
 
 type WasmAssetDescriptor = {
   filename?: string;
@@ -46,24 +46,40 @@ export const getWasmAssetVersionFromInfo = (info: unknown): string | null => {
 };
 
 export const getWasmInfoUrl = (): string => {
-  const path = typeof window !== 'undefined' && window.location.pathname.startsWith('/vault')
-    ? '/vault/api/wasm-info'
-    : '/api/wasm-info';
-  const url = new URL(path, window.location.origin);
+  const url = new URL('/api/wasm-info', window.location.origin);
   url.searchParams.set('_vault_wasm_check', String(Date.now()));
   return url.toString();
 };
 
 export const fetchLatestWasmAssetVersion = async (): Promise<string | null> => {
-  const response = await fetch(getWasmInfoUrl(), {
-    cache: 'no-store',
-    credentials: 'same-origin',
-    headers: { 'Cache-Control': 'no-cache' },
-  });
-  if (!response.ok) {
-    throw new Error(`wasm info HTTP ${response.status}`);
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutMs = 10000 + attempt * 5000;
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(getWasmInfoUrl(), {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { 'Cache-Control': 'no-cache' },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`wasm info HTTP ${response.status}`);
+      }
+      return getWasmAssetVersionFromInfo(await response.json());
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500 + attempt * 1000));
+      }
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
-  return getWasmAssetVersionFromInfo(await response.json());
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(String(lastError || 'wasm info request failed'));
 };
 
 export const getCurrentLoadedWasmAssetVersion = (): string | null => {
