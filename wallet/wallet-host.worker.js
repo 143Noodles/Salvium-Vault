@@ -184,10 +184,25 @@ async function handleInit(config) {
         }
 
         let wasmFetchBust = '';
-        Module = await factory({
+        // The glue/wasm URLs carry NO query string ('/api/wasm/<ver>/SalviumWallet.js'),
+        // so the old 'url + "&fresh=x"' produced '...SalviumWallet.js&fresh=x' — a
+        // malformed path the server 404s (surfaced as importScripts NetworkError). Insert
+        // the separator correctly so the cache-bust actually fetches fresh bytes.
+        const bustUrl = function (url) {
+            if (!wasmFetchBust) return url;
+            return url + (url.indexOf('?') === -1 ? '?' : '&') + 'fresh=' + wasmFetchBust;
+        };
+        // Factory options builder so a first-attempt CompileError (poisoned WASM bytes in
+        // a cache layer we cannot clear remotely — most often the Android WebView HTTP
+        // cache) can be retried ONCE with a cache-bust param. Without this the worker just
+        // reports worker_init_failed and every reload re-serves the same corrupt bytes
+        // (observed: a device stuck 14+ min on 'CompileError: Compiling function #305
+        // failed: Invalid opcode').
+        const buildFactoryOptions = function () {
+            return {
             locateFile: function (path) {
                 if (path && /\.wasm$/.test(path)) {
-                    return config.wasmUrl + wasmFetchBust;
+                    return bustUrl(config.wasmUrl);
                 }
                 return path;
             },
@@ -217,7 +232,25 @@ async function handleInit(config) {
                     postToClient({ kind: 'log', level: isActualError ? 'error' : 'log', text: t.slice(0, MAX_LOG_TEXT) });
                 } catch (_) { }
             }
-        });
+            };
+        };
+        const isWasmCompileFailure = function (e) {
+            const m = (e && (e.message || e.name)) ? String(e.message || e.name) : String(e);
+            return /CompileError|Compiling function|Invalid opcode|magic word|wasm (streaming )?compile|instantiate|Aborted\(/i.test(m);
+        };
+        try {
+            Module = await factory(buildFactoryOptions());
+        } catch (compileErr) {
+            if (!isWasmCompileFailure(compileErr)) throw compileErr;
+            postTelemetry('wallet.wasm_compile_retry', 'warn', String((compileErr && compileErr.message) || compileErr).slice(0, 160), {
+                endpoint: String(config.wasmUrl || ''),
+                reason: 'wasm_compile_error_cache_bust'
+            });
+            wasmFetchBust = Math.random().toString(36).slice(2);
+            importScripts(bustUrl(config.glueUrl));
+            const freshFactory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
+            Module = await freshFactory(buildFactoryOptions());
+        }
 
         wallet = createWalletInstance(config.network);
 
@@ -241,19 +274,10 @@ async function handleInit(config) {
                 // Bust BOTH files: glue and binary are a matched pair and the same
                 // poisoned cache serves both — a fresh binary under the stale glue
                 // hard-aborts on the import table (the launch-day import #229 abort).
-                wasmFetchBust = '&fresh=' + Math.random().toString(36).slice(2);
-                importScripts(config.glueUrl + wasmFetchBust);
+                wasmFetchBust = Math.random().toString(36).slice(2);
+                importScripts(bustUrl(config.glueUrl));
                 const freshFactory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
-                Module = await freshFactory({
-                    locateFile: function (path) {
-                        if (path && /\.wasm$/.test(path)) {
-                            return config.wasmUrl + wasmFetchBust;
-                        }
-                        return path;
-                    },
-                    print: function () { },
-                    printErr: function () { }
-                });
+                Module = await freshFactory(buildFactoryOptions());
             }
         } catch (verifyErr) { }
         postToClient({ kind: 'ready', wasmVersion: resolveWasmVersion() });
