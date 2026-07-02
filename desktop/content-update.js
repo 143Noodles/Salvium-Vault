@@ -93,7 +93,13 @@ function fetchBuffer(url, redirects = 5) {
       }
       if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode + ' for ' + url)); }
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      let total = 0;
+      const MAX_BYTES = 512 * 1024 * 1024; // hard ceiling; content bundles are a few MB
+      res.on('data', (c) => {
+        total += c.length;
+        if (total > MAX_BYTES) { req.destroy(new Error('content download exceeds size limit')); return; }
+        chunks.push(c);
+      });
       res.on('end', () => resolve(Buffer.concat(chunks)));
     });
     req.on('timeout', () => req.destroy(new Error('timeout')));
@@ -159,7 +165,14 @@ async function applyContentUpdate(manifest) {
   fs.mkdirSync(dest, { recursive: true });
   const tmpArchive = path.join(contentRoot(), version + '.tar.gz');
   fs.writeFileSync(tmpArchive, archive);
-  await tar.x({ file: tmpArchive, cwd: dest });
+  try {
+    await tar.x({ file: tmpArchive, cwd: dest });
+  } catch (e) {
+    // Extraction failed — don't leave a temp archive or a partial (un-'.ok'd) dir behind.
+    try { fs.unlinkSync(tmpArchive); } catch (_) {}
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch (_) {}
+    throw e;
+  }
   fs.unlinkSync(tmpArchive);
 
   // sanity: the unpacked content must declare the expected version
