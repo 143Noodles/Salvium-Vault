@@ -15,7 +15,9 @@ import {
   validationErrorMessage,
   normalizeNettype,
   getActiveNetwork,
+  fetchServerNodePresets,
   type NodeChoice,
+  type NodePreset,
 } from '../utils/vaultNode';
 
 interface NodeSelectorProps {
@@ -35,19 +37,23 @@ const hostLabel = (url: string): string => {
   }
 };
 
-const presetLabel = (id: string): string => {
+const presetLabel = (presets: NodePreset[], id: string): string => {
   if (id === 'auto') return 'Automatic';
-  return NODE_PRESETS.find((preset) => preset.id === id)?.label ?? id;
+  return presets.find((preset) => preset.id === id)?.label ?? id;
 };
 
-const choiceLabel = (choice: NodeChoice): string => {
+const choiceLabel = (presets: NodePreset[], choice: NodeChoice): string => {
   if (/^https?:\/\//i.test(choice)) return hostLabel(choice);
-  return presetLabel(choice);
+  return presetLabel(presets, choice);
 };
 
 const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, settings, className = '' }) => {
   const { t } = useTranslation();
   const [choice, setChoice] = useState<NodeChoice>('auto');
+  // The server decides which presets exist (the desktop sidecar exposes the 3
+  // official seed nodes; the hosted vault does not) — the hardcoded list is
+  // only the pre-fetch fallback.
+  const [presets, setPresets] = useState<NodePreset[]>(NODE_PRESETS);
   const [customNodes, setCustomNodes] = useState<string[]>([]);
   const [customInput, setCustomInput] = useState('');
   const [validating, setValidating] = useState(false);
@@ -61,6 +67,11 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
   useEffect(() => {
     setChoice(getCurrentNodeChoice());
     setCustomNodes(getCustomNodes());
+    let cancelled = false;
+    fetchServerNodePresets().then((serverPresets) => {
+      if (!cancelled && serverPresets.length > 0) setPresets(serverPresets);
+    });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -203,7 +214,7 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
             onClick={handleToggle}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/10 bg-bg-primary hover:border-white/20 transition-all text-left text-sm max-w-[220px]"
           >
-            <span className="text-text-secondary font-medium truncate">{choiceLabel(choice)}</span>
+            <span className="text-text-secondary font-medium truncate">{choiceLabel(presets, choice)}</span>
             <ChevronRight
               size={14}
               className={`text-text-muted transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-90' : ''}`}
@@ -229,7 +240,7 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
               <span className="flex-1 font-medium truncate">Automatic (recommended)</span>
               {choice === 'auto' && <Check size={14} className="text-accent-primary flex-shrink-0" />}
             </button>
-            {NODE_PRESETS.filter((preset) => preset.id !== 'auto').map((preset) => (
+            {presets.filter((preset) => preset.id !== 'auto').map((preset) => (
               <button
                 key={preset.id}
                 type="button"
@@ -342,7 +353,7 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
             className="w-full appearance-none rounded-lg bg-black/30 border border-white/10 pl-3 pr-9 py-2 text-sm text-white focus:outline-none focus:border-accent-primary/60 cursor-pointer"
           >
             <option value="auto">Automatic (recommended)</option>
-            {NODE_PRESETS.filter((preset) => preset.id !== 'auto').map((preset) => (
+            {presets.filter((preset) => preset.id !== 'auto').map((preset) => (
               <option key={preset.id} value={preset.id}>
                 {preset.label}
               </option>

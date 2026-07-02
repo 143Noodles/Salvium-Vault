@@ -19,6 +19,22 @@ export const NODE_PRESETS: NodePreset[] = [
   { id: 'local', label: 'Salvium Tools', kind: 'hosted' },
 ];
 
+// The server owns the preset list (GET /api/nodes): the desktop sidecar adds
+// the 3 official seed nodes, the hosted vault does not. Returns [] on failure
+// so callers keep their fallback.
+export async function fetchServerNodePresets(): Promise<NodePreset[]> {
+  try {
+    const resp = await fetch('/api/nodes');
+    const data = await resp.json();
+    const presets = Array.isArray(data?.presets) ? data.presets : [];
+    return presets
+      .filter((p: any) => p && typeof p.id === 'string' && typeof p.label === 'string')
+      .map((p: any) => ({ id: p.id, label: p.label, kind: (p.kind || 'custom') as NodeKind }));
+  } catch {
+    return [];
+  }
+}
+
 export function getNodeFromCookie(cookieHeader: string): NodeChoice {
   const prefix = `${VAULT_NODE_COOKIE}=`;
   const cookie = (cookieHeader || '')

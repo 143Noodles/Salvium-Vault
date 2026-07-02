@@ -390,6 +390,12 @@ async function createMainWindow(port) {
     width: 1280,
     height: 860,
     title: 'Salvium Vault',
+    // Linux taskbars/docks take the window icon from here (the AppImage has no
+    // installed icon theme entry to fall back on).
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    // The SPA carries its own chrome; keep the File/Edit/View/Window/Help menu
+    // bar hidden (Alt reveals it, and its shortcuts still work).
+    autoHideMenuBar: true,
     // Keep the wallet scan running at full speed when minimized to the tray —
     // Chromium otherwise throttles hidden-window timers to a crawl.
     // preload exposes window.__SALVIUM_DESKTOP__ so the SPA reliably detects the

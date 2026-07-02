@@ -7043,6 +7043,10 @@ async function streamDownloadAndExtractTxi(url) {
     console.log('[Fast Sync] Streamed TXI bundle -> ' + ci + ' .txi file(s) (no .bin stored)');
 }
 let cachePrepareJob = { mode: null, running: false, error: null, startedAt: 0, downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0, txiFailed: false };
+// Desktop Fast Sync: if local index coverage is this many blocks behind the tip,
+// re-pull the CDN bundles (regenerated server-side, e.g. after a hard fork)
+// instead of grinding through a full local rebuild from the daemon.
+const CDN_REPROVISION_LAG_BLOCKS = 10000;
 async function fastSyncProvisionCaches() {
     if (cachePrepareJob.running) return;
     cachePrepareJob = { mode: 'fast', running: true, error: null, startedAt: Date.now(), downloaded: 0, total: 0, downloadedBytes: 0, totalBytes: 0, txiFailed: false };
@@ -7058,8 +7062,24 @@ async function fastSyncProvisionCaches() {
         // the receive index, not just spend/stake. Include its size in the total so
         // the progress bar stays honest. URL is passed only by the Electron shell.
         const cspBundleUrl = process.env.SALVIUM_CSP_CDN_URL;
-        const cspBundlePresent = !!cspBundleUrl && ((fsSync.existsSync(CSP_BUNDLE_FILE) && fsSync.statSync(CSP_BUNDLE_FILE).size > 0) || fsSync.existsSync(CSP_BUNDLE_FILE + '.extracted'));
-        if (cspBundleUrl && !cspBundlePresent) {
+        // Download when nothing local exists, OR when local receive coverage sits far
+        // behind the tip even though an old bundle/.extracted marker is present (a
+        // stale pre-fork bundle must never block re-provisioning after a cache reset).
+        let cspBundleWanted = false;
+        if (cspBundleUrl) {
+            const localBin = fsSync.existsSync(CSP_BUNDLE_FILE) && fsSync.statSync(CSP_BUNDLE_FILE).size > 0;
+            const extracted = fsSync.existsSync(CSP_BUNDLE_FILE + '.extracted');
+            if (!localBin && !extracted) {
+                cspBundleWanted = true;
+            } else {
+                try {
+                    const tip = await getPrepareChainTip();
+                    const cov = await getCspCoverageHealth(tip);
+                    cspBundleWanted = tip > 0 && (tip - (cov.effectiveHeight || 0)) > CDN_REPROVISION_LAG_BLOCKS;
+                } catch (_) { cspBundleWanted = false; }
+            }
+        }
+        if (cspBundleWanted) {
             try { const h = await axios.head(cspBundleUrl, { timeout: 30000 }); cachePrepareJob.totalBytes += Number(h.headers['content-length']) || 0; } catch (_) {}
         }
         for (const f of files) {
@@ -7093,7 +7113,7 @@ async function fastSyncProvisionCaches() {
         }
         // CSP receive bundle: download in the sidecar (during restore prepare),
         // not at Electron boot. New wallets never enter prepare, so they skip it.
-        if (cspBundleUrl && !cspBundlePresent) {
+        if (cspBundleUrl && cspBundleWanted) {
             try {
                 await fs.mkdir(path.dirname(CSP_BUNDLE_FILE), { recursive: true });
                 const tmp = CSP_BUNDLE_FILE + '.part';
@@ -7118,7 +7138,21 @@ async function fastSyncProvisionCaches() {
         const txiBundleUrl = process.env.SALVIUM_TXI_CDN_URL;
         if (txiBundleUrl) {
             const txiMarker = TXI_BUNDLE_FILE + '.extracted';
-            if (!fsSync.existsSync(txiMarker)) {
+            let txiWanted = !fsSync.existsSync(txiMarker);
+            if (!txiWanted) {
+                // Marker present but most chunks gone/behind (e.g. a hard-fork cache
+                // reset): re-stream the bundle instead of regenerating ~9s/chunk locally.
+                try {
+                    const tip = await getPrepareChainTip();
+                    const expected = Math.max(1, Math.floor(tip / 1000));
+                    const have = (await fs.readdir(CACHE_DIR)).filter(f => /^blocks-\d+-\d+\.txi$/.test(f)).length;
+                    if (tip > 0 && have < expected * 0.5) {
+                        txiWanted = true;
+                        await fs.unlink(txiMarker).catch(() => {});
+                    }
+                } catch (_) {}
+            }
+            if (txiWanted) {
                 try { const h = await axios.head(txiBundleUrl, { timeout: 30000 }); cachePrepareJob.totalBytes += Number(h.headers['content-length']) || 0; } catch (_) {}
                 const cleanParts = async () => { try { for (const f of await fs.readdir(CACHE_DIR)) { if (f.startsWith('blocks-') && f.endsWith('.txi.part')) await fs.unlink(path.join(CACHE_DIR, f)).catch(() => {}); } } catch (_) {} };
                 if (fsSync.existsSync(TXI_BUNDLE_FILE) && fsSync.statSync(TXI_BUNDLE_FILE).size > 0) {
@@ -14341,6 +14375,24 @@ if (true) {
                 setInterval(() => { ensureTxiBundleFresh().catch(() => {}); }, 6 * 60 * 60 * 1000).unref();
 
                 console.log('\n[Vault] Startup complete');
+
+                // Desktop sidecar: if the local indexes are far behind the tip (fresh
+                // install with no wizard run, or a hard-fork cache reset), pull the
+                // prebuilt CDN bundles automatically instead of waiting for a restore
+                // wizard that will never run. Hosted never sets the CDN URL/private flag.
+                if (DESKTOP_SIDECAR && CSP_CACHE_ENABLED && process.env.SALVIUM_CSP_CDN_URL) {
+                    setTimeout(async () => {
+                        try {
+                            const tip = await getPrepareChainTip();
+                            const cov = await getCspCoverageHealth(tip);
+                            const behind = tip > 0 ? (tip - (cov.effectiveHeight || 0)) : 0;
+                            if (behind > CDN_REPROVISION_LAG_BLOCKS && !cachePrepareJob.running) {
+                                console.log('[Fast Sync] Receive index ' + behind + ' blocks behind tip - auto-provisioning prebuilt caches from CDN');
+                                fastSyncProvisionCaches().catch(() => {});
+                            }
+                        } catch (e) { console.warn('[Fast Sync] boot auto-provision check failed:', e.message); }
+                    }, 15000).unref();
+                }
 
                 console.log('[Price History] Setting up hourly background updates...');
 

@@ -40,6 +40,7 @@ import {
     mergeTransactionsByDirection
 } from '../utils/transactionMerge';
 import { shouldForceReturnedTransferScan } from '../utils/scanHints';
+import { notifyIncomingTransactions } from '../utils/desktopNotify';
 import { isNativePlatform, isDesktopApp } from '../utils/runtime';
 import { reportClientEvent, reportTaskEvent } from '../utils/clientTelemetry';
 import { getSyncWatchdogDecision } from '../utils/syncWatchdog';
@@ -3101,6 +3102,9 @@ const getDeviceMemoryBucket = (): string => {
             const stakeStateHeight = sync.daemonHeight || sync.walletHeight || 0;
             const parsedStakeState = await getNativeStakeState(stakeStateHeight);
 
+            // Native OS notification for newly scanned incoming transfers (desktop).
+            notifyIncomingTransactions(findNewTransactionsByDirection(newTxs, transactionsRef.current));
+
             setTransactions(prevTxs => {
                 const mergedTxs = mergeTransactionsByDirection([
                     ...prevTxs,
@@ -5801,6 +5805,8 @@ const getDeviceMemoryBucket = (): string => {
 
                     const cachedBalance = getTrustedCachedBalance(encryptedWallet);
                     const newlyFoundTxs = findNewTransactionsByDirection(newTxs, existingTxs);
+                    // Incremental catch-up only: a first/full restore would flood the OS tray.
+                    if (isIncrementalScan) notifyIncomingTransactions(newlyFoundTxs);
                     const hasNewTxs = newlyFoundTxs.length > 0;
                     const scanFoundOutputsButFilterEmpty = (result.outputsFound || 0) > 0 && !hasNewTxs;
                     const wasmHasFullState = currentBalance.balance > (cachedBalance?.balance || 0);
