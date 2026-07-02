@@ -615,7 +615,7 @@
       "welcome": {
         "title": "Selamat datang di Salvium Vault Anda",
         "subtitle": "Mari atur cara dompet Anda terhubung dan tersinkronisasi.",
-        "privacyNote": "Kunci Anda tidak pernah meninggalkan perangkat ini. Pemindaian sepenuhnya lokal."
+        "privacyNote": "Penyiapan dan pemindaian dilakukan secara lokal di perangkat ini."
       },
       "node": {
         "title": "Hubungkan ke node",

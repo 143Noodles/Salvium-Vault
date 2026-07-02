@@ -615,7 +615,7 @@
       "welcome": {
         "title": "Bienvenido a tu Salvium Vault",
         "subtitle": "Vamos a configurar cómo se conecta y sincroniza tu monedero.",
-        "privacyNote": "Tus claves nunca salen de este dispositivo. El escaneo es totalmente local."
+        "privacyNote": "La configuración y el escaneo se realizan localmente en este dispositivo."
       },
       "node": {
         "title": "Conectar a un nodo",

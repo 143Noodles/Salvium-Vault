@@ -615,7 +615,7 @@
       "welcome": {
         "title": "Willkommen in deinem Salvium Vault",
         "subtitle": "Richten wir ein, wie deine Wallet sich verbindet und synchronisiert.",
-        "privacyNote": "Deine Schlüssel verlassen dieses Gerät nie. Das Scannen erfolgt vollständig lokal."
+        "privacyNote": "Einrichtung und Scannen erfolgen lokal auf diesem Gerät."
       },
       "node": {
         "title": "Mit einem Node verbinden",

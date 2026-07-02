@@ -615,7 +615,7 @@
       "welcome": {
         "title": "Welcome to your Salvium Vault",
         "subtitle": "Let’s set up how your wallet connects and syncs.",
-        "privacyNote": "Your keys never leave this device. Scanning is fully local."
+        "privacyNote": "Setup and scanning happen locally on this device."
       },
       "node": {
         "title": "Connect to a node",

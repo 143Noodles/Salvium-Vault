@@ -615,7 +615,7 @@
       "welcome": {
         "title": "欢迎使用您的 Salvium Vault",
         "subtitle": "让我们设置您的钱包如何连接和同步。",
-        "privacyNote": "您的密钥永不离开本设备。扫描完全在本地进行。"
+        "privacyNote": "设置和扫描均在本设备本地进行。"
       },
       "node": {
         "title": "连接到节点",
