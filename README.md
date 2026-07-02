@@ -40,8 +40,8 @@ Salvium Vault is a fully client-side wallet that lets you create, manage, and tr
 
 ```bash
 # Clone the repository
-git clone https://github.com/143Noodles/Salvium-Vault-Web-Wallet.git
-cd Salvium-Vault-Web-Wallet
+git clone https://github.com/143Noodles/Salvium-Vault.git
+cd Salvium-Vault
 
 # Install dependencies
 npm install
@@ -69,7 +69,7 @@ npm start
 ## Desktop App
 
 Installers (Linux AppImage/deb, Windows, macOS) are on the
-[GitHub Releases](https://github.com/143Noodles/Salvium-Vault-Web-Wallet/releases) page.
+[GitHub Releases](https://github.com/143Noodles/Salvium-Vault/releases) page.
 The desktop app runs the same wallet fully locally (the server component runs as a
 localhost sidecar) and updates itself through Ed25519-signed over-the-air content
 bundles — installers rarely change. See [desktop/PUBLISHING.md](desktop/PUBLISHING.md)
@@ -175,7 +175,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Salvium Website](https://salvium.io)
 - [Salvium GitHub](https://github.com/salvium)
 - [Live Wallet](https://vault.salvium.tools)
-- [Desktop Downloads](https://github.com/143Noodles/Salvium-Vault-Web-Wallet/releases)
+- [Desktop Downloads](https://github.com/143Noodles/Salvium-Vault/releases)
 
 ---
 
