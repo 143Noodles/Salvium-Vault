@@ -60,6 +60,27 @@ function resolveActiveContentDir(repoRoot) {
   return { dir: bestDir, version: bestVer };
 }
 
+// Delete downloaded content versions strictly OLDER than the one currently running.
+// Never touches the running version or any pending (higher) downloaded update, nor the
+// bundled floor (which lives outside contentRoot). Bounds unbounded userData growth.
+function pruneOldContent(runningVersion) {
+  let removed = 0;
+  try {
+    for (const name of fs.readdirSync(contentRoot())) {
+      const dir = path.join(contentRoot(), name);
+      let stat;
+      try { stat = fs.statSync(dir); } catch (_) { continue; }
+      if (!stat.isDirectory()) continue;
+      const v = readVersion(dir);
+      if (v && verGt(runningVersion, v)) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); removed += 1; log('pruned superseded content v' + v); }
+        catch (e) { log('prune failed for v' + v + ':', e && e.message); }
+      }
+    }
+  } catch (_) { /* no downloaded content yet */ }
+  return removed;
+}
+
 // --- networking (follows redirects; GitHub asset URLs redirect) -------------
 function fetchBuffer(url, redirects = 5) {
   return new Promise((resolve, reject) => {
@@ -154,4 +175,5 @@ module.exports = {
   applyContentUpdate,
   getSkippedVersion,
   setSkippedVersion,
+  pruneOldContent,
 };
