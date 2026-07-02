@@ -44,8 +44,6 @@ const CDN_BUNDLE_URL = process.env.SALVIUM_CSP_CDN_URL || 'https://cdn.salvium.t
 const TXI_CDN_URL = process.env.SALVIUM_TXI_CDN_URL || 'https://cdn.salvium.tools/api/txi-bundle';
 const userDataDir = app.getPath('userData');
 const DATA_DIR = path.join(userDataDir, 'salvium-data');
-const CSP_DIR = path.join(DATA_DIR, SALVIUM_NETWORK, 'salvium-csp');
-const BUNDLE_FILE = path.join(CSP_DIR, 'csp-bundle-v8.bin');
 let sidecar = null;
 let mainWindow = null;
 let currentPort = 0;
@@ -234,74 +232,6 @@ async function resolveStablePort() {
   writePrefs(Object.assign({}, prefs, { sidecarPort: port }));
   log('Persisted new sidecar port', saved ? '(previous ' + saved + ' was taken)' : '', port);
   return port;
-}
-
-// ---------------------------------------------------------------------------
-// Integrity check: the CSP bundle must start with the 'BPSC' magic and be a
-// sane size. Guards Fast Sync against a truncated/HTML/error-page download.
-// ---------------------------------------------------------------------------
-function validateBundleFile(p) {
-  const st = fs.statSync(p);
-  if (st.size < 1024 * 1024) throw new Error('bundle too small: ' + st.size + ' bytes');
-  const fd = fs.openSync(p, 'r');
-  const buf = Buffer.alloc(4);
-  fs.readSync(fd, buf, 0, 4, 0);
-  fs.closeSync(fd);
-  const magic = buf.toString('latin1');
-  if (magic !== 'BPSC') throw new Error('bad bundle magic: ' + JSON.stringify(magic));
-  return st.size;
-}
-
-// ---------------------------------------------------------------------------
-// CDN download path for Fast Sync. Streams to a .part file then renames on
-// success. Fails soft (see fastSyncBootstrap) — scan builds incrementally if
-// the CDN is unreachable.
-// ---------------------------------------------------------------------------
-function downloadBundleFromCdn(url, destPath) {
-  return new Promise((resolve, reject) => {
-    log('CDN download attempt:', url);
-    const client = url.startsWith('https') ? https : http;
-    const tmp = destPath + '.part';
-    const file = fs.createWriteStream(tmp);
-    const req = client.get(url, { timeout: 30_000 }, (res) => {
-      if (res.statusCode !== 200) {
-        res.resume();
-        return reject(new Error('CDN HTTP ' + res.statusCode));
-      }
-      res.pipe(file);
-      file.on('finish', () => file.close(() => {
-        fs.renameSync(tmp, destPath);
-        resolve(destPath);
-      }));
-    });
-    req.on('timeout', () => req.destroy(new Error('CDN download timeout')));
-    req.on('error', (err) => { try { fs.unlinkSync(tmp); } catch (_) {} reject(err); });
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Fast Sync bootstrap: ensure the CSP scan-index bundle exists in the data dir.
-// (1) already present -> use it; (2) download + validate from the CDN.
-// Fails SOFT: if the CDN is unreachable the wallet still works — the scan just
-// falls back to building the index incrementally from the chosen node.
-// ---------------------------------------------------------------------------
-async function fastSyncBootstrap() {
-  fs.mkdirSync(CSP_DIR, { recursive: true });
-  if (fs.existsSync(BUNDLE_FILE) && fs.statSync(BUNDLE_FILE).size > 0) {
-    log('Fast Sync: bundle already present:', BUNDLE_FILE, '(' + fs.statSync(BUNDLE_FILE).size + ' bytes)');
-    return { source: 'cached', ms: 0 };
-  }
-  const start = Date.now();
-  try {
-    await downloadBundleFromCdn(CDN_BUNDLE_URL, BUNDLE_FILE);
-    const sz = validateBundleFile(BUNDLE_FILE);
-    log('Fast Sync: downloaded + validated bundle from CDN in', Date.now() - start, 'ms (' + sz + ' bytes)');
-    return { source: 'cdn', ms: Date.now() - start };
-  } catch (err) {
-    try { fs.unlinkSync(BUNDLE_FILE); } catch (_) {}
-    log('Fast Sync: CDN bundle unavailable (' + err.message + '); continuing without it (scan will build incrementally).');
-    return { source: 'unavailable', ms: Date.now() - start, error: err.message };
-  }
 }
 
 // ---------------------------------------------------------------------------
