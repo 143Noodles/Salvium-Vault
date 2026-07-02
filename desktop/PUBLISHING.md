@@ -46,9 +46,6 @@ sha512 before unpacking; unverified content is never extracted or run.
 There is intentionally **no electron-updater / shell self-update**: the shell
 is dumb on purpose, and self-replacing binaries would need per-OS signing.
 
-For installer code-signing (Windows SignPath, macOS notarization) and the free
-macOS Homebrew path, see [SIGNING.md](SIGNING.md).
-
 ## Linux sandbox on Ubuntu 24.04+
 
 Ubuntu 24.04 (and derivatives) set `kernel.apparmor_restrict_unprivileged_userns=1`,
