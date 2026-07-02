@@ -38,6 +38,22 @@ describe('client telemetry privacy sanitizer', () => {
     expect(redacted).toContain('[redacted-sensitive]');
   });
 
+  it('redacts uppercase SC1 addresses and compound balance keys', () => {
+    const sensitive = [
+      'send to SC1aBcDeFgHjKmNpQrStUvWxYz123456789ABCDEFGHJKLMNPQRSTUV failed',
+      'snapshot_balance=1533000000 snapshot_unlocked=1400000000',
+      'display_balance=15.33 locked_coins_total=2000000 suspect_tx_output_atomic=500',
+    ].join('\n');
+    const redacted = redactSensitiveText(sensitive);
+    expect(redacted).not.toMatch(/SC1[1-9A-HJ-NP-Za-km-z]{20}/);
+    expect(redacted).toContain('[redacted-address]');
+    expect(redacted).not.toContain('1533000000');
+    expect(redacted).not.toContain('1400000000');
+    expect(redacted).not.toContain('15.33');
+    expect(redacted).not.toContain('2000000');
+    expect(redacted).not.toContain('500');
+  });
+
   it('keeps only allowlisted low-cardinality context fields', () => {
     const context = sanitizeTelemetryContext({
       task: 'wallet.create',

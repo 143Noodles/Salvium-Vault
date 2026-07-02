@@ -313,6 +313,8 @@ const StakingPage: React.FC = () => {
    };
 
    const confirmStake = async () => {
+      // Re-entrancy guard: a double-tap could otherwise broadcast the stake twice.
+      if (isStaking) return;
       setShowStakeConfirm(false);
       setIsStaking(true);
       setStakeError(null);
@@ -789,7 +791,7 @@ const StakingPage: React.FC = () => {
                   <div className="space-y-4 mb-6">
                      <div className="p-4 bg-white/5 rounded-xl border border-white/10">
                         <p className="text-xs text-text-muted uppercase tracking-wider mb-1">{t('staking.amountToStake')}</p>
-                        <p className="text-2xl font-bold text-white font-mono">{numericAmount.toLocaleString()} SAL</p>
+                        <p className="text-2xl font-bold text-white font-mono">{numericAmount.toLocaleString(undefined, { maximumFractionDigits: 8 })} SAL</p>
                      </div>
 
                      <div className="p-4 bg-white/5 rounded-xl border border-white/10">
@@ -821,6 +823,7 @@ const StakingPage: React.FC = () => {
                      <Button
                         className="flex-1"
                         onClick={confirmStake}
+                        disabled={isStaking}
                      >
                         <TrendingUp className="mr-2 w-4 h-4" />
                         {t('staking.confirmStakeButton')}

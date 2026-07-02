@@ -21,11 +21,12 @@ Salvium Vault is a fully client-side wallet that lets you create, manage, and tr
 - **Sweep Support** - Consolidate all spendable outputs in one transaction
 - **Fast Restores** - Parallel client-side scanning restores wallets in minutes (benchmarked faster than the native CLI)
 - **Client-Side Scanning** - The blockchain is scanned locally using compact view-tag data; the server never learns which outputs are yours
-- **Node Selection** - Use the default hosted node, the official Salvium seed nodes, or add your own custom node (validated and proxied through the server)
+- **Node Selection** - Use the default hosted node or add your own custom node (validated and proxied through the server); the desktop app can also talk to local or official seed nodes directly
 - **Biometric Unlock** - Optional Face ID / Touch ID / Windows Hello support
 - **Encrypted Backups** - Export and import encrypted wallet backups
 - **WebAssembly Powered** - Native performance for cryptographic operations
 - **Native Android App** - Available as an Android app (Capacitor) in addition to the web wallet
+- **Desktop App** - Native Linux/Windows/macOS app (Electron) with signed over-the-air content updates
 - **Responsive Design** - Works on desktop and mobile browsers
 
 ## Getting Started
@@ -64,6 +65,15 @@ npm run build
 # Start the production server
 npm start
 ```
+
+## Desktop App
+
+Installers (Linux AppImage/deb, Windows, macOS) are on the
+[GitHub Releases](https://github.com/143Noodles/Salvium-Vault-Web-Wallet/releases) page.
+The desktop app runs the same wallet fully locally (the server component runs as a
+localhost sidecar) and updates itself through Ed25519-signed over-the-air content
+bundles — installers rarely change. See [desktop/PUBLISHING.md](desktop/PUBLISHING.md)
+for how releases and updates work.
 
 ## Docker Deployment
 
@@ -106,6 +116,7 @@ salvium-vault/
 ├── services/          # Business logic & API services
 ├── wallet/            # WebAssembly wallet core
 ├── server.cjs         # Express.js backend (RPC proxy)
+├── desktop/           # Electron desktop shell (see desktop/PUBLISHING.md)
 └── wasm-build/        # WASM compilation source & tools
 ```
 
@@ -164,6 +175,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Salvium Website](https://salvium.io)
 - [Salvium GitHub](https://github.com/salvium)
 - [Live Wallet](https://vault.salvium.tools)
+- [Desktop Downloads](https://github.com/143Noodles/Salvium-Vault-Web-Wallet/releases)
 
 ---
 
