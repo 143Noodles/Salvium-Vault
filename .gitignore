@@ -105,6 +105,8 @@ desktop/build/*
 !desktop/build/icon.ico
 !desktop/build/installerHeader.bmp
 !desktop/build/installerSidebar.bmp
+!desktop/build/apparmor-profile
+!desktop/build/deb-postinst.sh
 desktop/dist/
 desktop/release/
 desktop/content-dist/

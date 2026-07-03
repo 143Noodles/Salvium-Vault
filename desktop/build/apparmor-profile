@@ -1,0 +1,13 @@
+# AppArmor profile for Salvium Vault (Electron).
+# Grants the app permission to create unprivileged user namespaces for the
+# Chromium sandbox on Ubuntu 23.10+ / 24.04+ where
+# kernel.apparmor_restrict_unprivileged_userns=1 blocks it by default.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile salvium-vault-desktop "/opt/Salvium Vault/salvium-vault-desktop" flags=(unconfined) {
+  userns,
+
+  # Site-specific additions and overrides.
+  include if exists <local/salvium-vault-desktop>
+}
