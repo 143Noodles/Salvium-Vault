@@ -114,6 +114,12 @@
       "createStartMenuShortcut": true,
       "shortcutName": "Salvium Vault",
       "uninstallDisplayName": "Salvium Vault"
+    },
+    "deb": {
+      "afterInstall": "build/deb-postinst.sh",
+      "fpm": [
+        "build/apparmor-profile=/etc/apparmor.d/salvium-vault-desktop"
+      ]
     }
   },
   "dependencies": {
