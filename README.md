@@ -75,6 +75,10 @@ localhost sidecar) and updates itself through Ed25519-signed over-the-air conten
 bundles — installers rarely change. See [desktop/PUBLISHING.md](desktop/PUBLISHING.md)
 for how releases and updates work.
 
+> **Ubuntu 24.04+ / Debian:** use the **.deb** package. It installs an AppArmor
+> profile the Chromium sandbox needs on these systems. The AppImage cannot ship
+> that profile and will fail to launch on Ubuntu 24.04+.
+
 ## Docker Deployment
 
 ```bash
