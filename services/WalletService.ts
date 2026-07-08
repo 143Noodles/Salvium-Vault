@@ -1292,6 +1292,30 @@ function getSweepTransactionAmountAtomic(tx: Record<string, unknown>, debugConte
   return getCreatedTransactionAmountAtomic(tx);
 }
 
+
+function collectConstructedTxSpentKeyImages(tx: Record<string, unknown>): Record<string, number> {
+  const spent: Record<string, number> = {};
+  const addKeyImage = (value: unknown, heightValue: unknown = 0) => {
+    const keyImage = typeof value === 'string' ? value.trim() : '';
+    if (!/^[0-9a-f]{64}$/i.test(keyImage)) return;
+    const height = Number(heightValue || 0);
+    spent[keyImage] = Number.isFinite(height) && height > 0 ? Math.floor(height) : 0;
+  };
+
+  const vinKeyImages = Array.isArray(tx.vin_key_images) ? tx.vin_key_images : [];
+  for (const keyImage of vinKeyImages) addKeyImage(keyImage);
+
+  const selectedTransfers = Array.isArray(tx.selected_transfers) ? tx.selected_transfers : [];
+  for (const transfer of selectedTransfers) {
+    const record = diagnosticRecord(transfer);
+    if (!record) continue;
+    const height = record.block_height ?? record.height ?? record.spent_height ?? 0;
+    addKeyImage(record.key_image ?? record.keyImage ?? record.ki, height);
+  }
+
+  return spent;
+}
+
 export type NewBlockCallback = (fromHeight: number, toHeight: number, chunkStart: number, chunkEnd: number) => void;
 
 export interface MempoolEvent {
@@ -3756,6 +3780,7 @@ export class WalletService {
           amount: tx.amount,
           role,
           sourceAssetType,
+          selectedSpentKeyImages: collectConstructedTxSpentKeyImages(tx),
         };
       });
 
@@ -3984,10 +4009,15 @@ export class WalletService {
         throw new Error('Transaction broadcast failed before all transaction parts were submitted');
       }
 
-      // Apply our own just-broadcast tx to wallet state now so the displayed and
-      // send-validated balance reflects the spend without waiting for the mempool echo.
+      // Apply our own just-broadcast tx to wallet state now and durably persist the
+      // selected-input spent marks before reporting success; later chain scans reconcile.
       for (const broadcastTx of broadcastTxs) {
-        try { await this.scanTransaction(broadcastTx.txBlob); } catch { /* best-effort; mempool echo backstops */ }
+        await this.applyPostBroadcastLocalMarking(
+          broadcastTx.txBlob,
+          broadcastTx.selectedSpentKeyImages,
+          broadcastTx.txHash,
+          'send'
+        );
       }
       this.invalidateStateSnapshot();
 
@@ -4408,9 +4438,10 @@ export class WalletService {
         throw new Error('No stake transaction created');
       }
 
-      const txBlob = result.transactions[0].tx_blob;
-      const txHash = result.transactions[0].tx_hash;
-      const stakeAmount = result.transactions[0].stake_amount;
+      const stakeTx = result.transactions[0] as Record<string, unknown>;
+      const txBlob = String(stakeTx.tx_blob || '');
+      const txHash = String(stakeTx.tx_hash || '');
+      const selectedSpentKeyImages = collectConstructedTxSpentKeyImages(stakeTx);
 
       const MAX_BROADCAST_RETRIES = 3;
       const BROADCAST_RETRY_DELAY = 2000;
@@ -4471,6 +4502,8 @@ export class WalletService {
 
           if (broadcastResult.status === 'OK') {
             this.storePendingTransaction(txHash, txBlob, 'broadcast');
+            await this.applyPostBroadcastLocalMarking(txBlob, selectedSpentKeyImages, txHash, 'stake');
+            this.invalidateStateSnapshot();
             reportAssetDiagnostic('task.completed', {
               task: 'staking.transaction',
               stage: 'broadcast',
@@ -8445,6 +8478,62 @@ export class WalletService {
         this.disconnectMempoolStream();
       }
     };
+  }
+
+  private async persistPostBroadcastWalletCache(txHash: string, source: 'send' | 'stake'): Promise<void> {
+    const addr = this.getAddress();
+    try {
+      if (addr && this.engine) {
+        await this.engine.op('persistToIdb', { addr }, { timeoutMs: 120000 });
+        reportAssetDiagnostic('wallet.post_broadcast_cache_persisted', { txHash, source });
+        return;
+      }
+    } catch (e) {
+      reportAssetDiagnostic('wallet.post_broadcast_cache_persist_failed', {
+        txHash,
+        source,
+        reason: e instanceof Error ? e.message : String(e),
+      }, 'warn');
+    }
+
+    const exported = await this.exportWalletCache();
+    if (!exported?.cache_hex) {
+      reportAssetDiagnostic('wallet.post_broadcast_cache_export_failed', { txHash, source }, 'warn');
+    }
+  }
+
+  private async applyPostBroadcastLocalMarking(
+    txBlobHex: string,
+    selectedSpentKeyImages: Record<string, number>,
+    txHash: string,
+    source: 'send' | 'stake'
+  ): Promise<void> {
+    let scanChanged = false;
+    let scanError = '';
+    try {
+      scanChanged = await this.scanTransaction(txBlobHex);
+    } catch (e) {
+      scanError = e instanceof Error ? e.message : String(e);
+    }
+
+    const selectedCount = Object.keys(selectedSpentKeyImages || {}).length;
+    let markedCount = 0;
+    if (!scanChanged && selectedCount > 0) {
+      markedCount = await this.markOutputsSpent(selectedSpentKeyImages);
+    }
+
+    if (scanChanged || selectedCount > 0) {
+      await this.persistPostBroadcastWalletCache(txHash, source);
+    }
+
+    reportAssetDiagnostic('wallet.post_broadcast_local_marking', {
+      txHash,
+      source,
+      scanChanged,
+      scanError,
+      selectedSpentKeyImageCount: selectedCount,
+      fallbackMarkedCount: markedCount,
+    }, scanChanged || markedCount > 0 ? 'info' : 'warn');
   }
 
   async scanTransaction(txBlobHex: string): Promise<boolean> {

@@ -590,12 +590,14 @@ const AppContent: React.FC = () => {
   const restoreScanSessionActive =
     wallet.scanSession?.type === 'restore-full-rescan' &&
     wallet.scanSession.status === 'active';
-  const walletRequiresRescan =
-    wallet.scanHealth.repairRequired ||
-    wallet.scanHealth.terminalState === 'repair_required';
-  const requiredRescanIsCritical =
-    walletRequiresRescan &&
+  const confirmedNativeEmptyRepair =
+    wallet.scanHealth.repairRequired &&
     /native wallet state is empty/i.test(wallet.scanHealth.reason || '');
+  const walletRequiresRescan =
+    wallet.scanHealth.terminalState === 'repair_required' ||
+    confirmedNativeEmptyRepair ||
+    (wallet.scanHealth.repairRequired && !/native wallet state is empty/i.test(wallet.scanHealth.reason || ''));
+  const requiredRescanIsCritical = walletRequiresRescan && confirmedNativeEmptyRepair;
 
   useEffect(() => {
     const canShowRequiredRescan =
@@ -613,7 +615,7 @@ const AppContent: React.FC = () => {
       return;
     }
     setShowRequiredRescanPrompt(true);
-  }, [appState, wallet.isWalletReady, wallet.isLocked, wallet.isScanning, restoreScanSessionActive, walletRequiresRescan, requiredRescanIsCritical, wallet.scanHealth.reason]);
+  }, [appState, wallet.isWalletReady, wallet.isLocked, wallet.isScanning, restoreScanSessionActive, walletRequiresRescan, requiredRescanIsCritical, wallet.scanHealth.reason, confirmedNativeEmptyRepair]);
 
   const startRequiredRescan = async () => {
     if (requiredRescanStarting) {

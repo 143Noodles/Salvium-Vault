@@ -3224,14 +3224,13 @@ function dropCspChunkCoverageFromHeight(fromHeight) {
 
 // Highest block index the cached chunk actually includes. Full historical
 // chunks (no entry) cover their nominal range; a tip-intersecting chunk with
-// no recorded coverage falls back to the tip estimate (legacy assumption)
-// until the next regeneration records exact coverage.
+// no recorded coverage is not authoritative and must be regenerated or retried.
 function getCspChunkCoveredEnd(chunkStart, tipEstimate) {
     const chunkEnd = chunkStart + BLOCK_CHUNK_SIZE - 1;
     const recorded = cspChunkCoveredEnd.get(chunkStart);
     if (Number.isFinite(recorded)) return Math.min(recorded, chunkEnd);
     const tip = Number(tipEstimate);
-    if (Number.isFinite(tip) && tip > 0 && chunkEnd >= tip) return Math.min(chunkEnd, Math.max(chunkStart, tip - 1));
+    if (Number.isFinite(tip) && tip > 0 && chunkEnd >= tip) return null;
     return chunkEnd;
 }
 
@@ -9598,6 +9597,9 @@ app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
         if (logSample) console.log(`[CSP-Cached] HIT: ${path.basename(getCspCacheFilename(alignedStart, alignedEnd))} (${cachedCsp.length} bytes)`);
 
         const hitCoveredEnd = getCspChunkCoveredEnd(alignedStart, lastKnownHeight);
+        if (hitCoveredEnd === null) {
+            console.warn(`[CSP-Cached] Cached tail chunk ${alignedStart}-${alignedEnd} has no authoritative coverage; regenerating`);
+        } else {
         res.header('Content-Type', 'application/octet-stream');
         res.header('X-CSP-Start-Height', alignedStart);
         res.header('X-CSP-End-Height', alignedEnd);
@@ -9612,6 +9614,7 @@ app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
             ? 'public, max-age=15, must-revalidate'
             : getCspResponseCacheControl());
         return res.send(cachedCsp);
+        }
     }
 
     if (wasmModuleReady && wasmModule) {
@@ -9645,6 +9648,10 @@ app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
         if (cspBuffer) {
             // Generation just recorded exact coverage (WASM blocks_count) in the map.
             const generatedCoveredEnd = getCspChunkCoveredEnd(alignedStart, lastKnownHeight);
+            if (generatedCoveredEnd === null) {
+                console.warn(`[CSP-Cached] Generated tail chunk ${alignedStart}-${alignedEnd} has no authoritative coverage`);
+                return res.status(503).json({ error: 'CSP coverage unavailable', retryable: true });
+            }
             generatedBlockCount = generatedCoveredEnd - alignedStart + 1;
             // A short CSP whose range is already below the tip is truncated/incomplete: don't cache it (would be served as complete forever); report the real covered end height.
             let coversFullRange = true;
@@ -9747,6 +9754,23 @@ app.get(['/api/csp-batch', '/vault/api/csp-batch'], async (req, res) => {
         }
     }
 
+    if (chunks.length > 0) {
+        const authoritativeChunks = [];
+        for (const chunk of chunks) {
+            if (getCspChunkCoveredEnd(chunk.start, batchKnownHeight) === null) {
+                console.warn(`[CSP-Batch] Cached tail chunk ${chunk.start}-${chunk.end} has no authoritative coverage; regenerating`);
+                missingChunks.push(chunk.start);
+                totalSize -= 4 + chunk.data.length;
+                chunksLoaded--;
+            } else {
+                authoritativeChunks.push(chunk);
+            }
+        }
+        chunks.length = 0;
+        chunks.push(...authoritativeChunks);
+        missingChunks = [...new Set(missingChunks)];
+    }
+
     const generatableMissingChunks = batchKnownHeight > 0
         ? missingChunks.filter(chunkStart => chunkStart < batchKnownHeight)
         : missingChunks;
@@ -9810,6 +9834,11 @@ app.get(['/api/csp-batch', '/vault/api/csp-batch'], async (req, res) => {
                 if (!cspBuffer || cspBuffer.length === 0) {
                     continue;
                 }
+                const generatedCoveredEnd = getCspChunkCoveredEnd(chunkStart, batchKnownHeight);
+                if (generatedCoveredEnd === null) {
+                    console.warn(`[CSP-Batch] Generated tail chunk ${chunkStart}-${chunkEnd} has no authoritative coverage`);
+                    continue;
+                }
                 chunks.push({
                     start: chunkStart,
                     end: chunkEnd,
@@ -9866,6 +9895,18 @@ app.get(['/api/csp-batch', '/vault/api/csp-batch'], async (req, res) => {
         offset += chunk.data.length;
     }
 
+    const coveredHeights = chunks.map(chunk => getCspChunkCoveredEnd(chunk.start, batchKnownHeight));
+    if (coveredHeights.some(height => height === null || height <= 0)) {
+        console.warn(`[CSP-Batch] Refusing to emit unknown coverage for ${alignedStart}`);
+        res.header('X-CSP-Requested-Chunk-Starts', requestedChunkStarts.join(','));
+        res.header('X-CSP-Manifest-Version', '1');
+        res.header('X-CSP-Known-Height', String(batchKnownHeight || 0));
+        res.header('X-CSP-Cache-Epoch', CSP_CACHE_EPOCH);
+        res.header('X-CSP-Missing-Chunk-Starts', requestedChunkStarts.join(','));
+        res.header('X-CSP-Missing-Reason', 'coverage_unavailable');
+        return res.status(503).json({ error: 'CSP coverage unavailable', retryable: true });
+    }
+
     const endChunk = chunks[chunks.length - 1];
     console.log(`[CSP-Batch] Returning ${chunksLoaded} chunks (${(totalSize / 1024).toFixed(1)}KB), ${alignedStart}-${endChunk.end}`);
 
@@ -9883,13 +9924,13 @@ app.get(['/api/csp-batch', '/vault/api/csp-batch'], async (req, res) => {
     // X-CSP-Chunk-Starts). The tail chunk usually ends below its nominal range;
     // clients must clamp their scanned-to height to this, or blocks landing
     // between the chunk write and the daemon tip are skipped permanently.
-    res.header('X-CSP-Covered-Heights', chunks.map(chunk => getCspChunkCoveredEnd(chunk.start, batchKnownHeight)).join(','));
+    res.header('X-CSP-Covered-Heights', coveredHeights.join(','));
     res.header('X-CSP-Missing-Chunk-Starts', missingChunks.join(','));
     res.header('X-CSP-Missing-Reason', missingReason);
     // Immutable only when every returned chunk is complete and none are missing;
     // a batch containing the mutable tail chunk must not be cached long-term.
-    const batchAllComplete = missingChunks.length === 0 && chunks.every(chunk =>
-        getCspChunkCoveredEnd(chunk.start, batchKnownHeight) >= chunk.start + BLOCK_CHUNK_SIZE - 1);
+    const batchAllComplete = missingChunks.length === 0 && chunks.every((chunk, index) =>
+        coveredHeights[index] >= chunk.start + BLOCK_CHUNK_SIZE - 1);
     res.header('Cache-Control', batchAllComplete
         ? getCspResponseCacheControl()
         : 'public, max-age=15, must-revalidate');

@@ -1453,10 +1453,6 @@ class CSPScanService {
       ]);
     } finally {
       if (this._stallReject === stallReject) this._stallReject = null;
-      if (this._activeHeartbeatTimer) {
-        clearInterval(this._activeHeartbeatTimer);
-        this._activeHeartbeatTimer = null;
-      }
     }
   }
 
@@ -2819,7 +2815,8 @@ class CSPScanService {
         new Set(),   // skipChunks (unchanged default)
         true,        // deferFinalFlush — coalesce phase-2 flush into protocol recovery
         scanId,
-        scanEpoch
+        scanEpoch,
+        coveredThroughHeight
       );
       carriedPhase2Dirty = rescanResult.derivedDirty;
       carriedPhase2Fields = rescanResult.derivedFields;
@@ -3687,8 +3684,12 @@ class CSPScanService {
       throw error;
     } finally {
       if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
+        const finishedHeartbeatTimer = heartbeatTimer;
+        clearInterval(finishedHeartbeatTimer);
         heartbeatTimer = null;
+        if (this._activeHeartbeatTimer === finishedHeartbeatTimer) {
+          this._activeHeartbeatTimer = null;
+        }
       }
       // A zombie's finalizer must not release the LIVE scan's lock or destroy its
       // workers (that is exactly the frozen-at-1% wedge). Shared state is only
@@ -3958,7 +3959,8 @@ class CSPScanService {
           new Set(processedChunks),
           false,       // deferFinalFlush
           ownerScanId,
-          ownerEpoch
+          ownerEpoch,
+          null
         );
         if (returnRescanResult.phase3Degraded) {
           const phase3Message = `Phase 3 post-processing incomplete during Phase 2b: ${returnRescanResult.phase3Issues.join('; ')}`;
@@ -4593,7 +4595,8 @@ class CSPScanService {
     // Owning scan identity (see recoverProtocolTokenOutputs): journal writes must
     // target the caller's scan and no-op once that scan is no longer current.
     ownerScanId: string | null = null,
-    ownerEpoch: number | null = null
+    ownerEpoch: number | null = null,
+    provenCoveredThroughHeight: number | null = null
   ): Promise<{ outputsFound: number; successfullyProcessedChunks: number[]; minConfirmedHeight: number; phase3Degraded: boolean; phase3Issues: string[]; returnAddressSourceChunks: number[]; returnAddressesCsv: string; derivedDirty: boolean; derivedFields: string[] }> {
     const journalScanId = ownerScanId ?? this.currentScanId;
     const journalWriteAllowed = () => ownerEpoch === null || this.scanEpoch === ownerEpoch;
@@ -4613,32 +4616,53 @@ class CSPScanService {
     const isMobile = isAndroid || isIOS || /Mobile/i.test(ua);
 
     const matchesByChunk = new Map<number, number[]>();
-    // INCREMENTAL TAIL FILTER: skip candidates below the scan start. The chunk-aligned fetch drags
-    // in the whole ~1000-block tail chunk, whose earlier blocks were already scanned+ingested by a
-    // prior pass; re-ingesting that chunk re-fetches+re-processes it (~2.4s on a heavy wallet) for
-    // nothing. Keeping only new-block candidates means a non-receive catch-up ingests nothing.
-    // Lossless: skipped blocks are already in the wallet; reorgs are caught by hash-checkpoint
-    // detection + the small overlap already baked into scanStartHeight (tail = walletHeight-8).
+    const rawMatchHeightsByChunk = new Map<number, number[]>();
+    const filteredBelowFloor: Array<{ chunkStart: number; height: number }> = [];
+    // INCREMENTAL TAIL FILTER: only skip candidates below a floor that is bounded by
+    // server-proven coverage. Native wallet height alone can be ahead of the actually
+    // served tail chunk, and using it as the floor permanently drops blocks in the gap.
     let __incrFloor = 0;
-    if (isIncremental && recoveryAction === 'continue') {
-      // Normal catch-up: ingest only blocks ABOVE the wallet's already-scanned height — skip the
-      // chunk-aligned prefix AND the reorg overlap (both already ingested). Re-ingesting any candidate
-      // there (incl. a ~1/256 view-tag false positive) costs a full O(wallet) ingest (~2.4s) per
-      // catch-up. The overlap is still SCANNED for reorg hash-checks; a real reorg sets recoveryAction
-      // !== 'continue' → falls back to scanStartHeight and re-ingests the deeper range. Lossless.
-      // Mirror-served (same get_wallet_height source, computed worker-side).
-      let __wh = 0; try { __wh = wallet.mirror.getSyncStatus().walletHeight || 0; } catch {}
-      __incrFloor = __wh > 0 ? __wh + 1 : ((typeof scanStartHeight === 'number' && scanStartHeight > 0) ? scanStartHeight : 0);
-    } else if (isIncremental && typeof scanStartHeight === 'number' && scanStartHeight > 0) {
-      __incrFloor = scanStartHeight;
+    let __walletHeightForFloor = 0;
+    const __scanStartFloor = (typeof scanStartHeight === 'number' && scanStartHeight > 0) ? scanStartHeight : 0;
+    const __provenCoveredThrough = Number.isFinite(Number(provenCoveredThroughHeight))
+      ? Math.max(__scanStartFloor, Number(provenCoveredThroughHeight))
+      : null;
+    const __floorIsProvenDurable = __provenCoveredThrough !== null;
+    if (isIncremental && recoveryAction === 'continue' && __scanStartFloor > 0) {
+      try { __walletHeightForFloor = wallet.mirror.getSyncStatus().walletHeight || 0; } catch {}
+      __incrFloor = __walletHeightForFloor > 0 && __provenCoveredThrough !== null
+        ? Math.min(__walletHeightForFloor, __provenCoveredThrough) + 1
+        : __scanStartFloor;
+    } else if (isIncremental && __scanStartFloor > 0) {
+      __incrFloor = __scanStartFloor;
     }
     for (const match of allMatches) {
-      if (__incrFloor > 0 && (match.block_height || match.height || 0) < __incrFloor) continue;
-      const chunkStart = match.chunkStart ?? Math.floor((match.block_height || match.height || 0) / 1000) * 1000;
+      const matchHeight = Number(match.block_height || match.height || 0);
+      const chunkStart = match.chunkStart ?? Math.floor(matchHeight / 1000) * 1000;
+      if (!rawMatchHeightsByChunk.has(chunkStart)) rawMatchHeightsByChunk.set(chunkStart, []);
+      rawMatchHeightsByChunk.get(chunkStart)!.push(matchHeight);
+      if (__incrFloor > 0 && matchHeight < __incrFloor) {
+        filteredBelowFloor.push({ chunkStart, height: matchHeight });
+        continue;
+      }
       if (!matchesByChunk.has(chunkStart)) matchesByChunk.set(chunkStart, []);
       const txIndex = match.tx_idx ?? match.tx ?? match.txIndex ?? 0;
       const indices = matchesByChunk.get(chunkStart)!;
       if (!indices.includes(txIndex)) indices.push(txIndex);
+    }
+    if (filteredBelowFloor.length > 0) {
+      reportClientEvent('scan.filtered_below_proven_floor', {
+        level: 'warn',
+        context: {
+          scanId: journalScanId || '',
+          chunks: [...new Set(filteredBelowFloor.map(item => item.chunkStart))].slice(0, 20).join(','),
+          candidateHeights: filteredBelowFloor.map(item => item.height).slice(0, 50).join(','),
+          filteredCount: filteredBelowFloor.length,
+          walletHeight: __walletHeightForFloor,
+          provenCoveredHeight: __provenCoveredThrough ?? 0,
+          incrementalFloor: __incrFloor,
+        },
+      });
     }
     // Skip chunks already ingested earlier this scan (explicit skipChunks param OR the
     // service-level set populated by prior targetedRescan passes). Re-ingesting them is a
@@ -4648,23 +4672,18 @@ class CSPScanService {
       .sort((a, b) => a - b);
     const sortedChunks = candidateChunks
       .filter((chunkStart) => !skipChunks.has(chunkStart) && !this.ingestedChunksThisRestore.has(chunkStart));
-    // CHECK-THEN-RECORD for the coverage proof: a matched chunk that is verifiably a no-op must
-    // still count as PROCESSED, or the proof fails with "matched chunks were not ingested" and the
-    // scan retries forever (measured live: tail-chunk view-tag matches on the wallet's own
-    // already-ingested outputs fall below the incremental floor, leave the chunk with zero
-    // candidates, and re-match identically on every retry). Verified no-op cases, by construction
-    // of sortedChunks: (1) every candidate is below __incrFloor = blocks the wallet already
-    // ingested in a completed prior pass (the floor's own lossless guarantee); (2) the chunk was
-    // already ingested earlier this restore (txid-dedup skip set); (3) a matched chunk carrying no
-    // concrete candidate index. Genuine ingest FAILURES are unaffected: those chunks are in
-    // sortedChunks and only enter the processed set on success. NOTE: deliberately NOT added to
-    // ingestedChunksThisRestore -- a later pass with a real candidate in the same chunk must still
-    // process it.
+    // CHECK-THEN-RECORD for the coverage proof: a matched chunk only counts as a
+    // journal-completed no-op when we can prove it was already durably ingested. A
+    // native-height-only floor is not enough; tail coverage must also prove the floor.
     const verifiedNoOpChunks = new Set<number>();
     {
       const willProcess = new Set(sortedChunks);
       for (const chunkStart of new Set([...matchedChunks, ...matchesByChunk.keys()])) {
-        if (!willProcess.has(chunkStart)) verifiedNoOpChunks.add(chunkStart);
+        if (willProcess.has(chunkStart)) continue;
+        const skippedByThisScan = skipChunks.has(chunkStart) || this.ingestedChunksThisRestore.has(chunkStart);
+        const rawHeights = rawMatchHeightsByChunk.get(chunkStart) || [];
+        const belowProvenFloor = __floorIsProvenDurable && __incrFloor > 0 && rawHeights.length > 0 && rawHeights.every(height => height < __incrFloor);
+        if (skippedByThisScan || belowProvenFloor) verifiedNoOpChunks.add(chunkStart);
       }
     }
     const skippedCount = candidateChunks.length - sortedChunks.length;

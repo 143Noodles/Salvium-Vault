@@ -436,8 +436,15 @@ async function handleScanCsp(msg) {
         // Clamp signal only when the chunk is genuinely short of its NOMINAL end
         // (X-CSP-End-Height already reports the short end for generated chunks).
         const nominalEndHeight = startHeight + count - 1;
+        const requiresTailCoverage = isNearTip || endHeight < nominalEndHeight;
+        if (requiresTailCoverage && !Number.isFinite(coveredHeader)) {
+            throw new Error(`Retryable CSP coverage missing for tail chunk ${startHeight}-${nominalEndHeight}`);
+        }
+        if (Number.isFinite(coveredHeader) && coveredHeader < startHeight) {
+            throw new Error(`Retryable CSP coverage below request start for chunk ${startHeight}: ${coveredHeader}`);
+        }
         const coveredThrough = Number.isFinite(coveredHeader) && coveredHeader < nominalEndHeight
-            ? coveredHeader + 1
+            ? Math.max(startHeight, coveredHeader + 1)
             : null;
         const cspSource = response.headers.get('X-CSP-Source') || 'unknown';
 
@@ -598,7 +605,7 @@ function parseCspChunkStartHeader(value) {
 // Per-chunk covered end heights (X-CSP-Covered-Heights, aligned with
 // X-CSP-Chunk-Starts). The live tail chunk usually ends below its nominal
 // range; treating it as full coverage skipped blocks permanently. Absent
-// header (older server) => null per chunk => callers keep legacy behavior.
+// headers are allowed only for non-tail legacy chunks.
 function parseCspCoveredHeightsHeader(value, chunkStarts) {
     const raw = value ? String(value).split(',').map((h) => parseInt(h, 10)) : [];
     return chunkStarts.map((chunkStart, index) => {
@@ -756,7 +763,11 @@ async function handleScanCspBatch(msg) {
         const batchEndHeight = parseInt(response.headers.get('X-CSP-End') || startHeight);
         const requestedChunkStarts = parseCspChunkStartHeader(response.headers.get('X-CSP-Requested-Chunk-Starts') || '');
         const chunkStarts = parseCspChunkStartHeader(response.headers.get('X-CSP-Chunk-Starts') || '');
-        const coveredHeights = parseCspCoveredHeightsHeader(response.headers.get('X-CSP-Covered-Heights') || '', chunkStarts);
+        const coveredHeaderValue = response.headers.get('X-CSP-Covered-Heights') || '';
+        const coveredHeights = parseCspCoveredHeightsHeader(coveredHeaderValue, chunkStarts);
+        if (isNearTip && (!coveredHeaderValue.trim() || coveredHeights.some((covered) => covered === null))) {
+            throw new Error(`Retryable CSP batch coverage missing for tail request ${startHeight}`);
+        }
         const missingReason = response.headers.get('X-CSP-Missing-Reason') || 'none';
         const missingChunks = parseCspChunkStartHeader(response.headers.get('X-CSP-Missing-Chunk-Starts') || '');
 
@@ -971,7 +982,11 @@ async function handleScanKeyImagesOnly(msg) {
         const chunksReceived = parseInt(response.headers.get('X-CSP-Chunks') || '0');
         const batchEndHeight = parseInt(response.headers.get('X-CSP-End') || startHeight);
         const kiChunkStarts = parseCspChunkStartHeader(response.headers.get('X-CSP-Chunk-Starts') || '');
-        const kiCoveredHeights = parseCspCoveredHeightsHeader(response.headers.get('X-CSP-Covered-Heights') || '', kiChunkStarts);
+        const kiCoveredHeaderValue = response.headers.get('X-CSP-Covered-Heights') || '';
+        const kiCoveredHeights = parseCspCoveredHeightsHeader(kiCoveredHeaderValue, kiChunkStarts);
+        if (isNearTip && (!kiCoveredHeaderValue.trim() || kiCoveredHeights.some((covered) => covered === null))) {
+            throw new Error(`Retryable CSP key-image coverage missing for tail request ${startHeight}`);
+        }
         const kiCoveredThrough = contiguousCoveredThrough(kiChunkStarts, kiCoveredHeights);
 
         // A 200 can still be PARTIAL (some requested chunks missing in the middle). If the gap is
