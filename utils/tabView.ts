@@ -5,5 +5,6 @@ export enum TabView {
   HISTORY = 'HISTORY',
   STAKING = 'STAKING',
   ASSETS = 'ASSETS',
+  MINING = 'MINING',
   SETTINGS = 'SETTINGS'
 }

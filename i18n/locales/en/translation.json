@@ -33,7 +33,9 @@
     "settings": "Settings",
     "dashboard": "Dashboard",
     "lockWallet": "Lock Wallet",
-    "assets": "Assets"
+    "assets": "Assets",
+    "mining": "Mining",
+    "mine": "Mine"
   },
   "dashboard": {
     "balance": "Balance",
@@ -282,6 +284,11 @@
       "revealButton": "Reveal Seed Phrase",
       "copySeed": "Copy Seed Phrase",
       "neverShare": "Never share your seed phrase with anyone. Salvium support will never ask for it. Store it securely offline."
+    },
+    "mining": {
+      "title": "Earn SAL by Mining",
+      "description": "Mine directly to this wallet on the official Salvium pool and track your earnings live.",
+      "button": "Open Mining"
     }
   },
   "onboarding": {
@@ -652,6 +659,114 @@
         "gateNote": "We wait until every index reaches the latest block so your first scan doesn’t miss anything.",
         "continueAnyway": "Continue anyway"
       }
+    }
+  },
+  "mining": {
+    "title": "Mining",
+    "subtitle": "Mine SAL directly to your wallet on the official pool",
+    "stats": {
+      "hashrate": "Your Hashrate",
+      "avgHashrate": "24h Average",
+      "pending": "Pending Balance",
+      "totalPaid": "Total Paid",
+      "nextPayout": "Next Payout",
+      "shares": "Accepted Shares",
+      "lastShare": "Last share",
+      "never": "Never",
+      "online": "Mining",
+      "offline": "Offline"
+    },
+    "pool": {
+      "title": "Pool",
+      "fee": "Pool fee",
+      "minPayout": "Minimum payout",
+      "payouts": "Payouts",
+      "payoutTimes": "00:00 & 12:00 UTC",
+      "server": "Server"
+    },
+    "workers": "Workers",
+    "noWorkers": "No active workers",
+    "payments": "Payments",
+    "noPayments": "No payouts yet",
+    "paymentDate": "Date",
+    "paymentAmount": "Amount",
+    "paymentTx": "Tx",
+    "empty": {
+      "title": "Start earning SAL",
+      "body": "This wallet hasn't mined on the pool yet. Point a miner at the pool with your wallet address as the username and your stats will appear here.",
+      "desktopCta": "For one-click mining, use the Salvium Vault desktop app.",
+      "howTo": "Server {{server}} · algorithm RandomX (rx/0) · username = your wallet address"
+    },
+    "control": {
+      "start": "Start Mining",
+      "stop": "Stop Mining",
+      "starting": "Starting…",
+      "stopping": "Stopping…",
+      "installing": "Setting up miner…",
+      "downloading": "Downloading miner ({{pct}}%)",
+      "verifying": "Verifying download",
+      "mining": "Mining",
+      "pausedAfk": "Paused while you're active",
+      "cpuUsage": "CPU Usage",
+      "liveHashrate": "Hashrate",
+      "threads": "CPU cores",
+      "threadsOf": "{{used}} of {{total}} cores",
+      "afkTitle": "Only mine when I'm away",
+      "afkHint": "Pauses mining while you're using the computer and resumes after 5 minutes of inactivity.",
+      "afkUnsupported": "Idle detection isn't available on this system.",
+      "adminTitle": "Administrator permission",
+      "adminBody": "Your system will ask for administrator permission when mining starts. It enables full-speed mining (huge memory pages and CPU tuning); on Windows it also tells Windows Defender the miner is safe. If you decline, mining still runs at standard speed.",
+      "confirmStart": "Start",
+      "uptime": "Uptime",
+      "sharesLine": "{{good}} accepted",
+      "notInstalled": "Downloads ~3 MB on first start, verified.",
+      "externalActive": "This balance is already mining on {{count}} other device(s). Starting here adds this computer to the same balance.",
+      "externalChip": "Mining elsewhere too"
+    },
+    "errors": {
+      "startFailed": "Could not start mining",
+      "stopFailed": "Could not stop mining",
+      "statsUnavailable": "Pool stats are temporarily unavailable"
+    },
+    "winner": {
+      "blockEffort": "Block Effort",
+      "mining": "Mining",
+      "blockHeight": "Block Height",
+      "timeMined24h": "Time Mined (Last 24h)",
+      "networkHashrate": "Network Hashrate",
+      "profitRatio": "Profit Ratio",
+      "lastMined": "Last Mined",
+      "price": "Price"
+    },
+    "payout": {
+      "title": "Payout Progress",
+      "scheduledNext": "Scheduled Next Payout",
+      "threshold": "Threshold",
+      "nextEligibleWave": "Next Eligible Wave"
+    },
+    "tiles": {
+      "currentHashrate": "Current Hashrate",
+      "pending": "Pending",
+      "totalPaid": "Total Paid",
+      "dailyEst": "Daily (Est)",
+      "vsSalOnly": "vs SAL-Only"
+    },
+    "chart": {
+      "title": "Hashrate History",
+      "noData": "No hashrate data available yet. Start mining to see your stats.",
+      "lastShare": "Last Share",
+      "validShares": "Valid Shares",
+      "rejected": "Rejected",
+      "poolShare": "Pool Share"
+    },
+    "workersTable": {
+      "worker": "Worker",
+      "hashrate": "Hashrate",
+      "validShares": "Valid Shares",
+      "rejected": "Rejected",
+      "lastShare": "Last Share",
+      "allWorkers": "All Workers",
+      "thisDevice": "this device"
     }
   }
 }

@@ -33,7 +33,9 @@
     "settings": "Ajustes",
     "dashboard": "Panel",
     "lockWallet": "Bloquear Billetera",
-    "assets": "Activos"
+    "assets": "Activos",
+    "mining": "Minería",
+    "mine": "Minar"
   },
   "dashboard": {
     "balance": "Saldo",
@@ -282,6 +284,11 @@
     "currency": {
       "title": "Moneda de visualización",
       "description": "Elige la moneda fiduciaria para mostrar el valor de tu saldo."
+    },
+    "mining": {
+      "title": "Gana SAL minando",
+      "description": "Mina directamente a esta cartera en el pool oficial de Salvium y sigue tus ganancias en vivo.",
+      "button": "Abrir minería"
     }
   },
   "onboarding": {
@@ -652,6 +659,114 @@
         "gateNote": "Esperamos a que cada índice alcance el último bloque para que tu primer escaneo no se pierda nada.",
         "continueAnyway": "Continuar de todos modos"
       }
+    }
+  },
+  "mining": {
+    "title": "Minería",
+    "subtitle": "Mina SAL directamente a tu cartera en el pool oficial",
+    "stats": {
+      "hashrate": "Tu hashrate",
+      "avgHashrate": "Promedio 24h",
+      "pending": "Saldo pendiente",
+      "totalPaid": "Total pagado",
+      "nextPayout": "Próximo pago",
+      "shares": "Shares aceptados",
+      "lastShare": "Último share",
+      "never": "Nunca",
+      "online": "Minando",
+      "offline": "Desconectado"
+    },
+    "pool": {
+      "title": "Pool",
+      "fee": "Comisión del pool",
+      "minPayout": "Pago mínimo",
+      "payouts": "Pagos",
+      "payoutTimes": "00:00 & 12:00 UTC",
+      "server": "Servidor"
+    },
+    "workers": "Workers",
+    "noWorkers": "No hay workers activos",
+    "payments": "Pagos",
+    "noPayments": "Aún no hay pagos",
+    "paymentDate": "Fecha",
+    "paymentAmount": "Importe",
+    "paymentTx": "Tx",
+    "empty": {
+      "title": "Empieza a ganar SAL",
+      "body": "Esta cartera aún no ha minado en el pool. Apunta un minero al pool con tu dirección de cartera como nombre de usuario y tus estadísticas aparecerán aquí.",
+      "desktopCta": "Para minar con un clic, usa la aplicación de escritorio Salvium Vault.",
+      "howTo": "Servidor {{server}} · algoritmo RandomX (rx/0) · usuario = tu dirección de cartera"
+    },
+    "control": {
+      "start": "Iniciar minería",
+      "stop": "Detener minería",
+      "starting": "Iniciando…",
+      "stopping": "Deteniendo…",
+      "installing": "Configurando el minero…",
+      "downloading": "Descargando el minero ({{pct}}%)",
+      "verifying": "Verificando la descarga",
+      "mining": "Minando",
+      "pausedAfk": "En pausa mientras estás activo",
+      "cpuUsage": "Uso de CPU",
+      "liveHashrate": "Hashrate",
+      "threads": "Núcleos de CPU",
+      "threadsOf": "{{used}} de {{total}} núcleos",
+      "afkTitle": "Minar solo cuando no estoy",
+      "afkHint": "Pausa la minería mientras usas el ordenador y la reanuda tras 5 minutos de inactividad.",
+      "afkUnsupported": "La detección de inactividad no está disponible en este sistema.",
+      "adminTitle": "Permiso de administrador",
+      "adminBody": "Tu sistema pedirá permiso de administrador al iniciar la minería. Esto permite minar a máxima velocidad (huge pages y ajuste de CPU); en Windows además indica a Windows Defender que el minero es seguro. Si lo rechazas, la minería seguirá funcionando a velocidad estándar.",
+      "confirmStart": "Iniciar",
+      "uptime": "Tiempo activo",
+      "sharesLine": "{{good}} aceptados",
+      "notInstalled": "El minero se descarga automáticamente en el primer inicio (unos 3 MB, verificado).",
+      "externalActive": "Esta cartera ya está minando desde {{count}} worker(s) en otros dispositivos — sus estadísticas se muestran arriba. Iniciar aquí añade este ordenador como otro worker sobre el mismo saldo.",
+      "externalChip": "También minando en otro lugar"
+    },
+    "errors": {
+      "startFailed": "No se pudo iniciar la minería",
+      "stopFailed": "No se pudo detener la minería",
+      "statsUnavailable": "Las estadísticas del pool no están disponibles temporalmente"
+    },
+    "winner": {
+      "blockEffort": "Esfuerzo del bloque",
+      "mining": "Minando",
+      "blockHeight": "Altura del bloque",
+      "timeMined24h": "Tiempo minado (últimas 24h)",
+      "networkHashrate": "Hashrate de la red",
+      "profitRatio": "Ratio de beneficio",
+      "lastMined": "Último minado",
+      "price": "Precio"
+    },
+    "payout": {
+      "title": "Progreso del pago",
+      "scheduledNext": "Próximo pago programado",
+      "threshold": "Umbral",
+      "nextEligibleWave": "Próxima ola elegible"
+    },
+    "tiles": {
+      "currentHashrate": "Hashrate actual",
+      "pending": "Pendiente",
+      "totalPaid": "Total pagado",
+      "dailyEst": "Diario (est.)",
+      "vsSalOnly": "vs. solo SAL"
+    },
+    "chart": {
+      "title": "Historial de hashrate",
+      "noData": "Aún no hay datos de hashrate. Empieza a minar para ver tus estadísticas.",
+      "lastShare": "Último share",
+      "validShares": "Shares válidos",
+      "rejected": "Rechazados",
+      "poolShare": "Cuota del pool"
+    },
+    "workersTable": {
+      "worker": "Worker",
+      "hashrate": "Hashrate",
+      "validShares": "Shares válidos",
+      "rejected": "Rechazados",
+      "lastShare": "Último share",
+      "allWorkers": "Todos los workers",
+      "thisDevice": "este dispositivo"
     }
   }
 }

@@ -43,6 +43,7 @@ COPY wallet/ ./wallet/
 COPY wallet-legacy/ ./wallet-legacy/
 COPY assets/ ./assets/
 COPY utils/ ./utils/
+COPY services/minerManager.cjs ./services/minerManager.cjs
 COPY --from=build /app/dist ./dist
 
 EXPOSE 3000

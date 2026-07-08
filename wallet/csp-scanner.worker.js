@@ -432,6 +432,13 @@ async function handleScanCsp(msg) {
         const txCount = parseInt(response.headers.get('X-CSP-Tx-Count') || '0');
         const outputCount = parseInt(response.headers.get('X-CSP-Output-Count') || '0');
         const endHeight = parseInt(response.headers.get('X-CSP-End-Height') || startHeight);
+        const coveredHeader = parseInt(response.headers.get('X-CSP-Covered-Height') || '', 10);
+        // Clamp signal only when the chunk is genuinely short of its NOMINAL end
+        // (X-CSP-End-Height already reports the short end for generated chunks).
+        const nominalEndHeight = startHeight + count - 1;
+        const coveredThrough = Number.isFinite(coveredHeader) && coveredHeader < nominalEndHeight
+            ? coveredHeader + 1
+            : null;
         const cspSource = response.headers.get('X-CSP-Source') || 'unknown';
 
         // Reject empty/truncated 200 bodies so the chunk is retried, not falsely marked scanned (silently missing txs).
@@ -475,6 +482,7 @@ async function handleScanCsp(msg) {
             workerId,
             startHeight,
             endHeight,
+            coveredThrough,
             actualCount,
             stats: {
                 txCount,
@@ -585,6 +593,37 @@ function parseCspChunkStartHeader(value) {
         .split(',')
         .map((h) => parseInt(h, 10))
         .filter((h) => Number.isFinite(h) && h >= 0);
+}
+
+// Per-chunk covered end heights (X-CSP-Covered-Heights, aligned with
+// X-CSP-Chunk-Starts). The live tail chunk usually ends below its nominal
+// range; treating it as full coverage skipped blocks permanently. Absent
+// header (older server) => null per chunk => callers keep legacy behavior.
+function parseCspCoveredHeightsHeader(value, chunkStarts) {
+    const raw = value ? String(value).split(',').map((h) => parseInt(h, 10)) : [];
+    return chunkStarts.map((chunkStart, index) => {
+        const covered = raw[index];
+        if (!Number.isFinite(covered)) return null;
+        // Clamp defensively into the chunk's range; a covered value below the
+        // chunk start means "no blocks" and must not unclamp to full coverage.
+        return Math.max(chunkStart - 1, Math.min(covered, chunkStart + 999));
+    });
+}
+
+// Returns the height (exclusive, count-form like scan windows) at which proven
+// coverage STOPS, or null when every chunk fully covers its nominal range (the
+// common historical case — null means "no clamp", so full mid-history batches
+// never drag the wallet height backwards). Only a genuinely short chunk (the
+// live tail, or truncated data) produces a clamp.
+function contiguousCoveredThrough(chunkStarts, coveredHeights) {
+    const order = chunkStarts.map((start, index) => ({ start, covered: coveredHeights[index] }))
+        .sort((a, b) => a.start - b.start);
+    for (const { start, covered } of order) {
+        if (covered !== null && covered < start + 999) {
+            return covered + 1;
+        }
+    }
+    return null;
 }
 
 function hasDuplicateNumbers(values) {
@@ -717,6 +756,7 @@ async function handleScanCspBatch(msg) {
         const batchEndHeight = parseInt(response.headers.get('X-CSP-End') || startHeight);
         const requestedChunkStarts = parseCspChunkStartHeader(response.headers.get('X-CSP-Requested-Chunk-Starts') || '');
         const chunkStarts = parseCspChunkStartHeader(response.headers.get('X-CSP-Chunk-Starts') || '');
+        const coveredHeights = parseCspCoveredHeightsHeader(response.headers.get('X-CSP-Covered-Heights') || '', chunkStarts);
         const missingReason = response.headers.get('X-CSP-Missing-Reason') || 'none';
         const missingChunks = parseCspChunkStartHeader(response.headers.get('X-CSP-Missing-Chunk-Starts') || '');
 
@@ -821,6 +861,11 @@ async function handleScanCspBatch(msg) {
         const totalMs = performance.now() - batchStart;
         const blocksProcessed = scannedChunkStarts.length * 1000;
 
+        // Chunk data only proves coverage through the server-reported covered
+        // height; the nominal chunk end overstates the live tail chunk and made
+        // the coordinator mark never-served blocks as scanned (missed txs).
+        const coveredThrough = contiguousCoveredThrough(scannedChunkStarts, coveredHeights);
+
         self.postMessage({
             type: 'SCAN_BATCH_RESULT',
             workerId,
@@ -828,6 +873,8 @@ async function handleScanCspBatch(msg) {
             endHeight: scannedChunkStarts.length > 0
                 ? Math.max(...scannedChunkStarts) + 999
                 : batchEndHeight,
+            coveredThrough,
+            coveredHeights,
             chunksProcessed,
             blocksProcessed,
             scannedChunks: scannedChunkStarts,
@@ -923,6 +970,9 @@ async function handleScanKeyImagesOnly(msg) {
         const fetchMs = performance.now() - fetchStart;
         const chunksReceived = parseInt(response.headers.get('X-CSP-Chunks') || '0');
         const batchEndHeight = parseInt(response.headers.get('X-CSP-End') || startHeight);
+        const kiChunkStarts = parseCspChunkStartHeader(response.headers.get('X-CSP-Chunk-Starts') || '');
+        const kiCoveredHeights = parseCspCoveredHeightsHeader(response.headers.get('X-CSP-Covered-Heights') || '', kiChunkStarts);
+        const kiCoveredThrough = contiguousCoveredThrough(kiChunkStarts, kiCoveredHeights);
 
         // A 200 can still be PARTIAL (some requested chunks missing in the middle). If the gap is
         // beyond_tip it is legitimately empty; if it is a transient cache_or_generation_failure,
@@ -983,6 +1033,7 @@ async function handleScanKeyImagesOnly(msg) {
             workerId,
             startHeight,
             endHeight: batchEndHeight,
+            coveredThrough: kiCoveredThrough,
             chunksProcessed,
             spent: totalSpent,
             stats: {

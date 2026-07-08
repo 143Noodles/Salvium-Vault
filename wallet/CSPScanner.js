@@ -96,6 +96,9 @@ class CSPScanner {
         this.startTime = 0;
 
         this.allMatches = [];
+        // Server-proven contiguous coverage (exclusive, count-form). null until a
+        // live-fetched chunk reports coverage; nominal chunk ends overstate the tail.
+        this.coveredThroughHeight = null;
         this.matchedBlocks = new Set();
         this.matchedChunks = new Set();
         this.scannedChunks = new Set();
@@ -454,10 +457,10 @@ class CSPScanner {
         // uses it; prod uses it only after a Cloudflare 403 failover. Same-origin for dev.
         try {
             const h = (typeof window !== 'undefined' && window.location && window.location.hostname) || '';
-            if (h === 'vault-test.salvium.tools') {
-                return 'https://cdn.salvium.tools';
-            }
-            if (h === 'vault.salvium.tools' && CSPScanner.bulkOriginFailoverActive) {
+            // Both hosted origins ALWAYS use the cdn for bulk data: Cloudflare kills
+            // the 295MB bundle stream without a 403 ("http2: stream closed"), so the
+            // 403-gated failover never fired and prod restores fell to slow chunking.
+            if (h === 'vault-test.salvium.tools' || h === 'vault.salvium.tools') {
                 return 'https://cdn.salvium.tools';
             }
         } catch (_) {}
@@ -1606,6 +1609,9 @@ class CSPScanner {
         this.scanAborted = false;
         this.taskQueue = [];
         this.allMatches = [];
+        // Server-proven contiguous coverage (exclusive, count-form). null until a
+        // live-fetched chunk reports coverage; nominal chunk ends overstate the tail.
+        this.coveredThroughHeight = null;
         this.matchedChunks.clear();
         this.scannedBlocks = 0;
         this.ingestFloorHeight = 0; // explicit-range rescan: ingest everything in range
@@ -1754,6 +1760,7 @@ class CSPScanner {
                 if (msg.type === 'KEY_IMAGES_RESULT') {
                     pendingBatches--;
                     completedBatches++;
+                    this.noteCoveredThrough(msg.coveredThrough, 'keyimages:' + (msg.startHeight ?? -1));
 
                     if (msg.spent && msg.spent.length > 0) {
                         allSpent.push(...msg.spent);
@@ -1808,8 +1815,20 @@ class CSPScanner {
     }
 
 
+    // Track the lowest server-proven coverage seen this scan. Only heights the
+    // served chunk data actually includes count as scanned; the wallet height
+    // must not advance past this or skipped blocks are lost to the ingest floor.
+    noteCoveredThrough(coveredThrough, source) {
+        if (!Number.isFinite(coveredThrough)) return;
+        if (this.coveredThroughHeight === null || coveredThrough < this.coveredThroughHeight) {
+            this.coveredThroughHeight = coveredThrough;
+            this.coveredThroughSource = source || 'unknown';
+        }
+    }
+
     handleScanBatchResult(msg) {
         const { workerId, startHeight, endHeight, chunksProcessed, blocksProcessed, stats, matches, spent, scannedChunks, missingChunks, missingReason } = msg;
+        this.noteCoveredThrough(msg.coveredThrough, 'batch:' + startHeight);
         const scannedChunkStarts = Array.isArray(scannedChunks) && scannedChunks.length > 0
             ? [...new Set(scannedChunks.filter(h => Number.isFinite(h)))].sort((a, b) => a - b)
             : Array.from({ length: chunksProcessed || 0 }, (_, i) => startHeight + (i * this.chunkSize));
@@ -2013,6 +2032,7 @@ class CSPScanner {
 
     handleScanResult(msg) {
         const { workerId, startHeight, endHeight, stats, matches, spent, actualCount } = msg;
+        this.noteCoveredThrough(msg.coveredThrough, 'single:' + startHeight);
 
         this.recordTaskTiming(workerId, 1);
 
@@ -2486,6 +2506,9 @@ class CSPScanner {
         this.scanAborted = false;
         this.taskQueue = [];
         this.allMatches = [];
+        // Server-proven contiguous coverage (exclusive, count-form). null until a
+        // live-fetched chunk reports coverage; nominal chunk ends overstate the tail.
+        this.coveredThroughHeight = null;
         this.matchedBlocks.clear();
         this.scannedChunks.clear();
         this.failedBatches = [];
@@ -2700,6 +2723,9 @@ class CSPScanner {
         this.scanAborted = false;
         this.taskQueue = [];
         this.allMatches = [];
+        // Server-proven contiguous coverage (exclusive, count-form). null until a
+        // live-fetched chunk reports coverage; nominal chunk ends overstate the tail.
+        this.coveredThroughHeight = null;
         this.matchedBlocks.clear();
         this.scannedChunks.clear();
         this.failedBatches = [];
@@ -2825,6 +2851,8 @@ class CSPScanner {
             scannedChunks: Array.from(this.scannedChunks).sort((a, b) => a - b),
             blocksScanned: this.scannedBlocks,
             blocksPerSecond: blocksPerSec,
+            coveredThroughHeight: this.coveredThroughHeight,
+            coveredThroughSource: this.coveredThroughSource || null,
             stats: { ...this.stats },
             failedBatches: this.failedBatches || []
         };
@@ -2885,6 +2913,9 @@ class CSPScanner {
         this.patchedJsCode = null;
         this.taskQueue = [];
         this.allMatches = [];
+        // Server-proven contiguous coverage (exclusive, count-form). null until a
+        // live-fetched chunk reports coverage; nominal chunk ends overstate the tail.
+        this.coveredThroughHeight = null;
     }
 
     async verifyWorkerHealth() {

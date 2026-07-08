@@ -33,7 +33,9 @@
     "settings": "Einstellungen",
     "dashboard": "Dashboard",
     "lockWallet": "Wallet Sperren",
-    "assets": "Assets"
+    "assets": "Assets",
+    "mining": "Mining",
+    "mine": "Minen"
   },
   "dashboard": {
     "balance": "Guthaben",
@@ -282,6 +284,11 @@
     "currency": {
       "title": "Anzeigewährung",
       "description": "Wähle die Fiat-Währung, in der dein Guthabenwert angezeigt wird."
+    },
+    "mining": {
+      "title": "SAL durch Mining verdienen",
+      "description": "Mine direkt in diese Wallet auf dem offiziellen Salvium-Pool und verfolge deine Erträge live.",
+      "button": "Mining öffnen"
     }
   },
   "onboarding": {
@@ -652,6 +659,114 @@
         "gateNote": "Wir warten, bis jeder Index den neuesten Block erreicht, damit dein erster Scan nichts verpasst.",
         "continueAnyway": "Trotzdem fortfahren"
       }
+    }
+  },
+  "mining": {
+    "title": "Mining",
+    "subtitle": "Mine SAL direkt in deine Wallet auf dem offiziellen Pool",
+    "stats": {
+      "hashrate": "Deine Hashrate",
+      "avgHashrate": "24h-Durchschnitt",
+      "pending": "Ausstehendes Guthaben",
+      "totalPaid": "Insgesamt ausgezahlt",
+      "nextPayout": "Nächste Auszahlung",
+      "shares": "Akzeptierte Shares",
+      "lastShare": "Letzter Share",
+      "never": "Nie",
+      "online": "Mining",
+      "offline": "Offline"
+    },
+    "pool": {
+      "title": "Pool",
+      "fee": "Pool-Gebühr",
+      "minPayout": "Mindestauszahlung",
+      "payouts": "Auszahlungen",
+      "payoutTimes": "00:00 & 12:00 UTC",
+      "server": "Server"
+    },
+    "workers": "Worker",
+    "noWorkers": "Keine aktiven Worker",
+    "payments": "Zahlungen",
+    "noPayments": "Noch keine Auszahlungen",
+    "paymentDate": "Datum",
+    "paymentAmount": "Betrag",
+    "paymentTx": "Tx",
+    "empty": {
+      "title": "Beginne, SAL zu verdienen",
+      "body": "Diese Wallet hat noch nicht auf dem Pool gemint. Richte einen Miner mit deiner Wallet-Adresse als Benutzername auf den Pool und deine Statistiken erscheinen hier.",
+      "desktopCta": "Für Mining mit einem Klick nutze die Salvium-Vault-Desktop-App.",
+      "howTo": "Server {{server}} · Algorithmus RandomX (rx/0) · Benutzername = deine Wallet-Adresse"
+    },
+    "control": {
+      "start": "Mining starten",
+      "stop": "Mining stoppen",
+      "starting": "Wird gestartet…",
+      "stopping": "Wird gestoppt…",
+      "installing": "Miner wird eingerichtet…",
+      "downloading": "Miner wird heruntergeladen ({{pct}}%)",
+      "verifying": "Download wird überprüft",
+      "mining": "Mining",
+      "pausedAfk": "Pausiert, während du aktiv bist",
+      "cpuUsage": "CPU-Auslastung",
+      "liveHashrate": "Hashrate",
+      "threads": "CPU-Kerne",
+      "threadsOf": "{{used}} von {{total}} Kernen",
+      "afkTitle": "Nur minen, wenn ich weg bin",
+      "afkHint": "Pausiert das Mining, während du den Computer nutzt, und setzt es nach 5 Minuten Inaktivität fort.",
+      "afkUnsupported": "Leerlauferkennung ist auf diesem System nicht verfügbar.",
+      "adminTitle": "Administratorrechte",
+      "adminBody": "Dein System fragt beim Start des Minings nach Administratorrechten. Das ermöglicht Mining mit voller Geschwindigkeit (Huge Pages und CPU-Tuning); unter Windows wird zudem Windows Defender mitgeteilt, dass der Miner sicher ist. Lehnst du ab, läuft das Mining mit normaler Geschwindigkeit weiter.",
+      "confirmStart": "Starten",
+      "uptime": "Laufzeit",
+      "sharesLine": "{{good}} akzeptiert",
+      "notInstalled": "Der Miner wird beim ersten Start automatisch heruntergeladen (ca. 3 MB, verifiziert).",
+      "externalActive": "Diese Wallet mint bereits über {{count}} Worker auf anderen Geräten — deren Statistiken siehst du oben. Ein Start hier fügt diesen Computer als weiteren Worker auf demselben Guthaben hinzu.",
+      "externalChip": "Mint auch anderswo"
+    },
+    "errors": {
+      "startFailed": "Mining konnte nicht gestartet werden",
+      "stopFailed": "Mining konnte nicht gestoppt werden",
+      "statsUnavailable": "Pool-Statistiken sind vorübergehend nicht verfügbar"
+    },
+    "winner": {
+      "blockEffort": "Block-Effort",
+      "mining": "Mining",
+      "blockHeight": "Blockhöhe",
+      "timeMined24h": "Mining-Zeit (letzte 24h)",
+      "networkHashrate": "Netzwerk-Hashrate",
+      "profitRatio": "Gewinnverhältnis",
+      "lastMined": "Zuletzt gemint",
+      "price": "Preis"
+    },
+    "payout": {
+      "title": "Auszahlungsfortschritt",
+      "scheduledNext": "Nächste geplante Auszahlung",
+      "threshold": "Schwelle",
+      "nextEligibleWave": "Nächste berechtigte Welle"
+    },
+    "tiles": {
+      "currentHashrate": "Aktuelle Hashrate",
+      "pending": "Ausstehend",
+      "totalPaid": "Insgesamt ausgezahlt",
+      "dailyEst": "Täglich (geschätzt)",
+      "vsSalOnly": "vs. nur SAL"
+    },
+    "chart": {
+      "title": "Hashrate-Verlauf",
+      "noData": "Noch keine Hashrate-Daten verfügbar. Starte das Mining, um deine Statistiken zu sehen.",
+      "lastShare": "Letzter Share",
+      "validShares": "Gültige Shares",
+      "rejected": "Abgelehnt",
+      "poolShare": "Pool-Anteil"
+    },
+    "workersTable": {
+      "worker": "Worker",
+      "hashrate": "Hashrate",
+      "validShares": "Gültige Shares",
+      "rejected": "Abgelehnt",
+      "lastShare": "Letzter Share",
+      "allWorkers": "Alle Worker",
+      "thisDevice": "dieses Gerät"
     }
   }
 }

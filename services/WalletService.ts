@@ -2479,9 +2479,14 @@ export class WalletService {
     return '';
   }
 
+  // Positional list of every "index" field in the epee request, duplicates
+  // preserved: the daemon response is positional over the FULL request array,
+  // and a multi-ring sweep repeats decoy indexes across rings. Deduping here
+  // desynced the response-index verification after the first duplicate, so a
+  // big sweep failed with phantom "repaired index" mismatches while small
+  // sends (collision-free) passed.
   private extractEpeeOutputIndices(bytes: Uint8Array): number[] {
     const indices: number[] = [];
-    const seen = new Set<number>();
     const signature = [0x05, 105, 110, 100, 101, 120];
 
     for (let pos = 0; pos + signature.length + 1 < bytes.length; pos++) {
@@ -2514,8 +2519,7 @@ export class WalletService {
         value += bytes[valuePos + i] * (2 ** (8 * i));
       }
 
-      if (Number.isSafeInteger(value) && value >= 0 && !seen.has(value)) {
-        seen.add(value);
+      if (Number.isSafeInteger(value) && value >= 0) {
         indices.push(value);
       }
     }
@@ -6276,6 +6280,21 @@ export class WalletService {
     await this.injectJsonRpcResponses();
   }
 
+  // Daemon-state priming right after app open races the sidecar/proxy's first
+  // upstream connection: one failed fetch used to be silently swallowed and the
+  // WASM later threw a raw "no connection to daemon" mid-send. Retry the
+  // critical reads briefly before giving up.
+  private async fetchRpcWithRetry(method: string, params: any = {}, attempts = 3): Promise<any> {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const result = await this.fetchRpc(method, params);
+      if (result) return result;
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+      }
+    }
+    return null;
+  }
+
   private async fetchRpc(method: string, params: any = {}): Promise<any> {
     try {
       const response = await fetch('/api/wallet-rpc/json_rpc', {
@@ -6642,7 +6661,7 @@ export class WalletService {
   ): Promise<void> {
     const distributionAssetType = this.toDaemonAssetType(assetType || 'SAL1');
 
-    const infoData = await this.fetchRpc('get_info');
+    const infoData = await this.fetchRpcWithRetry('get_info');
     if (infoData) {
       const height = infoData.height || 0;
       const targetHeight = infoData.target_height || height;
@@ -6662,7 +6681,7 @@ export class WalletService {
       await this.engineCallOptional('inject_rpc_version', [version]);
     }
 
-    const feeData = await this.fetchRpc('get_fee_estimate');
+    const feeData = await this.fetchRpcWithRetry('get_fee_estimate');
     if (feeData) {
       const baseFee = feeData.fee || 360;
       const fees = feeData.fees || [baseFee];
@@ -6671,7 +6690,7 @@ export class WalletService {
       await this.engineCallOptional('inject_fee_estimate', [baseFee, JSON.stringify(fees), quantizationMask]);
     }
 
-    const forkData = await this.fetchRpc('hard_fork_info', { version: 0 });
+    const forkData = await this.fetchRpcWithRetry('hard_fork_info', { version: 0 });
     if (forkData) {
       const version = forkData.version || 10;
       const earliestHeight = forkData.earliest_height || 0;
@@ -6681,6 +6700,17 @@ export class WalletService {
       await this.engineCallOptional('inject_json_rpc_response', ['hard_fork_info', JSON.stringify({
         jsonrpc: '2.0', id: '0', result: forkData
       })]);
+    }
+
+    if (!infoData && !forkData) {
+      reportAssetDiagnostic('task.failed', {
+        task: 'wallet.inject_rpc',
+        stage: 'daemon_priming',
+        component: 'WalletService',
+        reason: 'daemon_unreachable',
+        result: 'failed',
+      }, 'warn', 'Daemon state priming failed after retries');
+      throw new Error('Still connecting to the Salvium network — please wait a few seconds and try again.');
     }
 
     const histogramData = await this.fetchRpc('get_output_histogram', {
