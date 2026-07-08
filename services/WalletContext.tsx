@@ -1094,8 +1094,8 @@ interface WalletContextType {
     lockWallet: () => void;
     startScan: (fromHeight?: number) => Promise<void>;
     sendTransaction: (address: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string) => Promise<string>;
-    sendTransactionWithDetails: (address: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string) => Promise<SentTransactionDetails>;
-    sendTransactionWithDetailsAtomic: (address: string, amountAtomic: string, paymentId?: string, sweepAll?: boolean, assetType?: string) => Promise<SentTransactionDetails>;
+    sendTransactionWithDetails: (address: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string, requireTxKey?: boolean) => Promise<SentTransactionDetails>;
+    sendTransactionWithDetailsAtomic: (address: string, amountAtomic: string, paymentId?: string, sweepAll?: boolean, assetType?: string, requireTxKey?: boolean) => Promise<SentTransactionDetails>;
     createTokenTransaction: (assetType: string, supply: string, size: number, metadata?: string, burnCostSal?: number) => Promise<string[]>;
     stakeTransaction: (amount: number, sweepAll?: boolean) => Promise<string>;
     returnTransaction: (txid: string) => Promise<string>;
@@ -7155,7 +7155,7 @@ const getDeviceMemoryBucket = (): string => {
         return txHash;
     };
 
-    const sendTransactionWithDetails = async (toAddress: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string): Promise<SentTransactionDetails> => {
+    const sendTransactionWithDetails = async (toAddress: string, amount: number, paymentId?: string, sweepAll?: boolean, assetType?: string, requireTxKey: boolean = false): Promise<SentTransactionDetails> => {
         const startedAt = performance.now();
         await assertWalletReadyForSpend();
         const normalizedAssetType = assetType?.trim() || 'SAL1';
@@ -7166,13 +7166,13 @@ const getDeviceMemoryBucket = (): string => {
                 sendKind: 'details',
                 sweepAll: Boolean(sweepAll),
                 hasPaymentId: Boolean(paymentId),
-                requireTxKey: true,
+                requireTxKey,
                 sendStage: 'wallet_service',
             },
         });
         let details: SentTransactionDetails;
         try {
-            details = await walletService.sendTransactionWithDetails(toAddress, amount, 1, paymentId, sweepAll, normalizedAssetType);
+            details = await walletService.sendTransactionWithDetails(toAddress, amount, 1, paymentId, sweepAll, normalizedAssetType, requireTxKey);
             reportClientEvent('asset.send_context_completed', {
                 level: 'info',
                 context: {
@@ -7222,7 +7222,7 @@ const getDeviceMemoryBucket = (): string => {
         return details;
     };
 
-    const sendTransactionWithDetailsAtomic = async (toAddress: string, amountAtomic: string, paymentId?: string, sweepAll?: boolean, assetType?: string): Promise<SentTransactionDetails> => {
+    const sendTransactionWithDetailsAtomic = async (toAddress: string, amountAtomic: string, paymentId?: string, sweepAll?: boolean, assetType?: string, requireTxKey: boolean = false): Promise<SentTransactionDetails> => {
         const startedAt = performance.now();
         await assertWalletReadyForSpend();
         const normalizedAssetType = assetType?.trim() || 'SAL1';
@@ -7233,13 +7233,13 @@ const getDeviceMemoryBucket = (): string => {
                 sendKind: 'atomic',
                 sweepAll: Boolean(sweepAll),
                 hasPaymentId: Boolean(paymentId),
-                requireTxKey: true,
+                requireTxKey,
                 sendStage: 'wallet_service',
             },
         });
         let details: SentTransactionDetails;
         try {
-            details = await walletService.sendTransactionWithDetailsAtomic(toAddress, amountAtomic, 1, paymentId, sweepAll, normalizedAssetType);
+            details = await walletService.sendTransactionWithDetailsAtomic(toAddress, amountAtomic, 1, paymentId, sweepAll, normalizedAssetType, requireTxKey);
             reportClientEvent('asset.send_context_completed', {
                 level: 'info',
                 context: {

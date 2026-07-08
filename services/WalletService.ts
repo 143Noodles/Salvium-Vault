@@ -2977,7 +2977,8 @@ export class WalletService {
     priority: number = 1,
     paymentId?: string,
     sweepAll: boolean = false,
-    assetType?: string
+    assetType?: string,
+    requireTxKey: boolean = false
   ): Promise<SentTransactionDetails> {
     return this.sendTransactionWithDetailsInternal(
       address,
@@ -2986,7 +2987,7 @@ export class WalletService {
       paymentId,
       sweepAll,
       assetType,
-      true
+      requireTxKey
     );
   }
 
@@ -2996,7 +2997,8 @@ export class WalletService {
     priority: number = 1,
     paymentId?: string,
     sweepAll: boolean = false,
-    assetType?: string
+    assetType?: string,
+    requireTxKey: boolean = false
   ): Promise<SentTransactionDetails> {
     const normalizedAmountAtomic = normalizeAtomicAmountString(amountAtomic);
     if (sweepAll) {
@@ -3010,7 +3012,7 @@ export class WalletService {
       paymentId,
       false,
       assetType,
-      true,
+      requireTxKey,
       normalizedAmountAtomic
     );
   }
@@ -3785,23 +3787,26 @@ export class WalletService {
       });
 
       const primaryTx = broadcastTxs[primaryTxIndex] || broadcastTxs[0];
-      if (requireTxKey && !primaryTx.txKey) {
+      if (!primaryTx.txKey) {
         const sourceTx = createdTxs[primaryTxIndex] || createdTxs[0] || {};
         const txKeyState = primaryTx.txKeyCandidate
           ? /^(?:0{64})+$/i.test(primaryTx.txKeyCandidate)
             ? 'all zeroes'
             : `invalid format (${primaryTx.txKeyCandidate.length} chars)`
           : `missing from transaction result; fields: ${Object.keys(sourceTx).sort().join(', ') || 'none'}`;
-        reportAssetDiagnostic('asset.send_wasm_failed', {
+        reportAssetDiagnostic(requireTxKey ? 'asset.send_wasm_failed' : 'asset.send_tx_key_unavailable', {
           tokenShape: getTokenShape(requestedAssetType || 'SAL1'),
           requireTxKey,
-          reason: 'missing_tx_key',
+          reason: requireTxKey ? 'missing_tx_key' : 'tx_key_unavailable_non_proof_send',
+          detail: txKeyState,
           txCreatedCount: createdTxs.length,
           candidateIndex: wasmAssetCandidateIndex,
           bucket: primaryTx.role,
           sendStage: 'wasm_result',
         }, 'warn');
-        throw new Error(`Transaction key returned by WASM is ${txKeyState}; SalPay proof flow cannot continue`);
+        if (requireTxKey) {
+          throw new Error(`Transaction key returned by WASM is ${txKeyState}; SalPay proof flow cannot continue`);
+        }
       }
 
       const sentDetails: SentTransactionDetails = {

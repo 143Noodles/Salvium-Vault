@@ -1406,7 +1406,8 @@ describe('WalletService', () => {
         1,
         undefined,
         false,
-        'SAL1'
+        'SAL1',
+        true
       )).rejects.toThrow('Transaction key returned by WASM is missing');
 
       const broadcastCalls = fetchMock.mock.calls.filter(([url]) =>
@@ -1431,13 +1432,42 @@ describe('WalletService', () => {
         1,
         undefined,
         false,
-        'SAL1'
+        'SAL1',
+        true
       )).rejects.toThrow('Transaction key returned by WASM is all zeroes');
 
       const broadcastCalls = fetchMock.mock.calls.filter(([url]) =>
         String(url).includes('/api/wallet/sendrawtransaction')
       );
       expect(broadcastCalls).toHaveLength(0);
+    });
+
+    it('broadcasts non-proof details sends when WASM returns an all-zero tx key', async () => {
+      const fetchMock = installFetchMock();
+      const service = setupService({
+        tx_blob: 'deadbeef',
+        tx_hash: txHash,
+        tx_key: '0'.repeat(64),
+        fee: 1234,
+        amount: 123000000,
+      });
+
+      await expect(service.sendTransactionWithDetails(
+        'SalvRecipientAddress',
+        1.23,
+        1,
+        undefined,
+        false,
+        'SAL1'
+      )).resolves.toEqual(expect.objectContaining({
+        txHash,
+        txKey: undefined,
+      }));
+
+      const broadcastCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/api/wallet/sendrawtransaction')
+      );
+      expect(broadcastCalls).toHaveLength(1);
     });
 
     it('keeps the legacy tx-hash-only send API compatible without tx_key', async () => {
