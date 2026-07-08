@@ -52,7 +52,8 @@ describe('SalPay service', () => {
       1,
       undefined,
       false,
-      'SAL1'
+      'SAL1',
+      true
     );
     expect(result.proof).toEqual({
       version: 1,
@@ -141,7 +142,8 @@ describe('SalPay service', () => {
       1,
       undefined,
       false,
-      'SAL1'
+      'SAL1',
+      false
     );
     expect(mockSender.sendTransactionWithDetails).not.toHaveBeenCalled();
   });

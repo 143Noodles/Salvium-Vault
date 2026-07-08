@@ -16,7 +16,8 @@ export interface SalPayWalletSender {
     priority?: number,
     paymentId?: string,
     sweepAll?: boolean,
-    assetType?: string
+    assetType?: string,
+    requireTxKey?: boolean
   ): Promise<SentTransactionDetails>;
   sendTransactionWithDetailsAtomic?(
     address: string,
@@ -24,7 +25,8 @@ export interface SalPayWalletSender {
     priority?: number,
     paymentId?: string,
     sweepAll?: boolean,
-    assetType?: string
+    assetType?: string,
+    requireTxKey?: boolean
   ): Promise<SentTransactionDetails>;
 }
 
@@ -88,7 +90,8 @@ export async function sendSalPayRequest(
       task.stage('callback_validate');
       assertSafeSalPayUrl(sendParams.callbackUrl, 'callback URL', { allowLocalhost: false });
     }
-    task.stage('wallet_send', { tokenShape });
+    const requireTxKey = Boolean(sendParams.callbackUrl && !options.skipCallback);
+    task.stage('wallet_send', { tokenShape, requireTxKey });
     const transaction = sender.sendTransactionWithDetailsAtomic
       ? await sender.sendTransactionWithDetailsAtomic(
           sendParams.address,
@@ -96,7 +99,8 @@ export async function sendSalPayRequest(
           1,
           undefined,
           false,
-          sendParams.assetType
+          sendParams.assetType,
+          requireTxKey
         )
       : await sender.sendTransactionWithDetails(
           sendParams.address,
@@ -104,7 +108,8 @@ export async function sendSalPayRequest(
           1,
           undefined,
           false,
-          sendParams.assetType
+          sendParams.assetType,
+          requireTxKey
         );
 
     task.stage('proof_build', { tokenShape });
