@@ -106,6 +106,10 @@ class CSPScanner {
         // ingest (they are the wallet history already in the tail chunk before the requested
         // start). 0 = no filtering (full restore). Set per-scan in scan() to the requested start.
         this.ingestFloorHeight = 0;
+        this.configuredScanTargetHeight = Number.isFinite(options.scanTargetHeight)
+            ? Number(options.scanTargetHeight)
+            : null;
+        this.scanTargetHeight = this.configuredScanTargetHeight;
 
         this.stats = {
             totalChunks: 0,
@@ -1826,12 +1830,28 @@ class CSPScanner {
         }
     }
 
-    requiresTailCoverage(startHeight, endHeight) {
-        return Number.isFinite(startHeight) && startHeight >= 380000;
+    requiresTailCoverage(startHeight, endHeight, chunkCount = 1) {
+        const chunkStart = Number(startHeight);
+        if (!Number.isFinite(chunkStart)) return false;
+
+        const chunks = Number(chunkCount);
+        const chunkSpan = Math.max(1, Number.isFinite(chunks) ? Math.ceil(chunks) : 1) * this.chunkSize;
+        const nominalEndHeight = chunkStart + chunkSpan - 1;
+        const returnedEndHeight = Number(endHeight);
+        if (Number.isFinite(returnedEndHeight) && returnedEndHeight < nominalEndHeight) return true;
+
+        const targetEndHeight = Number.isFinite(this.scanTargetHeight)
+            ? this.scanTargetHeight
+            : Number(this.stats?.endHeight);
+        if (!Number.isFinite(targetEndHeight)) return false;
+
+        const targetTipHeight = Math.max(0, targetEndHeight - 1);
+        return nominalEndHeight >= targetTipHeight - this.chunkSize;
     }
 
     failClosedOnMissingTailCoverage(msg, source) {
-        if (!this.requiresTailCoverage(Number(msg.startHeight || 0), Number(msg.endHeight || 0))) return false;
+        const chunkCount = msg.chunksProcessed || msg.chunkCount || 1;
+        if (!this.requiresTailCoverage(Number(msg.startHeight || 0), Number(msg.endHeight || 0), chunkCount)) return false;
         if (Number.isFinite(Number(msg.coveredThrough))) return false;
         this.handleScanError({
             workerId: msg.workerId,
@@ -2549,6 +2569,9 @@ class CSPScanner {
         // deep reorgs are caught by hash-checkpoint detection). startHeight===0 (full
         // restore) => floor 0 => no filtering.
         this.ingestFloorHeight = Math.max(0, startHeight | 0);
+        this.scanTargetHeight = Number.isFinite(this.configuredScanTargetHeight)
+            ? Math.max(this.configuredScanTargetHeight, Number(endHeight))
+            : Number(endHeight);
         this.totalBlocks = endHeight - startHeight;
         this.startTime = performance.now();
 
@@ -2759,6 +2782,9 @@ class CSPScanner {
         this._scanReject = null;
         this.scannedBlocks = 0;
         this.ingestFloorHeight = 0; // precise gap-run scan: ingest everything in the runs
+        this.scanTargetHeight = Number.isFinite(this.configuredScanTargetHeight)
+            ? Math.max(this.configuredScanTargetHeight, Number(overallEnd))
+            : Number(overallEnd);
         this.totalBlocks = totalBlocks;
         this.startTime = performance.now();
 

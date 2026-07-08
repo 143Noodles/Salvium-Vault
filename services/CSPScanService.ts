@@ -2195,6 +2195,7 @@ class CSPScanService {
       useBatchMode: !forceSingleChunkOnTest,
       batchSize: isAndroid ? 6 : 20,
       chunkSize: 1000,
+      scanTargetHeight: endHeight,
       ...overrides,
       // Persist Phase 1 progress incrementally as each task completes, so an interruption
       // mid-scan loses only the in-flight chunk (not the whole session). Recorded chunks are
