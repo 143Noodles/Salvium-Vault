@@ -1826,8 +1826,25 @@ class CSPScanner {
         }
     }
 
+    requiresTailCoverage(startHeight, endHeight) {
+        return Number.isFinite(startHeight) && startHeight >= 380000;
+    }
+
+    failClosedOnMissingTailCoverage(msg, source) {
+        if (!this.requiresTailCoverage(Number(msg.startHeight || 0), Number(msg.endHeight || 0))) return false;
+        if (Number.isFinite(Number(msg.coveredThrough))) return false;
+        this.handleScanError({
+            workerId: msg.workerId,
+            startHeight: msg.startHeight,
+            chunkCount: msg.chunksProcessed || msg.actualCount || 1,
+            error: `Retryable CSP coverage missing for tail ${source}:${msg.startHeight}`,
+        });
+        return true;
+    }
+
     handleScanBatchResult(msg) {
         const { workerId, startHeight, endHeight, chunksProcessed, blocksProcessed, stats, matches, spent, scannedChunks, missingChunks, missingReason } = msg;
+        if (this.failClosedOnMissingTailCoverage(msg, 'batch')) return;
         this.noteCoveredThrough(msg.coveredThrough, 'batch:' + startHeight);
         const scannedChunkStarts = Array.isArray(scannedChunks) && scannedChunks.length > 0
             ? [...new Set(scannedChunks.filter(h => Number.isFinite(h)))].sort((a, b) => a - b)
@@ -2032,6 +2049,7 @@ class CSPScanner {
 
     handleScanResult(msg) {
         const { workerId, startHeight, endHeight, stats, matches, spent, actualCount } = msg;
+        if (this.failClosedOnMissingTailCoverage(msg, 'single')) return;
         this.noteCoveredThrough(msg.coveredThrough, 'single:' + startHeight);
 
         this.recordTaskTiming(workerId, 1);
@@ -2176,7 +2194,9 @@ class CSPScanner {
             error.includes('Failed to fetch') ||
             error.includes('NetworkError') ||
             error.includes('empty body') ||
-            error.includes('size mismatch')
+            error.includes('size mismatch') ||
+            error.toLowerCase().includes('coverage missing') ||
+            error.toLowerCase().includes('coverage below request')
         );
 
         this.emitTelemetry('scan.worker_task_failed', {

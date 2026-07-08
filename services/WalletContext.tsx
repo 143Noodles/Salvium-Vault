@@ -4354,10 +4354,26 @@ const getDeviceMemoryBucket = (): string => {
             !cacheMissingRequiresFullScan &&
             nativeTransferCount === 0 &&
             nativeBalanceEmpty;
+        let confirmedNativeStateMissingForExistingWallet = false;
+        if (nativeStateMissingForExistingWallet) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+            const settledSnapshot = captureNativeSnapshot('unlock_bootstrap_settled_confirm', {
+                bootHeight,
+                restoreHeight: finalRestoreHeight,
+            });
+            const settledNativeBalance = getAuthoritativeNativeBalance(walletService.getBalance()).balance;
+            const settledNativeTransferCount = settledSnapshot?.transfer_count || 0;
+            const settledNativeBalanceEmpty =
+                settledNativeBalance.balance === 0 &&
+                settledNativeBalance.unlockedBalance === 0;
+            confirmedNativeStateMissingForExistingWallet =
+                settledNativeTransferCount === 0 &&
+                settledNativeBalanceEmpty;
+        }
         const severeRestoreMismatch =
             !!unlockSnapshot &&
             (
-                nativeStateMissingForExistingWallet ||
+                confirmedNativeStateMissingForExistingWallet ||
                 (
                     cachedTxCount >= 200 &&
                     nativeTransferCount > 0 &&
@@ -4375,7 +4391,7 @@ const getDeviceMemoryBucket = (): string => {
             });
             needsFullRescanRef.current = true;
             preferredScanStartHeightRef.current = 0;
-            const repairReason = nativeStateMissingForExistingWallet
+            const repairReason = confirmedNativeStateMissingForExistingWallet
                 ? 'Native wallet state is empty for an existing wallet'
                 : 'Native transaction history requires full repair';
             markFullRescanRequired(
@@ -4416,7 +4432,7 @@ const getDeviceMemoryBucket = (): string => {
 
         try {
             const storedWallet = safeReadWallet();
-            if (storedWallet && walletService.hasWallet() && !cacheMissingRequiresFullScan && !nativeStateMissingForExistingWallet) {
+            if (storedWallet && walletService.hasWallet() && !cacheMissingRequiresFullScan && !confirmedNativeStateMissingForExistingWallet) {
                 storedWallet.cachedBalance = { ...unlockNativeBalance };
                 storedWallet.cachedBalanceVersion = BASE_ASSET_CACHED_BALANCE_VERSION;
                 safeWriteWallet(storedWallet);
@@ -5684,11 +5700,20 @@ const getDeviceMemoryBucket = (): string => {
             const coveredThroughValue = (result as any)?.coveredThroughHeight;
             const coveredThroughRaw = coveredThroughValue == null ? NaN : Number(coveredThroughValue);
             const clampImplausible = Number.isFinite(coveredThroughRaw) && coveredThroughRaw < networkHeight - 5000;
+            const isIncrementalTailContinuation = effectiveIsIncremental && actualStartHeight > 0 && scanProfile === 'tail';
             if (clampImplausible) {
                 reportClientEvent('scan.coverage_clamp_implausible', {
                     level: 'error',
-                    message: `Implausible commit clamp ignored: ${coveredThroughRaw} (tip ${networkHeight})`,
+                    message: `Implausible commit clamp rejected: ${coveredThroughRaw} (tip ${networkHeight})`,
+                    context: {
+                        scanWindowStart: actualStartHeight,
+                        scanWindowEnd: networkHeight,
+                        sessionType: request?.sessionType || 'background',
+                    },
                 });
+            }
+            if (isIncrementalTailContinuation && clampImplausible) {
+                throw new Error(`Retryable scan coverage failure: covered through ${coveredThroughRaw}, daemon tip ${networkHeight}`);
             }
             const provenNetworkHeight = Number.isFinite(coveredThroughRaw) && !clampImplausible && coveredThroughRaw < networkHeight
                 ? Math.max(actualStartHeight, coveredThroughRaw)
@@ -5886,7 +5911,7 @@ const getDeviceMemoryBucket = (): string => {
                         request?.sessionType === 'background' &&
                         ((result.outputsFound || 0) > 0 || (result.spendsFound || 0) > 0);
                     const newTxs = shouldUseRangeTransactions
-                        ? await walletService.getTransactionsInRange(actualStartHeight, networkHeight)
+                        ? await walletService.getTransactionsInRange(actualStartHeight, provenNetworkHeight)
                         : walletService.getTransactions();
                     const isAuthoritativeFullRestoreScan =
                         request?.sessionType === 'restore-full-rescan' &&
@@ -5922,7 +5947,7 @@ const getDeviceMemoryBucket = (): string => {
                     ]);
                     const stakeSourceTxs = mergedTxs;
 
-                    await walletService.setBlockchainHeight(networkHeight, true);
+                    await walletService.setBlockchainHeight(provenNetworkHeight, true);
                     const nativeBalanceState = getAuthoritativeNativeBalance(walletService.getBalance());
                     const currentBalance = nativeBalanceState.balance;
 
@@ -5971,7 +5996,7 @@ const getDeviceMemoryBucket = (): string => {
 
                     finalBalance = clampUnlockedBalance(finalBalance);
 
-                    const currentHeight = networkHeight;
+                    const currentHeight = provenNetworkHeight;
                     const nativeStakeState = await getNativeStakeState(currentHeight);
                     if (request?.sessionType === 'restore-full-rescan') {
                         setRestoreScanPhase('phase3_stake_returns_rebuild', 'rebuilding wallet stake/returns state', 'stake_returns');
@@ -6245,7 +6270,7 @@ const getDeviceMemoryBucket = (): string => {
                     }
 
                     const chunksInRange = new Set<number>();
-                    for (let chunk = getChunkStart(actualStartHeight); chunk <= getChunkStart(networkHeight); chunk += CHUNK_SIZE) {
+                    for (let chunk = getChunkStart(actualStartHeight); chunk <= getChunkStart(provenNetworkHeight); chunk += CHUNK_SIZE) {
                         chunksInRange.add(chunk);
                     }
 
@@ -6269,7 +6294,7 @@ const getDeviceMemoryBucket = (): string => {
                             ...confirmedChunks
                         ])
                     ].sort((a, b) => b - a).slice(0, MAX_TRACKED_CHUNKS);
-                    markRangeScanned(actualStartHeight, Math.max(actualStartHeight, networkHeight - 1));
+                    markRangeScanned(actualStartHeight, Math.max(actualStartHeight, provenNetworkHeight - 1));
                     try {
                         const walletWithScannedRange = safeReadWallet();
                         if (walletWithScannedRange?.scannedRanges) {
@@ -6388,7 +6413,7 @@ const getDeviceMemoryBucket = (): string => {
                                     address,
                                     walletCacheHex,
                                     subaddressMap,
-                                    networkHeight,
+                                    provenNetworkHeight,
                                     walletService.getOutputCount(),
                                     walletService.getWasmVersion()
                                 );
@@ -6509,7 +6534,8 @@ const getDeviceMemoryBucket = (): string => {
                     level: 'info',
                     context: {
                         reason: request?.reason || 'unknown',
-                        walletHeight: networkHeight,
+                        walletHeight: provenNetworkHeight,
+                        daemonHeight: networkHeight,
                         blocksScanned: result.blocksScanned || 0,
                         sinceLastFullCommitMs: Date.now() - lastIncrementalPersistAtRef.current,
                     },
