@@ -33,7 +33,9 @@
     "settings": "Pengaturan",
     "dashboard": "Dasbor",
     "lockWallet": "Kunci Dompet",
-    "assets": "Aset"
+    "assets": "Aset",
+    "mining": "Penambangan",
+    "mine": "Tambang"
   },
   "dashboard": {
     "balance": "Saldo",
@@ -282,6 +284,11 @@
     "currency": {
       "title": "Mata uang tampilan",
       "description": "Pilih mata uang fiat yang digunakan untuk menampilkan nilai saldo Anda."
+    },
+    "mining": {
+      "title": "Dapatkan SAL dengan menambang",
+      "description": "Tambang langsung ke dompet ini di pool resmi Salvium dan pantau penghasilan Anda secara langsung.",
+      "button": "Buka penambangan"
     }
   },
   "onboarding": {
@@ -652,6 +659,114 @@
         "gateNote": "Kami menunggu hingga setiap indeks mencapai blok terbaru agar pemindaian pertama Anda tidak melewatkan apa pun.",
         "continueAnyway": "Tetap lanjutkan"
       }
+    }
+  },
+  "mining": {
+    "title": "Penambangan",
+    "subtitle": "Tambang SAL langsung ke dompet Anda di pool resmi",
+    "stats": {
+      "hashrate": "Hashrate Anda",
+      "avgHashrate": "Rata-rata 24 jam",
+      "pending": "Saldo tertunda",
+      "totalPaid": "Total dibayar",
+      "nextPayout": "Pembayaran berikutnya",
+      "shares": "Share diterima",
+      "lastShare": "Share terakhir",
+      "never": "Tidak pernah",
+      "online": "Menambang",
+      "offline": "Offline"
+    },
+    "pool": {
+      "title": "Pool",
+      "fee": "Biaya pool",
+      "minPayout": "Pembayaran minimum",
+      "payouts": "Pembayaran",
+      "payoutTimes": "00:00 & 12:00 UTC",
+      "server": "Server"
+    },
+    "workers": "Worker",
+    "noWorkers": "Tidak ada worker aktif",
+    "payments": "Pembayaran",
+    "noPayments": "Belum ada pembayaran",
+    "paymentDate": "Tanggal",
+    "paymentAmount": "Jumlah",
+    "paymentTx": "Tx",
+    "empty": {
+      "title": "Mulai dapatkan SAL",
+      "body": "Dompet ini belum pernah menambang di pool. Arahkan penambang ke pool dengan alamat dompet Anda sebagai nama pengguna dan statistik Anda akan muncul di sini.",
+      "desktopCta": "Untuk menambang sekali klik, gunakan aplikasi desktop Salvium Vault.",
+      "howTo": "Server {{server}} · algoritma RandomX (rx/0) · nama pengguna = alamat dompet Anda"
+    },
+    "control": {
+      "start": "Mulai menambang",
+      "stop": "Hentikan penambangan",
+      "starting": "Memulai…",
+      "stopping": "Menghentikan…",
+      "installing": "Menyiapkan penambang…",
+      "downloading": "Mengunduh penambang ({{pct}}%)",
+      "verifying": "Memverifikasi unduhan",
+      "mining": "Menambang",
+      "pausedAfk": "Dijeda saat Anda aktif",
+      "cpuUsage": "Penggunaan CPU",
+      "liveHashrate": "Hashrate",
+      "threads": "Inti CPU",
+      "threadsOf": "{{used}} dari {{total}} inti",
+      "afkTitle": "Hanya menambang saat saya pergi",
+      "afkHint": "Menjeda penambangan saat Anda menggunakan komputer dan melanjutkannya setelah 5 menit tidak aktif.",
+      "afkUnsupported": "Deteksi idle tidak tersedia di sistem ini.",
+      "adminTitle": "Izin administrator",
+      "adminBody": "Sistem Anda akan meminta izin administrator saat penambangan dimulai. Ini memungkinkan penambangan kecepatan penuh (huge pages dan penyetelan CPU); di Windows juga memberi tahu Windows Defender bahwa penambang ini aman. Jika Anda menolak, penambangan tetap berjalan dengan kecepatan standar.",
+      "confirmStart": "Mulai",
+      "uptime": "Waktu aktif",
+      "sharesLine": "{{good}} diterima",
+      "notInstalled": "Penambang diunduh otomatis saat pertama kali dijalankan (sekitar 3 MB, terverifikasi).",
+      "externalActive": "Dompet ini sudah menambang dari {{count}} worker di perangkat lain — statistiknya ditampilkan di atas. Memulai di sini menambahkan komputer ini sebagai worker lain pada saldo yang sama.",
+      "externalChip": "Juga menambang di tempat lain"
+    },
+    "errors": {
+      "startFailed": "Tidak dapat memulai penambangan",
+      "stopFailed": "Tidak dapat menghentikan penambangan",
+      "statsUnavailable": "Statistik pool sementara tidak tersedia"
+    },
+    "winner": {
+      "blockEffort": "Upaya blok",
+      "mining": "Menambang",
+      "blockHeight": "Tinggi blok",
+      "timeMined24h": "Waktu menambang (24 jam terakhir)",
+      "networkHashrate": "Hashrate jaringan",
+      "profitRatio": "Rasio keuntungan",
+      "lastMined": "Terakhir ditambang",
+      "price": "Harga"
+    },
+    "payout": {
+      "title": "Progres pembayaran",
+      "scheduledNext": "Pembayaran terjadwal berikutnya",
+      "threshold": "Ambang batas",
+      "nextEligibleWave": "Gelombang memenuhi syarat berikutnya"
+    },
+    "tiles": {
+      "currentHashrate": "Hashrate saat ini",
+      "pending": "Tertunda",
+      "totalPaid": "Total dibayar",
+      "dailyEst": "Harian (perkiraan)",
+      "vsSalOnly": "vs hanya SAL"
+    },
+    "chart": {
+      "title": "Riwayat hashrate",
+      "noData": "Belum ada data hashrate. Mulai menambang untuk melihat statistik Anda.",
+      "lastShare": "Share terakhir",
+      "validShares": "Share valid",
+      "rejected": "Ditolak",
+      "poolShare": "Porsi pool"
+    },
+    "workersTable": {
+      "worker": "Worker",
+      "hashrate": "Hashrate",
+      "validShares": "Share valid",
+      "rejected": "Ditolak",
+      "lastShare": "Share terakhir",
+      "allWorkers": "Semua worker",
+      "thisDevice": "perangkat ini"
     }
   }
 }

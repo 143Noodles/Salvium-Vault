@@ -37,7 +37,7 @@ const { resolveActiveContentDir, checkForContentUpdate, applyContentUpdate, setS
 // the bootstrap default used until the wizard's cookie is set.
 // ---------------------------------------------------------------------------
 const SALVIUM_NETWORK = 'mainnet';
-const RPC_URL = process.env.SALVIUM_RPC_URL || 'http://seed01.salvium.io:19081';
+const RPC_URL = process.env.SALVIUM_RPC_URL || 'https://node.salvium.tools';
 // When the user hasn't pinned a node via env, the shell auto-detects a local daemon
 // at boot and prefers it (the most private option), falling back to RPC_URL.
 const RPC_URL_FROM_ENV = !!process.env.SALVIUM_RPC_URL;

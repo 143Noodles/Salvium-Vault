@@ -4,7 +4,7 @@ import { isMobile, isTablet, isIPad13 } from 'react-device-detect';
 const isTabletDevice = isTablet || isIPad13;
 const isMobileOrTablet = isMobile || isTabletDevice;
 import { Card, Button, Input, Badge, Overlay } from './UIComponents';
-import { Settings, Lock, Shield, Monitor, Bell, Network, Database, RefreshCw, Loader2, Download, Eye, EyeOff, X, ScanFace, Heart, ExternalLink, CheckCircle2, Globe, Key, Trash2, AlertTriangle, FileText, Copy, Check, DollarSign } from './Icons';
+import { Settings, Lock, Shield, Monitor, Bell, Network, Database, RefreshCw, Loader2, Download, Eye, EyeOff, X, ScanFace, Heart, ExternalLink, CheckCircle2, Globe, Key, Trash2, AlertTriangle, FileText, Copy, Check, DollarSign, Pickaxe } from './Icons';
 import LanguageSelector from './LanguageSelector';
 import CurrencySelector from './CurrencySelector';
 import { useTranslation } from 'react-i18next';
@@ -679,6 +679,38 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                      >
                         <Heart size={18} className="mr-2 fill-white/20" />
                         {t('settings.donate.button')}
+                     </Button>
+                  </div>
+            </Card>
+
+            <Card className={`relative overflow-hidden group ${isMobileOrTablet ? '!p-3' : ''}`}>
+                  <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:opacity-20 transition-opacity">
+                     <Pickaxe size={120} className="text-accent-primary transform rotate-12 translate-x-10 -translate-y-10" />
+                  </div>
+
+                  <div className={`relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between ${isMobileOrTablet ? 'gap-3' : 'gap-6'}`}>
+                     <div className={isMobileOrTablet ? 'flex gap-3' : 'flex gap-4'}>
+                        <div className={`${isMobileOrTablet ? 'p-2' : 'p-3'} bg-gradient-to-br from-indigo-500/20 to-violet-500/20 rounded-xl border border-indigo-500/20 h-fit text-accent-primary`}>
+                           <Pickaxe className={isMobileOrTablet ? 'w-5 h-5' : 'w-6 h-6'} />
+                        </div>
+                        <div>
+                           <h4 className={`${isMobileOrTablet ? 'text-base leading-snug' : 'text-lg'} text-white font-bold mb-1`}>{t('settings.mining.title')}</h4>
+                           <p className={`${isMobileOrTablet ? 'text-xs leading-5' : 'text-sm leading-relaxed'} text-text-muted max-w-lg`}>
+                              {t('settings.mining.description')}
+                           </p>
+                        </div>
+                     </div>
+
+                     <Button
+                        className={`shrink-0 w-full md:w-auto ${isMobileOrTablet ? '!px-4 !py-2 !text-sm' : 'px-5 py-2.5 md:px-8 md:py-3'}`}
+                        onClick={() => {
+                           if (onNavigate) {
+                              onNavigate(TabView.MINING);
+                           }
+                        }}
+                     >
+                        <Pickaxe size={18} className="mr-2" />
+                        {t('settings.mining.button')}
                      </Button>
                   </div>
             </Card>

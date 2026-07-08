@@ -33,7 +33,9 @@
     "settings": "Inställningar",
     "dashboard": "Översikt",
     "lockWallet": "Lås Plånbok",
-    "assets": "Tillgångar"
+    "assets": "Tillgångar",
+    "mining": "Mining",
+    "mine": "Mina"
   },
   "dashboard": {
     "balance": "Saldo",
@@ -282,6 +284,11 @@
     "currency": {
       "title": "Visningsvaluta",
       "description": "Välj den fiatvaluta som används för att visa ditt saldovärde."
+    },
+    "mining": {
+      "title": "Tjäna SAL genom mining",
+      "description": "Mina direkt till den här plånboken på den officiella Salvium-poolen och följ dina intäkter live.",
+      "button": "Öppna mining"
     }
   },
   "onboarding": {
@@ -652,6 +659,114 @@
         "gateNote": "Vi väntar tills varje index når det senaste blocket så att din första skanning inte missar något.",
         "continueAnyway": "Fortsätt ändå"
       }
+    }
+  },
+  "mining": {
+    "title": "Mining",
+    "subtitle": "Mina SAL direkt till din plånbok på den officiella poolen",
+    "stats": {
+      "hashrate": "Din hashrate",
+      "avgHashrate": "24h-genomsnitt",
+      "pending": "Väntande saldo",
+      "totalPaid": "Totalt utbetalt",
+      "nextPayout": "Nästa utbetalning",
+      "shares": "Accepterade shares",
+      "lastShare": "Senaste share",
+      "never": "Aldrig",
+      "online": "Minar",
+      "offline": "Offline"
+    },
+    "pool": {
+      "title": "Pool",
+      "fee": "Poolavgift",
+      "minPayout": "Minsta utbetalning",
+      "payouts": "Utbetalningar",
+      "payoutTimes": "00:00 & 12:00 UTC",
+      "server": "Server"
+    },
+    "workers": "Workers",
+    "noWorkers": "Inga aktiva workers",
+    "payments": "Betalningar",
+    "noPayments": "Inga utbetalningar ännu",
+    "paymentDate": "Datum",
+    "paymentAmount": "Belopp",
+    "paymentTx": "Tx",
+    "empty": {
+      "title": "Börja tjäna SAL",
+      "body": "Den här plånboken har inte minat på poolen ännu. Rikta en miner mot poolen med din plånboksadress som användarnamn så visas din statistik här.",
+      "desktopCta": "För mining med ett klick, använd Salvium Vault-skrivbordsappen.",
+      "howTo": "Server {{server}} · algoritm RandomX (rx/0) · användarnamn = din plånboksadress"
+    },
+    "control": {
+      "start": "Starta mining",
+      "stop": "Stoppa mining",
+      "starting": "Startar…",
+      "stopping": "Stoppar…",
+      "installing": "Ställer in minern…",
+      "downloading": "Laddar ner minern ({{pct}}%)",
+      "verifying": "Verifierar nedladdningen",
+      "mining": "Minar",
+      "pausedAfk": "Pausad medan du är aktiv",
+      "cpuUsage": "CPU-användning",
+      "liveHashrate": "Hashrate",
+      "threads": "CPU-kärnor",
+      "threadsOf": "{{used}} av {{total}} kärnor",
+      "afkTitle": "Mina bara när jag är borta",
+      "afkHint": "Pausar miningen medan du använder datorn och återupptar efter 5 minuters inaktivitet.",
+      "afkUnsupported": "Inaktivitetsdetektering är inte tillgänglig på det här systemet.",
+      "adminTitle": "Administratörsbehörighet",
+      "adminBody": "Systemet ber om administratörsbehörighet när miningen startar. Det möjliggör mining i full hastighet (huge pages och CPU-justering); i Windows talar det också om för Windows Defender att minern är säker. Om du avböjer körs miningen i standardhastighet.",
+      "confirmStart": "Starta",
+      "uptime": "Drifttid",
+      "sharesLine": "{{good}} accepterade",
+      "notInstalled": "Minern laddas ner automatiskt vid första starten (cirka 3 MB, verifierad).",
+      "externalActive": "Den här plånboken minar redan från {{count}} worker(s) på andra enheter — deras statistik visas ovan. Att starta här lägger till den här datorn som ytterligare en worker på samma saldo.",
+      "externalChip": "Minar även någon annanstans"
+    },
+    "errors": {
+      "startFailed": "Kunde inte starta miningen",
+      "stopFailed": "Kunde inte stoppa miningen",
+      "statsUnavailable": "Poolstatistiken är tillfälligt otillgänglig"
+    },
+    "winner": {
+      "blockEffort": "Block-effort",
+      "mining": "Minar",
+      "blockHeight": "Blockhöjd",
+      "timeMined24h": "Minad tid (senaste 24h)",
+      "networkHashrate": "Nätverkets hashrate",
+      "profitRatio": "Vinstkvot",
+      "lastMined": "Senast minad",
+      "price": "Pris"
+    },
+    "payout": {
+      "title": "Utbetalningsförlopp",
+      "scheduledNext": "Nästa schemalagda utbetalning",
+      "threshold": "Tröskel",
+      "nextEligibleWave": "Nästa kvalificerade våg"
+    },
+    "tiles": {
+      "currentHashrate": "Aktuell hashrate",
+      "pending": "Väntande",
+      "totalPaid": "Totalt utbetalt",
+      "dailyEst": "Dagligen (uppsk.)",
+      "vsSalOnly": "vs endast SAL"
+    },
+    "chart": {
+      "title": "Hashrate-historik",
+      "noData": "Inga hashrate-data ännu. Börja mina för att se din statistik.",
+      "lastShare": "Senaste share",
+      "validShares": "Giltiga shares",
+      "rejected": "Avvisade",
+      "poolShare": "Poolandel"
+    },
+    "workersTable": {
+      "worker": "Worker",
+      "hashrate": "Hashrate",
+      "validShares": "Giltiga shares",
+      "rejected": "Avvisade",
+      "lastShare": "Senaste share",
+      "allWorkers": "Alla workers",
+      "thisDevice": "den här enheten"
     }
   }
 }

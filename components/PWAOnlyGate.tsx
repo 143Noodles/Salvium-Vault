@@ -245,15 +245,15 @@ const PWAOnlyGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     {isAndroid ? (
                         <div className="flex flex-col gap-4">
                             <p className="text-sm text-text-muted mb-2">
-                                Download the Android app to continue.
+                                Get the Android app on Google Play to continue.
                             </p>
                             <Button
                                 variant="primary"
-                                onClick={() => window.location.replace('/apk')}
+                                onClick={() => window.location.replace('https://play.google.com/store/apps/details?id=tools.salvium')}
                                 className="w-full flex items-center justify-center gap-2 py-3"
                             >
                                 <Download size={18} />
-                                Download APK
+                                Get it on Google Play
                             </Button>
                         </div>
                     ) : isIOS && isSafari ? (

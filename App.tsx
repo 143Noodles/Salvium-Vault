@@ -6,6 +6,7 @@ import {
   useWallet,
 } from './services/WalletContext';
 import { CurrencyProvider } from './services/CurrencyContext';
+import { MiningProvider, useMining } from './services/MiningContext';
 import { walletService } from './services/WalletService';
 import Dashboard from './components/Dashboard';
 import Onboarding from './components/Onboarding';
@@ -18,6 +19,7 @@ import StakingPage from './components/StakingPage';
 import HistoryPage from './components/HistoryPage';
 import SettingsPage from './components/SettingsPage';
 import AssetsPage from './components/AssetsPage';
+import MiningPage from './components/MiningPage';
 import {
   LayoutDashboard,
   TrendingUp,
@@ -28,6 +30,7 @@ import {
   Download,
   History,
   Cpu,
+  Pickaxe,
   Database,
   RefreshCw,
   AlertTriangle,
@@ -66,6 +69,7 @@ const isNativeApp = isNativePlatform();
 const AppContent: React.FC = () => {
   const { t } = useTranslation();
   const wallet = useWallet();
+  const { snapshot: miningSnapshot } = useMining();
   useMobileScaling();
 
   const [appState, setAppState] = useState<AppState>('initializing');
@@ -87,6 +91,7 @@ const AppContent: React.FC = () => {
     '#receive': TabView.RECEIVE,
     '#staking': TabView.STAKING,
     '#assets': TabView.ASSETS,
+    '#mining': TabView.MINING,
     '#history': TabView.HISTORY,
     '#settings': TabView.SETTINGS,
   };
@@ -97,6 +102,7 @@ const AppContent: React.FC = () => {
     [TabView.RECEIVE]: '#receive',
     [TabView.STAKING]: '#staking',
     [TabView.ASSETS]: '#assets',
+    [TabView.MINING]: '#mining',
     [TabView.HISTORY]: '#history',
     [TabView.SETTINGS]: '#settings',
   };
@@ -155,6 +161,19 @@ const AppContent: React.FC = () => {
 
     setActiveTab(tab);
   };
+
+  // Mining tab visibility: always on the desktop shell; on web/Android only when
+  // the wallet address has pool activity. Derived from the shared MiningProvider
+  // snapshot (already warm from cache + background polling), so no separate fetch.
+  const miningStats = miningSnapshot?.stats;
+  const miningActive = !!miningStats && (
+    miningStats.lastHash != null ||
+    Number(miningStats.pending) > 0 ||
+    Number(miningStats.totalPaid) > 0 ||
+    Number(miningStats.amtPaid) > 0 ||
+    Number(miningStats.amtDue) > 0
+  );
+  const showMiningTab = isDesktopApp() || miningActive;
 
   const [needsScan, setNeedsScan] = useState(false);
   const [autoLockEnabled, setAutoLockEnabled] = useState(true);
@@ -745,7 +764,7 @@ const AppContent: React.FC = () => {
         <MobileHeader activeTab={activeTab} onNavigate={handleNavigate} onLock={lockWallet} />
       )}
       {isMobileOrTablet && (
-        <MobileNavBar activeTab={activeTab} onNavigate={handleNavigate} showAssetsTab />
+        <MobileNavBar activeTab={activeTab} onNavigate={handleNavigate} showAssetsTab showMiningTab={showMiningTab} />
       )}
       {appState === 'dashboard' && showAssetsUpdateNotice && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
@@ -838,6 +857,9 @@ const AppContent: React.FC = () => {
               <NavItem tab={TabView.RECEIVE} icon={Download} label={t('navigation.receive')} />
               <NavItem tab={TabView.STAKING} icon={TrendingUp} label={t('navigation.staking')} />
               <NavItem tab={TabView.ASSETS} icon={Database} label={t('navigation.assets')} />
+              {showMiningTab && (
+                <NavItem tab={TabView.MINING} icon={Pickaxe} label={t('navigation.mining')} />
+              )}
               <NavItem tab={TabView.HISTORY} icon={History} label={t('navigation.history')} />
               <NavItem tab={TabView.SETTINGS} icon={Settings} label={t('navigation.settings')} />
             </nav>
@@ -953,6 +975,10 @@ const AppContent: React.FC = () => {
               <AssetsPage onNavigate={handleNavigate} />
             )}
 
+            {activeTab === TabView.MINING && (
+              <MiningPage />
+            )}
+
             {activeTab === TabView.SETTINGS && (
               <SettingsPage
                 autoLockEnabled={autoLockEnabled}
@@ -974,7 +1000,9 @@ const App: React.FC = () => {
   return (
     <WalletProvider>
       <CurrencyProvider>
-        <AppContent />
+        <MiningProvider>
+          <AppContent />
+        </MiningProvider>
       </CurrencyProvider>
     </WalletProvider>
   );

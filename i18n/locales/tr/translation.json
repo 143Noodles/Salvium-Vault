@@ -33,7 +33,9 @@
     "settings": "Ayarlar",
     "dashboard": "Panel",
     "lockWallet": "Cüzdanı Kilitle",
-    "assets": "Varlıklar"
+    "assets": "Varlıklar",
+    "mining": "Madencilik",
+    "mine": "Madencilik yap"
   },
   "dashboard": {
     "balance": "Bakiye",
@@ -282,6 +284,11 @@
     "currency": {
       "title": "Görüntüleme para birimi",
       "description": "Bakiye değerinizi göstermek için kullanılan itibari para birimini seçin."
+    },
+    "mining": {
+      "title": "Madencilikle SAL kazanın",
+      "description": "Resmî Salvium havuzunda doğrudan bu cüzdana madencilik yapın ve kazançlarınızı canlı takip edin.",
+      "button": "Madenciliği aç"
     }
   },
   "onboarding": {
@@ -652,6 +659,114 @@
         "gateNote": "İlk taramanızın hiçbir şeyi atlamaması için her dizinin en son bloğa ulaşmasını bekleriz.",
         "continueAnyway": "Yine de devam et"
       }
+    }
+  },
+  "mining": {
+    "title": "Madencilik",
+    "subtitle": "Resmî havuzda doğrudan cüzdanınıza SAL madenciliği yapın",
+    "stats": {
+      "hashrate": "Hashrate'iniz",
+      "avgHashrate": "24s ortalama",
+      "pending": "Bekleyen bakiye",
+      "totalPaid": "Toplam ödenen",
+      "nextPayout": "Sonraki ödeme",
+      "shares": "Kabul edilen share'ler",
+      "lastShare": "Son share",
+      "never": "Hiç",
+      "online": "Madencilik",
+      "offline": "Çevrimdışı"
+    },
+    "pool": {
+      "title": "Havuz",
+      "fee": "Havuz ücreti",
+      "minPayout": "Minimum ödeme",
+      "payouts": "Ödemeler",
+      "payoutTimes": "00:00 & 12:00 UTC",
+      "server": "Sunucu"
+    },
+    "workers": "Worker'lar",
+    "noWorkers": "Aktif worker yok",
+    "payments": "Ödemeler",
+    "noPayments": "Henüz ödeme yok",
+    "paymentDate": "Tarih",
+    "paymentAmount": "Tutar",
+    "paymentTx": "Tx",
+    "empty": {
+      "title": "SAL kazanmaya başlayın",
+      "body": "Bu cüzdan havuzda henüz madencilik yapmadı. Kullanıcı adı olarak cüzdan adresinizle bir madenciyi havuza yönlendirin, istatistikleriniz burada görünecek.",
+      "desktopCta": "Tek tıkla madencilik için Salvium Vault masaüstü uygulamasını kullanın.",
+      "howTo": "Sunucu {{server}} · algoritma RandomX (rx/0) · kullanıcı adı = cüzdan adresiniz"
+    },
+    "control": {
+      "start": "Madenciliği başlat",
+      "stop": "Madenciliği durdur",
+      "starting": "Başlatılıyor…",
+      "stopping": "Durduruluyor…",
+      "installing": "Madenci kuruluyor…",
+      "downloading": "Madenci indiriliyor ({{pct}}%)",
+      "verifying": "İndirme doğrulanıyor",
+      "mining": "Madencilik",
+      "pausedAfk": "Siz aktifken duraklatıldı",
+      "cpuUsage": "CPU kullanımı",
+      "liveHashrate": "Hashrate",
+      "threads": "CPU çekirdekleri",
+      "threadsOf": "{{total}} çekirdekten {{used}}",
+      "afkTitle": "Sadece ben yokken madencilik yap",
+      "afkHint": "Bilgisayarı kullanırken madenciliği duraklatır ve 5 dakika hareketsizlikten sonra devam ettirir.",
+      "afkUnsupported": "Bu sistemde boşta algılama kullanılamıyor.",
+      "adminTitle": "Yönetici izni",
+      "adminBody": "Madencilik başlarken sisteminiz yönetici izni isteyecek. Bu, tam hızda madenciliği (huge pages ve CPU ayarı) etkinleştirir; Windows'ta ayrıca Windows Defender'a madencinin güvenli olduğunu bildirir. Reddederseniz madencilik standart hızda çalışmaya devam eder.",
+      "confirmStart": "Başlat",
+      "uptime": "Çalışma süresi",
+      "sharesLine": "{{good}} kabul edildi",
+      "notInstalled": "Madenci ilk başlatmada otomatik indirilir (yaklaşık 3 MB, doğrulanmış).",
+      "externalActive": "Bu cüzdan diğer cihazlardaki {{count}} worker üzerinden zaten madencilik yapıyor — istatistikleri yukarıda. Burada başlatmak bu bilgisayarı aynı bakiyede bir worker olarak ekler.",
+      "externalChip": "Başka yerde de madencilik yapıyor"
+    },
+    "errors": {
+      "startFailed": "Madencilik başlatılamadı",
+      "stopFailed": "Madencilik durdurulamadı",
+      "statsUnavailable": "Havuz istatistikleri geçici olarak kullanılamıyor"
+    },
+    "winner": {
+      "blockEffort": "Blok eforu",
+      "mining": "Madencilik",
+      "blockHeight": "Blok yüksekliği",
+      "timeMined24h": "Madencilik süresi (son 24s)",
+      "networkHashrate": "Ağ hashrate'i",
+      "profitRatio": "Kâr oranı",
+      "lastMined": "Son kazılan",
+      "price": "Fiyat"
+    },
+    "payout": {
+      "title": "Ödeme ilerlemesi",
+      "scheduledNext": "Planlanan sonraki ödeme",
+      "threshold": "Eşik",
+      "nextEligibleWave": "Sonraki uygun dalga"
+    },
+    "tiles": {
+      "currentHashrate": "Mevcut hashrate",
+      "pending": "Bekleyen",
+      "totalPaid": "Toplam ödenen",
+      "dailyEst": "Günlük (tahminî)",
+      "vsSalOnly": "yalnız SAL'a kıyasla"
+    },
+    "chart": {
+      "title": "Hashrate geçmişi",
+      "noData": "Henüz hashrate verisi yok. İstatistiklerinizi görmek için madenciliğe başlayın.",
+      "lastShare": "Son share",
+      "validShares": "Geçerli share'ler",
+      "rejected": "Reddedilen",
+      "poolShare": "Havuz payı"
+    },
+    "workersTable": {
+      "worker": "Worker",
+      "hashrate": "Hashrate",
+      "validShares": "Geçerli share'ler",
+      "rejected": "Reddedilen",
+      "lastShare": "Son share",
+      "allWorkers": "Tüm worker'lar",
+      "thisDevice": "bu cihaz"
     }
   }
 }

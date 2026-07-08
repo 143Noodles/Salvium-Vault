@@ -13,6 +13,7 @@ const {
     createRelayError,
     relaySalPayCallback,
 } = require('./utils/salpayRelay.cjs');
+const { registerMiningRoutes } = require('./services/minerManager.cjs');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const isRender = process.env.RENDER === 'true';
 if (typeof dns.setDefaultResultOrder === 'function') {
@@ -90,7 +91,7 @@ function recordRateLimited(scope, key) {
     else { rateLimitStats.recentKeys.set(key, { scope, count: 1, firstAt: now, lastAt: now }); }
 }
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute window
-const RATE_LIMIT_MAX_REQUESTS = String(process.env.SALVIUM_DEPLOYMENT_CHANNEL || '').toLowerCase() === 'vault-test' ? 20000 : 300; // vault-test may raise this for asset-index repair diagnostics
+const RATE_LIMIT_MAX_REQUESTS = Number(process.env.SALVIUM_RATE_LIMIT_MAX) > 0 ? Number(process.env.SALVIUM_RATE_LIMIT_MAX) : (String(process.env.SALVIUM_DEPLOYMENT_CHANNEL || '').toLowerCase() === 'vault-test' ? 20000 : 300); // vault-test may raise this for asset-index repair diagnostics
 const DAEMON_INFO_RATE_MAX = 1200; // 20/s per client — far above any legit poll, but a ceiling for cold-cache stampede
 const SCAN_READ_RATE_MAX = Math.max(1, Number.parseInt(process.env.SCAN_READ_RATE_LIMIT_MAX || '3000', 10) || 3000); // per-IP/min ceiling for bulk scan reads (csp/sparse/bulk). ~10-25x a real restore burst; env-overridable so prod can raise without redeploy.
 const RATE_LIMIT_TX_MAX = 500; // 500 transaction broadcasts per minute
@@ -2214,6 +2215,11 @@ async function initCspCache() {
 
 let realtimeWatcherInterval = null;
 let lastKnownHeight = 0;
+// Chain COUNT from the most recent successful get_info, updated every watcher
+// tick regardless of regen outcome. lastKnownHeight intentionally lags on regen
+// failure (retry bookkeeping) — the past-tip guard must NOT read it, or a failed
+// regen at a 1000-boundary deadlocks: guard blocks the retry that would advance it.
+let latestChainCount = 0;
 let realtimeWatcherCheckInFlight = false;
 const REALTIME_BLOCK_WATCHER_INTERVAL_MS = Math.max(
     1000,
@@ -2432,6 +2438,12 @@ async function startRealtimeBlockWatcher() {
             lastKnownHeight = response.data.result.height;
             realtimeWatcherStatus.lastHeight = lastKnownHeight;
             console.log(`[Realtime-Watcher] Initial chain height: ${lastKnownHeight}`);
+            // Seed the tip chunk: after downtime/sleep the on-disk tail chunk is
+            // stale and its recorded coverage may be gone; one regen records exact
+            // coverage before clients scan. Off the boot path deliberately.
+            updateLatestCspChunk(lastKnownHeight, lastKnownHeight).catch((seedErr) => {
+                console.warn('[Realtime-Watcher] Boot tail-chunk seed failed:', seedErr.message);
+            });
         }
     } catch (err) {
         console.warn('[Realtime-Watcher] Could not get initial height:', err.message);
@@ -2468,6 +2480,7 @@ async function checkForNewBlocks() {
 
         const currentHeight = response.data?.result?.height || 0;
         if (currentHeight === 0) return;
+        latestChainCount = Math.max(latestChainCount, currentHeight);
 
         if (currentHeight < lastKnownHeight) {
             const reorgDepth = lastKnownHeight - currentHeight;
@@ -2518,10 +2531,37 @@ async function checkForNewBlocks() {
 
             realtimeWatcherStatus.lastNewBlock = new Date().toISOString();
 
-            const chunkStart = Math.floor(currentHeight / BLOCK_CHUNK_SIZE) * BLOCK_CHUNK_SIZE;
+            // get_info height is a block COUNT; the new tip block is height-1. Passing the
+            // count as a height made the regen request start_height == chain end whenever the
+            // count crossed a 1000 boundary — the daemon scores that as a host failure and
+            // auto-bans this server after a few 5s retries (vault+vault-test banned 2026-07-03).
+            const tipBlockHeight = currentHeight - 1;
+            const chunkStart = Math.floor(tipBlockHeight / BLOCK_CHUNK_SIZE) * BLOCK_CHUNK_SIZE;
             const chunkEnd = chunkStart + BLOCK_CHUNK_SIZE - 1;
 
-            await updateLatestCspChunk(prevHeight + 1, currentHeight);
+            if (Date.now() < (realtimeWatcherStatus.tailRegenBackoffUntil || 0)) {
+                return;
+            }
+            const regenOk = await updateLatestCspChunk(Math.max(0, prevHeight - 1), tipBlockHeight);
+            if (!regenOk) {
+                // Back off exponentially instead of hammering the daemon every check:
+                // rapid-fire failing bin requests are exactly the pattern that
+                // accumulates daemon host-fail score.
+                const streak = (realtimeWatcherStatus.tailRegenFailureStreak || 0) + 1;
+                realtimeWatcherStatus.tailRegenFailureStreak = streak;
+                realtimeWatcherStatus.tailRegenBackoffUntil =
+                    Date.now() + Math.min(300000, 5000 * 2 ** Math.min(streak, 6));
+                // Keep lastKnownHeight where it is so the next check retries the same
+                // blocks; advancing past a failed regen leaves the tail chunk stale
+                // until the NEXT block, and clients scanning in that window would rely
+                // solely on the coverage header to avoid skipping blocks.
+                realtimeWatcherStatus.lastRegenIncomplete = new Date().toISOString();
+                console.warn(`[Realtime-Watcher] Tail regen incomplete for ${Math.max(0, prevHeight - 1)}-${tipBlockHeight}; retrying next check`);
+                return;
+            }
+
+            realtimeWatcherStatus.tailRegenFailureStreak = 0;
+            realtimeWatcherStatus.tailRegenBackoffUntil = 0;
 
             broadcastNewBlock(prevHeight + 1, currentHeight, chunkStart, chunkEnd);
 
@@ -2583,6 +2623,7 @@ async function invalidateCspChunksFromHeight(fromHeight) {
     if (!CSP_CACHE_ENABLED) return;
 
     console.log(`[REORG] Invalidating CSP cache from height ${fromHeight} onwards...`);
+    dropCspChunkCoverageFromHeight(fromHeight);
 
     try {
         const files = await fs.readdir(CSP_CACHE_DIR);
@@ -2648,10 +2689,11 @@ async function updateLatestCspChunk(fromHeight, toHeight) {
     const job = startMaintenanceJob('csp-tail-chunk-update', { fromHeight, toHeight });
     if (!wasmModule || typeof wasmModule.convert_epee_to_csp_with_index !== 'function') {
         job.finish({ success: false, reason: 'wasm-unavailable' });
-        return;
+        return false;
     }
     const fromChunkStart = Math.floor(fromHeight / BLOCK_CHUNK_SIZE) * BLOCK_CHUNK_SIZE;
     const toChunkStart = Math.floor(toHeight / BLOCK_CHUNK_SIZE) * BLOCK_CHUNK_SIZE;
+    let allChunksOk = true;
     try {
         for (let chunkStart = fromChunkStart; chunkStart <= toChunkStart; chunkStart += BLOCK_CHUNK_SIZE) {
             const chunkEnd = chunkStart + BLOCK_CHUNK_SIZE - 1;
@@ -2662,6 +2704,7 @@ async function updateLatestCspChunk(fromHeight, toHeight) {
                 const epeeBuffer = await fetchBlocksFromDaemon(regenerateStart, regenerateEnd);
                 if (!epeeBuffer || epeeBuffer.length === 0) {
                     console.warn(`[Realtime-Watcher] No data for blocks ${regenerateStart}-${regenerateEnd}`);
+                    allChunksOk = false;
                     continue;
                 }
                 await saveBlocksToCache(chunkStart, chunkEnd, epeeBuffer);
@@ -2670,6 +2713,7 @@ async function updateLatestCspChunk(fromHeight, toHeight) {
                     await convertEpeeToCspOffloaded('convert_epee_to_csp_with_index', epeeBuffer, regenerateStart);
                 if (!result.success) {
                     console.warn(`[Realtime-Watcher] CSP conversion failed: ${result.error}`);
+                    allChunksOk = false;
                     continue;
                 }
                 const cspData = cspBuffer;
@@ -2677,17 +2721,22 @@ async function updateLatestCspChunk(fromHeight, toHeight) {
                 if (cspData && cspData.length > 12) {
                     const cspFilename = getCspCacheFilename(chunkStart, chunkEnd);
                     await atomicWriteFile(cspFilename, cspData);
+                    recordCspChunkCoverage(chunkStart, result.blocks_count);
                     const txCount = cspData.readUInt32LE(8);
                     console.log(`[Realtime-Watcher] Updated CSP ${chunkStart}-${chunkEnd}: ${txCount} txs, ${cspData.length} bytes`);
                     if (txiData && txiData.length > 0) {
                         await saveTxiToCache(chunkStart, chunkEnd, txiData);
                     }
+                } else {
+                    allChunksOk = false;
                 }
             } catch (err) {
                 console.error(`[Realtime-Watcher] Error updating chunk ${chunkStart}-${chunkEnd}:`, err.message);
+                allChunksOk = false;
             }
         }
-        job.finish({ success: true });
+        job.finish({ success: allChunksOk });
+        return allChunksOk;
     } catch (err) {
         job.finish({ success: false, error: err.message });
         throw err;
@@ -3113,6 +3162,79 @@ async function saveCspToCache(startHeight, endHeight, cspBuffer) {
     }
 }
 
+// Actual covered end (highest block index included) per cached CSP chunk. The
+// tail chunk is regenerated as the chain grows, so its file usually ends below
+// the nominal chunk end; serving it without coverage info let clients mark
+// not-yet-included blocks as scanned (permanent missed-tx hole). Keyed by
+// chunkStart; persisted so restarts don't forget tail coverage.
+const cspChunkCoveredEnd = new Map();
+const CSP_COVERAGE_FILE = path.join(CSP_CACHE_DIR, 'csp-chunk-coverage.json');
+let cspCoverageSaveTimer = null;
+
+function loadCspChunkCoverage() {
+    try {
+        const obj = JSON.parse(fsSync.readFileSync(CSP_COVERAGE_FILE, 'utf8'));
+        for (const [k, v] of Object.entries(obj || {})) {
+            const start = Number(k);
+            const end = Number(v);
+            if (Number.isFinite(start) && Number.isFinite(end)) cspChunkCoveredEnd.set(start, end);
+        }
+        if (cspChunkCoveredEnd.size > 0) {
+            console.log(`[CSP-Coverage] Loaded ${cspChunkCoveredEnd.size} chunk coverage entries`);
+        }
+    } catch (err) {
+        if (err.code !== 'ENOENT') console.warn('[CSP-Coverage] Load failed:', err.message);
+    }
+}
+loadCspChunkCoverage();
+
+function scheduleCspCoverageSave() {
+    if (cspCoverageSaveTimer) return;
+    cspCoverageSaveTimer = setTimeout(async () => {
+        cspCoverageSaveTimer = null;
+        try {
+            const obj = {};
+            for (const [k, v] of cspChunkCoveredEnd.entries()) obj[k] = v;
+            await atomicWriteFile(CSP_COVERAGE_FILE, JSON.stringify(obj));
+        } catch (err) {
+            console.warn('[CSP-Coverage] Save failed:', err.message);
+        }
+    }, 250);
+}
+
+// blocksCount comes from the WASM converter (exact); never record a guess.
+function recordCspChunkCoverage(chunkStart, blocksCount) {
+    const count = Number(blocksCount);
+    if (!Number.isFinite(count) || count <= 0) return;
+    const chunkEnd = chunkStart + BLOCK_CHUNK_SIZE - 1;
+    cspChunkCoveredEnd.set(chunkStart, Math.min(chunkStart + count - 1, chunkEnd));
+    scheduleCspCoverageSave();
+}
+
+function dropCspChunkCoverageFromHeight(fromHeight) {
+    let dropped = 0;
+    for (const chunkStart of cspChunkCoveredEnd.keys()) {
+        if (chunkStart + BLOCK_CHUNK_SIZE - 1 >= fromHeight) {
+            cspChunkCoveredEnd.delete(chunkStart);
+            dropped++;
+        }
+    }
+    if (dropped > 0) scheduleCspCoverageSave();
+}
+
+// Highest block index the cached chunk actually includes. Full historical
+// chunks (no entry) cover their nominal range; a tip-intersecting chunk with
+// no recorded coverage falls back to the tip estimate (legacy assumption)
+// until the next regeneration records exact coverage.
+function getCspChunkCoveredEnd(chunkStart, tipEstimate) {
+    const chunkEnd = chunkStart + BLOCK_CHUNK_SIZE - 1;
+    const recorded = cspChunkCoveredEnd.get(chunkStart);
+    if (Number.isFinite(recorded)) return Math.min(recorded, chunkEnd);
+    const tip = Number(tipEstimate);
+    if (Number.isFinite(tip) && tip > 0 && chunkEnd >= tip) return Math.min(chunkEnd, Math.max(chunkStart, tip - 1));
+    return chunkEnd;
+}
+
 async function saveTxiToCache(startHeight, endHeight, txiBuffer) {
     if (!CSP_CACHE_ENABLED) return false;
     if (!txiBuffer || txiBuffer.length === 0) return false;
@@ -3180,6 +3302,10 @@ async function generateCspFromEpee(startHeight, endHeight) {
             (txiBuffer ? ` + TXI (${txiBuffer.length} bytes)` : '') +
             ` in ${convertMs}ms`);
 
+        if (cspBuffer && cspBuffer.length > 0) {
+            recordCspChunkCoverage(startHeight, result.blocks_count);
+        }
+
         cspCacheStats.generates++;
         cspCacheStats.lastGenerate = new Date().toISOString();
 
@@ -3235,6 +3361,7 @@ async function generateCspForChunk(chunkStart, chunkEnd, blockData) {
 
         const convertMs = Date.now() - convertStart;
         if (saved) {
+            recordCspChunkCoverage(chunkStart, result.blocks_count);
             console.log(`[CSP] Generated CSP ${chunkKey}: ${cspBuffer.length} bytes in ${convertMs}ms`);
             cspCacheStats.generates++;
             cspCacheStats.lastGenerate = new Date().toISOString();
@@ -5001,6 +5128,14 @@ async function syncBlockCache() {
 }
 
 async function fetchBlocksFromDaemon(startHeight, endHeight) {
+    // Never ask the daemon for blocks at/past its tip: monerod-lineage daemons
+    // score such bin requests as host failures and can auto-ban this server
+    // (vault+vault-test were banned this way on 2026-07-03). lastKnownHeight is
+    // a block COUNT, so valid start heights are strictly below it.
+    const knownCount = Math.max(latestChainCount || 0, lastKnownHeight || 0);
+    if (Number.isFinite(knownCount) && knownCount > 0 && startHeight >= knownCount) {
+        throw new Error(`suppressed past-tip getblocks.bin request (start ${startHeight} >= known height ${knownCount})`);
+    }
     const DAEMON_URL = pickDaemonNode();
     const daemonBaseUrl = DAEMON_URL.replace(/\/$/, '');
     const targetUrl = `${daemonBaseUrl}/getblocks.bin`;
@@ -5335,10 +5470,13 @@ async function proxyVaultRequest(req, res, next) {
     }
 }
 app.use(proxyVaultRequest);
-// getoutsfix5: a patched WASM must only ever hit a patched daemon. The stock
-// Salvium seed nodes are OPT-IN (default OFF) so the vault uses only the
-// configured salvium:19081 unless SALVIUM_ALLOW_SEED_FALLBACK=1 is set.
-const SALVIUM_SEED_RPC_NODES = (process.env.SALVIUM_ALLOW_SEED_FALLBACK === '1') ? [
+// getoutsfix5 (historical): pre-HF13 the local daemon carried a read-path patch
+// (PR90) and stock nodes served drifted per-asset indexes, so seeds were opt-in
+// only. Verified 2026-07-03 post-HF13: seeds serve byte-identical
+// get_output_distribution/get_outs for SAL and SAL1 — full fallback is safe while
+// the local daemon runs the official release. If a divergent local patch is ever
+// deployed again, unset SALVIUM_ALLOW_SEED_FALLBACK.
+const SALVIUM_SEED_RPC_NODES = (process.env.SALVIUM_ALLOW_SEED_FALLBACK === '1' || process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1') ? [
     'http://seed01.salvium.io:19081',
     'http://seed02.salvium.io:19081',
     'http://seed03.salvium.io:19081',
@@ -5346,10 +5484,74 @@ const SALVIUM_SEED_RPC_NODES = (process.env.SALVIUM_ALLOW_SEED_FALLBACK === '1')
 // Local daemon is always tried first (privacy + speed); the three official
 // Salvium seed nodes are ALWAYS kept as automatic RPC fallback, even when a
 // primary node is pinned via SALVIUM_RPC_URL.
-const RPC_NODES = [...new Set([
-    (process.env.SALVIUM_RPC_URL || 'http://salvium:19081').replace(/\/$/, ''),
-    ...SALVIUM_SEED_RPC_NODES,
-])];
+//
+// Desktop sidecar (SALVIUM_ALLOW_PRIVATE_NODES=1, never set on the hosted
+// server): in Automatic mode the shell pins SALVIUM_RPC_URL to a detected LOCAL
+// daemon when present, else to a public seed. We want OUR hosted node
+// (node.salvium.tools -> patched daemon restricted RPC, correct getoutsfix5
+// output set) as primary whenever there is no local daemon, seeds always-on
+// fallback. So order is: [local-if-pinned], node.salvium.tools, seeds.
+const OUR_HOSTED_NODE = 'https://node.salvium.tools';
+function __isLocalRpcUrl(u) {
+    try {
+        const h = new URL(u).hostname;
+        return h === '127.0.0.1' || h === 'localhost' || h === '::1'
+            || h.startsWith('192.168.') || h.startsWith('10.')
+            || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+    } catch (e) { return false; }
+}
+const __configuredPrimary = (process.env.SALVIUM_RPC_URL || 'http://salvium:19081').replace(/\/$/, '');
+const RPC_NODES = (process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1')
+    ? [...new Set([
+        ...(__isLocalRpcUrl(__configuredPrimary) ? [__configuredPrimary] : []),
+        OUR_HOSTED_NODE,
+        ...SALVIUM_SEED_RPC_NODES,
+      ])]
+    : [...new Set([
+        __configuredPrimary,
+        ...SALVIUM_SEED_RPC_NODES,
+      ])];
+
+// Read-only chain metadata behaves identically on stock upstream nodes, so these
+// methods may fall back to the official seed nodes when the local patched daemon
+// is unreachable (outage, restart, ban). Output-selection methods
+// (get_outs, get_output_distribution, ...) must ONLY ever hit the patched daemon
+// (getoutsfix5) and are never in this set.
+const SEED_SAFE_RPC_METHODS = new Set([
+    'get_info', 'getinfo', 'hard_fork_info', 'get_version',
+    'get_block_count', 'getblockcount', 'get_fee_estimate',
+    'get_last_block_header', 'get_block_header_by_height',
+    'get_block_header_by_hash', 'get_block_headers_range',
+]);
+// NOT filtered against RPC_NODES: with SALVIUM_ALLOW_SEED_FALLBACK=1 the seeds
+// are in RPC_NODES too, and filtering left this list empty — which silently
+// disabled the json_rpc proxy's fallback.
+const SEED_FALLBACK_RPC_NODES = [
+    'http://seed01.salvium.io:19081',
+    'http://seed02.salvium.io:19081',
+    'http://seed03.salvium.io:19081',
+];
+
+// Serve a seed-safe read method from the official seeds when the local daemon
+// is unreachable, so wallet priming / chain metadata survive a local outage.
+async function requestSeedFallbackRpc(config, method, originalError) {
+    let lastError = originalError;
+    for (const seed of SEED_FALLBACK_RPC_NODES) {
+        try {
+            const response = await axiosInstance({
+                ...config,
+                url: `${seed}/json_rpc`,
+                auth: undefined,
+                timeout: 10000,
+            });
+            console.warn(`[JSON-RPC Proxy] served ${method} from seed fallback ${seed} (local daemon unreachable)`);
+            return response;
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError;
+}
 
 
 const SALVIUM_RPC_USER = process.env.SALVIUM_RPC_USER || '';
@@ -7114,21 +7316,30 @@ async function fastSyncProvisionCaches() {
         // CSP receive bundle: download in the sidecar (during restore prepare),
         // not at Electron boot. New wallets never enter prepare, so they skip it.
         if (cspBundleUrl && cspBundleWanted) {
-            try {
-                await fs.mkdir(path.dirname(CSP_BUNDLE_FILE), { recursive: true });
-                const tmp = CSP_BUNDLE_FILE + '.part';
-                const resp = await axios.get(cspBundleUrl, { responseType: 'stream', timeout: 300000 });
-                await new Promise((resolve, reject) => {
-                    const ws = fsSync.createWriteStream(tmp);
-                    resp.data.on('data', (chunk) => { cachePrepareJob.downloadedBytes += chunk.length; });
-                    resp.data.on('error', reject);
-                    ws.on('error', reject);
-                    ws.on('finish', resolve);
-                    resp.data.pipe(ws);
-                });
-                await fs.rename(tmp, CSP_BUNDLE_FILE);
-                console.log('[Fast Sync] Downloaded CSP receive bundle');
-            } catch (e) { console.warn('[Fast Sync] CSP bundle download:', e.message); }
+            // Retry like the TXI bundle below: one transient failure here used to
+            // silently drop the whole restore onto the ~9s/chunk regeneration path.
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    await fs.mkdir(path.dirname(CSP_BUNDLE_FILE), { recursive: true });
+                    const tmp = CSP_BUNDLE_FILE + '.part';
+                    const resp = await axios.get(cspBundleUrl, { responseType: 'stream', timeout: 300000 });
+                    await new Promise((resolve, reject) => {
+                        const ws = fsSync.createWriteStream(tmp);
+                        resp.data.on('data', (chunk) => { cachePrepareJob.downloadedBytes += chunk.length; });
+                        resp.data.on('error', reject);
+                        ws.on('error', reject);
+                        ws.on('finish', resolve);
+                        resp.data.pipe(ws);
+                    });
+                    await fs.rename(tmp, CSP_BUNDLE_FILE);
+                    console.log('[Fast Sync] Downloaded CSP receive bundle');
+                    break;
+                } catch (e) {
+                    console.warn(`[Fast Sync] CSP bundle download attempt ${attempt}/3:`, e.message);
+                    await fs.unlink(CSP_BUNDLE_FILE + '.part').catch(() => {});
+                    if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt));
+                }
+            }
         }
         try { await loadCspBundle(); } catch (e) { console.warn('[Fast Sync] reload CSP bundle:', e.message); }
         try { await extractCspBundleToChunks(); } catch (e) { console.warn('[Fast Sync] explode CSP bundle:', e.message); }
@@ -8376,7 +8587,10 @@ function getUsableCachedDaemonInfo() {
 // cache (which would break the restore's height fetch and stall it at 0%).
 async function quickDaemonInfoFromAnyNode() {
     const store = nodeContext.getStore();
-    const order = (store && store.order && store.order.length ? store.order : healthyOrder) || RPC_NODES;
+    const configured = (store && store.order && store.order.length ? store.order : healthyOrder) || RPC_NODES;
+    // get_info is seed-safe: genuinely fall through to the official seeds so a
+    // local-daemon outage cannot strand clients at height 0 / CONNECTING.
+    const order = [...new Set([...configured, ...SEED_FALLBACK_RPC_NODES])];
     for (const node of order) {
         try {
             const resp = await axiosInstance.post(node.replace(/\/$/, '') + '/json_rpc',
@@ -8552,6 +8766,16 @@ app.get(['/api/asset-media', '/vault/api/asset-media'], generalRateLimit, async 
         res.status(502).send('failed to load asset media');
     }
 });
+// Mining: pool stats proxy (all platforms) + xmrig control (desktop sidecar only).
+registerMiningRoutes(app, {
+    desktopSidecar: DESKTOP_SIDECAR,
+    blockIfNotAdmin,
+    validateCsrfToken,
+    axiosInstance,
+    dataDir: DEFAULT_DATA_DIR,
+    cpuCount,
+});
+
 let cachedPrice = { price: 0.15, timestamp: 0, source: 'fallback' };
 
 app.get(['/api/price', '/vault/api/price'], async (req, res) => {
@@ -8884,7 +9108,19 @@ app.post(['/api/wallet-rpc/json_rpc', '/json_rpc'], express.json({ limit: '2mb' 
             config.auth = { username: SALVIUM_RPC_USER, password: SALVIUM_RPC_PASS };
         }
 
-        const response = await requestDaemonRpc(config);
+        let response;
+        try {
+            response = await requestDaemonRpc(config);
+        } catch (error) {
+            const method = String(req.body?.method || '');
+            // Fall back whenever NO HTTP response arrived (refused, reset, DNS,
+            // timeout — i.e. the local daemon is unreachable). A real HTTP error
+            // response means the daemon is alive and its answer stands.
+            if (!SEED_SAFE_RPC_METHODS.has(method) || error?.response) {
+                throw error;
+            }
+            response = await requestSeedFallbackRpc(config, method, error);
+        }
         res.status(200).json(response.data);
     } catch (error) {
         const status = error.response?.status || 500;
@@ -9236,6 +9472,16 @@ app.get(['/api/txi-bundle', '/vault/api/txi-bundle'], async (req, res) => {
     } catch (e) { if (!res.headersSent) res.status(500).json({ error: 'TXI bundle error' }); }
 });
 app.get(['/api/csp-bundle', '/vault/api/csp-bundle'], async (req, res) => {
+    // Cloudflare aborts this multi-hundred-MB stream mid-flight (no 403, just a
+    // killed stream), which silently degraded restores to per-chunk scanning.
+    // Requests that arrived through CF get bounced to the DNS-only bulk host;
+    // requests already arriving via cdn.salvium.tools carry no CF headers.
+    if (req.headers['cf-connecting-ip'] && !DESKTOP_SIDECAR) {
+        const redirectTarget = 'https://cdn.salvium.tools' + req.originalUrl.replace(/^\/vault/, '');
+        console.log('[CSP-Bundle] Redirecting Cloudflare-routed bundle request to cdn host');
+        return res.redirect(302, redirectTarget);
+    }
+
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Expose-Headers', 'X-Bundle-Chunks, X-Bundle-Size, X-Bundle-First-Height, X-Bundle-Last-Height, X-Uncompressed-Size, Content-Range, Accept-Ranges');
     res.header('Cache-Control', SALVIUM_NETWORK === 'testnet'
@@ -9334,7 +9580,7 @@ app.options(['/api/csp-cached', '/vault/api/csp-cached'], (req, res) => {
 
 app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Expose-Headers', 'X-CSP-Start-Height, X-CSP-End-Height, X-CSP-Source, X-CSP-Cache-Status, X-CSP-Size, X-CSP-Incomplete');
+    res.header('Access-Control-Expose-Headers', 'X-CSP-Start-Height, X-CSP-End-Height, X-CSP-Source, X-CSP-Cache-Status, X-CSP-Size, X-CSP-Incomplete, X-CSP-Covered-Height');
 
     const startHeight = parseInt(req.query.start_height) || 0;
     const count = Math.min(parseInt(req.query.count) || 1000, 1000);
@@ -9351,13 +9597,20 @@ app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
     if (cachedCsp) {
         if (logSample) console.log(`[CSP-Cached] HIT: ${path.basename(getCspCacheFilename(alignedStart, alignedEnd))} (${cachedCsp.length} bytes)`);
 
+        const hitCoveredEnd = getCspChunkCoveredEnd(alignedStart, lastKnownHeight);
         res.header('Content-Type', 'application/octet-stream');
         res.header('X-CSP-Start-Height', alignedStart);
         res.header('X-CSP-End-Height', alignedEnd);
+        res.header('X-CSP-Covered-Height', hitCoveredEnd);
         res.header('X-CSP-Source', 'cached');
         res.header('X-CSP-Cache-Status', 'hit');
         res.header('X-CSP-Size', cachedCsp.length);
-        res.header('Cache-Control', getCspResponseCacheControl());
+        // A partial (tip-intersecting) chunk mutates every block; marking it immutable
+        // poisons browser caches with a stale X-CSP-Covered-Height, which wedges clients
+        // in a clamp->rescan loop (seen 2026-07-03 after the tail-chunk stub outage).
+        res.header('Cache-Control', hitCoveredEnd < alignedEnd
+            ? 'public, max-age=15, must-revalidate'
+            : getCspResponseCacheControl());
         return res.send(cachedCsp);
     }
 
@@ -9390,14 +9643,15 @@ app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
         }
 
         if (cspBuffer) {
+            // Generation just recorded exact coverage (WASM blocks_count) in the map.
+            const generatedCoveredEnd = getCspChunkCoveredEnd(alignedStart, lastKnownHeight);
+            generatedBlockCount = generatedCoveredEnd - alignedStart + 1;
             // A short CSP whose range is already below the tip is truncated/incomplete: don't cache it (would be served as complete forever); report the real covered end height.
             let coversFullRange = true;
             const expectedBlocks = alignedEnd - alignedStart + 1;
             if (typeof generatedBlockCount === 'number' && generatedBlockCount > 0 &&
                 generatedBlockCount < expectedBlocks && alignedEnd <= (lastKnownHeight || 0)) {
                 coversFullRange = false;
-                res.header('X-CSP-End-Height', alignedStart + generatedBlockCount - 1);
-                res.header('X-CSP-Incomplete', '1');
                 console.warn('[CSP-Cached] Short chunk ' + alignedStart + '-' + alignedEnd + ': covered ' + generatedBlockCount + '/' + expectedBlocks + ' blocks - not caching');
             }
             const shouldCache = cspBuffer.length > 100 && coversFullRange;
@@ -9407,7 +9661,9 @@ app.get(['/api/csp-cached', '/vault/api/csp-cached'], async (req, res) => {
 
             res.header('Content-Type', 'application/octet-stream');
             res.header('X-CSP-Start-Height', alignedStart);
-            res.header('X-CSP-End-Height', alignedEnd);
+            res.header('X-CSP-End-Height', coversFullRange ? alignedEnd : (alignedStart + generatedBlockCount - 1));
+            res.header('X-CSP-Covered-Height', generatedCoveredEnd);
+            if (!coversFullRange) res.header('X-CSP-Incomplete', '1');
             res.header('X-CSP-Source', 'generated');
             res.header('X-CSP-Cache-Status', 'miss-generated');
             res.header('X-CSP-Size', cspBuffer.length);
@@ -9431,7 +9687,7 @@ app.options(['/api/csp-batch', '/vault/api/csp-batch'], (req, res) => {
 
 app.get(['/api/csp-batch', '/vault/api/csp-batch'], async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Expose-Headers', 'X-CSP-Manifest-Version, X-CSP-Chunks, X-CSP-Total-Size, X-CSP-Start, X-CSP-End, X-CSP-Chunk-Starts, X-CSP-Missing-Chunk-Starts, X-CSP-Missing-Reason, X-CSP-Requested-Chunk-Starts, X-CSP-Known-Height, X-CSP-Cache-Epoch');
+    res.header('Access-Control-Expose-Headers', 'X-CSP-Manifest-Version, X-CSP-Chunks, X-CSP-Total-Size, X-CSP-Start, X-CSP-End, X-CSP-Chunk-Starts, X-CSP-Covered-Heights, X-CSP-Missing-Chunk-Starts, X-CSP-Missing-Reason, X-CSP-Requested-Chunk-Starts, X-CSP-Known-Height, X-CSP-Cache-Epoch');
 
     const startHeight = parseInt(req.query.start_height) || 0;
     const chunkCount = Math.min(parseInt(req.query.chunks) || 10, 50);
@@ -9502,13 +9758,49 @@ app.get(['/api/csp-batch', '/vault/api/csp-batch'], async (req, res) => {
         console.log(`[CSP-Batch] ${beyondTipMissingChunks.length} missing chunk(s) are beyond tip ${batchKnownHeight}; skipping generation`);
     }
 
-    if (generatableMissingChunks.length > 0 && wasmModuleReady && wasmModule) {
+    // Desktop sidecar: a missing chunk is far cheaper to fetch prebuilt from the
+    // hosted vault (~0.3s) than to regenerate from daemon blocks (~9s). Full chunks
+    // are cached to disk; short (tail) chunks are served without caching and their
+    // actual coverage recorded from the upstream header.
+    const fetchChunkFromUpstreamVault = async (chunkStart) => {
+        if (!DESKTOP_SIDECAR) return null;
+        try {
+            // Desktop sidecars run on user machines: the docker-internal sibling URL is
+            // unreachable there, so use the public DNS-only bulk host (proxied to prod).
+            const upstreamBase = process.env.SALVIUM_UPSTREAM_VAULT_URL || 'https://cdn.salvium.tools';
+            const resp = await axiosInstance.get(
+                `${upstreamBase}/api/csp-batch?start_height=${chunkStart}&chunks=1&v=8`,
+                { responseType: 'arraybuffer', timeout: 30000 }
+            );
+            const body = Buffer.from(resp.data);
+            if (body.length <= 16) return null;
+            const declaredLen = body.readUInt32LE(0);
+            if (declaredLen <= 12 || 4 + declaredLen > body.length) return null;
+            const cspBuffer = body.subarray(4, 4 + declaredLen);
+            if (!(cspBuffer[0] === 0x43 && cspBuffer[1] === 0x53 && cspBuffer[2] === 0x50)) return null;
+            const coveredHeader = parseInt(String(resp.headers['x-csp-covered-heights'] || '').split(',')[0], 10);
+            const chunkEnd = chunkStart + CHUNK_SIZE - 1;
+            const coveredEnd = Number.isFinite(coveredHeader) ? Math.min(coveredHeader, chunkEnd) : chunkEnd;
+            if (coveredEnd >= chunkEnd) {
+                await saveCspToCache(chunkStart, chunkEnd, Buffer.from(cspBuffer));
+            }
+            recordCspChunkCoverage(chunkStart, coveredEnd - chunkStart + 1);
+            console.log(`[CSP-Batch] Fetched chunk ${chunkStart} from upstream vault (${cspBuffer.length} bytes, covered ${coveredEnd})`);
+            return Buffer.from(cspBuffer);
+        } catch (e) {
+            console.warn(`[CSP-Batch] Upstream chunk fetch failed for ${chunkStart}: ${e.message}`);
+            return null;
+        }
+    };
+
+    if (generatableMissingChunks.length > 0 && (DESKTOP_SIDECAR || (wasmModuleReady && wasmModule))) {
         console.log(`[CSP-Batch] ${generatableMissingChunks.length} missing chunks - generating from local cache first...`);
         for (const chunkStart of generatableMissingChunks) {
             const chunkEnd = chunkStart + CHUNK_SIZE - 1;
             try {
-                let cspBuffer = await generateCspFromEpee(chunkStart, chunkEnd);
-                if (!cspBuffer) {
+                let cspBuffer = await fetchChunkFromUpstreamVault(chunkStart);
+                if (!cspBuffer && wasmModuleReady && wasmModule) cspBuffer = await generateCspFromEpee(chunkStart, chunkEnd);
+                if (!cspBuffer && wasmModuleReady && wasmModule) {
                     const epeeData = await fetchBlocksFromDaemon(chunkStart, chunkEnd);
                     if (epeeData && epeeData.length > 0) {
                         await saveBlocksToCache(chunkStart, chunkEnd, epeeData);
@@ -9587,9 +9879,20 @@ app.get(['/api/csp-batch', '/vault/api/csp-batch'], async (req, res) => {
     res.header('X-CSP-Cache-Epoch', CSP_CACHE_EPOCH);
     res.header('X-CSP-Requested-Chunk-Starts', requestedChunkStarts.join(','));
     res.header('X-CSP-Chunk-Starts', chunks.map(chunk => chunk.start).join(','));
+    // Highest block index each returned chunk actually includes (same order as
+    // X-CSP-Chunk-Starts). The tail chunk usually ends below its nominal range;
+    // clients must clamp their scanned-to height to this, or blocks landing
+    // between the chunk write and the daemon tip are skipped permanently.
+    res.header('X-CSP-Covered-Heights', chunks.map(chunk => getCspChunkCoveredEnd(chunk.start, batchKnownHeight)).join(','));
     res.header('X-CSP-Missing-Chunk-Starts', missingChunks.join(','));
     res.header('X-CSP-Missing-Reason', missingReason);
-    res.header('Cache-Control', getCspResponseCacheControl());
+    // Immutable only when every returned chunk is complete and none are missing;
+    // a batch containing the mutable tail chunk must not be cached long-term.
+    const batchAllComplete = missingChunks.length === 0 && chunks.every(chunk =>
+        getCspChunkCoveredEnd(chunk.start, batchKnownHeight) >= chunk.start + BLOCK_CHUNK_SIZE - 1);
+    res.header('Cache-Control', batchAllComplete
+        ? getCspResponseCacheControl()
+        : 'public, max-age=15, must-revalidate');
     return res.send(batchBuffer);
 });
 
@@ -10559,7 +10862,14 @@ app.get(['/assets/:assetFile', '/vault/assets/:assetFile'], (req, res, next) => 
 app.get(['/apk', '/vault/apk'], (_req, res) => {
     const distApkPath = path.join(__dirname, 'dist', 'salvium-vault.apk');
     const publicApkPath = path.join(__dirname, 'public', 'salvium-vault.apk');
-    const apkPath = fsKv.existsSync(distApkPath) ? distApkPath : publicApkPath;
+    const apkPath = fsKv.existsSync(distApkPath) ? distApkPath
+        : (fsKv.existsSync(publicApkPath) ? publicApkPath : null);
+    // No bundled APK in this build: send Android users to the Play listing
+    // instead of a 500 — this route is the PWA gate's only install path.
+    if (!apkPath) {
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        return res.redirect(302, 'https://play.google.com/store/apps/details?id=tools.salvium');
+    }
     res.setHeader('Cache-Control', 'public, max-age=300');
     res.setHeader('Content-Type', 'application/vnd.android.package-archive');
     res.setHeader('Content-Disposition', 'attachment; filename="salvium-vault.apk"');

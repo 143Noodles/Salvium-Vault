@@ -1,7 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { TabView } from '../utils/tabView';
-import { LayoutDashboard, Send, Download, TrendingUp, History, Database } from './Icons';
+import { LayoutDashboard, Send, Download, TrendingUp, History, Database, Pickaxe } from './Icons';
 import { isDesktop } from '../utils/device';
 
 const isDesktopOnly = isDesktop;
@@ -10,9 +10,10 @@ interface MobileNavBarProps {
     activeTab: TabView;
     onNavigate: (tab: TabView) => void;
     showAssetsTab?: boolean;
+    showMiningTab?: boolean;
 }
 
-export const MobileNavBar: React.FC<MobileNavBarProps> = ({ activeTab, onNavigate, showAssetsTab = false }) => {
+export const MobileNavBar: React.FC<MobileNavBarProps> = ({ activeTab, onNavigate, showAssetsTab = false, showMiningTab = false }) => {
     const { t } = useTranslation();
     if (isDesktopOnly) return null;
     const NavItem = ({ tab, icon: Icon, label }: { tab: TabView; icon: any; label: string }) => {
@@ -48,6 +49,9 @@ export const MobileNavBar: React.FC<MobileNavBarProps> = ({ activeTab, onNavigat
                 <NavItem tab={TabView.STAKING} icon={TrendingUp} label={t('navigation.stake')} />
                 {showAssetsTab && (
                     <NavItem tab={TabView.ASSETS} icon={Database} label={t('navigation.assets')} />
+                )}
+                {showMiningTab && (
+                    <NavItem tab={TabView.MINING} icon={Pickaxe} label={t('navigation.mine')} />
                 )}
                 <NavItem tab={TabView.HISTORY} icon={History} label={t('navigation.history')} />
             </div>

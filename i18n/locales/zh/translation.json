@@ -33,7 +33,9 @@
     "settings": "设置",
     "dashboard": "仪表盘",
     "lockWallet": "锁定钱包",
-    "assets": "资产"
+    "assets": "资产",
+    "mining": "挖矿",
+    "mine": "挖矿"
   },
   "dashboard": {
     "balance": "余额",
@@ -282,6 +284,11 @@
     "currency": {
       "title": "显示货币",
       "description": "选择用于显示余额价值的法定货币。"
+    },
+    "mining": {
+      "title": "通过挖矿赚取 SAL",
+      "description": "在官方 Salvium 矿池直接挖矿到此钱包，并实时跟踪您的收益。",
+      "button": "打开挖矿"
     }
   },
   "onboarding": {
@@ -652,6 +659,114 @@
         "gateNote": "我们会等待每个索引都到达最新区块，以确保您的首次扫描不会遗漏任何内容。",
         "continueAnyway": "仍然继续"
       }
+    }
+  },
+  "mining": {
+    "title": "挖矿",
+    "subtitle": "在官方矿池直接挖矿 SAL 到您的钱包",
+    "stats": {
+      "hashrate": "您的算力",
+      "avgHashrate": "24小时平均",
+      "pending": "待发放余额",
+      "totalPaid": "累计支付",
+      "nextPayout": "下次支付",
+      "shares": "已接受份额",
+      "lastShare": "最近份额",
+      "never": "从未",
+      "online": "挖矿中",
+      "offline": "离线"
+    },
+    "pool": {
+      "title": "矿池",
+      "fee": "矿池费率",
+      "minPayout": "最低支付额",
+      "payouts": "支付",
+      "payoutTimes": "00:00 & 12:00 UTC",
+      "server": "服务器"
+    },
+    "workers": "矿工",
+    "noWorkers": "没有活跃矿工",
+    "payments": "支付记录",
+    "noPayments": "暂无支付记录",
+    "paymentDate": "日期",
+    "paymentAmount": "金额",
+    "paymentTx": "交易",
+    "empty": {
+      "title": "开始赚取 SAL",
+      "body": "此钱包尚未在矿池挖矿。将矿机指向矿池并使用您的钱包地址作为用户名，您的统计数据将显示在这里。",
+      "desktopCta": "要一键挖矿，请使用 Salvium Vault 桌面应用。",
+      "howTo": "服务器 {{server}} · 算法 RandomX (rx/0) · 用户名 = 您的钱包地址"
+    },
+    "control": {
+      "start": "开始挖矿",
+      "stop": "停止挖矿",
+      "starting": "正在启动…",
+      "stopping": "正在停止…",
+      "installing": "正在设置矿机…",
+      "downloading": "正在下载矿机（{{pct}}%）",
+      "verifying": "正在校验下载",
+      "mining": "挖矿中",
+      "pausedAfk": "您使用电脑时已暂停",
+      "cpuUsage": "CPU 使用率",
+      "liveHashrate": "算力",
+      "threads": "CPU 核心",
+      "threadsOf": "{{used}} / {{total}} 核心",
+      "afkTitle": "仅在我离开时挖矿",
+      "afkHint": "您使用电脑时暂停挖矿，闲置 5 分钟后自动恢复。",
+      "afkUnsupported": "此系统不支持闲置检测。",
+      "adminTitle": "管理员权限",
+      "adminBody": "开始挖矿时系统会请求管理员权限。它可启用全速挖矿（大内存页和 CPU 调优）；在 Windows 上还会告知 Windows Defender 矿机是安全的。如果拒绝，挖矿仍会以标准速度运行。",
+      "confirmStart": "开始",
+      "uptime": "运行时间",
+      "sharesLine": "已接受 {{good}} 份",
+      "notInstalled": "矿机会在首次启动时自动下载（约 3 MB，已校验）。",
+      "externalActive": "此钱包已在其他设备上通过 {{count}} 个矿工挖矿 — 其统计数据显示在上方。在此启动会将这台电脑添加为同一余额下的另一个矿工。",
+      "externalChip": "也在其他设备挖矿"
+    },
+    "errors": {
+      "startFailed": "无法开始挖矿",
+      "stopFailed": "无法停止挖矿",
+      "statsUnavailable": "矿池统计暂时不可用"
+    },
+    "winner": {
+      "blockEffort": "区块努力值",
+      "mining": "挖矿中",
+      "blockHeight": "区块高度",
+      "timeMined24h": "挖矿时长（近24小时）",
+      "networkHashrate": "全网算力",
+      "profitRatio": "收益比率",
+      "lastMined": "最近出块",
+      "price": "价格"
+    },
+    "payout": {
+      "title": "支付进度",
+      "scheduledNext": "下次计划支付",
+      "threshold": "起付额",
+      "nextEligibleWave": "下一轮符合条件的支付"
+    },
+    "tiles": {
+      "currentHashrate": "当前算力",
+      "pending": "待发放",
+      "totalPaid": "累计支付",
+      "dailyEst": "每日（预估）",
+      "vsSalOnly": "对比仅挖 SAL"
+    },
+    "chart": {
+      "title": "算力历史",
+      "noData": "暂无算力数据。开始挖矿即可查看您的统计。",
+      "lastShare": "最近份额",
+      "validShares": "有效份额",
+      "rejected": "被拒绝",
+      "poolShare": "矿池占比"
+    },
+    "workersTable": {
+      "worker": "矿工",
+      "hashrate": "算力",
+      "validShares": "有效份额",
+      "rejected": "被拒绝",
+      "lastShare": "最近份额",
+      "allWorkers": "所有矿工",
+      "thisDevice": "本设备"
     }
   }
 }

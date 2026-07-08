@@ -33,7 +33,9 @@
     "settings": "Instellingen",
     "dashboard": "Dashboard",
     "lockWallet": "Wallet Vergrendelen",
-    "assets": "Assets"
+    "assets": "Assets",
+    "mining": "Mining",
+    "mine": "Minen"
   },
   "dashboard": {
     "balance": "Saldo",
@@ -282,6 +284,11 @@
     "currency": {
       "title": "Weergavevaluta",
       "description": "Kies de fiatvaluta waarin de waarde van je saldo wordt weergegeven."
+    },
+    "mining": {
+      "title": "Verdien SAL met mining",
+      "description": "Mine rechtstreeks naar deze wallet op de officiële Salvium-pool en volg je opbrengsten live.",
+      "button": "Mining openen"
     }
   },
   "onboarding": {
@@ -652,6 +659,114 @@
         "gateNote": "We wachten tot elke index het nieuwste blok bereikt, zodat je eerste scan niets mist.",
         "continueAnyway": "Toch doorgaan"
       }
+    }
+  },
+  "mining": {
+    "title": "Mining",
+    "subtitle": "Mine SAL rechtstreeks naar je wallet op de officiële pool",
+    "stats": {
+      "hashrate": "Jouw hashrate",
+      "avgHashrate": "24u-gemiddelde",
+      "pending": "Openstaand saldo",
+      "totalPaid": "Totaal uitbetaald",
+      "nextPayout": "Volgende uitbetaling",
+      "shares": "Geaccepteerde shares",
+      "lastShare": "Laatste share",
+      "never": "Nooit",
+      "online": "Aan het minen",
+      "offline": "Offline"
+    },
+    "pool": {
+      "title": "Pool",
+      "fee": "Poolkosten",
+      "minPayout": "Minimale uitbetaling",
+      "payouts": "Uitbetalingen",
+      "payoutTimes": "00:00 & 12:00 UTC",
+      "server": "Server"
+    },
+    "workers": "Workers",
+    "noWorkers": "Geen actieve workers",
+    "payments": "Betalingen",
+    "noPayments": "Nog geen uitbetalingen",
+    "paymentDate": "Datum",
+    "paymentAmount": "Bedrag",
+    "paymentTx": "Tx",
+    "empty": {
+      "title": "Begin SAL te verdienen",
+      "body": "Deze wallet heeft nog niet op de pool gemined. Richt een miner op de pool met je walletadres als gebruikersnaam en je statistieken verschijnen hier.",
+      "desktopCta": "Gebruik de Salvium Vault-desktopapp om met één klik te minen.",
+      "howTo": "Server {{server}} · algoritme RandomX (rx/0) · gebruikersnaam = je walletadres"
+    },
+    "control": {
+      "start": "Mining starten",
+      "stop": "Mining stoppen",
+      "starting": "Starten…",
+      "stopping": "Stoppen…",
+      "installing": "Miner wordt ingesteld…",
+      "downloading": "Miner wordt gedownload ({{pct}}%)",
+      "verifying": "Download wordt geverifieerd",
+      "mining": "Aan het minen",
+      "pausedAfk": "Gepauzeerd terwijl je actief bent",
+      "cpuUsage": "CPU-gebruik",
+      "liveHashrate": "Hashrate",
+      "threads": "CPU-kernen",
+      "threadsOf": "{{used}} van {{total}} kernen",
+      "afkTitle": "Alleen minen als ik weg ben",
+      "afkHint": "Pauzeert het minen terwijl je de computer gebruikt en hervat na 5 minuten inactiviteit.",
+      "afkUnsupported": "Inactiviteitsdetectie is niet beschikbaar op dit systeem.",
+      "adminTitle": "Beheerdersrechten",
+      "adminBody": "Je systeem vraagt om beheerdersrechten wanneer het minen start. Dit maakt minen op volle snelheid mogelijk (huge pages en CPU-tuning); op Windows vertelt het Windows Defender bovendien dat de miner veilig is. Als je weigert, draait het minen gewoon op standaardsnelheid.",
+      "confirmStart": "Starten",
+      "uptime": "Uptime",
+      "sharesLine": "{{good}} geaccepteerd",
+      "notInstalled": "De miner wordt bij de eerste start automatisch gedownload (ongeveer 3 MB, geverifieerd).",
+      "externalActive": "Deze wallet mint al vanaf {{count}} worker(s) op andere apparaten — hun statistieken staan hierboven. Hier starten voegt deze computer toe als extra worker op hetzelfde saldo.",
+      "externalChip": "Mint ook elders"
+    },
+    "errors": {
+      "startFailed": "Kon het minen niet starten",
+      "stopFailed": "Kon het minen niet stoppen",
+      "statsUnavailable": "Poolstatistieken zijn tijdelijk niet beschikbaar"
+    },
+    "winner": {
+      "blockEffort": "Block-effort",
+      "mining": "Aan het minen",
+      "blockHeight": "Blokhoogte",
+      "timeMined24h": "Gemined (afgelopen 24u)",
+      "networkHashrate": "Netwerk-hashrate",
+      "profitRatio": "Winstverhouding",
+      "lastMined": "Laatst gemined",
+      "price": "Prijs"
+    },
+    "payout": {
+      "title": "Uitbetalingsvoortgang",
+      "scheduledNext": "Volgende geplande uitbetaling",
+      "threshold": "Drempel",
+      "nextEligibleWave": "Volgende geschikte ronde"
+    },
+    "tiles": {
+      "currentHashrate": "Huidige hashrate",
+      "pending": "In afwachting",
+      "totalPaid": "Totaal uitbetaald",
+      "dailyEst": "Dagelijks (gesch.)",
+      "vsSalOnly": "vs. alleen SAL"
+    },
+    "chart": {
+      "title": "Hashrategeschiedenis",
+      "noData": "Nog geen hashrategegevens beschikbaar. Begin met minen om je statistieken te zien.",
+      "lastShare": "Laatste share",
+      "validShares": "Geldige shares",
+      "rejected": "Afgewezen",
+      "poolShare": "Poolaandeel"
+    },
+    "workersTable": {
+      "worker": "Worker",
+      "hashrate": "Hashrate",
+      "validShares": "Geldige shares",
+      "rejected": "Afgewezen",
+      "lastShare": "Laatste share",
+      "allWorkers": "Alle workers",
+      "thisDevice": "dit apparaat"
     }
   }
 }

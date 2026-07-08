@@ -2030,6 +2030,8 @@ const getDeviceMemoryBucket = (): string => {
         if (address) {
             void deleteFromIndexedDB(`wallet_cache_${address}`);
             void walletStateService.clear(address);
+            void import('./restoreCheckpoint').then(({ deleteRestoreCheckpoint }) =>
+                deleteRestoreCheckpoint(address)).catch(() => { });
         }
 
         debugWarn('[WalletContext] Scheduling native integrity recovery via clean seed restore path', {
@@ -3677,7 +3679,22 @@ const getDeviceMemoryBucket = (): string => {
 
         const cacheKey = `wallet_cache_${wallet.address}`;
         let cachedOutputsHex = await loadFromIndexedDB(cacheKey) || '';
-        if (cachedOutputsHex) {
+        if (!cachedOutputsHex && wallet.address) {
+            // Second, independent copy: walletStateService keeps its own cacheHex in a
+            // separate IndexedDB database (written together with the primary store by
+            // persistFullStateNow). If only the primary copy was lost, recover from it
+            // instead of paying a full rescan.
+            try {
+                const fallbackState = await walletStateService.load(wallet.address);
+                if (fallbackState?.cacheHex && fallbackState.cacheHex.length > 0) {
+                    cachedOutputsHex = fallbackState.cacheHex;
+                    void saveToIndexedDB(cacheKey, fallbackState.cacheHex);
+                    reportClientEvent('wallet.cache_fallback_state_service', {
+                        level: 'warn',
+                        context: { cacheSize: fallbackState.cacheHex.length },
+                    });
+                }
+            } catch { }
         }
 
         let cachedReturnAddressCount = 0;
@@ -3747,6 +3764,45 @@ const getDeviceMemoryBucket = (): string => {
             );
 
             cachedOutputsHex = '';
+
+            // Resume-from-journal: an interrupted scan already recorded per-chunk
+            // coverage durably. Rescanning only the gaps (plus matched chunks, which
+            // must re-match so phase 3 re-ingests their outputs into the now-empty
+            // native wallet) turns the "every reopen restarts from zero" loop into a
+            // short catch-up. Scanned-unmatched chunks are provably empty for this
+            // wallet and are skipped.
+            cspScanService.setJournalResumePlan(null);
+            if (forceCleanRestoreScanRef.current && wallet.address) {
+                // A user-forced clean rescan must not resurrect prior restore state.
+                void import('./restoreCheckpoint').then(({ deleteRestoreCheckpoint }) =>
+                    deleteRestoreCheckpoint(wallet.address)).catch(() => { });
+            }
+            if (!forceCleanRestoreScanRef.current && wallet.address) {
+                try {
+                    const { getIncompleteJournal } = await import('./ScanJournal');
+                    const incompleteJournal = await getIncompleteJournal(wallet.address);
+                    const notDone = new Set<number>([
+                        ...((incompleteJournal?.inProgressChunks || []) as number[]),
+                        ...((incompleteJournal?.needsRescanChunks || []) as number[]),
+                    ]);
+                    const scannedChunks = ((incompleteJournal?.scannedChunks || []) as number[])
+                        .filter((h) => Number.isFinite(h) && !notDone.has(h));
+                    const matchedChunks = ((incompleteJournal?.matchedChunks || []) as number[])
+                        .filter((h) => Number.isFinite(h));
+                    if (incompleteJournal && scannedChunks.length >= 20) {
+                        cspScanService.setJournalResumePlan({ walletAddress: wallet.address, scannedChunks, matchedChunks });
+                        reportClientEvent('scan.journal_resume_planned', {
+                            level: 'warn',
+                            context: {
+                                scannedChunkCount: scannedChunks.length,
+                                matchedChunkCount: matchedChunks.length,
+                                journalStartHeight: incompleteJournal.startHeight || 0,
+                                journalTargetEnd: incompleteJournal.targetEndHeight || 0,
+                            },
+                        });
+                    }
+                } catch { /* no usable journal -> full rescan as before */ }
+            }
         }
 
         const unlockFlowContext = () => ({
@@ -3799,6 +3855,22 @@ const getDeviceMemoryBucket = (): string => {
         if (!wasmOk) {
             return false;
         }
+
+        // Re-request durable storage with the unlock as an engagement signal: Android
+        // Chrome denies persist() on first load for non-installed origins, leaving the
+        // multi-MB wallet cache evictable (field: users resyncing from zero every open).
+        try {
+            if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
+                void navigator.storage.persisted().then(async (alreadyPersistent) => {
+                    if (alreadyPersistent) return;
+                    const granted = await navigator.storage.persist();
+                    reportClientEvent('storage.persist_request_after_unlock', {
+                        level: granted ? 'info' : 'warn',
+                        context: { granted },
+                    });
+                }).catch(() => {});
+            }
+        } catch { }
 
         try {
             const postUnlockSnapshot = captureNativeSnapshot('post_unlock_diag_guard', {
@@ -5217,7 +5289,19 @@ const getDeviceMemoryBucket = (): string => {
             let actualStartHeight = finalScanStartHeight;
             let recoveryAction: 'continue' | 'full_rescan' | 'rescan_gaps' = 'continue';
 
-            if (fromHeight === undefined && address && !restoredFromVaultRef.current && !forceCleanRestoreScan) {
+            if (fromHeight === undefined && finalScanStartHeight === 0) {
+                // Required full restore over an EMPTY/untrusted native wallet. The generic
+                // rescan_gaps recovery below is UNSAFE here: it would skip previously
+                // scanned chunks WITHOUT re-ingesting their matched outputs. Clean start;
+                // the journal resume plan (if any) is applied inside the scan service.
+                recoveryAction = 'full_rescan';
+                cspScanService.setRecoveryAction('full_rescan');
+                actualStartHeight = 0;
+                await walletService.setWalletHeight(0);
+                clearCompletedChunks();
+                cspScanService.setResumeRuns(null);
+                cspScanService.setResumeSeedCoverage(null);
+            } else if (fromHeight === undefined && address && !restoredFromVaultRef.current && !forceCleanRestoreScan) {
                 try {
                     // Recovery journals may be older than the wallet's live height. Keep
                     // them from rewinding incremental scans below the resolved scan floor.
@@ -5252,6 +5336,15 @@ const getDeviceMemoryBucket = (): string => {
             } else if (fromHeight !== undefined) {
                 cspScanService.setRecoveryAction(fromHeight === 0 ? 'full_rescan' : 'continue');
                 actualStartHeight = fromHeight;
+                if (fromHeight === 0) {
+                    // From-zero restores must not inherit stale coverage state: persisted
+                    // wallet height / completed chunks only prove coverage, not retained
+                    // outputs. The journal resume plan applies inside the scan service.
+                    await walletService.setWalletHeight(0);
+                    clearCompletedChunks();
+                    cspScanService.setResumeRuns(null);
+                    cspScanService.setResumeSeedCoverage(null);
+                }
             }
 
             if (
@@ -5580,6 +5673,38 @@ const getDeviceMemoryBucket = (): string => {
                 scanSubaddressCountHint
             );
 
+            // Server-proven scan coverage: when the live tail chunk lagged the daemon
+            // tip, networkHeight overstates what was scanned. Persisting it would skip
+            // the gap forever (the scan ingest floor drops those matches on every later
+            // pass), so every post-scan height write below uses this instead. The sync
+            // watchdog re-issues a catch-up from the clamped height.
+            // null/undefined = every chunk fully covered its nominal range (no clamp
+            // needed); Number(null) is 0 and used to fire a spurious implausible-clamp
+            // error from every healthy at-tip session.
+            const coveredThroughValue = (result as any)?.coveredThroughHeight;
+            const coveredThroughRaw = coveredThroughValue == null ? NaN : Number(coveredThroughValue);
+            const clampImplausible = Number.isFinite(coveredThroughRaw) && coveredThroughRaw < networkHeight - 5000;
+            if (clampImplausible) {
+                reportClientEvent('scan.coverage_clamp_implausible', {
+                    level: 'error',
+                    message: `Implausible commit clamp ignored: ${coveredThroughRaw} (tip ${networkHeight})`,
+                });
+            }
+            const provenNetworkHeight = Number.isFinite(coveredThroughRaw) && !clampImplausible && coveredThroughRaw < networkHeight
+                ? Math.max(actualStartHeight, coveredThroughRaw)
+                : networkHeight;
+            if (provenNetworkHeight < networkHeight) {
+                reportClientEvent('scan.commit_height_clamped_to_coverage', {
+                    level: 'warn',
+                    context: {
+                        provenHeight: provenNetworkHeight,
+                        daemonHeight: networkHeight,
+                        clampedBlocks: networkHeight - provenNetworkHeight,
+                        sessionType: request?.sessionType || 'background',
+                    },
+                });
+            }
+
             if (!result.success) {
                 const resultError = result.error || 'CSP scan did not complete successfully';
                 if (resultError.includes('Scan already in progress')) {
@@ -5653,7 +5778,9 @@ const getDeviceMemoryBucket = (): string => {
 
             if (request?.sessionType === 'restore-full-rescan' && actualStartHeight === 0) {
                 const expectedFullRescanBlocks = Math.max(0, networkHeight - actualStartHeight);
-                const actualBlocksScanned = result.blocksScanned || 0;
+                // Precise-runs resume: the seeded journal coverage was validated by the
+                // completion proof; phase 1 deliberately did not re-scan those blocks.
+                const actualBlocksScanned = (result.blocksScanned || 0) + (result.journalSeededCoverageBlocks || 0);
                 debugLog('[WalletContext] Restore full-rescan proof', {
                     actualStartHeight,
                     networkHeight,
@@ -5747,12 +5874,12 @@ const getDeviceMemoryBucket = (): string => {
             try {
                 const encryptedWallet = safeReadWallet();
                 if (encryptedWallet) {
-                    encryptedWallet.height = networkHeight;
+                    encryptedWallet.height = provenNetworkHeight;
                     if (result.keyImagesCsv) {
                         encryptedWallet.keyImagesCsv = result.keyImagesCsv;
                     }
 
-                    encryptedWallet.snapshotHeight = networkHeight;
+                    encryptedWallet.snapshotHeight = provenNetworkHeight;
 
                     const shouldUseRangeTransactions =
                         actualStartHeight > 0 &&
@@ -6400,7 +6527,7 @@ const getDeviceMemoryBucket = (): string => {
                 // everything else terminates here through finalizeRestoreTerminalState.
                 const ownsRestoreSession = request?.sessionType === 'restore-full-rescan' && !!request.sessionId;
                 if (commitTrusted) {
-                    await walletService.setWalletHeight(networkHeight);
+                    await walletService.setWalletHeight(provenNetworkHeight);
                     if (request?.sessionType === 'restore-full-rescan') {
                         restoreCompletedForPersist = true;
                     }
@@ -7424,6 +7551,15 @@ const getDeviceMemoryBucket = (): string => {
                 DB_DELETE_REQUEST.onerror = () => resolve();
             });
  } catch (e) { }
+
+        // The restore checkpoint lives in its own database so it survives the
+        // cache-DB wipe above during rescans; only a true reset removes it.
+        if (!preserveSeedInMemory) {
+            try {
+                const { deleteRestoreCheckpointDatabase } = await import('./restoreCheckpoint');
+                await deleteRestoreCheckpointDatabase();
+            } catch (e) { }
+        }
 
         try {
             await clearReturnAddressCache();
@@ -9207,6 +9343,12 @@ const getDeviceMemoryBucket = (): string => {
             const insist = async () => {
                 persistAttempts += 1;
                 const ok = await (persistFullStateNowRef.current?.() ?? Promise.resolve(false));
+                if (ok && address) {
+                    // The completed restore's full cache is durably saved; the
+                    // mid-restore checkpoint is now stale.
+                    void import('./restoreCheckpoint').then(({ deleteRestoreCheckpoint }) =>
+                        deleteRestoreCheckpoint(address)).catch(() => { });
+                }
                 if (!ok && persistAttempts < 40) {
                     window.setTimeout(() => { void insist(); }, 15000);
                 } else if (!ok) {

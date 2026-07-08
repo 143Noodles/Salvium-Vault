@@ -33,7 +33,9 @@
     "settings": "Ustawienia",
     "dashboard": "Panel",
     "lockWallet": "Zablokuj Portfel",
-    "assets": "Zasoby"
+    "assets": "Zasoby",
+    "mining": "Kopanie",
+    "mine": "Kop"
   },
   "dashboard": {
     "balance": "Saldo",
@@ -282,6 +284,11 @@
     "currency": {
       "title": "Waluta wyświetlania",
       "description": "Wybierz walutę fiducjarną, w której wyświetlana jest wartość salda."
+    },
+    "mining": {
+      "title": "Zarabiaj SAL przez kopanie",
+      "description": "Kop bezpośrednio do tego portfela w oficjalnej puli Salvium i śledź swoje zarobki na żywo.",
+      "button": "Otwórz kopanie"
     }
   },
   "onboarding": {
@@ -652,6 +659,114 @@
         "gateNote": "Czekamy, aż każdy indeks osiągnie najnowszy blok, aby Twoje pierwsze skanowanie niczego nie pominęło.",
         "continueAnyway": "Kontynuuj mimo to"
       }
+    }
+  },
+  "mining": {
+    "title": "Kopanie",
+    "subtitle": "Kop SAL bezpośrednio do swojego portfela w oficjalnej puli",
+    "stats": {
+      "hashrate": "Twój hashrate",
+      "avgHashrate": "Średnia 24h",
+      "pending": "Oczekujące saldo",
+      "totalPaid": "Łącznie wypłacono",
+      "nextPayout": "Następna wypłata",
+      "shares": "Zaakceptowane share'y",
+      "lastShare": "Ostatni share",
+      "never": "Nigdy",
+      "online": "Kopanie",
+      "offline": "Offline"
+    },
+    "pool": {
+      "title": "Pula",
+      "fee": "Prowizja puli",
+      "minPayout": "Minimalna wypłata",
+      "payouts": "Wypłaty",
+      "payoutTimes": "00:00 & 12:00 UTC",
+      "server": "Serwer"
+    },
+    "workers": "Workery",
+    "noWorkers": "Brak aktywnych workerów",
+    "payments": "Płatności",
+    "noPayments": "Brak wypłat",
+    "paymentDate": "Data",
+    "paymentAmount": "Kwota",
+    "paymentTx": "Tx",
+    "empty": {
+      "title": "Zacznij zarabiać SAL",
+      "body": "Ten portfel jeszcze nie kopał w puli. Skieruj koparkę na pulę, używając adresu portfela jako nazwy użytkownika, a Twoje statystyki pojawią się tutaj.",
+      "desktopCta": "Aby kopać jednym kliknięciem, użyj aplikacji desktopowej Salvium Vault.",
+      "howTo": "Serwer {{server}} · algorytm RandomX (rx/0) · użytkownik = Twój adres portfela"
+    },
+    "control": {
+      "start": "Rozpocznij kopanie",
+      "stop": "Zatrzymaj kopanie",
+      "starting": "Uruchamianie…",
+      "stopping": "Zatrzymywanie…",
+      "installing": "Konfigurowanie koparki…",
+      "downloading": "Pobieranie koparki ({{pct}}%)",
+      "verifying": "Weryfikacja pobierania",
+      "mining": "Kopanie",
+      "pausedAfk": "Wstrzymane, gdy jesteś aktywny",
+      "cpuUsage": "Użycie CPU",
+      "liveHashrate": "Hashrate",
+      "threads": "Rdzenie CPU",
+      "threadsOf": "{{used}} z {{total}} rdzeni",
+      "afkTitle": "Kop tylko, gdy mnie nie ma",
+      "afkHint": "Wstrzymuje kopanie, gdy używasz komputera, i wznawia po 5 minutach bezczynności.",
+      "afkUnsupported": "Wykrywanie bezczynności jest niedostępne w tym systemie.",
+      "adminTitle": "Uprawnienia administratora",
+      "adminBody": "System poprosi o uprawnienia administratora przy starcie kopania. Umożliwia to kopanie z pełną prędkością (huge pages i strojenie CPU); w Windows dodatkowo informuje Windows Defender, że koparka jest bezpieczna. Jeśli odmówisz, kopanie będzie działać ze standardową prędkością.",
+      "confirmStart": "Start",
+      "uptime": "Czas działania",
+      "sharesLine": "{{good}} zaakceptowanych",
+      "notInstalled": "Koparka pobiera się automatycznie przy pierwszym uruchomieniu (ok. 3 MB, zweryfikowana).",
+      "externalActive": "Ten portfel już kopie z {{count}} worker(ów) na innych urządzeniach — ich statystyki są powyżej. Start tutaj doda ten komputer jako kolejnego workera na tym samym saldzie.",
+      "externalChip": "Kopie też gdzie indziej"
+    },
+    "errors": {
+      "startFailed": "Nie udało się rozpocząć kopania",
+      "stopFailed": "Nie udało się zatrzymać kopania",
+      "statsUnavailable": "Statystyki puli są tymczasowo niedostępne"
+    },
+    "winner": {
+      "blockEffort": "Wysiłek bloku",
+      "mining": "Kopanie",
+      "blockHeight": "Wysokość bloku",
+      "timeMined24h": "Czas kopania (ostatnie 24h)",
+      "networkHashrate": "Hashrate sieci",
+      "profitRatio": "Współczynnik zysku",
+      "lastMined": "Ostatnio wykopano",
+      "price": "Cena"
+    },
+    "payout": {
+      "title": "Postęp wypłaty",
+      "scheduledNext": "Następna zaplanowana wypłata",
+      "threshold": "Próg",
+      "nextEligibleWave": "Następna kwalifikująca się tura"
+    },
+    "tiles": {
+      "currentHashrate": "Bieżący hashrate",
+      "pending": "Oczekujące",
+      "totalPaid": "Łącznie wypłacono",
+      "dailyEst": "Dziennie (szac.)",
+      "vsSalOnly": "vs tylko SAL"
+    },
+    "chart": {
+      "title": "Historia hashrate'u",
+      "noData": "Brak danych o hashrate. Zacznij kopać, aby zobaczyć statystyki.",
+      "lastShare": "Ostatni share",
+      "validShares": "Prawidłowe share'y",
+      "rejected": "Odrzucone",
+      "poolShare": "Udział w puli"
+    },
+    "workersTable": {
+      "worker": "Worker",
+      "hashrate": "Hashrate",
+      "validShares": "Prawidłowe share'y",
+      "rejected": "Odrzucone",
+      "lastShare": "Ostatni share",
+      "allWorkers": "Wszystkie workery",
+      "thisDevice": "to urządzenie"
     }
   }
 }
