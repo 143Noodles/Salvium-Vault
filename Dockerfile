@@ -40,6 +40,11 @@ RUN npm ci --only=production
 COPY server.cjs ./
 COPY server-csp-worker.cjs ./
 COPY wallet/ ./wallet/
+RUN test -s ./wallet/SalviumWallet.js \
+    && test -s ./wallet/SalviumWallet.wasm \
+    && test -s ./wallet/SalviumWalletBaseline.js \
+    && test -s ./wallet/SalviumWalletBaseline.wasm \
+    && test -s ./wallet/wasm-feature-detect.js
 COPY wallet-legacy/ ./wallet-legacy/
 COPY assets/ ./assets/
 COPY utils/ ./utils/
@@ -50,6 +55,6 @@ EXPOSE 3000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=15s --start-period=180s --retries=5 \
-CMD sh -c 'wget -q -T 10 -O /dev/null "http://127.0.0.1:${PORT:-3000}/vault/api/debug/health" || exit 1'
+CMD sh -c 'wget -q -T 10 -O /dev/null "http://127.0.0.1:${PORT:-3000}/vault/api/healthz" || exit 1'
 
 CMD ["node", "server.cjs"]
