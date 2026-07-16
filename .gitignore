@@ -147,3 +147,11 @@ wallet/backup-*/
 wallet-legacy/backup-*/
 INVESTIGATION_BRIEF.md
 stakeable-balance-deploy-ts.txt
+
+# Generated per-deploy by deploy.sh
+public/build-info.json
+
+# Bundled Android build output
+dist-android/
+docker-compose.yml.assetrefs-*
+salvium-tools-logo.png

@@ -157,6 +157,8 @@ cd wasm-build
 
 ## Security
 
+See **[SECURITY.md](SECURITY.md)** for release-signing fingerprints, how to verify downloads, the update trust model, telemetry details, and how to report vulnerabilities.
+
 - **Client-Side Only** - All wallet operations happen in your browser
 - **No Key Transmission** - Private keys and seed phrases are never sent to any server
 - **Encrypted Storage** - Wallet data is encrypted with AES-256-GCM before storage

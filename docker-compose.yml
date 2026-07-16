@@ -1,6 +1,6 @@
 services:
   vault:
-    image: salvium-vault:v1.1.3c-assetrefs-final2-20260710
+    image: ${VAULT_IMAGE:-salvium-vault:latest}
     container_name: salvium-vault
     restart: unless-stopped
     cpus: 0.75
