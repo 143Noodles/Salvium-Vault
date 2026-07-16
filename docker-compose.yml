@@ -1,20 +1,25 @@
 services:
   vault:
-    image: salvium-vault:latest
+    image: salvium-vault:v1.1.3c-assetrefs-final2-20260710
     container_name: salvium-vault
     restart: unless-stopped
     cpus: 0.75
     mem_limit: 3g
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     ports:
       - "127.0.0.1:3000:3000"
     environment:
-      SALPAY_AGENT_URL: http://salpay-agent:3021
+      SALPAY_AGENT_URL: http://salvium-salpay-agent:3021
       SALPAY_AGENT_PUBLIC_BASE_URL: https://vault.salvium.tools/api/salpay/orders
       SALVIUM_TXI_BUNDLE_AUTOBUILD: "1"
-      # Verified 2026-07-03: post-HF13 (v1.1.3b) seeds serve byte-identical
+      # Verified 2026-07-03: post-HF13 seeds serve byte-identical
       # get_output_distribution/get_outs data to the local daemon, so full seed
-      # failover is safe. UNSET this if the local daemon ever runs a read-path
-      # patch that diverges from the official release again.
+      # failover is safe. The local v1.1.3c patches are networking-only. UNSET
+      # this if the local daemon ever runs a divergent read-path patch again.
       SALVIUM_ALLOW_SEED_FALLBACK: "1"
     volumes:
       - vault-cache:/app/data
@@ -23,7 +28,7 @@ services:
     depends_on:
       - salpay-agent
     healthcheck:
-      test: ["CMD-SHELL", "sh -c 'wget -q -T 10 -O /dev/null \"http://127.0.0.1:$${PORT:-3000}/vault/api/debug/health\" || exit 1'"]
+      test: ["CMD-SHELL", "sh -c 'wget -q -T 10 -O /dev/null \"http://127.0.0.1:$${PORT:-3000}/vault/api/healthz\" || exit 1'"]
       interval: 30s
       timeout: 15s
       retries: 5

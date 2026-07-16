@@ -356,11 +356,11 @@ async function restartSidecar() {
 }
 
 // ---------------------------------------------------------------------------
-// Poll /api/debug/health until status ok (or timeout). Returns ms-to-ready.
+// Poll the minimal public health route until status ok (or timeout).
 // ---------------------------------------------------------------------------
 function waitForHealth(port, timeoutMs) {
   const start = Date.now();
-  const url = 'http://127.0.0.1:' + port + '/api/debug/health';
+  const url = 'http://127.0.0.1:' + port + '/api/healthz';
   return new Promise((resolve, reject) => {
     const tick = () => {
       const req = http.get(url, { timeout: 4000 }, (res) => {

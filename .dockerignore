@@ -7,6 +7,11 @@ node_modules/
 
 # Build output (rebuilt in Docker)
 dist/
+dist-extension/
+dist-backups/
+
+# Desktop packages are built separately and contain large Electron artifacts
+desktop/
 
 # WASM build directory
 wasm-build/
@@ -43,6 +48,10 @@ android/
 # Local edit backups
 *.bak-*
 **/*.bak-*
+.codex-backups/
+wallet/backups/
+wallet/*.before-*
+wallet-legacy/backup-*/
 
 # Android release artifacts must not be published by the web wallet
 public/*.apk

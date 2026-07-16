@@ -621,7 +621,8 @@ function sanitizeClientTelemetryContext(context) {
         'phase', 'status', 'progress', 'durationMs', 'thresholdMs', 'httpStatus',
         'label', 'outcome', 'totalMs', 'parseMs', 'importMs', 'restoreMs',
         'decryptMs', 'expandMs', 'subaddressMs', 'cacheBytes',
-        'endpoint', 'asset', 'swState', 'wasmReady', 'hasWallet', 'isScanning',
+        'endpoint', 'asset', 'swState', 'wasmReady', 'wasmVariant', 'fallbackAvailable',
+        'featureProbe', 'hasWallet', 'isScanning',
         'restorePending', 'daemonHeight', 'errorName', 'reason', 'source', 'component',
         'walletHeight', 'scanStartHeight', 'lastSuccessfulScanAt', 'rawProgress',
         'maxProgress', 'syncProgress', 'scanSessionStatus', 'scanSessionPhase',
@@ -869,7 +870,7 @@ const CSP_BUNDLE_FILE = path.join(CSP_CACHE_DIR, `csp-bundle-v${CSP_CACHE_SCHEMA
 const CSP_BUNDLE_VERSION = 1;
 const CSP_BUNDLE_AUTOBUILD = String(process.env.SALVIUM_CSP_BUNDLE_AUTOBUILD || 'false').toLowerCase() === 'true';
 const CSP_BUNDLE_PRELOAD = String(process.env.SALVIUM_CSP_BUNDLE_PRELOAD || 'false').toLowerCase() === 'true';
-const ASSET_INDEX_CACHE_EPOCH = String(process.env.SALVIUM_ASSET_INDEX_CACHE_EPOCH || 'hf13-v1.1.3b-asset-index-20260701');
+const ASSET_INDEX_CACHE_EPOCH = String(process.env.SALVIUM_ASSET_INDEX_CACHE_EPOCH || 'hf13-v1.1.3c-asset-index-20260709');
 const ASSET_INDEX_CACHE_EPOCH_FILE = path.join(CACHE_DIR, '.asset-index-cache-epoch');
 const STARTUP_BACKGROUND_GRACE_MS = Math.max(0, parseInt(process.env.SALVIUM_STARTUP_BACKGROUND_GRACE_MS || '0', 10) || 0);
 const startupBackgroundWorkReadyAt = Date.now() + STARTUP_BACKGROUND_GRACE_MS;
@@ -1125,6 +1126,8 @@ const TIMESTAMP_CACHE_FILE = path.join(CACHE_DIR, 'block-timestamps.json');
 const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19081';
 const GLOBAL_DAEMON_BASE_URL = GLOBAL_DAEMON_URL.replace(/\/$/, '');
 const DEFAULT_WASM_BASENAME = 'SalviumWallet';
+const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c';
+const SALVIUM_WASM_RUNTIME_BUILD = '5.54.8-hf13-v113c-assetrefs-20260710';
 const SALVIUM_WASM_BASENAME = String(process.env.SALVIUM_WASM_BASENAME || inferWasmBasenameFromNetwork(SALVIUM_NETWORK))
     .replace(/\.(js|wasm)$/i, '')
     .replace(/\.worker$/i, '') || inferWasmBasenameFromNetwork(SALVIUM_NETWORK);
@@ -1991,7 +1994,13 @@ async function convertEpeeToCspOffloaded(method, epeeBuffer, startHeight) {
 }
 
 function resolveConfiguredWasmFilename(requestedFilename) {
-    const allowedFiles = new Set(['SalviumWallet.wasm', 'SalviumWallet.js', 'SalviumWallet.worker.js']);
+    const allowedFiles = new Set([
+        'SalviumWallet.wasm',
+        'SalviumWallet.js',
+        'SalviumWalletBaseline.wasm',
+        'SalviumWalletBaseline.js',
+        'SalviumWallet.worker.js'
+    ]);
     if (!allowedFiles.has(requestedFilename)) {
         return null;
     }
@@ -2120,6 +2129,8 @@ function getConfiguredWasmAssetVersion() {
     const descriptors = [
         ['js', getConfiguredWasmAssetInfo('SalviumWallet.js')],
         ['wasm', getConfiguredWasmAssetInfo('SalviumWallet.wasm')],
+        ['baseline-js', getConfiguredWasmAssetInfo('SalviumWalletBaseline.js')],
+        ['baseline-wasm', getConfiguredWasmAssetInfo('SalviumWalletBaseline.wasm')],
         ['worker', getConfiguredWasmAssetInfo('SalviumWallet.worker.js')]
     ];
     return descriptors
@@ -6432,7 +6443,13 @@ async function extractAllSparseTxsFromChunk(chunkStart) {
     }
 }
 
+app.get(['/api/healthz', '/vault/api/healthz'], noCacheHeaders, (_req, res) => {
+    res.json({ status: 'ok' });
+});
+
 app.get(['/api/debug/health', '/vault/api/debug/health'], noCacheHeaders, (req, res) => {
+    if (blockIfNotAdmin(req, res)) return;
+
     let wasmVersion = 'unknown';
     let hasScanCspBatch = false;
     let hasScanCspBatchWithSpent = false;
@@ -7480,9 +7497,12 @@ app.get('/api/wasm-info', noCacheHeaders, (req, res) => {
     try {
         const wasmInfo = getConfiguredWasmAssetInfo('SalviumWallet.wasm');
         const jsInfo = getConfiguredWasmAssetInfo('SalviumWallet.js');
+        const baselineWasmInfo = getConfiguredWasmAssetInfo('SalviumWalletBaseline.wasm');
+        const baselineJsInfo = getConfiguredWasmAssetInfo('SalviumWalletBaseline.js');
         const workerInfo = getConfiguredWasmAssetInfo('SalviumWallet.worker.js');
 
         let serverBuildId = null;
+        let serverRuntimeVersion = null;
         if (wasmModule && typeof wasmModule.get_sparse_build_id === 'function') {
             try {
                 serverBuildId = wasmModule.get_sparse_build_id();
@@ -7490,15 +7510,33 @@ app.get('/api/wasm-info', noCacheHeaders, (req, res) => {
                 serverBuildId = `error: ${e.message}`;
             }
         }
+        if (wasmModule && typeof wasmModule.get_version === 'function') {
+            try {
+                serverRuntimeVersion = wasmModule.get_version();
+            } catch (e) {
+                serverRuntimeVersion = `error: ${e.message}`;
+            }
+        }
 
         res.json({
             success: true,
             configuredBasename: SALVIUM_WASM_BASENAME,
+            runtimeRelease: SALVIUM_WASM_RUNTIME_RELEASE,
+            expectedRuntimeBuild: SALVIUM_WASM_RUNTIME_BUILD,
             assetVersion: getConfiguredWasmAssetVersion(),
             wasm: wasmInfo,
             js: jsInfo,
+            baselineWasm: baselineWasmInfo,
+            baselineJs: baselineJsInfo,
+            variants: {
+                simd: { wasm: wasmInfo, js: jsInfo },
+                baseline: baselineWasmInfo && baselineJsInfo
+                    ? { wasm: baselineWasmInfo, js: baselineJsInfo }
+                    : null
+            },
             worker: workerInfo,
             serverBuildId,
+            serverRuntimeVersion,
             serverWasmLoaded: !!wasmModule
         });
     } catch (e) {
@@ -10854,8 +10892,8 @@ function serveIndexHtml(req, res) {
 }
 app.get(['/', '/index.html', '/vault', '/vault/', '/vault/index.html'], serveIndexHtml);
 app.get([
-    '/SalviumWallet.js', '/SalviumWallet.wasm', '/SalviumWallet.worker.js',
-    '/vault/SalviumWallet.js', '/vault/SalviumWallet.wasm', '/vault/SalviumWallet.worker.js'
+    '/SalviumWallet.js', '/SalviumWallet.wasm', '/SalviumWalletBaseline.js', '/SalviumWalletBaseline.wasm', '/SalviumWallet.worker.js',
+    '/vault/SalviumWallet.js', '/vault/SalviumWallet.wasm', '/vault/SalviumWalletBaseline.js', '/vault/SalviumWalletBaseline.wasm', '/vault/SalviumWallet.worker.js'
 ], rejectNonCanonicalWasmAsset);
 app.use(express.static(path.join(__dirname, 'dist'), distStaticOptions));
 app.use('/vault', express.static(path.join(__dirname, 'dist'), distStaticOptions));
@@ -10922,8 +10960,8 @@ app.get(['/privacy', '/vault/privacy'], (_req, res) => {
     return res.sendFile(privacyPath);
 });
 app.get([
-    '/wallet/SalviumWallet.js', '/wallet/SalviumWallet.wasm', '/wallet/SalviumWallet.worker.js',
-    '/vault/wallet/SalviumWallet.js', '/vault/wallet/SalviumWallet.wasm', '/vault/wallet/SalviumWallet.worker.js'
+    '/wallet/SalviumWallet.js', '/wallet/SalviumWallet.wasm', '/wallet/SalviumWalletBaseline.js', '/wallet/SalviumWalletBaseline.wasm', '/wallet/SalviumWallet.worker.js',
+    '/vault/wallet/SalviumWallet.js', '/vault/wallet/SalviumWallet.wasm', '/vault/wallet/SalviumWalletBaseline.js', '/vault/wallet/SalviumWalletBaseline.wasm', '/vault/wallet/SalviumWallet.worker.js'
 ], rejectNonCanonicalWasmAsset);
 // Mirrors sendConfiguredWasmAsset: versioned (?v=) requests (e.g. CSPScanner.js?v=..., csp-scanner.worker.js?v=...) are immutable-cacheable; unversioned stay no-store.
 function walletStaticSetHeaders(res, filePath) {
@@ -10958,6 +10996,23 @@ function walletStaticSetHeaders(res, filePath) {
     res.setHeader('Expires', '0');
     res.setHeader('Surrogate-Control', 'no-store');
 }
+app.use(['/wallet', '/vault/wallet'], (req, res, next) => {
+    let requestedPath = String(req.path || '');
+    try {
+        requestedPath = decodeURIComponent(requestedPath);
+    } catch {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(404).type('text/plain').send('Not found');
+    }
+    requestedPath = requestedPath.toLowerCase();
+    const isPrivateSnapshot = requestedPath === '/backups'
+        || requestedPath.startsWith('/backups/')
+        || requestedPath.includes('.before-')
+        || requestedPath.includes('.bak-');
+    if (!isPrivateSnapshot) return next();
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(404).type('text/plain').send('Not found');
+});
 app.use('/wallet', express.static(path.join(__dirname, 'wallet'), { setHeaders: walletStaticSetHeaders }));
 app.use('/vault/wallet', express.static(path.join(__dirname, 'wallet'), { setHeaders: walletStaticSetHeaders }));
 
