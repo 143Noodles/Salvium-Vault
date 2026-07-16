@@ -197,6 +197,10 @@
       "lockAfter": "Vergrendelen na",
       "minutes": "minuten"
     },
+    "telemetry": {
+      "title": "Diagnostiek",
+      "description": "Stuur anonieme diagnoserapporten (crashes, fouten, prestaties) om Vault te helpen verbeteren. Bevat nooit adressen, saldi of sleutels."
+    },
     "backup": {
       "title": "Back-up Exporteren",
       "description": "Maak een versleuteld back-upbestand met je wallet, adresboek en instellingen.",

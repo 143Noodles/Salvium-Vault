@@ -197,6 +197,10 @@
       "lockAfter": "Kilitleme süresi",
       "minutes": "dakika"
     },
+    "telemetry": {
+      "title": "Tanılama",
+      "description": "Vault'u geliştirmeye yardımcı olmak için anonim tanılama raporları (çökme, hata, performans) gönderin. Asla adres, bakiye veya anahtar içermez."
+    },
     "backup": {
       "title": "Yedek Dışa Aktar",
       "description": "Cüzdanınızı, adres defterinizi ve ayarlarınızı içeren şifreli bir yedek dosyası oluşturun.",

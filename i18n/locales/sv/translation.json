@@ -197,6 +197,10 @@
       "lockAfter": "Lås efter",
       "minutes": "minuter"
     },
+    "telemetry": {
+      "title": "Diagnostik",
+      "description": "Skicka anonyma diagnostikrapporter (krascher, fel, prestanda) för att hjälpa till att förbättra Vault. Innehåller aldrig adresser, saldon eller nycklar."
+    },
     "backup": {
       "title": "Exportera Säkerhetskopia",
       "description": "Skapa en krypterad säkerhetskopia som innehåller din plånbok, adressbok och inställningar.",

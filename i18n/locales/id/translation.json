@@ -197,6 +197,10 @@
       "lockAfter": "Kunci setelah",
       "minutes": "menit"
     },
+    "telemetry": {
+      "title": "Diagnostik",
+      "description": "Kirim laporan diagnostik anonim (crash, kesalahan, kinerja) untuk membantu meningkatkan Vault. Tidak pernah menyertakan alamat, saldo, atau kunci."
+    },
     "backup": {
       "title": "Ekspor Cadangan",
       "description": "Buat file cadangan terenkripsi yang berisi dompet, buku alamat, dan pengaturan Anda.",
