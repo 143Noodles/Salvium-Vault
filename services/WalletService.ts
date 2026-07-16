@@ -6,7 +6,13 @@ import {
   type WalletKeyImageEntry,
 } from '../utils/walletIntegrity';
 import { reportClientEvent } from '../utils/clientTelemetry';
-import { WASM_CACHE_VERSION, fetchLatestWasmAssetVersion } from '../utils/wasmVersion';
+import {
+  WASM_CACHE_VERSION,
+  fetchLatestWasmAssetVersion,
+  getWasmVariantAssetFilenames,
+  selectPreferredWasmVariant,
+  type WasmVariant,
+} from '../utils/wasmVersion';
 import { getExtensionAssetUrl, isExtensionRuntime } from '../utils/extensionRuntime';
 import type { WalletEngine } from './walletWorker/WalletEngine';
 import { WorkerEngine, guardEngineSurface } from './walletWorker/WorkerEngine';
@@ -1134,6 +1140,7 @@ declare global {
     __salviumExpectedWasmAssetVersion?: string;
     __salviumWasmAssetVersion?: string;
     __salviumWasmRuntimeVersion?: string;
+    __salviumWasmVariant?: WasmVariant;
     __salviumRuntimeStale?: boolean;
   }
 }
@@ -1437,7 +1444,13 @@ export class WalletService {
     });
     // DirectEngine.init performs no awaits before its initial delta push, so the mirror is
     // populated synchronously and the sync getters work immediately after assignment.
-    void engine.init({ wasmAssetVersion: '', glueUrl: '', wasmUrl: '', network: this.network });
+    void engine.init({
+      wasmAssetVersion: '',
+      glueUrl: '',
+      wasmUrl: '',
+      wasmVariant: 'simd',
+      network: this.network,
+    });
     this.engine = engine;
   }
 
@@ -1704,9 +1717,13 @@ export class WalletService {
     // Path-versioned (no query): query-keyed wasm URLs were cache-poisonable with
     // mismatched pairs — versioned paths are a pristine address space per release.
     const version = encodeURIComponent(wasmAssetVersion || WASM_CACHE_VERSION);
-    const glueUrl = isExtensionRuntime()
-      ? getExtensionAssetUrl('wallet/SalviumWallet.js')
-      : '/api/wasm/' + version + '/SalviumWallet.js';
+    const preferredVariant = selectPreferredWasmVariant();
+    const selectedFiles = getWasmVariantAssetFilenames(preferredVariant);
+    const baselineFiles = getWasmVariantAssetFilenames('baseline');
+    const assetUrl = (filename: string): string => isExtensionRuntime()
+      ? getExtensionAssetUrl('wallet/' + filename)
+      : '/api/wasm/' + version + '/' + filename;
+    const glueUrl = assetUrl(selectedFiles.glue);
 
     // The WASM binary is VERSION-COUPLED to the worker/glue of this exact build, so it
     // must always load same-origin: serving it via the shared cdn host is what caused
@@ -1714,13 +1731,27 @@ export class WalletService {
     // cdn stays for version-independent bulk chain data only (chunks, spent-index).
     // ~MBs through the origin is fine; the Cloudflare throttle only mattered for the
     // 285MB chunk bundle.
-    const wasmUrl = isExtensionRuntime()
-      ? getExtensionAssetUrl('wallet/SalviumWallet.wasm')
-      : '/api/wasm/' + version + '/SalviumWallet.wasm';
+    const wasmUrl = assetUrl(selectedFiles.wasm);
+    const fallbackGlueUrl = assetUrl(baselineFiles.glue);
+    const fallbackWasmUrl = assetUrl(baselineFiles.wasm);
+    window.__salviumWasmVariant = preferredVariant;
+
+    if (preferredVariant === 'baseline') {
+      reportClientEvent('wasm.fallback_selected', {
+        level: 'info',
+        message: 'Canonical WASM features unavailable',
+        context: {
+          endpoint: wasmUrl,
+          wasmVariant: preferredVariant,
+          fallbackAvailable: true,
+          featureProbe: 'simd+bulk-memory',
+        },
+      });
+    }
 
     reportClientEvent('wasm.script_load_started', {
       level: 'info',
-      context: { endpoint: '/api/wasm/SalviumWallet.js' },
+      context: { endpoint: glueUrl, wasmVariant: preferredVariant, fallbackAvailable: true },
     });
 
     try {
@@ -1733,7 +1764,16 @@ export class WalletService {
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
             const candidate = guardEngineSurface(new WorkerEngine());
-            await candidate.init({ wasmAssetVersion, glueUrl, wasmUrl, network: this.network, appBuildVersion: WASM_CACHE_VERSION });
+            await candidate.init({
+              wasmAssetVersion,
+              glueUrl,
+              wasmUrl,
+              wasmVariant: preferredVariant,
+              fallbackGlueUrl,
+              fallbackWasmUrl,
+              network: this.network,
+              appBuildVersion: WASM_CACHE_VERSION,
+            });
             return candidate;
           } catch (initError) {
             lastInitError = initError;
@@ -1743,7 +1783,7 @@ export class WalletService {
             reportClientEvent('wasm.script_load_retry', {
               level: 'warn',
               message: initMessage,
-              context: { endpoint: '/api/wasm/SalviumWallet.js', count: attempt },
+              context: { endpoint: glueUrl, count: attempt, wasmVariant: preferredVariant },
             });
             await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
           }
@@ -1752,6 +1792,8 @@ export class WalletService {
       };
       const engine = await initWithRetry();
       this.engine = engine;
+      const activeVariant = engine.wasmVariant || preferredVariant;
+      window.__salviumWasmVariant = activeVariant;
 
       // Worker crash = the in-memory wallet is gone (secrets only cross at unlock, so no
       // silent re-restore is possible). Surface it like a fresh page load: clear engine
@@ -1772,7 +1814,7 @@ export class WalletService {
 
       reportClientEvent('wasm.script_load_completed', {
         level: 'info',
-        context: { endpoint: '/api/wasm/SalviumWallet.js', status: 'loaded' },
+        context: { endpoint: glueUrl, status: 'loaded', wasmVariant: activeVariant },
       });
 
       let runtimeVersion = 'unknown';
@@ -1787,14 +1829,14 @@ export class WalletService {
       window.__salviumWasmRuntimeVersion = runtimeVersion;
       reportClientEvent('wasm.init_completed', {
         level: 'info',
-        context: { endpoint: '/api/wasm/SalviumWallet.wasm', status: 'ready', asset: this.wasmAssetVersion },
+        context: { endpoint: wasmUrl, status: 'ready', asset: this.wasmAssetVersion, wasmVariant: activeVariant },
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       reportClientEvent('wasm.script_load_failed', {
         level: 'error',
         message,
-        context: { endpoint: '/api/wasm/SalviumWallet.js', errorName: e instanceof Error ? e.name : typeof e },
+        context: { endpoint: glueUrl, errorName: e instanceof Error ? e.name : typeof e, wasmVariant: preferredVariant },
       });
       // Self-heal stuck clients: when a Service Worker is actively controlling the page, a
       // wedged worker-init is almost always the SW serving the worker script through its Cache
@@ -7941,65 +7983,87 @@ export class WalletService {
   }
 
   async validateMnemonic(mnemonic: string): Promise<SeedValidationResult> {
-    return new Promise(async (resolve) => {
-      const seedWorkerUrl = isExtensionRuntime()
-        ? getExtensionAssetUrl('wallet/seed-validator.worker.js')
-        : '/wallet/seed-validator.worker.js';
-      const seedWasmVersion = isExtensionRuntime()
-        ? ''
-        : encodeURIComponent((await this.resolveWasmAssetVersion()) || WASM_CACHE_VERSION);
-      const seedWasmPath = isExtensionRuntime()
-        ? getExtensionAssetUrl('wallet')
-        : '/api/wasm/' + seedWasmVersion;
+    const seedWorkerUrl = isExtensionRuntime()
+      ? getExtensionAssetUrl('wallet/seed-validator.worker.js')
+      : '/wallet/seed-validator.worker.js';
+    const seedWasmVersion = isExtensionRuntime()
+      ? ''
+      : encodeURIComponent((await this.resolveWasmAssetVersion()) || WASM_CACHE_VERSION);
+    const selectedVariant = selectPreferredWasmVariant();
+    const selectedFiles = getWasmVariantAssetFilenames(selectedVariant);
+    const baselineFiles = getWasmVariantAssetFilenames('baseline');
+    if (selectedVariant === 'baseline') {
+      reportClientEvent('wasm.seed_validator_fallback_selected', {
+        level: 'info',
+        context: { wasmVariant: selectedVariant, featureProbe: 'simd+bulk-memory' },
+      });
+    }
+    const seedAssetUrl = (filename: string): string => isExtensionRuntime()
+      ? getExtensionAssetUrl('wallet/' + filename)
+      : '/api/wasm/' + seedWasmVersion + '/' + filename;
 
+    try {
+      const response = await fetch(seedWorkerUrl, { method: 'HEAD' });
+      if (!response.ok) {
+        return { valid: false, error: `Worker file not found (Status ${response.status})` };
+      }
+    } catch {
+    }
+
+    return new Promise((resolve) => {
+      let worker: Worker;
       try {
-        const response = await fetch(seedWorkerUrl, { method: 'HEAD' });
-        if (!response.ok) {
-          resolve({ valid: false, error: `Worker file not found (Status ${response.status})` });
-          return;
-        }
-      } catch (e) {
+        worker = new Worker(seedWorkerUrl);
+      } catch (error) {
+        resolve({ valid: false, error: `Worker error: ${error instanceof Error ? error.message : String(error)}` });
+        return;
       }
 
-      const worker = new Worker(seedWorkerUrl);
-
+      let settled = false;
+      const finish = (result: SeedValidationResult): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        try { worker.terminate(); } catch {}
+        resolve(result);
+      };
       const timeout = setTimeout(() => {
-        worker.terminate();
-        resolve({ valid: false, error: 'Validation timed out - please try again' });
+        finish({ valid: false, error: 'Validation timed out - please try again' });
       }, 30000);
 
       worker.onmessage = (e) => {
-        clearTimeout(timeout);
         const { type, result, error } = e.data;
-        worker.terminate();
-
         if (type === 'SUCCESS') {
-          if (result.valid) {
-            resolve({ valid: true });
-          } else {
-            resolve({ valid: false, error: 'Invalid seed phrase' });
-          }
+          finish(result.valid
+            ? { valid: true }
+            : { valid: false, error: 'Invalid seed phrase' });
         } else {
-          resolve({ valid: false, error: error || 'Validation failed' });
+          finish({ valid: false, error: error || 'Validation failed' });
         }
       };
 
       worker.onerror = (e) => {
-        clearTimeout(timeout);
-        worker.terminate();
         const errorMsg = e.message || e.error?.message ||
           (e.filename ? `Error in ${e.filename}:${e.lineno}` : 'Unknown worker error');
-        resolve({ valid: false, error: `Worker error: ${errorMsg}` });
+        finish({ valid: false, error: `Worker error: ${errorMsg}` });
       };
 
-      worker.postMessage({
-        type: 'VALIDATE',
-        payload: {
-          mnemonic,
-          wasmPath: seedWasmPath
-        },
-        id: Date.now()
-      });
+      try {
+        worker.postMessage({
+          type: 'VALIDATE',
+          payload: {
+            mnemonic,
+            wasmVariant: selectedVariant,
+            glueUrl: seedAssetUrl(selectedFiles.glue),
+            wasmUrl: seedAssetUrl(selectedFiles.wasm),
+            fallbackGlueUrl: seedAssetUrl(baselineFiles.glue),
+            fallbackWasmUrl: seedAssetUrl(baselineFiles.wasm),
+          },
+          id: Date.now(),
+        });
+      } catch (error) {
+        finish({ valid: false, error: `Worker error: ${error instanceof Error ? error.message : String(error)}` });
+      }
     });
   }
 

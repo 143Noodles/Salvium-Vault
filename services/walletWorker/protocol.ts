@@ -6,6 +6,8 @@
  * shapes by convention. Keep both sides in sync when changing anything here.
  */
 
+import type { WasmVariant } from '../../utils/wasmVersion';
+
 export interface WorkerInitConfig {
   /** Cache-busting asset version (same value WalletService.resolveWasmAssetVersion produces). */
   wasmAssetVersion: string;
@@ -13,6 +15,11 @@ export interface WorkerInitConfig {
   glueUrl: string;
   /** URL the glue's locateFile routes .wasm requests to. */
   wasmUrl: string;
+  /** Feature-selected artifact variant requested by the main thread. */
+  wasmVariant: WasmVariant;
+  /** Baseline pair used if the worker rejects the canonical SIMD module. */
+  fallbackGlueUrl?: string;
+  fallbackWasmUrl?: string;
   /** 'mainnet' | 'testnet' | 'stagenet' — passed to new Module.WasmWallet(network). */
   network: string;
   appBuildVersion?: string;
@@ -45,7 +52,7 @@ export interface StateDelta {
 }
 
 export type WireResponse =
-  | { kind: 'ready'; wasmVersion: string }
+  | { kind: 'ready'; wasmVersion: string; wasmVariant?: WasmVariant }
   | { kind: 'result'; id: number; ok: true; value: unknown; durationMs: number }
   | { kind: 'result'; id: number; ok: false; error: { name: string; message: string } }
   | { kind: 'delta'; delta: StateDelta }

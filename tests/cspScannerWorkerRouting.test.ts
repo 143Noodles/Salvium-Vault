@@ -54,6 +54,90 @@ describe('csp-scanner.worker routing', () => {
     expect(postMessage).toHaveBeenCalledWith({ type: 'NEED_WASM', reason: 'boot' });
   });
 
+  it('includes explicit coverage on direct cached scan results', async () => {
+    const context = createWorkerContext({
+      allocate_binary_buffer: vi.fn(() => 8),
+      HEAPU8: new Uint8Array(4096),
+      scan_csp_batch: vi.fn(() => JSON.stringify({ matches: [], spent: [], stats: {} })),
+    });
+    const postMessage = (context as any).self.postMessage;
+
+    await vm.runInContext(`handleScanCspDirect({
+      startHeight: 526000,
+      count: 1000,
+      actualCount: 1000,
+      coveredThrough: null,
+      cspData: new Uint8Array([1, 2, 3]).buffer,
+    })`, context);
+
+    const result = postMessage.mock.calls
+      .map((call: unknown[]) => call[0])
+      .find((message: any) => message.type === 'SCAN_RESULT');
+    expect(result).toMatchObject({
+      type: 'SCAN_RESULT',
+      startHeight: 526000,
+      endHeight: 526999,
+      coveredThrough: null,
+    });
+  });
+
+  it('returns a covered empty result for an all-beyond-tip batch 404', async () => {
+    const context = createWorkerContext({});
+    const postMessage = (context as any).self.postMessage;
+    Object.assign(context as any, {
+      AbortController,
+      setTimeout,
+      clearTimeout,
+      fetch: vi.fn().mockResolvedValue(new Response('', {
+        status: 404,
+        headers: {
+          'X-CSP-Known-Height': '527245',
+          'X-CSP-Missing-Reason': 'beyond_tip',
+          'X-CSP-Missing-Chunk-Starts': '528000,529000',
+        },
+      })),
+    });
+
+    await vm.runInContext('handleScanCspBatch({ startHeight: 528000, chunkCount: 2 })', context);
+
+    const messages = postMessage.mock.calls.map((call: unknown[]) => call[0]);
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'SCAN_BATCH_RESULT',
+      startHeight: 528000,
+      coveredThrough: 527245,
+      chunksProcessed: 0,
+      scannedChunks: [],
+      missingChunks: [528000, 529000],
+      missingReason: 'beyond_tip',
+    }));
+    expect(messages).not.toContainEqual(expect.objectContaining({ type: 'SCAN_ERROR' }));
+  });
+
+  it('activates the CDN route before reporting a retryable batch 403', async () => {
+    const context = createWorkerContext({});
+    const postMessage = (context as any).self.postMessage;
+    Object.assign(context as any, {
+      AbortController,
+      setTimeout,
+      clearTimeout,
+      fetch: vi.fn().mockResolvedValue(new Response('', { status: 403 })),
+    });
+
+    await vm.runInContext(`
+      apiBaseUrl = normalizeApiBaseUrl('https://vault.salvium.tools');
+      handleScanCspBatch({ startHeight: 520000, chunkCount: 2 });
+    `, context);
+
+    expect(vm.runInContext('bulkOriginFailoverActive', context)).toBe(true);
+    expect(vm.runInContext("resolveFetchUrl('/api/csp-batch?start_height=520000&chunks=2')", context))
+      .toBe('https://cdn.salvium.tools/api/csp-batch?start_height=520000&chunks=2');
+    expect(postMessage.mock.calls.map((call: unknown[]) => call[0])).toContainEqual(expect.objectContaining({
+      type: 'SCAN_ERROR',
+      startHeight: 520000,
+      error: 'ERROR: CSP batch fetch failed: 403',
+    }));
+  });
+
   it('resolves root-relative fetches against the owning origin for blob workers', () => {
     const context = createWorkerContext({});
 

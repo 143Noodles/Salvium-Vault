@@ -26,6 +26,9 @@ function assertBuiltExtension(dir, browserName) {
   assert(fs.existsSync(path.join(dir, 'vault.html')), `${browserName} vault.html is missing`);
   assert(fs.existsSync(path.join(dir, 'wallet/SalviumWallet.js')), `${browserName} packaged WASM glue is missing`);
   assert(fs.existsSync(path.join(dir, 'wallet/SalviumWallet.wasm')), `${browserName} packaged WASM binary is missing`);
+  assert(fs.existsSync(path.join(dir, 'wallet/SalviumWalletBaseline.js')), `${browserName} packaged baseline WASM glue is missing`);
+  assert(fs.existsSync(path.join(dir, 'wallet/SalviumWalletBaseline.wasm')), `${browserName} packaged baseline WASM binary is missing`);
+  assert(fs.existsSync(path.join(dir, 'wallet/wasm-feature-detect.js')), `${browserName} packaged WASM feature detector is missing`);
 }
 
 function listFiles(root, dir = root, out = []) {

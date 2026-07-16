@@ -1,4 +1,40 @@
-export const WASM_CACHE_VERSION = '8.2.20-wasmbust-atpolyfill-20260702';
+import '../wallet/wasm-feature-detect.js';
+
+export const WASM_CACHE_VERSION = '8.2.22-v113c-dual-wasm-20260709';
+
+export type WasmVariant = 'simd' | 'baseline';
+
+export type WasmVariantAssetFilenames = {
+  glue: string;
+  wasm: string;
+};
+
+type WasmFeatureDetector = {
+  supportsCanonicalFeatures: (webAssemblyApi?: Pick<typeof WebAssembly, 'validate'>) => boolean;
+  selectVariant: (webAssemblyApi?: Pick<typeof WebAssembly, 'validate'>) => WasmVariant;
+  getAssetFilenames: (variant: WasmVariant) => WasmVariantAssetFilenames;
+};
+
+const getWasmFeatureDetector = (): WasmFeatureDetector => {
+  const detector = (globalThis as typeof globalThis & {
+    SalviumWasmFeatures?: WasmFeatureDetector;
+  }).SalviumWasmFeatures;
+  if (!detector) {
+    throw new Error('Salvium WASM feature detector was not initialized');
+  }
+  return detector;
+};
+
+export const supportsCanonicalWasmFeatures = (
+  webAssemblyApi?: Pick<typeof WebAssembly, 'validate'>,
+): boolean => getWasmFeatureDetector().supportsCanonicalFeatures(webAssemblyApi);
+
+export const selectPreferredWasmVariant = (
+  webAssemblyApi?: Pick<typeof WebAssembly, 'validate'>,
+): WasmVariant => getWasmFeatureDetector().selectVariant(webAssemblyApi);
+
+export const getWasmVariantAssetFilenames = (variant: WasmVariant): WasmVariantAssetFilenames =>
+  getWasmFeatureDetector().getAssetFilenames(variant);
 
 type WasmAssetDescriptor = {
   filename?: string;
@@ -11,6 +47,8 @@ type WasmInfoPayload = {
   assetVersion?: string;
   wasm?: WasmAssetDescriptor | null;
   js?: WasmAssetDescriptor | null;
+  baselineWasm?: WasmAssetDescriptor | null;
+  baselineJs?: WasmAssetDescriptor | null;
   worker?: WasmAssetDescriptor | null;
 };
 
@@ -39,6 +77,8 @@ export const getWasmAssetVersionFromInfo = (info: unknown): string | null => {
   const parts = [
     describeAsset('js', payload.js),
     describeAsset('wasm', payload.wasm),
+    describeAsset('baseline-js', payload.baselineJs),
+    describeAsset('baseline-wasm', payload.baselineWasm),
     describeAsset('worker', payload.worker),
   ].filter((part): part is string => Boolean(part));
 

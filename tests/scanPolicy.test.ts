@@ -8,6 +8,7 @@ import {
   DEFAULT_TAIL_SCAN_OVERLAP_BLOCKS,
   resolveScanWorkerPolicy,
   resolveIncrementalScanPlan,
+  resolveRestoreRetryResumePolicy,
   resolveScanResumeHeight,
   resolveUnlockScheduledScanFromHeight,
   shouldForceFullScanForMissingWalletCache,
@@ -18,6 +19,43 @@ import {
 import { getSyncWatchdogDecision } from '../utils/syncWatchdog';
 
 describe('scanPolicy', () => {
+  describe('restore retry journal resume', () => {
+    it('drops the original height-zero request and one-shot clean flag for an active restore retry', () => {
+      const policy = resolveRestoreRetryResumePolicy({
+        reason: 'restore-retryable-retry',
+        sessionType: 'restore-full-rescan',
+        fromHeight: 0,
+        forceCleanRestoreScan: true,
+      });
+
+      expect(policy).toEqual({
+        resumeFromJournal: true,
+        forceCleanRestoreScan: false,
+        minResumeHeight: 0,
+      });
+    });
+
+    it('recognizes a coalesced restore retry and preserves non-retry scan requests', () => {
+      expect(resolveRestoreRetryResumePolicy({
+        reason: 'visibility-resume+restore-retryable-retry',
+        sessionType: 'restore-full-rescan',
+        fromHeight: 0,
+        forceCleanRestoreScan: true,
+      }).resumeFromJournal).toBe(true);
+
+      expect(resolveRestoreRetryResumePolicy({
+        reason: 'finalizeSeedRestore',
+        sessionType: 'restore-full-rescan',
+        fromHeight: 0,
+        forceCleanRestoreScan: true,
+      })).toEqual({
+        resumeFromJournal: false,
+        fromHeight: 0,
+        forceCleanRestoreScan: true,
+      });
+    });
+  });
+
   describe('shouldForceFullScanForMissingWalletCache', () => {
     it('forces a clean scan when the cached outputs are gone but a stored wallet height survives', () => {
       expect(shouldForceFullScanForMissingWalletCache({

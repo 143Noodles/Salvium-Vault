@@ -8,6 +8,7 @@ import type { WalletEngine } from './WalletEngine';
 import type { StateDelta, WorkerInitConfig } from './protocol';
 import { WalletStateMirror } from './WalletStateMirror';
 import { WalletWorkerClient, type WorkerFactory } from './WalletWorkerClient';
+import type { WasmVariant } from '../../utils/wasmVersion';
 
 // Legacy-access tripwire: after the worker cutover, code probing direct WASM methods on
 // the engine (`engine.get_key_images_csv`) gets `undefined` and typeof-guards silently
@@ -15,7 +16,7 @@ import { WalletWorkerClient, type WorkerFactory } from './WalletWorkerClient';
 // makes such access LOUD: telemetry + console error, and in vitest it throws.
 const ENGINE_OWN_KEYS = new Set([
   'init', 'call', 'op', 'mirror', 'onCrash', 'onDelta', 'terminate', 'isReady',
-  'wasmVersion', 'client', 'then', 'constructor',
+  'wasmVersion', 'wasmVariant', 'client', 'then', 'constructor',
 ]);
 
 export function guardEngineSurface<T extends object>(engine: T): T {
@@ -57,20 +58,33 @@ export class WorkerEngine implements WalletEngine {
     this.workerFactory = workerFactory;
   }
 
+  get wasmVariant(): WasmVariant | null {
+    return this.client?.wasmVariant ?? null;
+  }
+
   async init(config: WorkerInitConfig): Promise<void> {
     if (this.client) {
       throw new Error('WorkerEngine already initialized');
     }
 
-    const client = await WalletWorkerClient.spawn(config, this.workerFactory);
-    this.client = client;
-    this.unsubscribeDelta = client.onDelta((delta: StateDelta) => {
-      this.mirror.applyDelta(delta);
-    });
+    let client: WalletWorkerClient | null = null;
+    try {
+      client = await WalletWorkerClient.spawn(config, this.workerFactory);
+      this.client = client;
+      this.unsubscribeDelta = client.onDelta((delta: StateDelta) => {
+        this.mirror.applyDelta(delta);
+      });
 
-    // Prime the mirror with the full state bundle. The worker also pushes the
-    // bundle on the delta channel, so applying happens through the normal path.
-    await client.op('getStateBundle', {});
+      // Prime the mirror with the full state bundle. The worker also pushes the
+      // bundle on the delta channel, so applying happens through the normal path.
+      await client.op('getStateBundle', {});
+    } catch (error) {
+      this.unsubscribeDelta?.();
+      this.unsubscribeDelta = null;
+      client?.terminate();
+      this.client = null;
+      throw error;
+    }
   }
 
   call<T = unknown>(method: string, args: unknown[] = [], opts?: { timeoutMs?: number }): Promise<T> {

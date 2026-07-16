@@ -15,6 +15,43 @@ export interface ScanTriggerRequest {
   sessionId?: string;
 }
 
+export interface RestoreRetryResumePolicy {
+  resumeFromJournal: boolean;
+  fromHeight?: number;
+  forceCleanRestoreScan: boolean;
+  minResumeHeight?: number;
+}
+
+export function resolveRestoreRetryResumePolicy({
+  reason,
+  sessionType,
+  fromHeight,
+  forceCleanRestoreScan,
+}: {
+  reason?: string;
+  sessionType?: ScanTriggerSessionType;
+  fromHeight?: number;
+  forceCleanRestoreScan: boolean;
+}): RestoreRetryResumePolicy {
+  const resumeFromJournal =
+    sessionType === 'restore-full-rescan' &&
+    String(reason || '').split('+').includes('restore-retryable-retry');
+
+  if (resumeFromJournal) {
+    return {
+      resumeFromJournal: true,
+      forceCleanRestoreScan: false,
+      minResumeHeight: 0,
+    };
+  }
+
+  return {
+    resumeFromJournal: false,
+    ...(fromHeight !== undefined ? { fromHeight } : {}),
+    forceCleanRestoreScan,
+  };
+}
+
 export function shouldForceFullScanForMissingWalletCache({
   cacheMissing,
   hadCachedWalletData,

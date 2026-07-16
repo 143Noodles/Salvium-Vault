@@ -15,6 +15,7 @@ import {
   recordScanError,
   cleanupOldJournals,
   getCheckpoint,
+  getIncompleteJournal,
   markChunksInProgress,
   markChunksCompleted,
   recordChunksNeedRescan,
@@ -24,6 +25,12 @@ import {
   saveCheckpointMetadata,
   type ScanCheckpoint,
 } from './ScanJournal';
+
+export interface ScanResumeSeedCoverage {
+  scannedChunks: number[];
+  matchedChunks: number[];
+  ingestedChunks: number[];
+}
 
 import {
   startMobileScanAudio,
@@ -49,7 +56,7 @@ import {
   buildKeyImagePrefixMap,
   parseSpentIndexBinaryHeader,
 } from '../utils/cspBinary';
-import { coalesceChunksToRuns, hasCompleteCoverageManifest, selectSparseIngestLimits, shouldCompletePhase2bJournal, validateSpentIndexProgress } from '../utils/scanCoverage';
+import { coalesceChunksToRuns, getExpectedScanChunks, hasCompleteCoverageManifest, selectSparseIngestLimits, shouldCompletePhase2bJournal, validateSpentIndexProgress } from '../utils/scanCoverage';
 import { shouldUseBundle } from '../utils/scanMode';
 
 
@@ -809,8 +816,6 @@ class CSPScanService {
   private currentScanId: string | null = null;
   private currentWalletAddress: string | null = null;
   private currentRecoveryAction: RecoveryAction = 'continue';
-  // Precise gap chunks for the next resume scan (see setResumeRuns). Consumed by startScan.
-  private resumeRunChunks: number[] | null = null;
   // Chunks whose sparse data has been ingested during the CURRENT scan (across phase-3 main +
   // returns + phase-2b). Every targetedRescan pass skips chunks already in here — re-ingesting
   // is a no-op (txid dedup) and was the redundant reconstruction wave. Reset at each startScan.
@@ -852,6 +857,7 @@ class CSPScanService {
     needsFullRescan: boolean;
     reason: string;
     checkpoint?: ScanCheckpoint | null;
+    seedCoverage?: ScanResumeSeedCoverage;
     action: 'continue' | 'full_rescan' | 'rescan_gaps';
   }> {
     try {
@@ -934,16 +940,107 @@ class CSPScanService {
         };
       }
 
-      const checkpoint = await getCheckpoint(walletAddress);
+      const [checkpoint, incompleteJournal] = await Promise.all([
+        getCheckpoint(walletAddress),
+        getIncompleteJournal(walletAddress),
+      ]);
 
-      if (safetyCheck.action === 'rescan_gaps' && safetyCheck.gaps && safetyCheck.gaps.length > 0) {
+      let recoveryGaps = [...(safetyCheck.gaps || [])];
+      let seedCoverage: ScanResumeSeedCoverage | undefined;
+      if (incompleteJournal && incompleteJournal.targetEndHeight > incompleteJournal.startHeight) {
+        const recoveryChunkSize = 1000;
+        const alignedResumeFloor = Number.isFinite(minResumeHeight) && minResumeHeight > 0
+          ? Math.floor(minResumeHeight / recoveryChunkSize) * recoveryChunkSize
+          : 0;
+        const invalidChunks = new Set([
+          ...(incompleteJournal.inProgressChunks || []),
+          ...(incompleteJournal.needsRescanChunks || []),
+        ]);
+        const requiredChunkEnd = (chunk: number) => Math.min(chunk + recoveryChunkSize, targetEndHeight);
+        const journalScanned = Array.from(new Set(incompleteJournal.scannedChunks || []))
+          .filter((chunk) =>
+            Number.isFinite(chunk) &&
+            chunk >= incompleteJournal.startHeight &&
+            chunk < targetEndHeight &&
+            !invalidChunks.has(chunk) &&
+            requiredChunkEnd(chunk) <= incompleteJournal.targetEndHeight
+          );
+        const checkpointScanned = Array.from(new Set(checkpoint?.scannedChunks || []))
+          .filter((chunk) =>
+            Number.isFinite(chunk) &&
+            chunk >= 0 &&
+            chunk < targetEndHeight &&
+            !invalidChunks.has(chunk) &&
+            requiredChunkEnd(chunk) <= (checkpoint?.lastCompletedHeight || 0)
+          );
+        const effectiveScanned = Array.from(new Set([...journalScanned, ...checkpointScanned]))
+          .sort((a, b) => a - b);
+        const effectiveScannedSet = new Set(effectiveScanned);
+        const matchedChunks = Array.from(new Set([
+          ...(incompleteJournal.matchedChunks || []),
+          ...(checkpoint?.lastCoverageManifest?.matchedChunks || []),
+        ]))
+          .filter((chunk) => effectiveScannedSet.has(chunk))
+          .sort((a, b) => a - b);
+        const ingestedSet = new Set([
+          ...(incompleteJournal.ingestedChunks || []),
+          ...(checkpoint?.lastCoverageManifest?.ingestedChunks || []),
+        ]);
+
+        // A scanned match whose outputs were not durably ingested is not reusable
+        // coverage. Put it back in the precise run set so retrying cannot prove the
+        // chain complete while silently omitting that wallet transaction.
+        const matchedButNotIngested = matchedChunks.filter((chunk) =>
+          !ingestedSet.has(chunk) && chunk >= alignedResumeFloor
+        );
+        recoveryGaps = Array.from(new Set([...recoveryGaps, ...matchedButNotIngested]))
+          .sort((a, b) => a - b);
+
+        if (recoveryGaps.length > 0) {
+          // A precise retry creates a fresh contiguous journal beginning at its first
+          // gap. Derive both halves of that proof here: runs contain every chunk that
+          // is not reusable (including a newly advanced tail), while the seed is the
+          // exact reusable complement. Together they cover the fresh journal once.
+          const retryStart = Math.min(...recoveryGaps);
+          const retryExpectedChunks = getExpectedScanChunks(
+            retryStart,
+            targetEndHeight,
+            recoveryChunkSize
+          );
+          const reusableScanned = new Set(
+            effectiveScanned.filter((chunk) => !matchedButNotIngested.includes(chunk))
+          );
+          recoveryGaps = retryExpectedChunks.filter((chunk) => !reusableScanned.has(chunk));
+          const recoveryGapSet = new Set(recoveryGaps);
+          const seededScanned = retryExpectedChunks.filter((chunk) =>
+            reusableScanned.has(chunk) && !recoveryGapSet.has(chunk)
+          );
+          const seededScannedSet = new Set(seededScanned);
+          const seededMatched = matchedChunks.filter((chunk) => seededScannedSet.has(chunk));
+          const seededMatchedSet = new Set(seededMatched);
+          const seededIngested = Array.from(ingestedSet)
+            .filter((chunk) => seededScannedSet.has(chunk) && seededMatchedSet.has(chunk))
+            .sort((a, b) => a - b);
+
+          if (seededScanned.length > 0) {
+            seedCoverage = {
+              scannedChunks: seededScanned,
+              matchedChunks: seededMatched,
+              ingestedChunks: seededIngested,
+            };
+          }
+        }
+      }
+
+      if (recoveryGaps.length > 0) {
         return {
           shouldResume: true,
           resumeFromHeight: checkpoint?.lastCompletedHeight || 0,
-          gaps: safetyCheck.gaps,
+          gaps: recoveryGaps,
           needsFullRescan: false,
-          reason: safetyCheck.reason,
+          reason: `${recoveryGaps.length} chunk(s) need (re)scanning`,
           checkpoint,
+          seedCoverage,
           action: 'rescan_gaps',
         };
       }
@@ -1581,14 +1678,13 @@ class CSPScanService {
         if (!scannedSet.has(chunk) || (matchedSet.has(chunk) && !checkpointIngested.has(chunk))) runs.push(chunk);
       }
       if (runs.length > 0 && runs.length < totalChunkCount) {
-        this.resumeRunChunks = runs;
-        this.resumeSeedCoverage = {
+        this.setResumePlan(plan.walletAddress, runs, {
           scannedChunks: [...plan.scannedChunks],
           matchedChunks: [...plan.matchedChunks],
           // Only chunks BOTH ingested-per-checkpoint AND excluded from the run set are
           // seeded as ingested; they must satisfy the completion proof without re-scan.
           ingestedChunks: [...checkpointIngested].filter((chunk) => scannedSet.has(chunk) && matchedSet.has(chunk)),
-        };
+        });
         const runsSet = new Set(runs);
         journalSeededCoverageBlocks = plan.scannedChunks.filter((chunk) => !runsSet.has(chunk)).length * 1000;
         reportClientEvent('scan.journal_resume_applied', {
@@ -1606,11 +1702,9 @@ class CSPScanService {
       }
     }
 
-    const resumeChunkOverride = (this.resumeRunChunks && this.resumeRunChunks.length > 0)
-      ? this.resumeRunChunks.filter((h) => h >= startHeight && h < endHeight)
-      : null;
-    this.resumeRunChunks = null;
-    const usePreciseRuns = !!resumeChunkOverride && resumeChunkOverride.length > 0;
+    let resumeChunkOverride: number[] | null = null;
+    let resumeSeedCoverage: ScanResumeSeedCoverage | null = null;
+    let usePreciseRuns = false;
 
     onProgress?.({
       progress: 0,
@@ -1636,6 +1730,10 @@ class CSPScanService {
       if (walletService.hasWallet()) {
         // Mirror-served (same get_address source, computed worker-side).
         walletAddressForJournal = walletService.getAddress();
+        const resumePlan = this.consumeResumePlan(walletAddressForJournal, startHeight, endHeight);
+        resumeChunkOverride = resumePlan.chunkHeights;
+        resumeSeedCoverage = resumePlan.seedCoverage;
+        usePreciseRuns = !!resumeChunkOverride && resumeChunkOverride.length > 0;
         await this.hydrateIncrementalState(walletAddressForJournal);
 
         await startScanJournal(
@@ -1645,8 +1743,7 @@ class CSPScanService {
           endHeight
         );
 
-        const seedCoverage = this.resumeSeedCoverage;
-        this.resumeSeedCoverage = null;
+        const seedCoverage = resumeSeedCoverage;
         if (seedCoverage && usePreciseRuns) {
           await recordScannedChunks(scanId, seedCoverage.scannedChunks, seedCoverage.matchedChunks, 0);
           const seedIngested = seedCoverage.ingestedChunks || [];
@@ -1670,10 +1767,16 @@ class CSPScanService {
         }
 
         cleanupOldJournals(walletAddressForJournal, 7).catch(() => {});
-      } else if (journalRequired) {
-        throw new Error('Scan journal required for restore scan but no wallet address was available');
+      } else {
+        // A pending plan is wallet-specific. If the wallet disappeared during setup,
+        // discard it now so a later wallet cannot inherit the skip-list.
+        this.consumeResumePlan('', startHeight, endHeight);
+        if (journalRequired) {
+          throw new Error('Scan journal required for restore scan but no wallet address was available');
+        }
       }
     } catch (e) {
+      this.clearResumePlan();
       if (DEBUG) debugWarn('[CSPScanService] Failed to start scan journal:', e);
       if (journalRequired) {
         // Reset here: this throw precedes the main try/finally, so without it a failed journal start leaves isScanning stuck true and bricks all future scans.
@@ -4143,22 +4246,23 @@ class CSPScanService {
     // Cleared on reset so a subsequent wallet never POSTs the previous wallet's
     // spending txids (cross-wallet correlation) and the set cannot grow unbounded.
     this.outgoingSpendingTxids.clear();
+    // Resume plans are wallet-specific skip-lists. A reset can race after a plan is
+    // prepared but before startScan consumes it; never let the next wallet inherit it.
+    this.clearResumePlan();
   }
 
   setRecoveryAction(action: RecoveryAction): void {
     this.currentRecoveryAction = action;
   }
 
-  // Precise chunk-aligned heights to (re)scan on the next startScan, instead of a contiguous
-  // [startHeight, endHeight) sweep. Set by the resume path (rescan_gaps) and consumed+cleared
-  // by startScan. When set, Phase 1 scans exactly these chunks via scanner.scanRuns(), so each
-  // missing block is scanned at most once. Null/empty => normal contiguous scan (unchanged).
-  // Coverage carried over from a previous interrupted scan's journal, for a resume
-  // with an EMPTY native wallet (evicted cache / interrupted restore). Seeded into
-  // the new scan's journal right after it starts so the [startHeight, endHeight]
-  // completion proof passes without rescanning chunks the previous run already
-  // proved empty. Consumed once by startScanInner alongside resumeRunChunks.
-  private resumeSeedCoverage: { scannedChunks: number[]; matchedChunks: number[]; ingestedChunks?: number[] } | null = null;
+  // Exact runs plus reusable proof coverage travel as one wallet-bound, one-shot plan.
+  // Keeping the address beside the skip-list prevents a reset/replacement wallet from
+  // consuming coverage that was proved for a different set of keys.
+  private resumePlan: {
+    walletAddress: string;
+    chunkHeights: number[];
+    seedCoverage: ScanResumeSeedCoverage | null;
+  } | null = null;
 
   // Journal-based resume plan for a from-zero restore over an EMPTY native wallet
   // (missing/evicted cache). Set at unlock; consumed by the NEXT from-zero,
@@ -4174,16 +4278,64 @@ class CSPScanService {
       : null;
   }
 
-  setResumeSeedCoverage(seed: { scannedChunks: number[]; matchedChunks: number[]; ingestedChunks?: number[] } | null): void {
-    this.resumeSeedCoverage = (seed && Array.isArray(seed.scannedChunks) && seed.scannedChunks.length > 0)
-      ? { scannedChunks: [...seed.scannedChunks], matchedChunks: [...(seed.matchedChunks || [])], ingestedChunks: [...(seed.ingestedChunks || [])] }
-      : null;
+  setResumePlan(
+    walletAddress: string,
+    chunkHeights: number[] | null | undefined,
+    seedCoverage: ScanResumeSeedCoverage | null = null
+  ): void {
+    const normalizedAddress = String(walletAddress || '').trim();
+    const normalizedChunks = Array.isArray(chunkHeights)
+      ? Array.from(new Set(chunkHeights.filter((height) => Number.isFinite(height))))
+        .sort((a, b) => a - b)
+      : [];
+    if (!normalizedAddress || normalizedChunks.length === 0) {
+      this.resumePlan = null;
+      return;
+    }
+
+    this.resumePlan = {
+      walletAddress: normalizedAddress,
+      chunkHeights: normalizedChunks,
+      seedCoverage: seedCoverage && Array.isArray(seedCoverage.scannedChunks) && seedCoverage.scannedChunks.length > 0
+        ? {
+          scannedChunks: [...seedCoverage.scannedChunks],
+          matchedChunks: [...(seedCoverage.matchedChunks || [])],
+          ingestedChunks: [...(seedCoverage.ingestedChunks || [])],
+        }
+        : null,
+    };
   }
 
-  setResumeRuns(chunkHeights: number[] | null | undefined): void {
-    this.resumeRunChunks = (Array.isArray(chunkHeights) && chunkHeights.length > 0)
-      ? Array.from(new Set(chunkHeights.filter((h) => Number.isFinite(h)))).sort((a, b) => a - b)
-      : null;
+  clearResumePlan(): void {
+    this.resumePlan = null;
+  }
+
+  private consumeResumePlan(
+    walletAddress: string,
+    startHeight: number,
+    endHeight: number
+  ): { chunkHeights: number[] | null; seedCoverage: ScanResumeSeedCoverage | null } {
+    const plan = this.resumePlan;
+    this.resumePlan = null;
+    if (!plan) {
+      return { chunkHeights: null, seedCoverage: null };
+    }
+
+    if (!walletAddress || plan.walletAddress !== walletAddress) {
+      reportClientEvent('scan.resume_plan_discarded', {
+        level: 'warn',
+        message: 'Precise resume plan discarded: wallet address mismatch',
+      });
+      return { chunkHeights: null, seedCoverage: null };
+    }
+
+    const chunkHeights = plan.chunkHeights.filter((height) =>
+      height >= startHeight && height < endHeight
+    );
+    return {
+      chunkHeights: chunkHeights.length > 0 ? chunkHeights : null,
+      seedCoverage: chunkHeights.length > 0 ? plan.seedCoverage : null,
+    };
   }
 
   resetCancellation(): void {

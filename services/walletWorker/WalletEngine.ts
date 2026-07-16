@@ -9,11 +9,13 @@
 
 import type { WorkerInitConfig } from './protocol';
 import type { WalletStateMirror } from './WalletStateMirror';
+import type { WasmVariant } from '../../utils/wasmVersion';
 
 export interface WalletEngine {
   init(config: WorkerInitConfig): Promise<void>;
   call<T = unknown>(method: string, args?: unknown[], opts?: { timeoutMs?: number }): Promise<T>;
   op<T = unknown>(op: string, payload?: any, opts?: { timeoutMs?: number; transfer?: Transferable[] }): Promise<T>;
   mirror: WalletStateMirror;
+  readonly wasmVariant?: WasmVariant | null;
   terminate(): void;
 }
