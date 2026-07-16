@@ -23,11 +23,24 @@ const TELEMETRY_ENABLED_KEY = 'salvium_telemetry_enabled';
 
 // User preference gate. Read once at module load (reportClientEvent can fire
 // before React mounts); Settings flips it at runtime via setClientTelemetryEnabled.
-const readTelemetryEnabled = (): boolean => {
+declare const __SALVIUM_TELEMETRY_DEFAULT_OFF__: boolean;
+
+// F-Droid flavor ships with diagnostics off until the user opts in.
+const telemetryDefault = (): boolean => {
   try {
-    return window.localStorage.getItem(TELEMETRY_ENABLED_KEY) !== 'false';
+    return !(typeof __SALVIUM_TELEMETRY_DEFAULT_OFF__ !== 'undefined' && __SALVIUM_TELEMETRY_DEFAULT_OFF__ === true);
   } catch {
     return true;
+  }
+};
+
+const readTelemetryEnabled = (): boolean => {
+  try {
+    const stored = window.localStorage.getItem(TELEMETRY_ENABLED_KEY);
+    if (stored === null) return telemetryDefault();
+    return stored !== 'false';
+  } catch {
+    return telemetryDefault();
   }
 };
 

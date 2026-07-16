@@ -24,6 +24,7 @@ export default defineConfig({
   define: {
     __SALVIUM_EXTENSION_BROWSER__: JSON.stringify(browserTarget),
     __SALVIUM_BUNDLED__: 'false',
+    __SALVIUM_TELEMETRY_DEFAULT_OFF__: 'false',
   },
   resolve: {
     alias: {

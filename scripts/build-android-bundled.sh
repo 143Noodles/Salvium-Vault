@@ -13,6 +13,8 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/.local/android-sdk}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 export SALVIUM_BUNDLED=1
+# F-Droid flavor: diagnostics default OFF (user can opt in via Settings).
+if [ "${FDROID_BUILD:-}" = "true" ]; then export SALVIUM_TELEMETRY_DEFAULT_OFF=1; fi
 
 cd "$ROOT_DIR"
 

@@ -67,6 +67,7 @@ export default defineConfig(() => {
     },
     define: {
       __SALVIUM_BUNDLED__: JSON.stringify(isBundled),
+      __SALVIUM_TELEMETRY_DEFAULT_OFF__: JSON.stringify(process.env.SALVIUM_TELEMETRY_DEFAULT_OFF === "1"),
     },
     build: {
       outDir,
