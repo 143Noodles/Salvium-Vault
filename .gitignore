@@ -36,6 +36,7 @@ Desktop.ini
 
 # Logs
 *.log
+!deploys.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
