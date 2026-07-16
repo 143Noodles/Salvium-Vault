@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bundled build: cleartext denied app-wide; the app only ever talks HTTPS
+     to *.salvium.tools. The base-config trust anchors intentionally stay at
+     the system store (a full pin is a self-brick risk on CA rotation). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
