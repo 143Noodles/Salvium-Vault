@@ -9,6 +9,13 @@ This is useful while Vault is moving quickly, but it is not the most typical
 F-Droid model because the wallet UI and WASM code are loaded from the official
 Vault service at runtime rather than bundled into the APK.
 
+## Release Tags
+
+Android releases are tagged `android-v<versionName>` (e.g. `android-v1.0.1`),
+matching `versionName`/`versionCode` in `android/app/build.gradle` and the
+fdroiddata metadata (`UpdateCheckMode: Tags ^android-v[0-9.]+$`). Tag every
+Play/F-Droid release; desktop releases use plain `v<version>` tags.
+
 ## Release Discipline
 
 Production web deploys for the Android app should come from public source,

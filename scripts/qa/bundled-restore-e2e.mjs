@@ -1,0 +1,88 @@
+// Bundled build FULL restore E2E: serve dist-android locally, restore the
+// designated test wallet from height 0 entirely through routed API calls to
+// api.salvium.tools, reach the expected balance, dry-run a spend. Proves the
+// frozen-code APK model works for the real scan pipeline.
+import { chromium } from 'playwright';
+import http from 'http';
+import fs from 'fs';
+import path from 'path';
+
+const ROOT = path.resolve('dist-android');
+const SEED = fs.readFileSync('/tmp/.salvium_seed', 'utf8').trim();
+const PASSWORD = 'HeadlessTest123!';
+const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+const MIME = { '.html':'text/html','.js':'application/javascript','.css':'text/css','.wasm':'application/wasm','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2','.ico':'image/x-icon' };
+
+const server = http.createServer((req, res) => {
+  let urlPath = decodeURIComponent(req.url.split('?')[0]);
+  if (urlPath === '/') urlPath = '/index.html';
+  let filePath = path.join(ROOT, urlPath);
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) filePath = path.join(ROOT, 'index.html');
+  res.setHeader('Content-Type', MIME[path.extname(filePath)] || 'application/octet-stream');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+  fs.createReadStream(filePath).pipe(res);
+});
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const LOCAL = `http://127.0.0.1:${server.address().port}`;
+log('serving dist-android at', LOCAL);
+
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+const remoteCodeLoads = [];
+const apiHosts = new Set();
+page.on('request', (req) => {
+  const u = new URL(req.url());
+  if ((/\.(js|mjs|wasm)$/.test(u.pathname) || u.pathname.startsWith('/wallet/')) && u.hostname !== '127.0.0.1') remoteCodeLoads.push(req.url());
+  if (u.pathname.startsWith('/api/') && u.hostname !== '127.0.0.1') apiHosts.add(u.hostname);
+});
+await page.addInitScript(() => { window.__v = []; document.addEventListener('securitypolicyviolation', (e) => window.__v.push(e.violatedDirective)); });
+
+await page.goto(LOCAL, { waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(6000);
+
+log('restore: seed + height 0');
+await page.getByText('Import from seed or backup', { exact: false }).first().click();
+await page.waitForTimeout(1500);
+await page.getByText('Enter your 25-word recovery phrase', { exact: false }).first().click();
+await page.waitForTimeout(1500);
+await page.locator('textarea').first().fill(SEED);
+const h = page.locator('input[type="number"]').first();
+if (await h.count()) await h.fill('0');
+await page.getByRole('button', { name: /continue|next/i }).first().click();
+await page.waitForTimeout(1500);
+const pw = page.locator('input[type="password"]');
+await pw.nth(0).fill(PASSWORD);
+await pw.nth(1).fill(PASSWORD);
+await page.getByRole('button', { name: /restore wallet/i }).last().click();
+log('restore started; scanning...');
+
+const deadline = Date.now() + 13 * 60 * 1000;
+let success = false, last = '';
+while (Date.now() < deadline) {
+  await page.waitForTimeout(15000);
+  const txt = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 400)).catch(() => '');
+  const snip = txt.slice(0, 150);
+  if (snip !== last) { log('ui:', snip); last = snip; }
+  if (/16\.8\d/.test(txt)) { success = true; break; }
+}
+log('balance reached:', success);
+
+let sweep = 'skipped';
+const aborted = [];
+if (success) {
+  await page.route('**/*sendrawtransaction*', (r) => { aborted.push((r.request().postData()||'').length); r.abort(); });
+  sweep = await page.evaluate(async () => {
+    const ws = window.walletService;
+    const addr = (ws.getAddress && ws.getAddress()) || (ws.getPrimaryAddress && ws.getPrimaryAddress());
+    try { await ws.sweepAllTransaction(addr, 1); return 'unexpected success'; }
+    catch (e) { return 'threw: ' + String(e.message||e).slice(0, 80); }
+  });
+}
+
+const violations = await page.evaluate(() => window.__v).catch(() => ['<fail>']);
+log('RESULT', JSON.stringify({ success, sweep, abortedBroadcastBytes: aborted, remoteCodeLoads, apiHostsSeen: [...apiHosts], violations }, null, 1));
+await browser.close();
+server.close();
+const pass = success && remoteCodeLoads.length === 0 && [...apiHosts].every((x) => x === 'api.salvium.tools') && violations.length === 0 && aborted.some((b) => b > 100);
+process.exit(pass ? 0 : 1);

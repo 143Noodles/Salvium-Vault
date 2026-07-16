@@ -26,6 +26,12 @@ For the first Play upload of `tools.salvium`, create a fresh upload key and enro
 
 Without all four `SALVIUM_RELEASE_*` values, Gradle can build and lint the release bundle, but the generated AAB remains unsigned and is not upload-ready.
 
+## Release tagging
+
+Tag every Play release `android-v<versionName>` after bumping
+`versionCode`/`versionName` in `android/app/build.gradle`, and push the tag.
+Keep `metadata/tools.salvium.yml` (`CurrentVersion`/`commit`) in sync.
+
 ## Build
 
 ```bash

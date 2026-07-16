@@ -19,7 +19,12 @@ signing / notarization is required.
    ```bash
    node desktop/scripts/publish-content.mjs <version>
    ```
-3. Publish — the manifest MUST land on the release marked **Latest**
+3. Generate the checksum manifest for every asset (published users verify
+   downloads against it — see SECURITY.md):
+   ```bash
+   node scripts/generate-sha256sums.mjs desktop/content-dist -o desktop/content-dist/SHA256SUMS.txt
+   ```
+4. Publish — the manifest MUST land on the release marked **Latest**
    (clients poll `releases/latest/download/content-manifest.json` at launch and hourly):
    ```bash
    gh release create v<version> desktop/content-dist/* --latest \
@@ -67,3 +72,16 @@ stable-port persistence). **macOS / Windows:** CI-built (dmg x64+arm64, NSIS
 x64), not yet runtime-tested on real hardware; the shell code is portable by
 construction (AppImage-specific bits are Linux-guarded, tray/menu/single-instance
 are OS-agnostic).
+
+
+## Offline signing (recommended)
+
+The Ed25519 content-signing key does not need to live on the build server.
+`publish-content.mjs` reads `SALVIUM_CONTENT_SIGNING_KEY` (path to the key), so
+the maintainer can hold the key locally and run only the sign+publish step:
+
+1. Server (or CI) builds the unsigned tarball; copy `desktop/content-dist/` down.
+2. Locally: `SALVIUM_CONTENT_SIGNING_KEY=~/keys/salvium-content-signing.key node desktop/scripts/publish-content.mjs <version>`
+3. `gh release create` as above from the local machine.
+
+With the key off the server, a server compromise cannot sign a desktop update.
