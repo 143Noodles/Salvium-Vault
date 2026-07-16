@@ -6222,13 +6222,50 @@ app.use((req, res, next) => {
     });
     next();
 });
+// Two CSP variants selected per request by UA capability. 'wasm-unsafe-eval'
+// and script nonces need Chrome 97+ / Safari 16.4+ / Firefox 102+; older
+// WebViews are still supported (see the .at() polyfill in index.html), so
+// anything below those versions — or unidentifiable — gets the permissive
+// legacy policy. Fail-open: a wrong guess must never block WebAssembly
+// compilation (= wallet load) on a user's device.
+function uaSupportsModernCsp(ua) {
+  if (typeof ua !== 'string' || !ua) return false;
+  try {
+    const chrome = ua.match(/(?:Chrome|CriOS)\/(\d+)/);
+    if (chrome) return parseInt(chrome[1], 10) >= 97;
+    const firefox = ua.match(/Firefox\/(\d+)/);
+    if (firefox) return parseInt(firefox[1], 10) >= 102;
+    if (/Safari\//.test(ua)) {
+      const safari = ua.match(/Version\/(\d+)\.(\d+)/);
+      if (!safari) return false;
+      const major = parseInt(safari[1], 10);
+      const minor = parseInt(safari[2], 10);
+      return major > 16 || (major === 16 && minor >= 4);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+const CSP_SHARED = "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://*.salvium.io https://*.salvium.io:19081 https://*.salvium.tools; img-src 'self' data: blob: https://dweb.link https://*.ipfs.dweb.link https://ipfs.io https://*.ipfs.ipfs.io https://arweave.net https://*.arweave.net https://*.salvium.tools; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self'; frame-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self';";
 app.use((req, res, next) => {
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  // TODO(post-launch): replace script-src/style-src 'unsafe-inline' (and 'unsafe-eval', kept for Emscripten WASM) with per-request nonces.
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://*.salvium.io https://*.salvium.io:19081 https://*.salvium.tools wss://*; img-src 'self' data: blob: https://dweb.link https://*.ipfs.dweb.link https://ipfs.io https://*.ipfs.ipfs.io https://arweave.net https://*.arweave.net https://*.salvium.tools; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self'; base-uri 'self';");
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(self), geolocation=(), microphone=(), payment=(), usb=(), bluetooth=(), serial=(), browsing-topics=()');
+  const nonce = crypto.randomBytes(16).toString('base64');
+  res.locals.cspNonce = nonce;
+  // 'unsafe-eval' is load-bearing: scan workers are blob-created (inherit the
+  // document CSP) and eval patched WASM glue, and embind builds invokers with
+  // new Function. Dropping it requires importScripts-able patched glue plus a
+  // DYNAMIC_EXECUTION=0 WASM rebuild. The modern-browser win here is nonces
+  // replacing 'unsafe-inline': injected inline scripts / handlers / javascript:
+  // URLs are dead without the per-request nonce.
+  const scriptSrc = uaSupportsModernCsp(req.headers['user-agent'])
+    ? `script-src 'self' 'nonce-${nonce}' 'unsafe-eval' blob:;`
+    : "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:;";
+  res.setHeader('Content-Security-Policy', `${CSP_SHARED} ${scriptSrc}`);
   next();
 });
 
@@ -10873,19 +10910,27 @@ const distStaticOptions = {
 // Keyed on SALVIUM_ALLOW_PRIVATE_NODES, which ONLY the Electron shell sets — the
 // hosted web server never does, so its HTML is untouched (fast sendFile path).
 const SALVIUM_DESKTOP_SIDECAR = process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1';
-let desktopIndexHtmlCache = null;
+// Cached app-shell template with a nonce placeholder pre-stamped on every
+// <script> tag; each request substitutes the per-request CSP nonce. The
+// legacy-UA CSP variant ignores nonce attributes ('unsafe-inline' governs),
+// so stamping unconditionally is safe for both variants.
+let indexHtmlTemplateCache = null;
+function getIndexHtmlTemplate() {
+    if (!indexHtmlTemplateCache) {
+        let html = fsSync.readFileSync(path.join(__dirname, 'dist', 'index.html'), 'utf8');
+        html = html.replace(/<script(?![^>]*\bnonce=)/g, '<script nonce="__CSP_NONCE__"');
+        if (SALVIUM_DESKTOP_SIDECAR) {
+            html = html.replace('<head>', '<head><script nonce="__CSP_NONCE__">window.__SALVIUM_DESKTOP__=true;</script>');
+        }
+        indexHtmlTemplateCache = html;
+    }
+    return indexHtmlTemplateCache;
+}
 function serveIndexHtml(req, res) {
     res.setHeader('Cache-Control', 'no-cache');
-    if (!SALVIUM_DESKTOP_SIDECAR) {
-        return res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-    }
     try {
-        if (!desktopIndexHtmlCache) {
-            let html = fsSync.readFileSync(path.join(__dirname, 'dist', 'index.html'), 'utf8');
-            html = html.replace('<head>', '<head><script>window.__SALVIUM_DESKTOP__=true;</script>');
-            desktopIndexHtmlCache = html;
-        }
-        res.type('html').send(desktopIndexHtmlCache);
+        const nonce = (res.locals && res.locals.cspNonce) || '';
+        res.type('html').send(getIndexHtmlTemplate().split('__CSP_NONCE__').join(nonce));
     } catch (e) {
         res.sendFile(path.join(__dirname, 'dist', 'index.html'));
     }
