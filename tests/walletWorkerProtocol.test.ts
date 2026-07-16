@@ -64,6 +64,9 @@ const INIT_CONFIG = {
   wasmAssetVersion: 'test-asset-1',
   glueUrl: '/api/wasm/SalviumWallet.js?v=test-asset-1',
   wasmUrl: '/api/wasm/SalviumWallet.wasm?v=test-asset-1',
+  wasmVariant: 'simd' as const,
+  fallbackGlueUrl: '/api/wasm/SalviumWalletBaseline.js?v=test-asset-1',
+  fallbackWasmUrl: '/api/wasm/SalviumWalletBaseline.wasm?v=test-asset-1',
   network: 'mainnet',
 };
 
@@ -86,7 +89,7 @@ function makeDispatcher(opts: {
 
   return (msg, reply) => {
     if (msg.kind === 'init') {
-      reply({ kind: 'ready', wasmVersion: '6.1.99-test' });
+      reply({ kind: 'ready', wasmVersion: '6.1.99-test', wasmVariant: msg.config.wasmVariant });
       return;
     }
 
@@ -153,6 +156,7 @@ describe('WalletWorkerClient', () => {
     const { client, worker } = await spawnWithFake(makeDispatcher());
 
     expect(client.wasmVersion).toBe('6.1.99-test');
+    expect(client.wasmVariant).toBe('simd');
     expect(worker.sent[0]).toEqual({ kind: 'init', config: INIT_CONFIG });
   });
 
@@ -242,9 +246,23 @@ describe('WalletWorkerClient', () => {
     await expect(pending).rejects.toBeInstanceOf(WalletWorkerCrashedError);
     expect(crashes).toHaveLength(1);
     expect(crashes[0].message).toContain('OOM in wallet worker');
+    expect(worker.terminated).toBe(true);
 
     // After a crash, new requests fail fast (no auto-restart in v1 by design).
     await expect(client.call('get_address')).rejects.toBeInstanceOf(WalletWorkerCrashedError);
+  });
+
+  it('terminates a worker that crashes before the ready handshake', async () => {
+    let worker!: FakeWorker;
+    const spawn = WalletWorkerClient.spawn(INIT_CONFIG, () => {
+      worker = new FakeWorker((_msg, _reply, activeWorker) => {
+        activeWorker.crash('unsupported wasm feature');
+      });
+      return worker;
+    });
+
+    await expect(spawn).rejects.toThrow('unsupported wasm feature');
+    expect(worker.terminated).toBe(true);
   });
 
   it('rejects in-flight and subsequent requests after terminate()', async () => {

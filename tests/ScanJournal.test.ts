@@ -35,6 +35,7 @@ import {
   type ScanJournalEntry,
   type ScanCheckpoint,
 } from '../services/ScanJournal';
+import { resolveRestoreRetryResumePolicy } from '../utils/scanPolicy';
 
 describe('ScanJournal', () => {
   beforeEach(async () => {
@@ -249,17 +250,26 @@ describe('ScanJournal', () => {
       expect(result.gaps).toEqual([506000, 507000, 508000]);
     });
 
-    it('does not prune journal gaps when the resume floor is explicitly zero', async () => {
+    it('resumes exact flushed gaps for a height-zero restore retry', async () => {
       const walletAddress = 'salv1zerofloor';
       const scanId = 'scan_zero_floor';
       await startScanJournal(scanId, walletAddress, 0, 3000);
       await recordScannedChunks(scanId, [0], false, 0);
       await flushPendingUpdates();
 
-      const result = await isRecoverySafe(walletAddress, 3000, 1000, {
-        minResumeHeight: 0,
+      const retryPolicy = resolveRestoreRetryResumePolicy({
+        reason: 'restore-retryable-retry',
+        sessionType: 'restore-full-rescan',
+        fromHeight: 0,
+        forceCleanRestoreScan: true,
       });
 
+      const result = await isRecoverySafe(walletAddress, 3000, 1000, {
+        minResumeHeight: retryPolicy.minResumeHeight,
+      });
+
+      expect('fromHeight' in retryPolicy).toBe(false);
+      expect(retryPolicy.forceCleanRestoreScan).toBe(false);
       expect(result.action).toBe('rescan_gaps');
       expect(result.gaps).toEqual([1000, 2000]);
     });

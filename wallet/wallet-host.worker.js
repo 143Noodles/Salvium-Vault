@@ -8,12 +8,12 @@
  * plain JS and self-contained, the only external code is importScripts of the glue).
  *
  * Inbound messages:
- *   { kind: 'init', config: { wasmAssetVersion, glueUrl, wasmUrl, network } }
+ *   { kind: 'init', config: { wasmAssetVersion, glueUrl, wasmUrl, wasmVariant, network } }
  *   { kind: 'call', id, method, args }          -> generic wallet[method](...args) (fallback Module[method])
  *   { kind: 'op',   id, op, payload }           -> composite operations (see handleOp)
  *
  * Outbound messages:
- *   { kind: 'ready', wasmVersion }
+ *   { kind: 'ready', wasmVersion, wasmVariant }
  *   { kind: 'result', id, ok: true, value, durationMs }
  *   { kind: 'result', id, ok: false, error: { name, message } }
  *   { kind: 'delta', delta }                    -> wallet state changes (see computeDelta)
@@ -23,11 +23,21 @@
 
 'use strict';
 
+try {
+    importScripts(new URL('wasm-feature-detect.js', self.location.href).toString());
+} catch (_) {
+    // The main thread also selects a conservative variant. A missing helper here
+    // must never prevent the worker from using that explicit configuration.
+}
+
 let Module = null;
 let wallet = null;
 let initConfig = null;
 let initDone = false;
 let initInProgress = false;
+let activeWasmVariant = 'baseline';
+let activeGlueUrl = '';
+let activeWasmUrl = '';
 
 // Delta ordering: version increments on every push; incarnation is fixed at worker
 // start so a respawned worker is detected by the mirror (which resets on a new value).
@@ -158,7 +168,7 @@ self.onmessage = function (e) {
 async function handleInit(config) {
     if (initDone) {
         // Re-init of a live worker: just re-announce readiness.
-        postToClient({ kind: 'ready', wasmVersion: resolveWasmVersion() });
+        postToClient({ kind: 'ready', wasmVersion: resolveWasmVersion(), wasmVariant: activeWasmVariant });
         return;
     }
     if (initInProgress) return;
@@ -169,6 +179,32 @@ async function handleInit(config) {
             throw new Error('init config missing glueUrl/wasmUrl');
         }
         initConfig = config;
+        activeWasmVariant = config.wasmVariant === 'simd' ? 'simd' : 'baseline';
+        activeGlueUrl = config.glueUrl;
+        activeWasmUrl = config.wasmUrl;
+
+        const activateBaseline = function (reason) {
+            if (!config.fallbackGlueUrl || !config.fallbackWasmUrl) return false;
+            activeWasmVariant = 'baseline';
+            activeGlueUrl = config.fallbackGlueUrl;
+            activeWasmUrl = config.fallbackWasmUrl;
+            postTelemetry('wallet.wasm_fallback_activated', 'warn', reason, {
+                endpoint: String(activeWasmUrl || ''),
+                reason: reason,
+                wasmVariant: activeWasmVariant,
+                fallbackAvailable: true
+            });
+            return true;
+        };
+
+        try {
+            const detector = self.SalviumWasmFeatures;
+            if (activeWasmVariant === 'simd' && detector && detector.selectVariant() === 'baseline') {
+                activateBaseline('worker_feature_probe');
+            }
+        } catch (_) {
+            if (activeWasmVariant === 'simd') activateBaseline('worker_feature_probe_failed');
+        }
 
         // iOS/Safari shim — mirrors WalletService.loadWasm: the glue references
         // SharedArrayBuffer even with pthreads disabled.
@@ -176,11 +212,11 @@ async function handleInit(config) {
             self.SharedArrayBuffer = ArrayBuffer;
         }
 
-        importScripts(config.glueUrl);
+        importScripts(activeGlueUrl);
 
-        const factory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
+        let factory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
         if (typeof factory !== 'function') {
-            throw new Error('SalviumWallet factory not found after importScripts(' + config.glueUrl + ')');
+            throw new Error('SalviumWallet factory not found after importScripts(' + activeGlueUrl + ')');
         }
 
         let wasmFetchBust = '';
@@ -202,7 +238,7 @@ async function handleInit(config) {
             return {
             locateFile: function (path) {
                 if (path && /\.wasm$/.test(path)) {
-                    return bustUrl(config.wasmUrl);
+                    return bustUrl(activeWasmUrl);
                 }
                 return path;
             },
@@ -242,14 +278,23 @@ async function handleInit(config) {
             Module = await factory(buildFactoryOptions());
         } catch (compileErr) {
             if (!isWasmCompileFailure(compileErr)) throw compileErr;
-            postTelemetry('wallet.wasm_compile_retry', 'warn', String((compileErr && compileErr.message) || compileErr).slice(0, 160), {
-                endpoint: String(config.wasmUrl || ''),
-                reason: 'wasm_compile_error_cache_bust'
-            });
-            wasmFetchBust = Math.random().toString(36).slice(2);
-            importScripts(bustUrl(config.glueUrl));
-            const freshFactory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
-            Module = await freshFactory(buildFactoryOptions());
+            const message = String((compileErr && compileErr.message) || compileErr).slice(0, 160);
+            if (activeWasmVariant === 'simd' && activateBaseline('canonical_compile_failed')) {
+                wasmFetchBust = '';
+                importScripts(activeGlueUrl);
+                factory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
+                Module = await factory(buildFactoryOptions());
+            } else {
+                postTelemetry('wallet.wasm_compile_retry', 'warn', message, {
+                    endpoint: String(activeWasmUrl || ''),
+                    reason: 'wasm_compile_error_cache_bust',
+                    wasmVariant: activeWasmVariant
+                });
+                wasmFetchBust = Math.random().toString(36).slice(2);
+                importScripts(bustUrl(activeGlueUrl));
+                const freshFactory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
+                Module = await freshFactory(buildFactoryOptions());
+            }
         }
 
         wallet = createWalletInstance(config.network);
@@ -268,26 +313,29 @@ async function handleInit(config) {
                 : -1;
             if (arity >= 0 && arity !== 5) {
                 postTelemetry('wallet.wasm_pair_mismatch_healed', 'warn', 'stale arity=' + arity, {
-                    endpoint: String(config.wasmUrl || ''),
-                    reason: 'stale-wasm-bytes'
+                    endpoint: String(activeWasmUrl || ''),
+                    reason: 'stale-wasm-bytes',
+                    wasmVariant: activeWasmVariant
                 });
                 // Bust BOTH files: glue and binary are a matched pair and the same
                 // poisoned cache serves both — a fresh binary under the stale glue
                 // hard-aborts on the import table (the launch-day import #229 abort).
                 wasmFetchBust = Math.random().toString(36).slice(2);
-                importScripts(bustUrl(config.glueUrl));
+                importScripts(bustUrl(activeGlueUrl));
                 const freshFactory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
                 Module = await freshFactory(buildFactoryOptions());
             }
         } catch (verifyErr) { }
-        postToClient({ kind: 'ready', wasmVersion: resolveWasmVersion() });
+        postToClient({ kind: 'ready', wasmVersion: resolveWasmVersion(), wasmVariant: activeWasmVariant });
     } catch (err) {
         initInProgress = false;
         const message = (err && err.message) ? err.message : String(err);
         postTelemetry('wallet.worker_init_failed', 'error', message, {
-            endpoint: initConfig ? String(initConfig.glueUrl || '') : '',
+            endpoint: String(activeGlueUrl || ''),
             errorName: (err && err.name) || typeof err,
-            asset: initConfig ? String(initConfig.wasmAssetVersion || '') : ''
+            asset: initConfig ? String(initConfig.wasmAssetVersion || '') : '',
+            wasmVariant: activeWasmVariant,
+            fallbackAvailable: !!(initConfig && initConfig.fallbackWasmUrl)
         });
         // Rethrow OUTSIDE the async chain so the Worker's onerror fires on the client
         // (an async rejection alone would only surface as unhandledrejection).

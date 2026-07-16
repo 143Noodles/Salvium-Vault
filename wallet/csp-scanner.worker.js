@@ -263,9 +263,10 @@ self.onmessage = async function (e) {
 
 async function handleLoadWasm(msg) {
     try {
+        const wasmVariant = msg.wasmVariant === 'simd' ? 'simd' : 'baseline';
         if (isReady && Module) {
             const version = Module.get_version ? Module.get_version() : 'unknown';
-            self.postMessage({ type: 'READY', version, hasScanCspBatch: typeof Module.scan_csp_batch === 'function' });
+            self.postMessage({ type: 'READY', version, wasmVariant, hasScanCspBatch: typeof Module.scan_csp_batch === 'function' });
             return;
         }
         if (wasmLoadInProgress) {
@@ -284,7 +285,8 @@ async function handleLoadWasm(msg) {
         self.postMessage({
             type: 'WASM_LOAD_STARTED',
             wasmBytes: wasmBinary.byteLength || 0,
-            jsBytes: patchedJsCode?.length || 0
+            jsBytes: patchedJsCode?.length || 0,
+            wasmVariant
         });
 
         const wasmModule = await WebAssembly.compile(wasmBinary);
@@ -303,7 +305,7 @@ async function handleLoadWasm(msg) {
 
         let jsCode = patchedJsCode;
         if (!jsCode && isExtensionProtocol()) {
-            importScripts('SalviumWallet.js');
+            importScripts(msg.glueUrl || (wasmVariant === 'simd' ? 'SalviumWallet.js' : 'SalviumWalletBaseline.js'));
         } else {
             if (!jsCode) {
                 throw new Error('Patched WASM JS code missing');
@@ -341,11 +343,15 @@ async function handleLoadWasm(msg) {
         if (!hasScanCspBatch) {
         }
 
-        self.postMessage({ type: 'READY', version, hasScanCspBatch });
+        self.postMessage({ type: 'READY', version, wasmVariant, hasScanCspBatch });
 
     } catch (err) {
         wasmLoadInProgress = false;
-        self.postMessage({ type: 'ERROR', error: 'WASM load failed: ' + err.message });
+        self.postMessage({
+            type: 'ERROR',
+            error: 'WASM load failed: ' + err.message,
+            wasmVariant: msg.wasmVariant === 'simd' ? 'simd' : 'baseline'
+        });
     }
 }
 
@@ -528,6 +534,10 @@ async function handleScanCspDirect(msg) {
     const startHeight = msg.startHeight;
     const count = msg.count || 1000;
     const actualCount = msg.actualCount || count;
+    const reportedCoverage = msg.coveredThrough;
+    const coveredThrough = reportedCoverage === null
+        ? null
+        : (Number.isFinite(Number(reportedCoverage)) ? Number(reportedCoverage) : null);
     const cspData = msg.cspData;
     const scanStart = performance.now();
 
@@ -561,6 +571,7 @@ async function handleScanCspDirect(msg) {
             workerId,
             startHeight,
             endHeight,
+            coveredThrough,
             actualCount,
             stats: {
                 txCount: 0,
@@ -746,6 +757,39 @@ async function handleScanCspBatch(msg) {
         if (response.status === 404) {
             const missingReason = response.headers.get('X-CSP-Missing-Reason') || 'unknown';
             const missingStarts = response.headers.get('X-CSP-Missing-Chunk-Starts') || '';
+            const knownHeight = parseInt(response.headers.get('X-CSP-Known-Height') || '', 10);
+            if (missingReason === 'beyond_tip' && Number.isFinite(knownHeight)) {
+                const missingChunks = parseCspChunkStartHeader(missingStarts);
+                self.postMessage({
+                    type: 'SCAN_BATCH_RESULT',
+                    workerId,
+                    startHeight,
+                    endHeight: Math.max(0, knownHeight - 1),
+                    coveredThrough: knownHeight,
+                    chunksProcessed: 0,
+                    blocksProcessed: 0,
+                    scannedChunks: [],
+                    missingChunks,
+                    missingReason,
+                    stats: {
+                        txCount: 0,
+                        outputCount: 0,
+                        viewTagMatches: 0,
+                        derivations: 0,
+                        scanMs: 0,
+                        bytesReceived: 0,
+                        fetchMs: Math.round(tempFetchMs),
+                        carrotCoinbaseChecked: 0,
+                        carrotCoinbaseMatched: 0,
+                        carrotRingctPassthrough: 0,
+                        inputsScanned: 0,
+                        spentOutputsFound: 0,
+                    },
+                    matches: [],
+                    spent: [],
+                });
+                return;
+            }
             throw new Error(`CSP batch unavailable: HTTP 404 (${missingReason}; missing=${missingStarts || startHeight})`);
         }
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Loads the REAL wallet/CSPScanner.js in a sandbox and returns a scanner instance, so we
 // can integration-test the failure-recovery logic (batch requeue, stuck-worker cap,
@@ -37,6 +37,10 @@ function loadScanner(extraGlobals: Record<string, unknown> = {}) {
 function busyWorker(id: number, task: any) {
   return { id, busy: true, currentTask: task, ready: true, enabled: true, taskStartTime: 0 };
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('CSPScanner batch recovery', () => {
   it('re-queues an all-missing batch when the reason is NOT beyond-tip (bounded)', () => {
@@ -117,6 +121,140 @@ describe('CSPScanner batch recovery', () => {
 
     // After the 3-retry cap, further empties go to failedBatches instead of looping forever.
     expect(scanner.failedBatches.some((f: any) => f.startHeight === 5000)).toBe(true);
+  });
+
+  it('does not re-queue beyond-tip chunks or let completion exceed the scan total', () => {
+    const { scanner, telemetry } = loadScanner();
+    scanner.scheduleNextTask = () => {};
+    scanner.chunkSize = 1000;
+    scanner.taskQueue = [];
+    scanner.pendingTasks = 1;
+    scanner.totalBlocks = 2245;
+    scanner.scannedBlocks = 1000;
+    scanner.stats = { ...scanner.stats, completedChunks: 1, totalChunks: 2, endHeight: 527245 };
+    scanner.scannedChunks = new Set([525000]);
+    scanner.workers = [busyWorker(0, { startHeight: 526000, chunkCount: 20, isBatch: true })];
+
+    scanner.handleScanBatchResult({
+      workerId: 0,
+      startHeight: 526000,
+      endHeight: 527999,
+      coveredThrough: 527245,
+      chunksProcessed: 2,
+      stats: { txCount: 0, outputCount: 0 },
+      scannedChunks: [526000, 527000],
+      missingChunks: Array.from({ length: 18 }, (_, i) => 528000 + (i * 1000)),
+      missingReason: 'beyond_tip',
+      matches: [],
+      spent: [],
+    });
+
+    expect(scanner.taskQueue).toEqual([]);
+    expect(scanner.stats.completedChunks).toBe(2);
+    expect(telemetry.map((event) => event.type)).not.toContain('scan.worker_partial_batch_requeued');
+  });
+
+  it('preserves the failed task mode and bounds when scheduling a retry', () => {
+    vi.useFakeTimers();
+    const { scanner } = loadScanner();
+    scanner.scheduleNextTask = () => {};
+    scanner.isScanning = true;
+    scanner._scanGeneration = 7;
+    scanner.pendingTasks = 1;
+    const failedTask = {
+      startHeight: 526000,
+      count: 1000,
+      actualCount: 1000,
+      isBatch: false,
+      useBundle: true,
+      bundleData: new Uint8Array([1, 2, 3]),
+      coveredThrough: null,
+    };
+    scanner.workers = [busyWorker(0, failedTask)];
+
+    scanner.handleScanError({
+      workerId: 0,
+      startHeight: 526000,
+      chunkCount: 1,
+      error: 'Retryable CSP coverage missing for tail single:526000',
+    });
+    vi.advanceTimersByTime(1000);
+
+    expect(scanner.taskQueue).toHaveLength(1);
+    expect(scanner.taskQueue[0]).toMatchObject({
+      startHeight: 526000,
+      count: 1000,
+      actualCount: 1000,
+      isBatch: false,
+      useBundle: true,
+      coveredThrough: null,
+      isRetry: true,
+    });
+    expect(scanner.taskQueue[0].chunkCount).toBeUndefined();
+  });
+
+  it('parses HTTP status exactly instead of matching digits inside block heights', () => {
+    const { scanner } = loadScanner();
+    const beyondTip404 = 'CSP batch unavailable: HTTP 404 (beyond_tip; missing=528000,535000,545000)';
+
+    expect(scanner.extractScanHttpStatus(beyondTip404)).toBe(404);
+    expect(scanner.isRetryableScanError(beyondTip404)).toBe(false);
+    expect(scanner.isRetryableScanError('CSP batch fetch failed: 403')).toBe(true);
+    expect(scanner.isRetryableScanError('CSP batch fetch failed: 503')).toBe(true);
+    expect(scanner.isRetryableScanError('TIMEOUT: signal is aborted without reason')).toBe(true);
+  });
+
+  it('re-queues an exact 403 batch so the worker can use its activated CDN failover', () => {
+    vi.useFakeTimers();
+    const { scanner, telemetry } = loadScanner();
+    scanner.scheduleNextTask = () => {};
+    scanner.isScanning = true;
+    scanner._scanGeneration = 11;
+    scanner.pendingTasks = 1;
+    const failedTask = { startHeight: 520000, chunkCount: 2, isBatch: true };
+    scanner.workers = [busyWorker(0, failedTask)];
+
+    scanner.handleScanError({
+      workerId: 0,
+      startHeight: 520000,
+      chunkCount: 2,
+      error: 'CSP batch fetch failed: 403',
+    });
+
+    expect(scanner.pendingRetryTasks).toBe(1);
+    expect(telemetry.map((event) => event.type)).toContain('scan.worker_task_retry_scheduled');
+    vi.advanceTimersByTime(1000);
+    expect(scanner.taskQueue).toEqual([{ ...failedTask, isRetry: true }]);
+  });
+});
+
+describe('CSPScanner cached returned-transfer rescan', () => {
+  it('keeps cached tasks single-mode and queues the uncached live tail within bounds', () => {
+    const { scanner } = loadScanner();
+    scanner.batchSize = 20;
+    scanner.scheduleNextTask = () => {};
+    scanner.cachedBundle = {
+      lastHeight: 526999,
+      chunks: [{ startHeight: 526000, endHeight: 526999 }],
+    };
+
+    void scanner.rescanCached(526000, 527245, { returnMatchOnly: true });
+
+    expect(scanner.stats.totalChunks).toBe(2);
+    expect(scanner.taskQueue).toHaveLength(2);
+    expect(scanner.taskQueue[0]).toMatchObject({
+      startHeight: 526000,
+      count: 1000,
+      actualCount: 1000,
+      isBatch: false,
+      useBundle: true,
+      coveredThrough: null,
+    });
+    expect(scanner.taskQueue[1]).toEqual({
+      startHeight: 527000,
+      chunkCount: 1,
+      isBatch: true,
+    });
   });
 });
 

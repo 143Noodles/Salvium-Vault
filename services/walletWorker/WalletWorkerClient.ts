@@ -15,6 +15,7 @@
 import { reportClientEvent } from '../../utils/clientTelemetry';
 import { getExtensionAssetUrl, isExtensionRuntime } from '../../utils/extensionRuntime';
 import type { StateDelta, WireRequest, WireResponse, WorkerInitConfig } from './protocol';
+import type { WasmVariant } from '../../utils/wasmVersion';
 
 export class WalletWorkerCrashedError extends Error {
   constructor(message: string) {
@@ -125,12 +126,13 @@ export class WalletWorkerClient {
   private nextId = 1;
   private deltaSubscribers = new Set<(delta: StateDelta) => void>();
   private crashSubscribers = new Set<(error: Error) => void>();
-  private readyWaiter: { resolve: (wasmVersion: string) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private readyWaiter: { resolve: (wasmVersion: string, wasmVariant?: WasmVariant) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null;
   private crashed: Error | null = null;
   private terminated = false;
 
   /** Runtime WASM version reported by the worker's ready message. */
   wasmVersion: string | null = null;
+  wasmVariant: WasmVariant | null = null;
 
   private constructor(worker: WorkerLike) {
     this.worker = worker;
@@ -159,7 +161,12 @@ export class WalletWorkerClient {
       encodeURIComponent(config.wasmAssetVersion + ':' + (config.appBuildVersion || ''));
     const worker: WorkerLike = workerFactory ? workerFactory(url) : (new Worker(url) as unknown as WorkerLike);
     const client = new WalletWorkerClient(worker);
-    return client.init(config).then(() => client);
+    return client.init(config)
+      .then(() => client)
+      .catch((error) => {
+        client.terminate();
+        throw error;
+      });
   }
 
   private init(config: WorkerInitConfig): Promise<void> {
@@ -170,10 +177,11 @@ export class WalletWorkerClient {
       }, INIT_TIMEOUT_MS);
 
       this.readyWaiter = {
-        resolve: (wasmVersion: string) => {
+        resolve: (wasmVersion: string, wasmVariant?: WasmVariant) => {
           clearTimeout(timer);
           this.readyWaiter = null;
           this.wasmVersion = wasmVersion;
+          this.wasmVariant = wasmVariant || config.wasmVariant;
           resolve();
         },
         reject: (error: Error) => {
@@ -332,7 +340,7 @@ export class WalletWorkerClient {
 
     switch (data.kind) {
       case 'ready':
-        this.readyWaiter?.resolve(data.wasmVersion);
+        this.readyWaiter?.resolve(data.wasmVersion, data.wasmVariant);
         break;
 
       case 'result': {
@@ -400,6 +408,8 @@ export class WalletWorkerClient {
   private handleCrash(error: Error): void {
     if (this.crashed || this.terminated) return;
     this.crashed = error;
+
+    try { this.worker.terminate(); } catch {}
 
     this.readyWaiter?.reject(error);
     this.rejectAllPending(error);

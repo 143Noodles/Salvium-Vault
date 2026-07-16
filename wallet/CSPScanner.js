@@ -18,6 +18,26 @@ function extensionAssetUrl(path) {
     return '/' + clean;
 }
 
+function preferredWasmVariant() {
+    try {
+        const detector = globalThis.SalviumWasmFeatures;
+        return detector && detector.selectVariant() === 'simd' ? 'simd' : 'baseline';
+    } catch (_) {
+        return 'baseline';
+    }
+}
+
+function wasmVariantFiles(variant) {
+    try {
+        const detector = globalThis.SalviumWasmFeatures;
+        if (detector) return detector.getAssetFilenames(variant);
+    } catch (_) {
+    }
+    return variant === 'simd'
+        ? { glue: 'SalviumWallet.js', wasm: 'SalviumWallet.wasm' }
+        : { glue: 'SalviumWalletBaseline.js', wasm: 'SalviumWalletBaseline.wasm' };
+}
+
 class CSPScanner {
     constructor(options) {
         this.viewSecretKey = options.viewSecretKey;
@@ -26,6 +46,8 @@ class CSPScanner {
         this.sViewBalance = options.sViewBalance || '';
         this.keyImagesCsv = options.keyImagesCsv || '';
         this.apiBaseUrl = this.resolveApiBaseUrl(options.apiBaseUrl);
+        this.wasmVariant = preferredWasmVariant();
+        this.wasmGlueUrl = null;
         this.cspCacheEpoch = options.cspCacheEpoch || '';
         const defaultMax = options.workerCount || Math.min(navigator.hardwareConcurrency || 4, 6);
         this.maxWorkerCount = Math.max(1, options.maxWorkerCount || defaultMax);
@@ -88,6 +110,8 @@ class CSPScanner {
         this.workers = [];
         this.taskQueue = [];
         this.pendingTasks = 0;
+        this.pendingRetryTasks = 0;
+        this._scanGeneration = 0;
         this.isScanning = false;
         this.scanAborted = false;
         this.streamDispatchInProgress = false;
@@ -414,7 +438,7 @@ class CSPScanner {
         }
     }
 
-    static WASM_VERSION = '8.2.18-20260702';
+    static WASM_VERSION = '8.2.22-v113c-dual-wasm-20260709';
 
     // fetch() with a hard timeout so a stuck/half-open connection can't hang init/scan forever.
     static async fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
@@ -611,16 +635,30 @@ class CSPScanner {
         return CSPScanner.wasmAssetVersionPromise;
     }
 
-    static async bulkWasmUrl(file) {
-        if (isExtensionProtocol()) return extensionAssetUrl('wallet/' + file);
+    static async bulkWasmUrl(file, variant = preferredWasmVariant()) {
+        const files = wasmVariantFiles(variant);
+        const selectedFile = file.endsWith('.wasm') ? files.wasm : files.glue;
+        if (isExtensionProtocol()) return extensionAssetUrl('wallet/' + selectedFile);
         const version = encodeURIComponent(await CSPScanner.canonicalWasmAssetVersion());
-        return '/api/wasm/' + version + '/' + file;
+        return '/api/wasm/' + version + '/' + selectedFile;
     }
 
     async fetchWasmBinary() {
         if (this.wasmBinary) return this.wasmBinary;
 
-        const response = await CSPScanner.fetchWithTimeout(await CSPScanner.bulkWasmUrl('SalviumWallet.wasm'), {}, 90000);
+        if (this.wasmVariant === 'baseline' && !this._wasmVariantTelemetryEmitted) {
+            this._wasmVariantTelemetryEmitted = true;
+            this.emitTelemetry('scan.wasm_fallback_selected', {
+                wasmVariant: this.wasmVariant,
+                featureProbe: 'simd+bulk-memory'
+            });
+        }
+
+        const response = await CSPScanner.fetchWithTimeout(
+            await CSPScanner.bulkWasmUrl('SalviumWallet.wasm', this.wasmVariant),
+            {},
+            90000
+        );
         if (!response.ok) {
             throw new Error(`Failed to fetch WASM: ${response.status}`);
         }
@@ -629,10 +667,11 @@ class CSPScanner {
     }
 
     async fetchPatchedJs() {
+        this.wasmGlueUrl = await CSPScanner.bulkWasmUrl('SalviumWallet.js', this.wasmVariant);
         if (isExtensionProtocol()) return null;
         if (this.patchedJsCode) return this.patchedJsCode;
 
-        const response = await CSPScanner.fetchWithTimeout(await CSPScanner.bulkWasmUrl('SalviumWallet.js'), {}, 90000);
+        const response = await CSPScanner.fetchWithTimeout(this.wasmGlueUrl, {}, 90000);
         if (!response.ok) {
             throw new Error(`Failed to fetch JS: ${response.status}`);
         }
@@ -731,6 +770,7 @@ class CSPScanner {
         if (needed.length === 0) return false;
 
         const datas = new Map();
+        const coveredThroughByHeight = new Map();
         const tailStart = needed[needed.length - 1];
         let tailFromNetwork = false;
         let sinceYield = 0;
@@ -754,17 +794,12 @@ class CSPScanner {
                 if (isTail) { tailFromNetwork = true; continue; }
                 return false; // truncated/partial -> treat as miss
             }
-            // Tail freshness: a cached tail chunk written when the chain was shorter
-            // passes length/hash checks but silently OMITS the newest blocks. Only a
-            // COMPLETE final chunk (inclusive end = start + chunkSize - 1) is accepted
-            // from cache; a partial tip-chunk is stale by construction (the tip moves)
-            // and is fetched from the network instead -- without rejecting the rest.
-            if (isTail) {
-                const cachedEnd = parseInt(match.headers.get('x-end-height') || '0', 10);
-                if (!Number.isFinite(cachedEnd) || cachedEnd < h + this.chunkSize - 1) {
-                    tailFromNetwork = true;
-                    continue;
-                }
+            // A chunk cached while it was the live tail may later become an internal
+            // chunk. Never accept that partial data as complete coverage.
+            const cachedEnd = parseInt(match.headers.get('x-end-height') || '', 10);
+            if (!Number.isFinite(cachedEnd) || cachedEnd < h + this.chunkSize - 1) {
+                if (isTail) { tailFromNetwork = true; continue; }
+                return false;
             }
             // Integrity: SHA-256 via native SubtleCrypto when the entry carries x-sha
             // (~0.5s for a full 285MB range, async). Byte-wise JS FNV is the fallback
@@ -784,6 +819,10 @@ class CSPScanner {
                 if (this._chunkHash(buf) !== expectedHash) return false;
             }
             datas.set(h, buf);
+            coveredThroughByHeight.set(
+                h,
+                cachedEnd < h + this.chunkSize - 1 ? cachedEnd + 1 : null
+            );
             if (++sinceYield >= 16) {
                 sinceYield = 0;
                 await new Promise((r) => setTimeout(r, 0));
@@ -809,6 +848,7 @@ class CSPScanner {
                 isBatch: false,
                 useBundle: true,
                 bundleData: datas.get(h),
+                coveredThrough: coveredThroughByHeight.get(h),
             });
         }
         this.stats.totalChunks = needed.length;
@@ -962,7 +1002,10 @@ class CSPScanner {
                                     actualCount: this.chunkSize,
                                     isBatch: false,
                                     useBundle: true,
-                                    bundleData: chunkData
+                                    bundleData: chunkData,
+                                    coveredThrough: chunk.endHeight < chunk.startHeight + this.chunkSize - 1
+                                        ? chunk.endHeight + 1
+                                        : null
                                 });
 
                                 // Write-through to the CacheStorage chunk cache (re-wired: this
@@ -1263,7 +1306,8 @@ class CSPScanner {
                     durationMs: Math.round(performance.now() - workerStartedAt),
                     workerScriptVersion: CSPScanner.WASM_VERSION,
                     wasmBytes: wasmBinary?.byteLength || 0,
-                    jsBytes: patchedJsCode?.length || 0
+                    jsBytes: patchedJsCode?.length || 0,
+                    wasmVariant: this.wasmVariant
                 });
                 try {
                     const payloadWasmBinary = wasmBinary && typeof wasmBinary.slice === 'function'
@@ -1273,7 +1317,9 @@ class CSPScanner {
                     worker.postMessage({
                         type: 'LOAD_WASM',
                         wasmBinary: payloadWasmBinary,
-                        patchedJsCode: patchedJsCode
+                        patchedJsCode: patchedJsCode,
+                        glueUrl: this.wasmGlueUrl,
+                        wasmVariant: this.wasmVariant
                     }, transferList);
                 } catch (err) {
                     failInit(err);
@@ -1308,7 +1354,8 @@ class CSPScanner {
                 this.emitTelemetry('scan.worker_init_completed', {
                     durationMs: Math.round(performance.now() - workerStartedAt),
                     subaddressCount: msg.subaddressCount || 0,
-                    hasWallet: true
+                    hasWallet: true,
+                    wasmVariant: msg.wasmVariant || this.wasmVariant
                 });
                 if (!msg.hasCarrotKey && this.DEBUG) {
                 }
@@ -1378,13 +1425,15 @@ class CSPScanner {
                         workerId: id,
                         durationMs: Math.round(performance.now() - workerStartedAt),
                         wasmBytes: msg.wasmBytes || 0,
-                        jsBytes: msg.jsBytes || 0
+                        jsBytes: msg.jsBytes || 0,
+                        wasmVariant: msg.wasmVariant || this.wasmVariant
                     });
                 } else if (msg.type === 'READY') {
                     this.emitTelemetry('scan.worker_ready', {
                         durationMs: Math.round(performance.now() - workerStartedAt),
                         workerCount: this.workerCount,
-                        enabledWorkerCount: this.enabledWorkerCount
+                        enabledWorkerCount: this.enabledWorkerCount,
+                        wasmVariant: msg.wasmVariant || this.wasmVariant
                     });
                     try {
                         worker.postMessage({
@@ -1611,14 +1660,18 @@ class CSPScanner {
 
         this.isScanning = true;
         this.scanAborted = false;
+        this._scanGeneration++;
+        this.pendingRetryTasks = 0;
         this.taskQueue = [];
         this.allMatches = [];
         // Server-proven contiguous coverage (exclusive, count-form). null until a
         // live-fetched chunk reports coverage; nominal chunk ends overstate the tail.
         this.coveredThroughHeight = null;
         this.matchedChunks.clear();
+        this.scannedChunks.clear();
         this.scannedBlocks = 0;
         this.ingestFloorHeight = 0; // explicit-range rescan: ingest everything in range
+        this.scanTargetHeight = Number(endHeight);
         this.totalBlocks = endHeight - startHeight;
         this.startTime = performance.now();
         this.pendingTasks = 0;
@@ -1647,17 +1700,48 @@ class CSPScanner {
             this._scanReject = reject;
         });
 
+        const alignedStart = Math.floor(startHeight / this.chunkSize) * this.chunkSize;
+        const expectedStarts = [];
+        for (let h = alignedStart; h < endHeight; h += this.chunkSize) {
+            expectedStarts.push(h);
+        }
+
+        const queuedStarts = new Set();
         for (const chunk of this.cachedBundle.chunks) {
-            if (chunk.startHeight >= startHeight && chunk.startHeight < endHeight) {
+            if (chunk.startHeight >= alignedStart && chunk.startHeight < endHeight) {
+                const requiredEnd = Math.min(chunk.startHeight + this.chunkSize - 1, endHeight - 1);
+                if (!Number.isFinite(chunk.endHeight) || chunk.endHeight < requiredEnd) continue;
                 this.taskQueue.push({
                     startHeight: chunk.startHeight,
                     count: this.chunkSize,
                     actualCount: Math.min(this.chunkSize, endHeight - chunk.startHeight),
-                    useBundle: true
+                    isBatch: false,
+                    useBundle: true,
+                    coveredThrough: chunk.endHeight < chunk.startHeight + this.chunkSize - 1
+                        ? chunk.endHeight + 1
+                        : null
                 });
-                this.stats.totalChunks++;
+                queuedStarts.add(chunk.startHeight);
             }
         }
+
+        // The bundle contains only finalized chunks. Cover its live-tail gap from the
+        // network so the returned-transfer pass scans the same target as pass 1.
+        const missingStarts = expectedStarts.filter((h) => !queuedStarts.has(h));
+        for (let i = 0; i < missingStarts.length;) {
+            const batchStart = missingStarts[i];
+            let chunkCount = 1;
+            while (
+                i + chunkCount < missingStarts.length &&
+                chunkCount < this.batchSize &&
+                missingStarts[i + chunkCount] === batchStart + (chunkCount * this.chunkSize)
+            ) {
+                chunkCount++;
+            }
+            this.taskQueue.push({ startHeight: batchStart, chunkCount, isBatch: true });
+            i += chunkCount;
+        }
+        this.stats.totalChunks = expectedStarts.length;
 
         if (this.taskQueue.length === 0) {
             this.isScanning = false;
@@ -1843,7 +1927,7 @@ class CSPScanner {
         const targetEndHeight = Number.isFinite(this.scanTargetHeight)
             ? this.scanTargetHeight
             : Number(this.stats?.endHeight);
-        if (!Number.isFinite(targetEndHeight)) return false;
+        if (!Number.isFinite(targetEndHeight) || targetEndHeight <= 0) return false;
 
         const targetTipHeight = Math.max(0, targetEndHeight - 1);
         return nominalEndHeight >= targetTipHeight - this.chunkSize;
@@ -1852,7 +1936,9 @@ class CSPScanner {
     failClosedOnMissingTailCoverage(msg, source) {
         const chunkCount = msg.chunksProcessed || msg.chunkCount || 1;
         if (!this.requiresTailCoverage(Number(msg.startHeight || 0), Number(msg.endHeight || 0), chunkCount)) return false;
-        if (Number.isFinite(Number(msg.coveredThrough))) return false;
+        const hasCoverage = Object.prototype.hasOwnProperty.call(msg, 'coveredThrough') &&
+            (msg.coveredThrough === null || Number.isFinite(Number(msg.coveredThrough)));
+        if (hasCoverage) return false;
         this.handleScanError({
             workerId: msg.workerId,
             startHeight: msg.startHeight,
@@ -1866,16 +1952,24 @@ class CSPScanner {
         const { workerId, startHeight, endHeight, chunksProcessed, blocksProcessed, stats, matches, spent, scannedChunks, missingChunks, missingReason } = msg;
         if (this.failClosedOnMissingTailCoverage(msg, 'batch')) return;
         this.noteCoveredThrough(msg.coveredThrough, 'batch:' + startHeight);
-        const scannedChunkStarts = Array.isArray(scannedChunks) && scannedChunks.length > 0
+        const scanEndHeight = Number(this.stats?.endHeight);
+        const hasScanEndHeight = Number.isFinite(scanEndHeight) && scanEndHeight > 0;
+        const scannedChunkStarts = (Array.isArray(scannedChunks) && scannedChunks.length > 0
             ? [...new Set(scannedChunks.filter(h => Number.isFinite(h)))].sort((a, b) => a - b)
-            : Array.from({ length: chunksProcessed || 0 }, (_, i) => startHeight + (i * this.chunkSize));
+            : Array.from({ length: chunksProcessed || 0 }, (_, i) => startHeight + (i * this.chunkSize)))
+            .filter((h) => !hasScanEndHeight || h < scanEndHeight);
+        const newlyScannedChunkStarts = scannedChunkStarts.filter((h) => !this.scannedChunks.has(h));
 
         this.recordTaskTiming(workerId, scannedChunkStarts.length || 1);
 
         if (this.DEBUG && (matches?.length > 0 || this.stats.completedChunks % 100 < chunksProcessed)) {
         }
 
-        this.stats.completedChunks += scannedChunkStarts.length;
+        const completionCeiling = this.stats.totalChunks > 0 ? this.stats.totalChunks : Number.POSITIVE_INFINITY;
+        this.stats.completedChunks = Math.min(
+            completionCeiling,
+            this.stats.completedChunks + newlyScannedChunkStarts.length
+        );
         this.stats.totalTxs += stats.txCount || 0;
         this.stats.totalOutputs += stats.outputCount || 0;
         this.stats.viewTagMatches += stats.viewTagMatches || 0;
@@ -1903,7 +1997,7 @@ class CSPScanner {
             });
         }
 
-        this.scannedBlocks += blocksProcessed || (scannedChunkStarts.length * this.chunkSize);
+        this.scannedBlocks += newlyScannedChunkStarts.length * this.chunkSize;
 
         for (const chunkStartHeight of scannedChunkStarts) {
             this.scannedChunks.add(chunkStartHeight);
@@ -1961,38 +2055,47 @@ class CSPScanner {
 
             if (currentTask && currentTask.isBatch && scannedChunkStarts.length > 0 && scannedChunkStarts.length < currentTask.chunkCount) {
                 const scannedSet = new Set(scannedChunkStarts);
+                const beyondTipSet = /^(beyond_tip|beyond_chain_tip|tip)$/i.test(missingReason || '')
+                    ? new Set(Array.isArray(missingChunks) ? missingChunks : [])
+                    : new Set();
                 const missingStarts = [];
                 for (let i = 0; i < currentTask.chunkCount; i++) {
                     const expectedStart = currentTask.startHeight + (i * this.chunkSize);
-                    if (!scannedSet.has(expectedStart)) {
+                    if (
+                        (!hasScanEndHeight || expectedStart < scanEndHeight) &&
+                        !scannedSet.has(expectedStart) &&
+                        !beyondTipSet.has(expectedStart)
+                    ) {
                         missingStarts.push(expectedStart);
                     }
                 }
 
-                this.emitTelemetry('scan.worker_partial_batch_requeued', {
-                    requestHeight: startHeight,
-                    responseItems: scannedChunkStarts.length,
-                    missingChunkCount: missingStarts.length,
-                    missingReason: missingReason || 'unknown',
-                    serverMissingChunkCount: Array.isArray(missingChunks) ? missingChunks.length : 0,
-                }, 'warn', `Partial CSP batch at ${startHeight}; re-queuing missing chunks`);
+                if (missingStarts.length > 0) {
+                    this.emitTelemetry('scan.worker_partial_batch_requeued', {
+                        requestHeight: startHeight,
+                        responseItems: scannedChunkStarts.length,
+                        missingChunkCount: missingStarts.length,
+                        missingReason: missingReason || 'unknown',
+                        serverMissingChunkCount: Array.isArray(missingChunks) ? missingChunks.length : 0,
+                    }, 'warn', `Partial CSP batch at ${startHeight}; re-queuing missing chunks`);
 
-                const groupedMissing = [];
-                for (const missingStart of missingStarts) {
-                    const lastGroup = groupedMissing[groupedMissing.length - 1];
-                    if (lastGroup && lastGroup.startHeight + (lastGroup.chunkCount * this.chunkSize) === missingStart) {
-                        lastGroup.chunkCount++;
-                    } else {
-                        groupedMissing.push({
-                            startHeight: missingStart,
-                            chunkCount: 1,
-                            isBatch: true
-                        });
+                    const groupedMissing = [];
+                    for (const missingStart of missingStarts) {
+                        const lastGroup = groupedMissing[groupedMissing.length - 1];
+                        if (lastGroup && lastGroup.startHeight + (lastGroup.chunkCount * this.chunkSize) === missingStart) {
+                            lastGroup.chunkCount++;
+                        } else {
+                            groupedMissing.push({
+                                startHeight: missingStart,
+                                chunkCount: 1,
+                                isBatch: true
+                            });
+                        }
                     }
-                }
 
-                for (let i = groupedMissing.length - 1; i >= 0; i--) {
-                    this.taskQueue.unshift(groupedMissing[i]);
+                    for (let i = groupedMissing.length - 1; i >= 0; i--) {
+                        this.taskQueue.unshift(groupedMissing[i]);
+                    }
                 }
             } else if (currentTask && scannedChunkStarts.length === 0) {
                 const reason = (missingReason || '').toLowerCase();
@@ -2074,7 +2177,11 @@ class CSPScanner {
 
         this.recordTaskTiming(workerId, 1);
 
-        this.stats.completedChunks++;
+        const isNewChunk = !this.scannedChunks.has(startHeight);
+        const completionCeiling = this.stats.totalChunks > 0 ? this.stats.totalChunks : Number.POSITIVE_INFINITY;
+        if (isNewChunk) {
+            this.stats.completedChunks = Math.min(completionCeiling, this.stats.completedChunks + 1);
+        }
         this.stats.totalTxs += stats.txCount || 0;
         this.stats.totalOutputs += stats.outputCount || 0;
         this.stats.viewTagMatches += stats.viewTagMatches || 0;
@@ -2103,7 +2210,7 @@ class CSPScanner {
         }
 
         const blocksInChunk = actualCount || (endHeight - startHeight) || this.chunkSize;
-        this.scannedBlocks += blocksInChunk;
+        if (isNewChunk) this.scannedBlocks += blocksInChunk;
 
         this.scannedChunks.add(startHeight);
 
@@ -2181,6 +2288,40 @@ class CSPScanner {
         this.maybeAutoTune();
     }
 
+    extractScanHttpStatus(error) {
+        const message = String(error || '');
+        const patterns = [
+            /\bHTTP\s+(\d{3})\b/i,
+            /\b(?:CSP\s+)?(?:batch\s+)?fetch failed:\s*(\d{3})\b/i,
+            /\bstatus(?:\s+code)?\s*[:=]?\s*(\d{3})\b/i,
+        ];
+        for (const pattern of patterns) {
+            const match = message.match(pattern);
+            if (match) return Number(match[1]);
+        }
+        return null;
+    }
+
+    isRetryableScanError(error) {
+        const message = String(error || '');
+        const httpStatus = this.extractScanHttpStatus(message);
+        if (httpStatus !== null) {
+            return httpStatus === 403 || httpStatus === 429 || httpStatus === 500 || httpStatus === 502 ||
+                httpStatus === 503 || httpStatus === 504;
+        }
+
+        const lower = message.toLowerCase();
+        return lower.includes('timeout') ||
+            lower.includes('network') ||
+            lower.includes('abort') ||
+            lower.includes('fetch failed') ||
+            lower.includes('failed to fetch') ||
+            lower.includes('empty body') ||
+            lower.includes('size mismatch') ||
+            lower.includes('coverage missing') ||
+            lower.includes('coverage below request');
+    }
+
     handleScanError(msg) {
         const { workerId, startHeight, error, chunkCount } = msg;
 
@@ -2201,23 +2342,7 @@ class CSPScanner {
             (typeof navigator !== 'undefined' && navigator.onLine === false);
 
         // Transient node/proxy conditions; skipping any would leave a silent gap, so always retry these.
-        const isRetryable = error && (
-            error.includes('429') ||
-            error.includes('500') ||
-            error.includes('502') ||
-            error.includes('503') ||
-            error.includes('504') ||
-            error.toLowerCase().includes('timeout') ||
-            error.toLowerCase().includes('network') ||
-            error.toLowerCase().includes('abort') ||
-            error.includes('fetch failed') ||
-            error.includes('Failed to fetch') ||
-            error.includes('NetworkError') ||
-            error.includes('empty body') ||
-            error.includes('size mismatch') ||
-            error.toLowerCase().includes('coverage missing') ||
-            error.toLowerCase().includes('coverage below request')
-        );
+        const isRetryable = this.isRetryableScanError(error);
 
         this.emitTelemetry('scan.worker_task_failed', {
             requestHeight: startHeight,
@@ -2263,22 +2388,23 @@ class CSPScanner {
             if (!scanPaused) this.retryCount[retryKey] = currentRetries + 1;
 
             const delay = scanPaused ? 5000 : Math.min(1000 * Math.pow(2, currentRetries), 10000);
+            const retryTask = { ...failedTask, isRetry: true };
+            const retryGeneration = this._scanGeneration;
+            this.pendingRetryTasks++;
             this.emitTelemetry('scan.worker_task_retry_scheduled', {
                 requestHeight: startHeight,
-                responseItems: failedTask.chunkCount || this.batchSize,
-                requestKind: failedTask.isBatch !== false ? 'batch' : 'single',
+                responseItems: failedTask.chunkCount || 1,
+                requestKind: failedTask.isBatch === true ? 'batch' : 'single',
                 durationMs: delay,
                 scanIssueCount: currentRetries + 1,
                 reason: error || 'retryable worker scan error',
             }, 'warn', error || 'retryable worker scan error');
 
             setTimeout(() => {
-                this.taskQueue.unshift({
-                    startHeight: failedTask.startHeight,
-                    chunkCount: failedTask.chunkCount || this.batchSize,
-                    isBatch: failedTask.isBatch !== false,
-                    isRetry: true
-                });
+                if (this._scanGeneration !== retryGeneration) return;
+                this.pendingRetryTasks = Math.max(0, this.pendingRetryTasks - 1);
+                if (!this.isScanning || this.scanAborted) return;
+                this.taskQueue.unshift(retryTask);
                 this.scheduleNextTask();
             }, delay);
 
@@ -2431,12 +2557,26 @@ class CSPScanner {
         const freeWorker = this.workers.find(w => w.ready && !w.busy && w.enabled !== false);
         if (!freeWorker) return;
 
-        const task = this.taskQueue.shift();
+        let task = this.taskQueue.shift();
         if (!task) {
-            if (this.pendingTasks === 0 && !this.streamDispatchInProgress) {
+            if (this.pendingTasks === 0 && this.pendingRetryTasks === 0 && !this.streamDispatchInProgress) {
                 this.finishScan();
             }
             return;
+        }
+
+        if (task.isBatch) {
+            const scanEndHeight = Number(this.stats?.endHeight);
+            if (Number.isFinite(scanEndHeight) && scanEndHeight > 0) {
+                const remainingChunks = Math.ceil((scanEndHeight - task.startHeight) / this.chunkSize);
+                if (remainingChunks <= 0) {
+                    this.scheduleNextTask();
+                    return;
+                }
+                if (task.chunkCount > remainingChunks) {
+                    task = { ...task, chunkCount: remainingChunks };
+                }
+            }
         }
 
         freeWorker.busy = true;
@@ -2471,6 +2611,7 @@ class CSPScanner {
                 startHeight: task.startHeight,
                 count: task.count || this.chunkSize,
                 actualCount: task.actualCount || task.count || this.chunkSize,
+                coveredThrough: task.coveredThrough === undefined ? null : task.coveredThrough,
                 cspData: dataToSend
             }, [dataToSend]);
         } else if (task.useBundle && this.cachedBundle) {
@@ -2481,6 +2622,7 @@ class CSPScanner {
                     startHeight: task.startHeight,
                     count: task.count || this.chunkSize,
                     actualCount: task.actualCount || task.count || this.chunkSize,
+                    coveredThrough: task.coveredThrough === undefined ? null : task.coveredThrough,
                     cspData: cspData.buffer
                 }, [cspData.buffer]);
             } else {
@@ -2544,6 +2686,8 @@ class CSPScanner {
 
         this.isScanning = true;
         this.scanAborted = false;
+        this._scanGeneration++;
+        this.pendingRetryTasks = 0;
         this.taskQueue = [];
         this.allMatches = [];
         // Server-proven contiguous coverage (exclusive, count-form). null until a
@@ -2764,6 +2908,8 @@ class CSPScanner {
 
         this.isScanning = true;
         this.scanAborted = false;
+        this._scanGeneration++;
+        this.pendingRetryTasks = 0;
         this.taskQueue = [];
         this.allMatches = [];
         // Server-proven contiguous coverage (exclusive, count-form). null until a

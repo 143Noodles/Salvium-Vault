@@ -15,6 +15,7 @@
 import type { WalletEngine } from './WalletEngine';
 import type { DeltaField, StateDelta, WorkerInitConfig } from './protocol';
 import { WalletStateMirror } from './WalletStateMirror';
+import type { WasmVariant } from '../../utils/wasmVersion';
 
 const ALL_DELTA_FIELDS: DeltaField[] = ['snapshot', 'syncStatus', 'addresses', 'transactions', 'flags'];
 
@@ -26,14 +27,20 @@ export class DirectEngine implements WalletEngine {
   private version = 0;
   private readonly incarnation = Date.now();
   private initialized = false;
+  private activeWasmVariant: WasmVariant | null = null;
+
+  get wasmVariant(): WasmVariant | null {
+    return this.activeWasmVariant;
+  }
 
   constructor(deps: { wallet?: any; module?: any } = {}) {
     this.wallet = deps.wallet ?? null;
     this.module = deps.module ?? null;
   }
 
-  async init(_config: WorkerInitConfig): Promise<void> {
+  async init(config: WorkerInitConfig): Promise<void> {
     // No WASM bootstrap: the wallet/module fakes are supplied to the constructor.
+    this.activeWasmVariant = config.wasmVariant;
     this.initialized = true;
     this.pushDelta(ALL_DELTA_FIELDS);
   }
@@ -129,6 +136,7 @@ export class DirectEngine implements WalletEngine {
 
   terminate(): void {
     this.initialized = false;
+    this.activeWasmVariant = null;
   }
 
   // -------------------------------------------------------------------------

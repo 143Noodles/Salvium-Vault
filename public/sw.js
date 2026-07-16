@@ -10,10 +10,10 @@
 
 const SW_BUILD_ID = '__SW_BUILD_ID__'; // replaced at build time by the stamp-sw vite plugin
 const CACHE_VERSION = 'salvium-vault-' + SW_BUILD_ID;
-const WASM_CACHE = 'salvium-wasm-v27';
+const WASM_CACHE = 'salvium-wasm-v35';
 const STATIC_CACHE = 'salvium-static-' + SW_BUILD_ID;
 const API_CACHE = 'salvium-api-' + SW_BUILD_ID;
-const WASM_VERSION = '5.53.36-pid-detach-20260606';
+const WASM_VERSION = '8.2.22-v113c-dual-wasm-20260709';
 
 // Critical assets that must be cached for offline use
 const PRECACHE_ASSETS = [
@@ -115,7 +115,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   // WASM files - Network first, cache fallback
-  if (url.pathname.includes('.wasm') || url.pathname.includes('SalviumWallet.js')) {
+  if (url.pathname.includes('.wasm') || /SalviumWallet(?:Baseline)?\.js$/.test(url.pathname)) {
     event.respondWith(wasmNetworkFirst(event.request));
     return;
   }

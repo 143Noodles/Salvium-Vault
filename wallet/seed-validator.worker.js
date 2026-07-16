@@ -7,7 +7,13 @@ function isExtensionProtocol() {
     }
 }
 
+try {
+    importScripts(new URL('wasm-feature-detect.js', self.location.href).toString());
+} catch (_) {
+}
+
 let Module = null;
+let activeWasmVariant = 'baseline';
 
 self.onerror = function (message, filename, lineno, colno, error) {
     const errorMsg = error?.message || message || 'Unknown WASM error';
@@ -20,11 +26,11 @@ self.onmessage = async (e) => {
 
     if (type === 'VALIDATE') {
         try {
-            const { mnemonic, wasmPath } = payload;
-            await initWasm(wasmPath);
+            const { mnemonic } = payload;
+            await initWasm(payload || {});
 
             const isValid = validateMnemonic(mnemonic);
-            self.postMessage({ type: 'SUCCESS', id, result: { valid: isValid } });
+            self.postMessage({ type: 'SUCCESS', id, result: { valid: isValid }, wasmVariant: activeWasmVariant });
         } catch (error) {
             const errorMsg = error?.message || String(error);
             self.postMessage({ type: 'ERROR', id, error: errorMsg });
@@ -32,14 +38,30 @@ self.onmessage = async (e) => {
     }
 };
 
-async function initWasm(basePath) {
+async function initWasm(config) {
     if (Module) return;
 
-    if (!basePath) {
-        throw new Error('WASM base path missing');
+    if (!config.glueUrl || !config.wasmUrl) {
+        throw new Error('WASM asset URLs missing');
     }
-    const jsUrl = `${basePath}/SalviumWallet.js`;
-    const wasmUrl = `${basePath}/SalviumWallet.wasm`;
+    let jsUrl = config.glueUrl;
+    let wasmUrl = config.wasmUrl;
+    activeWasmVariant = config.wasmVariant === 'simd' ? 'simd' : 'baseline';
+
+    const activateBaseline = () => {
+        if (!config.fallbackGlueUrl || !config.fallbackWasmUrl) return false;
+        activeWasmVariant = 'baseline';
+        jsUrl = config.fallbackGlueUrl;
+        wasmUrl = config.fallbackWasmUrl;
+        return true;
+    };
+    try {
+        if (activeWasmVariant === 'simd' && self.SalviumWasmFeatures?.selectVariant() === 'baseline') {
+            activateBaseline();
+        }
+    } catch (_) {
+        if (activeWasmVariant === 'simd') activateBaseline();
+    }
 
     // Disable pthreads: WASM spawns workers via URL.createObjectURL, which fails in nested workers.
     const origWorker = self.Worker;
@@ -61,25 +83,33 @@ async function initWasm(basePath) {
     };
 
     try {
-        if (typeof self.SalviumWallet === 'undefined') {
+        const loadFactory = async () => {
             if (isExtensionProtocol()) {
                 importScripts(jsUrl);
             } else {
                 const response = await fetch(jsUrl);
+                if (!response.ok) throw new Error(`WASM glue HTTP ${response.status}`);
                 const jsCode = await response.text();
                 (0, eval)(jsCode);
             }
-        }
+            const factory = self.SalviumWallet;
+            if (typeof factory !== 'function') throw new Error('SalviumWallet factory unavailable');
+            return factory({
+                locateFile: (path) => {
+                    if (path.endsWith('.wasm')) return wasmUrl;
+                    return path;
+                },
+                PTHREAD_POOL_SIZE: 0,
+                PTHREAD_POOL_SIZE_STRICT: 0
+            });
+        };
 
-        const factory = self.SalviumWallet;
-        Module = await factory({
-            locateFile: (path) => {
-                if (path.endsWith('.wasm')) return wasmUrl;
-                return path;
-            },
-            PTHREAD_POOL_SIZE: 0,
-            PTHREAD_POOL_SIZE_STRICT: 0
-        });
+        try {
+            Module = await loadFactory();
+        } catch (error) {
+            if (activeWasmVariant !== 'simd' || !activateBaseline()) throw error;
+            Module = await loadFactory();
+        }
     } finally {
         self.Worker = origWorker;
         URL.createObjectURL = origCreateObjectURL;

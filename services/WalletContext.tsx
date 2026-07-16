@@ -55,6 +55,7 @@ import {
     computeIncrementalScanStartHeight,
     coalesceScanTriggerRequest,
     resolveIncrementalScanPlan,
+    resolveRestoreRetryResumePolicy,
     resolveScanResumeHeight,
     resolveUnlockScheduledScanFromHeight,
     shouldForceFullScanForMissingWalletCache,
@@ -4732,8 +4733,23 @@ const getDeviceMemoryBucket = (): string => {
         sessionType: ScanSessionType;
         sessionId?: string;
     }): Promise<ScanExecutionResult> => {
-        if (fromHeight === undefined && preferredScanStartHeightRef.current !== undefined) {
-            fromHeight = preferredScanStartHeightRef.current;
+        const restoreRetryResumePolicy = resolveRestoreRetryResumePolicy({
+            reason: request?.reason,
+            sessionType: request?.sessionType,
+            fromHeight,
+            forceCleanRestoreScan: forceCleanRestoreScanRef.current,
+        });
+        if (restoreRetryResumePolicy.resumeFromJournal) {
+            // A retry continues the same in-memory restore. The journal owns the exact
+            // remaining ranges; the original session's fromHeight=0 and one-shot clean
+            // flag must not restart all already-flushed work.
+            fromHeight = restoreRetryResumePolicy.fromHeight;
+            preferredScanStartHeightRef.current = undefined;
+            forceCleanRestoreScanRef.current = false;
+        } else {
+            if (fromHeight === undefined && preferredScanStartHeightRef.current !== undefined) {
+                fromHeight = preferredScanStartHeightRef.current;
+            }
         }
         if (fromHeight !== undefined) {
             preferredScanStartHeightRef.current = undefined;
@@ -4761,7 +4777,7 @@ const getDeviceMemoryBucket = (): string => {
             return { terminalState: 'cancelled', reason: 'scan requests suspended' };
         }
 
-        const forceCleanRestoreScan = forceCleanRestoreScanRef.current;
+        const forceCleanRestoreScan = restoreRetryResumePolicy.forceCleanRestoreScan;
         const activeRestoreSession = activeScanSessionRef.current;
         const restoreScanSessionActive = isRestoreScanSessionActive();
         if (restoreScanSessionActive && request?.sessionType !== 'restore-full-rescan') {
@@ -5304,8 +5320,10 @@ const getDeviceMemoryBucket = (): string => {
 
             let actualStartHeight = finalScanStartHeight;
             let recoveryAction: 'continue' | 'full_rescan' | 'rescan_gaps' = 'continue';
+            const resumeInterruptedFullRestore =
+                restoreRetryResumePolicy.resumeFromJournal && restoreScanSessionActive;
 
-            if (fromHeight === undefined && finalScanStartHeight === 0) {
+            if (!resumeInterruptedFullRestore && fromHeight === undefined && finalScanStartHeight === 0) {
                 // Required full restore over an EMPTY/untrusted native wallet. The generic
                 // rescan_gaps recovery below is UNSAFE here: it would skip previously
                 // scanned chunks WITHOUT re-ingesting their matched outputs. Clean start;
@@ -5315,13 +5333,26 @@ const getDeviceMemoryBucket = (): string => {
                 actualStartHeight = 0;
                 await walletService.setWalletHeight(0);
                 clearCompletedChunks();
-                cspScanService.setResumeRuns(null);
-                cspScanService.setResumeSeedCoverage(null);
-            } else if (fromHeight === undefined && address && !restoredFromVaultRef.current && !forceCleanRestoreScan) {
+                cspScanService.clearResumePlan();
+            } else if (
+                fromHeight === undefined &&
+                address &&
+                (
+                    resumeInterruptedFullRestore ||
+                    (!restoredFromVaultRef.current && !forceCleanRestoreScan)
+                )
+            ) {
                 try {
                     // Recovery journals may be older than the wallet's live height. Keep
                     // them from rewinding incremental scans below the resolved scan floor.
-                    const recoveryCheck = await cspScanService.resumeScanSafely(address, networkHeight, finalScanStartHeight);
+                    // Active full-restore retries are different: their original floor is 0,
+                    // and every flushed hole must remain eligible even if UI persistence
+                    // advanced the apparent wallet height before the interruption.
+                    const recoveryCheck = await cspScanService.resumeScanSafely(
+                        address,
+                        networkHeight,
+                        restoreRetryResumePolicy.minResumeHeight ?? finalScanStartHeight
+                    );
                     recoveryAction = recoveryCheck.action;
                     cspScanService.setRecoveryAction(recoveryCheck.action);
 
@@ -5330,7 +5361,7 @@ const getDeviceMemoryBucket = (): string => {
                         actualStartHeight = 0;
                         await walletService.setWalletHeight(0);
                         clearCompletedChunks();
-                        cspScanService.setResumeRuns(null);
+                        cspScanService.clearResumePlan();
                     } else if (recoveryCheck.action === 'rescan_gaps' && recoveryCheck.gaps.length > 0) {
                         const earliestGap = Math.min(...recoveryCheck.gaps);
                         debugLog(`[WalletContext] Recovery check found ${recoveryCheck.gaps.length} gaps - rescanning exactly those (from ${earliestGap})`);
@@ -5338,7 +5369,16 @@ const getDeviceMemoryBucket = (): string => {
                         // Scan ONLY the gap chunks (precise) rather than earliestGap→tip. The
                         // contiguous [earliestGap, networkHeight] remains the fallback range
                         // for progress/spent-index; Phase 1 block scan is restricted to gaps.
-                        cspScanService.setResumeRuns(recoveryCheck.gaps);
+                        // startScan creates a fresh journal for the retry. Carry forward
+                        // the interrupted journal's proven coverage so non-contiguous
+                        // precise runs still satisfy the final contiguous proof.
+                        cspScanService.setResumePlan(
+                            address,
+                            recoveryCheck.gaps,
+                            recoveryCheck.seedCoverage || null
+                        );
+                    } else {
+                        cspScanService.clearResumePlan();
                     }
                 } catch (e) {
                     console.error('[WalletContext] Recovery check failed - forcing full rescan:', e);
@@ -5347,7 +5387,7 @@ const getDeviceMemoryBucket = (): string => {
                     actualStartHeight = 0;
                     await walletService.setWalletHeight(0);
                     clearCompletedChunks();
-                    cspScanService.setResumeRuns(null);
+                    cspScanService.clearResumePlan();
                 }
             } else if (fromHeight !== undefined) {
                 cspScanService.setRecoveryAction(fromHeight === 0 ? 'full_rescan' : 'continue');
@@ -5358,8 +5398,7 @@ const getDeviceMemoryBucket = (): string => {
                     // outputs. The journal resume plan applies inside the scan service.
                     await walletService.setWalletHeight(0);
                     clearCompletedChunks();
-                    cspScanService.setResumeRuns(null);
-                    cspScanService.setResumeSeedCoverage(null);
+                    cspScanService.clearResumePlan();
                 }
             }
 
@@ -9444,6 +9483,15 @@ const getDeviceMemoryBucket = (): string => {
                     fromHeight: activeSession.fromHeight,
                 }
                 : (ctx.retryRequest || { sessionType: 'background' as ScanSessionType, sessionId: undefined, fromHeight: undefined });
+            const retryResumePolicy = resolveRestoreRetryResumePolicy({
+                reason: 'restore-retryable-retry',
+                sessionType: retryTarget.sessionType,
+                fromHeight: retryTarget.fromHeight,
+                forceCleanRestoreScan: forceCleanRestoreScanRef.current,
+            });
+            if (retryResumePolicy.resumeFromJournal) {
+                forceCleanRestoreScanRef.current = false;
+            }
 
             if (!scanFailureRetryRef.current.timer) {
                 const attempt = scanFailureRetryRef.current.count;
@@ -9458,6 +9506,7 @@ const getDeviceMemoryBucket = (): string => {
                             delayMs: delay,
                             sessionType: retryTarget.sessionType,
                             sessionActive: !!sessionOwnedRetry,
+                            resumeFromJournal: retryResumePolicy.resumeFromJournal,
                             reason: ctx.reason || '',
                         },
                     });
@@ -9484,7 +9533,9 @@ const getDeviceMemoryBucket = (): string => {
                             }
                         }
                         void requestScanStartRef.current?.({
-                            fromHeight: retryTarget.fromHeight,
+                            ...(retryResumePolicy.fromHeight !== undefined
+                                ? { fromHeight: retryResumePolicy.fromHeight }
+                                : {}),
                             reason: 'restore-retryable-retry',
                             sessionType: retryTarget.sessionType,
                             sessionId: retryTarget.sessionId,
