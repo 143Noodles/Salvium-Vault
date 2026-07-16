@@ -1,3 +1,4 @@
+import { isBundledNativeRuntime } from './bundledRuntime';
 type ClientTelemetryLevel = 'info' | 'warn' | 'error';
 
 type ClientTelemetryContext = Record<string, string | number | boolean | null | undefined>;
@@ -18,6 +19,29 @@ declare global {
 }
 
 const SESSION_KEY = 'salvium_vault_telemetry_session_v1';
+const TELEMETRY_ENABLED_KEY = 'salvium_telemetry_enabled';
+
+// User preference gate. Read once at module load (reportClientEvent can fire
+// before React mounts); Settings flips it at runtime via setClientTelemetryEnabled.
+const readTelemetryEnabled = (): boolean => {
+  try {
+    return window.localStorage.getItem(TELEMETRY_ENABLED_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+};
+
+let telemetryEnabled = typeof window === 'undefined' ? true : readTelemetryEnabled();
+
+export const isClientTelemetryEnabled = (): boolean => telemetryEnabled;
+
+export const setClientTelemetryEnabled = (enabled: boolean): void => {
+  telemetryEnabled = enabled;
+  try {
+    window.localStorage.setItem(TELEMETRY_ENABLED_KEY, String(enabled));
+  } catch {
+  }
+};
 const DEDUPE_WINDOW_MS = 30000;
 const DEDUPE_MAX_KEYS = 500;
 const DEDUPE_TRIM_TO_KEYS = 400;
@@ -67,7 +91,11 @@ const getBrowserSummary = (): string => {
         : /Safari\//.test(ua)
           ? 'safari'
           : 'other';
-  return `${platform}-${browser}`;
+  // Engine major version (no full UA): sizes the legacy-browser population so
+  // the server's UA-conditioned CSP fallback can eventually be retired.
+  const versionMatch = ua.match(/(?:Edg|CriOS|Chrome|Firefox|Version)\/(\d+)/);
+  const major = versionMatch ? versionMatch[1] : '0';
+  return `${platform}-${browser}-${major}`;
 };
 
 // Strips secrets/PII (URLs, hex, addresses, balances, keys) before any telemetry leaves the client.
@@ -279,6 +307,7 @@ const normalizeType = (type: string): string => {
 
 export const reportClientEvent = (type: string, event: Omit<ClientTelemetryEvent, 'type'> = {}) => {
   if (typeof window === 'undefined') return;
+  if (!telemetryEnabled) return;
 
   const normalizedType = normalizeType(type);
   const level: ClientTelemetryLevel = event.level || 'info';
@@ -324,7 +353,9 @@ export const reportClientEvent = (type: string, event: Omit<ClientTelemetryEvent
 
   const body = JSON.stringify(payload);
   try {
-    if (navigator.sendBeacon) {
+    // Bundled native builds must not beacon: relative beacons hit the local
+    // Capacitor server and silently succeed. The fetch below is routed remote.
+    if (navigator.sendBeacon && !isBundledNativeRuntime()) {
       const blob = new Blob([body], { type: 'application/json' });
       if (navigator.sendBeacon('/api/client-events', blob)) return;
     }

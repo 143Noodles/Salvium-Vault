@@ -197,6 +197,10 @@
       "lockAfter": "Bloquear após",
       "minutes": "minutos"
     },
+    "telemetry": {
+      "title": "Diagnósticos",
+      "description": "Enviar relatórios de diagnóstico anônimos (falhas, erros, desempenho) para ajudar a melhorar o Vault. Nunca inclui endereços, saldos ou chaves."
+    },
     "backup": {
       "title": "Exportar Backup",
       "description": "Crie um arquivo de backup criptografado contendo sua carteira, livro de endereços e configurações.",

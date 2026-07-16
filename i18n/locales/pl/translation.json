@@ -197,6 +197,10 @@
       "lockAfter": "Blokuj po",
       "minutes": "minutach"
     },
+    "telemetry": {
+      "title": "Diagnostyka",
+      "description": "Wysyłaj anonimowe raporty diagnostyczne (awarie, błędy, wydajność), aby pomóc ulepszać Vault. Nigdy nie zawierają adresów, sald ani kluczy."
+    },
     "backup": {
       "title": "Eksportuj Kopię Zapasową",
       "description": "Utwórz zaszyfrowany plik kopii zapasowej zawierający portfel, książkę adresową i ustawienia.",

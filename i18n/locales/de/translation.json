@@ -197,6 +197,10 @@
       "lockAfter": "Sperren nach",
       "minutes": "Minuten"
     },
+    "telemetry": {
+      "title": "Diagnose",
+      "description": "Anonyme Diagnoseberichte (Abstürze, Fehler, Leistung) senden, um Vault zu verbessern. Enthält niemals Adressen, Guthaben oder Schlüssel."
+    },
     "backup": {
       "title": "Backup Exportieren",
       "description": "Erstellen Sie eine verschlüsselte Backup-Datei mit Wallet, Adressbuch und Einstellungen.",

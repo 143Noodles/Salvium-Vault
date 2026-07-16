@@ -197,6 +197,10 @@
       "lockAfter": "Verrouiller après",
       "minutes": "minutes"
     },
+    "telemetry": {
+      "title": "Diagnostics",
+      "description": "Envoyer des rapports de diagnostic anonymes (plantages, erreurs, performances) pour aider à améliorer Vault. N'inclut jamais d'adresses, de soldes ni de clés."
+    },
     "backup": {
       "title": "Exporter la Sauvegarde",
       "description": "Créez un fichier de sauvegarde chiffré contenant votre portefeuille, carnet d'adresses et paramètres.",

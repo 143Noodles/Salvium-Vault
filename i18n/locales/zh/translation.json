@@ -197,6 +197,10 @@
       "lockAfter": "锁定时间",
       "minutes": "分钟"
     },
+    "telemetry": {
+      "title": "诊断",
+      "description": "发送匿名诊断报告（崩溃、错误、性能）以帮助改进 Vault。绝不包含地址、余额或密钥。"
+    },
     "backup": {
       "title": "导出备份",
       "description": "创建包含您的钱包、地址簿和设置的加密备份文件。",

@@ -201,6 +201,10 @@
       "lockAfter": "Lock after",
       "minutes": "minutes"
     },
+    "telemetry": {
+      "title": "Diagnostics",
+      "description": "Send anonymous diagnostic reports (crashes, errors, performance) to help improve Vault. Never includes addresses, balances, or keys."
+    },
     "backup": {
       "title": "Export Backup",
       "description": "Create an encrypted backup file containing your wallet, address book, and settings.",

@@ -21,7 +21,7 @@ import {
     getDisplayAssetBalanceFromSnapshot
 } from './WalletService';
 import { cspScanService, ScanProgress, ScanResult, clearReturnAddressCache, clearSubaddressOwnershipCache, getCachedReturnAddressCount } from './CSPScanService';
-import { encrypt, decrypt } from './CryptoService';
+import { encrypt, decrypt, LEGACY_PBKDF2_ITERATIONS, DEFAULT_PBKDF2_ITERATIONS } from './CryptoService';
 import { initDesktopSilentAudio } from './SilentAudio';
 import { forceCleanSlate, getCheckpoint, pruneCheckpointCoverageFromHeight } from './ScanJournal';
 import {
@@ -3616,6 +3616,31 @@ const getDeviceMemoryBucket = (): string => {
         }
 
         const mnemonic = await decrypt(wallet.encryptedSeed, wallet.iv, wallet.salt, password, wallet.iterations);
+
+        // Transparent KDF upgrade: legacy vaults (no iterations field = 100k)
+        // re-wrap at the current default on unlock. Round-trip verified before
+        // the stored record is replaced; failure leaves the old record intact.
+        try {
+            const storedIterations = Number.isFinite(wallet.iterations) && wallet.iterations > 0
+                ? Math.floor(wallet.iterations)
+                : LEGACY_PBKDF2_ITERATIONS;
+            if (storedIterations < DEFAULT_PBKDF2_ITERATIONS) {
+                const rewrapped = await encrypt(mnemonic, password);
+                const roundTrip = await decrypt(rewrapped.encrypted, rewrapped.iv, rewrapped.salt, password, rewrapped.iterations);
+                if (roundTrip === mnemonic && safeWriteWallet({
+                    ...wallet,
+                    encryptedSeed: rewrapped.encrypted,
+                    iv: rewrapped.iv,
+                    salt: rewrapped.salt,
+                    iterations: rewrapped.iterations
+                })) {
+                    reportClientEvent('wallet.kdf_upgraded', {
+                        context: { fromIterations: storedIterations, toIterations: rewrapped.iterations }
+                    });
+                }
+            }
+        } catch {
+        }
 
         if (isVaultRestore) {
             restoredFromVaultRef.current = true;

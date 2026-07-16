@@ -47,7 +47,10 @@ export function getNodeFromCookie(cookieHeader: string): NodeChoice {
 }
 
 export function buildNodeCookie(value: NodeChoice): string {
-  return `${VAULT_NODE_COOKIE}=${encodeURIComponent(value)}; Max-Age=31536000; Path=/; SameSite=Lax`;
+  // Secure only over https: the desktop sidecar serves over http://127.0.0.1,
+  // where a Secure cookie set via document.cookie may be dropped.
+  const secure = typeof location !== 'undefined' && location.protocol === 'https:' ? '; Secure' : '';
+  return `${VAULT_NODE_COOKIE}=${encodeURIComponent(value)}; Max-Age=31536000; Path=/; SameSite=Lax${secure}`;
 }
 
 export function getCurrentNodeChoice(): NodeChoice {

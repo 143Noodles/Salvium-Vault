@@ -20,11 +20,15 @@ import {
    normalizeWalletStorageNetwork
 } from '../utils/walletStorage';
 import { startTaskTelemetry } from '../utils/clientTelemetry';
+import { copySeedWithAutoClear } from '../utils/secureClipboard';
+import { setScreenSecure } from '../utils/secureScreen';
 
 interface SettingsPageProps {
    autoLockEnabled: boolean;
    autoLockMinutes: number;
    onAutoLockChange: (enabled: boolean, minutes: number) => void;
+   telemetryEnabled: boolean;
+   onTelemetryChange: (enabled: boolean) => void;
    onRescan?: () => void;
    onNavigate?: (tab: any, params?: any) => void;
    onReset?: () => void;
@@ -132,6 +136,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
    autoLockEnabled,
    autoLockMinutes,
    onAutoLockChange,
+   telemetryEnabled,
+   onTelemetryChange,
    onRescan,
    onNavigate,
    onReset
@@ -192,6 +198,14 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
       setIsBioEnabled(BiometricService.isEnabled());
    }, []);
 
+   // Screenshot / app-switcher protection while the seed or backup is on screen.
+   React.useEffect(() => {
+      const sensitive = Boolean(revealedSeed) || showBackupModal;
+      if (!sensitive) return;
+      setScreenSecure(true);
+      return () => setScreenSecure(false);
+   }, [revealedSeed, showBackupModal]);
+
    const handleToggleBio = () => {
       if (isBioEnabled) {
          const task = startTaskTelemetry('biometric.disable', 'SettingsPage');
@@ -243,6 +257,10 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
    const toggleAutoLock = () => {
       onAutoLockChange(!autoLockEnabled, autoLockMinutes);
+   };
+
+   const toggleTelemetry = () => {
+      onTelemetryChange(!telemetryEnabled);
    };
 
    const runRescan = async () => {
@@ -628,7 +646,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
       const task = startTaskTelemetry('wallet.seed_copy', 'SettingsPage');
       try {
-         await navigator.clipboard.writeText(revealedSeed);
+         await copySeedWithAutoClear(revealedSeed);
          setSeedCopied(true);
          setTimeout(() => setSeedCopied(false), 2000);
          task.completed();
@@ -844,6 +862,29 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                            className={`w-12 h-6 rounded-full transition-colors relative ${autoLockEnabled ? 'bg-accent-primary' : 'bg-white/10'}`}
                         >
                            <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform duration-200 ${autoLockEnabled ? 'left-7' : 'left-1'}`}></div>
+                        </button>
+                     </div>
+                  </div>
+
+                  <div className="h-[1px] bg-white/5 w-full"></div>
+
+                  <div className="flex items-start justify-between">
+                     <div className="flex gap-4">
+                        <div className="p-2.5 bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary">
+                           <Monitor size={20} />
+                        </div>
+                        <div>
+                           <h4 className="text-white font-medium mb-1">{t('settings.telemetry.title')}</h4>
+                           <p className="text-sm text-text-muted max-w-sm">{t('settings.telemetry.description')}</p>
+                        </div>
+                     </div>
+
+                     <div className="flex items-center">
+                        <button
+                           onClick={toggleTelemetry}
+                           className={`w-12 h-6 rounded-full transition-colors relative ${telemetryEnabled ? 'bg-accent-primary' : 'bg-white/10'}`}
+                        >
+                           <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform duration-200 ${telemetryEnabled ? 'left-7' : 'left-1'}`}></div>
                         </button>
                      </div>
                   </div>

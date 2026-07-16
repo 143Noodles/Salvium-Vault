@@ -50,7 +50,7 @@ import {
 } from './utils/walletStorage';
 import { isNativePlatform, isDesktopApp } from './utils/runtime';
 import SetupWizard from './components/SetupWizard';
-import { reportTaskEvent, startTaskTelemetry } from './utils/clientTelemetry';
+import { reportTaskEvent, startTaskTelemetry, isClientTelemetryEnabled, setClientTelemetryEnabled } from './utils/clientTelemetry';
 
 const isDesktopOnly = isDesktop;
 
@@ -177,6 +177,7 @@ const AppContent: React.FC = () => {
 
   const [needsScan, setNeedsScan] = useState(false);
   const [autoLockEnabled, setAutoLockEnabled] = useState(true);
+  const [telemetryEnabled, setTelemetryEnabled] = useState(() => isClientTelemetryEnabled());
   const [autoLockMinutes, setAutoLockMinutes] = useState(15);
   const lastActivityRef = useRef(Date.now());
 
@@ -572,12 +573,28 @@ const AppContent: React.FC = () => {
     updateActivity();
   };
 
+  const mergeSalviumSettings = (patch: Record<string, unknown>) => {
+    let existing: Record<string, unknown> = {};
+    try {
+      existing = JSON.parse(localStorage.getItem('salvium_settings') || '{}');
+    } catch {
+    }
+    localStorage.setItem('salvium_settings', JSON.stringify({ ...existing, ...patch }));
+  };
+
   const handleAutoLockSettingsChange = (enabled: boolean, minutes: number) => {
     setAutoLockEnabled(enabled);
     setAutoLockMinutes(minutes);
-    localStorage.setItem('salvium_settings', JSON.stringify({ autoLockEnabled: enabled, autoLockMinutes: minutes }));
+    mergeSalviumSettings({ autoLockEnabled: enabled, autoLockMinutes: minutes });
     localStorage.setItem('salvium_autolock_enabled', String(enabled));
     localStorage.setItem('salvium_autolock_minutes', String(minutes));
+    updateActivity();
+  };
+
+  const handleTelemetryChange = (enabled: boolean) => {
+    setTelemetryEnabled(enabled);
+    setClientTelemetryEnabled(enabled);
+    mergeSalviumSettings({ telemetryEnabled: enabled });
     updateActivity();
   };
 
@@ -986,6 +1003,8 @@ const AppContent: React.FC = () => {
                 autoLockEnabled={autoLockEnabled}
                 autoLockMinutes={autoLockMinutes}
                 onAutoLockChange={handleAutoLockSettingsChange}
+                telemetryEnabled={telemetryEnabled}
+                onTelemetryChange={handleTelemetryChange}
                 onRescan={presentRescanLoading}
                 onNavigate={handleNavigate}
                 onReset={handleReset}

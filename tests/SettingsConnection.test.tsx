@@ -60,7 +60,7 @@ describe("SettingsPage Connection & Sync controls", () => {
   afterEach(() => { vi.clearAllMocks(); });
 
   const renderPage = () =>
-    render(<SettingsPage autoLockEnabled={true} autoLockMinutes={15} onAutoLockChange={vi.fn()} />);
+    render(<SettingsPage autoLockEnabled={true} autoLockMinutes={15} onAutoLockChange={vi.fn()} telemetryEnabled={true} onTelemetryChange={vi.fn()} />);
 
   // Scan-index mode is a first-run-wizard-only choice now, not a Settings control.
   it("renders the node selector and no scan-index mode control", () => {
