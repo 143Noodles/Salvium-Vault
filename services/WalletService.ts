@@ -14,6 +14,7 @@ import {
   type WasmVariant,
 } from '../utils/wasmVersion';
 import { getExtensionAssetUrl, isExtensionRuntime } from '../utils/extensionRuntime';
+import { isPackagedRuntime, getPackagedWalletAssetUrl, resolveApiUrl } from '../utils/bundledRuntime';
 import type { WalletEngine } from './walletWorker/WalletEngine';
 import { WorkerEngine, guardEngineSurface } from './walletWorker/WorkerEngine';
 import { DirectEngine } from './walletWorker/DirectEngine';
@@ -1556,7 +1557,7 @@ export class WalletService {
       throw new Error(staleError);
     };
 
-    if (isExtensionRuntime()) return;
+    if (isPackagedRuntime()) return;
 
     const flagWasSet = window.__salviumRuntimeStale === true;
 
@@ -1678,7 +1679,7 @@ export class WalletService {
 
   private async resolveWasmAssetVersion(): Promise<string> {
     window.__salviumWasmCacheVersion = WASM_CACHE_VERSION;
-    if (isExtensionRuntime()) {
+    if (isPackagedRuntime()) {
       window.__salviumExpectedWasmAssetVersion = WASM_CACHE_VERSION;
       this.wasmAssetVersion = WASM_CACHE_VERSION;
       return WASM_CACHE_VERSION;
@@ -1720,8 +1721,8 @@ export class WalletService {
     const preferredVariant = selectPreferredWasmVariant();
     const selectedFiles = getWasmVariantAssetFilenames(preferredVariant);
     const baselineFiles = getWasmVariantAssetFilenames('baseline');
-    const assetUrl = (filename: string): string => isExtensionRuntime()
-      ? getExtensionAssetUrl('wallet/' + filename)
+    const assetUrl = (filename: string): string => isPackagedRuntime()
+      ? getPackagedWalletAssetUrl(filename)
       : '/api/wasm/' + version + '/' + filename;
     const glueUrl = assetUrl(selectedFiles.glue);
 
@@ -7986,7 +7987,7 @@ export class WalletService {
     const seedWorkerUrl = isExtensionRuntime()
       ? getExtensionAssetUrl('wallet/seed-validator.worker.js')
       : '/wallet/seed-validator.worker.js';
-    const seedWasmVersion = isExtensionRuntime()
+    const seedWasmVersion = isPackagedRuntime()
       ? ''
       : encodeURIComponent((await this.resolveWasmAssetVersion()) || WASM_CACHE_VERSION);
     const selectedVariant = selectPreferredWasmVariant();
@@ -7998,8 +7999,8 @@ export class WalletService {
         context: { wasmVariant: selectedVariant, featureProbe: 'simd+bulk-memory' },
       });
     }
-    const seedAssetUrl = (filename: string): string => isExtensionRuntime()
-      ? getExtensionAssetUrl('wallet/' + filename)
+    const seedAssetUrl = (filename: string): string => isPackagedRuntime()
+      ? getPackagedWalletAssetUrl(filename)
       : '/api/wasm/' + seedWasmVersion + '/' + filename;
 
     try {
@@ -8360,7 +8361,7 @@ export class WalletService {
   private connectBlockStream(): void {
     if (this.blockStreamConnection) return;
 
-    const url = '/api/wallet/block-stream';
+    const url = resolveApiUrl('/api/wallet/block-stream');
     const wasReconnecting = this.sseDisconnectTime > 0;
     const disconnectDuration = wasReconnecting ? Date.now() - this.sseDisconnectTime : 0;
 
@@ -8823,7 +8824,7 @@ export class WalletService {
     if (this.mempoolStreamConnection || this.mempoolReconnecting) return;
 
     this.mempoolReconnecting = true;
-    const url = '/api/mempool-stream';
+    const url = resolveApiUrl('/api/mempool-stream');
 
     try {
       this.mempoolStreamConnection = new EventSource(url);

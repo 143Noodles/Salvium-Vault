@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Plus, Loader2, Trash2, AlertCircle, ChevronDown } from 'lucide-react';
 import { Check, ChevronRight } from './Icons';
 import { useTranslation } from 'react-i18next';
+import { isBundledNativeRuntime } from '../utils/bundledRuntime';
 import { isDesktopApp } from '../utils/runtime';
 import {
   NODE_PRESETS,
@@ -50,6 +51,10 @@ const choiceLabel = (presets: NodePreset[], choice: NodeChoice): string => {
 const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, settings, className = '' }) => {
   const { t } = useTranslation();
   const [choice, setChoice] = useState<NodeChoice>('auto');
+  // Custom/preset node pinning uses a same-origin cookie the server honours;
+  // in the bundled app the API is cross-origin (api.salvium.tools) so the
+  // cookie never reaches it. Hide the add-custom affordance there.
+  const customNodesSupported = !isBundledNativeRuntime();
   // The server decides which presets exist (the desktop sidecar exposes the 3
   // official seed nodes; the hosted vault does not) — the hardcoded list is
   // only the pre-fetch fallback.
@@ -270,6 +275,7 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
                 {choice === url && <Check size={14} className="text-accent-primary flex-shrink-0" />}
               </button>
             ))}
+            {customNodesSupported && (
             <button
               type="button"
               onClick={() => handleSettingsSelect(ADD_VALUE)}
@@ -278,6 +284,7 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
               <Plus size={14} className="shrink-0" />
               <span className="flex-1 font-medium truncate">Add custom node…</span>
             </button>
+            )}
           </div>
         )}
 
@@ -367,7 +374,7 @@ const NodeSelector: React.FC<NodeSelectorProps> = ({ onAfterChange, compact, set
                 ))}
               </optgroup>
             )}
-            <option value={ADD_VALUE}>+ Add custom node…</option>
+            {customNodesSupported && <option value={ADD_VALUE}>+ Add custom node…</option>}
           </select>
           <ChevronDown
             size={16}

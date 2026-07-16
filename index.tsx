@@ -1,3 +1,5 @@
+import './utils/bundledBootstrap';
+import { isBundledNativeRuntime } from './utils/bundledRuntime';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
@@ -192,6 +194,7 @@ const getBundleFreshnessCheckUrl = (): string => {
 };
 
 const checkForStaleRuntimeAssets = async (source: string, force = false): Promise<void> => {
+  if (isBundledNativeRuntime()) return;
   if (typeof window === 'undefined' || BUILD_ID === 'unknown') return;
 
   const now = Date.now();
@@ -275,6 +278,7 @@ const checkForStaleRuntimeAssets = async (source: string, force = false): Promis
 };
 
 const startRuntimeFreshnessMonitor = () => {
+  if (isBundledNativeRuntime()) return;
   if (typeof window === 'undefined' || BUILD_ID === 'unknown') return;
 
   const runCheck = (source: string, force = false) => {

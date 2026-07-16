@@ -70,6 +70,7 @@ describe('validated fallback artifact integration', () => {
   it('publishes both variants through the canonical manifest and packaging surfaces', () => {
     const server = readRepoFile('server.cjs');
     const extensionBuild = readRepoFile('scripts/build-extension.mjs');
+    const walletRuntimeList = readRepoFile('scripts/copy-wallet-runtime.mjs');
     const dockerfile = readRepoFile('Dockerfile');
     const clientTelemetry = readRepoFile('utils/clientTelemetry.ts');
     const desktopPackage = readRepoFile('desktop/package.json');
@@ -84,8 +85,9 @@ describe('validated fallback artifact integration', () => {
     expect(server).toContain('hf13-v1.1.3c-asset-index-20260709');
     expect(server).toContain('responseOuts[i].output_id = lookupOutputs[i].index');
     expect(server).toContain('baseline: baselineWasmInfo && baselineJsInfo');
-    expect(extensionBuild).toContain("'SalviumWalletBaseline.wasm'");
-    expect(extensionBuild).toContain("'wasm-feature-detect.js'");
+    expect(extensionBuild).toContain('walletRuntimeFiles');
+    expect(walletRuntimeList).toContain('SalviumWalletBaseline.wasm');
+    expect(walletRuntimeList).toContain('wasm-feature-detect.js');
     expect(dockerfile).toContain('test -s ./wallet/SalviumWalletBaseline.wasm');
     expect(clientTelemetry).toContain("'wasmVariant', 'fallbackAvailable'");
     expect(server).toContain("'wasmVariant', 'fallbackAvailable'");
