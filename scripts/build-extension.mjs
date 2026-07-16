@@ -6,17 +6,7 @@ const repoRoot = process.cwd();
 const browser = process.argv[2] === 'firefox' ? 'firefox' : 'chrome';
 const outDir = path.join(repoRoot, 'dist-extension', browser);
 const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-const walletRuntimeFiles = [
-  'CSPScanner.js',
-  'SalviumWallet.js',
-  'SalviumWallet.wasm',
-  'SalviumWalletBaseline.js',
-  'SalviumWalletBaseline.wasm',
-  'wasm-feature-detect.js',
-  'csp-scanner.worker.js',
-  'seed-validator.worker.js',
-  'wallet-host.worker.js',
-];
+import { walletRuntimeFiles } from './copy-wallet-runtime.mjs';
 
 function toExtensionVersion(version) {
   const parts = String(version || '0.0.1').split('-')[0].split('.').map((part) => {

@@ -1,3 +1,4 @@
+import { isBundledNativeRuntime, BUNDLED_API_BASE } from '../utils/bundledRuntime';
 import { debugLog, debugWarn } from '../utils/debug';
 // Type-only; '@/' (tsconfig paths + vite alias) keeps this resolvable from every
 // compile context that type-checks this file.
@@ -2288,7 +2289,7 @@ class CSPScanService {
       returnAddressesCsv,
       stakeReturnHeights,
       cspCacheEpoch,
-      apiBaseUrl: '',
+      apiBaseUrl: isBundledNativeRuntime() ? BUNDLED_API_BASE : '',
       autoTune: true,
       maxWorkerCount,
       initialWorkerCount,

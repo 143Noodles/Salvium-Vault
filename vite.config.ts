@@ -5,6 +5,9 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig(() => {
+  // Bundled Android build: local webDir + remote API (scripts/build-android-bundled.sh).
+  const isBundled = process.env.SALVIUM_BUNDLED === '1';
+  const outDir = isBundled ? 'dist-android' : 'dist';
   return {
     // Base path - root since vault is on its own subdomain
     base: '/',
@@ -21,8 +24,8 @@ export default defineConfig(() => {
         name: 'stamp-sw-build-id',
         apply: 'build',
         closeBundle() {
-          const swPath = path.join(__dirname, 'dist', 'sw.js');
-          const idxPath = path.join(__dirname, 'dist', 'index.html');
+          const swPath = path.join(__dirname, outDir, 'sw.js');
+          const idxPath = path.join(__dirname, outDir, 'index.html');
           if (!fs.existsSync(swPath) || !fs.existsSync(idxPath)) return;
           const id = crypto.createHash('sha256').update(fs.readFileSync(idxPath)).digest('hex').slice(0, 12);
           let sw = fs.readFileSync(swPath, 'utf8');
@@ -62,8 +65,11 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       }
     },
+    define: {
+      __SALVIUM_BUNDLED__: JSON.stringify(isBundled),
+    },
     build: {
-      outDir: 'dist',
+      outDir,
       assetsDir: 'assets',
       sourcemap: false,
       minify: 'esbuild',

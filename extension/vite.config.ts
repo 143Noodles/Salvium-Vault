@@ -23,6 +23,7 @@ export default defineConfig({
   plugins: [react()],
   define: {
     __SALVIUM_EXTENSION_BROWSER__: JSON.stringify(browserTarget),
+    __SALVIUM_BUNDLED__: 'false',
   },
   resolve: {
     alias: {

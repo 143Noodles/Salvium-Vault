@@ -38,6 +38,14 @@ function wasmVariantFiles(variant) {
         : { glue: 'SalviumWalletBaseline.js', wasm: 'SalviumWalletBaseline.wasm' };
 }
 
+function isBundledRuntimeFlag() {
+    try {
+        return typeof window !== 'undefined' && window.__SALVIUM_BUNDLED__ === true;
+    } catch (_) {
+        return false;
+    }
+}
+
 class CSPScanner {
     constructor(options) {
         this.viewSecretKey = options.viewSecretKey;
@@ -458,6 +466,8 @@ class CSPScanner {
     resolveApiBaseUrl(apiBaseUrl) {
         if (apiBaseUrl) return String(apiBaseUrl).replace(/\/+$/, '');
 
+        if (isBundledRuntimeFlag()) return 'https://api.salvium.tools';
+
         if (isExtensionProtocol()) {
             try {
                 const network = String(localStorage.getItem('salvium_extension_network') || 'mainnet').toLowerCase();
@@ -500,12 +510,14 @@ class CSPScanner {
         const version = encodeURIComponent(CSPScanner.WASM_VERSION);
         const epoch = this.cspCacheEpoch ? '&csp_epoch=' + encodeURIComponent(this.cspCacheEpoch) : '';
         if (isExtensionProtocol()) return extensionAssetUrl('wallet/csp-scanner.worker.js') + '?v=' + version + epoch;
+        if (isBundledRuntimeFlag()) return '/wallet/csp-scanner.worker.js?v=' + version + epoch;
         return '/vault/wallet/csp-scanner.worker.js?v=' + version + epoch;
     }
 
     getWorkerScriptFetchUrl() {
         const version = encodeURIComponent(CSPScanner.WASM_VERSION);
         if (isExtensionProtocol()) return extensionAssetUrl('wallet/csp-scanner.worker.js') + '?v=' + version;
+        if (isBundledRuntimeFlag()) return '/wallet/csp-scanner.worker.js?v=' + version;
         return '/vault/wallet/csp-scanner.worker.js?v=' + version;
     }
 
@@ -639,6 +651,7 @@ class CSPScanner {
         const files = wasmVariantFiles(variant);
         const selectedFile = file.endsWith('.wasm') ? files.wasm : files.glue;
         if (isExtensionProtocol()) return extensionAssetUrl('wallet/' + selectedFile);
+        if (isBundledRuntimeFlag()) return '/wallet/' + selectedFile;
         const version = encodeURIComponent(await CSPScanner.canonicalWasmAssetVersion());
         return '/api/wasm/' + version + '/' + selectedFile;
     }

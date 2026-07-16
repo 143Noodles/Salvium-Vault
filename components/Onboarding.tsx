@@ -5,6 +5,7 @@ import { Copy, ArrowUpRight, ArrowDownLeft, Shield, Key, CheckCircle2, ChevronRi
 import { useWallet } from '../services/WalletContext';
 import { isMobile } from 'react-device-detect';
 import { parseBackup, restoreFromBackup, BackupData } from '../services/BackupService';
+import { isBundledNativeRuntime } from '../utils/bundledRuntime';
 import { isNativePlatform } from '../utils/runtime';
 import {
   buildOnboardingUrl,
@@ -17,6 +18,8 @@ import {
 } from '../utils/vaultNetwork';
 import NodeSelector from './NodeSelector';
 import { startTaskTelemetry } from '../utils/clientTelemetry';
+import { copySeedWithAutoClear } from '../utils/secureClipboard';
+import { setScreenSecure } from '../utils/secureScreen';
 
 type OnboardingMode = 'initial' | 'create' | 'restore';
 type CreateStep = 'seed' | 'verify' | 'password';
@@ -44,6 +47,14 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [createStep, setCreateStep] = useState<CreateStep>('seed');
   const [generatedSeed, setGeneratedSeed] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState(false);
+
+  // Screenshot / app-switcher protection while the generated seed is visible.
+  useEffect(() => {
+    const seedVisible = mode === 'create' && Boolean(generatedSeed) && (createStep === 'seed' || createStep === 'verify');
+    if (!seedVisible) return;
+    setScreenSecure(true);
+    return () => setScreenSecure(false);
+  }, [mode, generatedSeed, createStep]);
 
   const [verifyIndices, setVerifyIndices] = useState<[number, number]>([0, 0]);
   const [verifyInput1, setVerifyInput1] = useState('');
@@ -142,7 +153,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const copySeed = () => {
     if (generatedSeed) {
       const task = startTaskTelemetry('wallet.seed_copy', 'Onboarding');
-      navigator.clipboard.writeText(generatedSeed)
+      copySeedWithAutoClear(generatedSeed)
         .then(() => task.completed())
         .catch((error) => task.failed(error, 'clipboard_failed'));
     }
@@ -321,7 +332,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     window.location.replace(nextUrl);
   };
 
-  const networkSwitcher = (
+  const networkSwitcher = isBundledNativeRuntime() ? null : (
     <div className="flex flex-col items-center gap-2">
       <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 backdrop-blur-md shadow-[0_18px_40px_-30px_rgba(0,0,0,0.9)]">
         <span className={`h-2 w-2 rounded-full ${vaultMode === 'mainnet' ? 'bg-emerald-400' : 'bg-accent-primary'}`}></span>
