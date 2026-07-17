@@ -12,6 +12,7 @@ import androidx.core.view.WindowInsetsCompat;
 
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.Plugin;
+import com.getcapacitor.ServerPath;
 import com.getcapacitor.WebViewListener;
 import com.capacitorjs.plugins.statusbar.StatusBarPlugin;
 
@@ -22,15 +23,19 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends BridgeActivity {
+    private static final int CONTENT_HEALTH_MAX_POLLS = 20;
     private int lastSystemBarTop = 0;
     private int lastSystemBarRight = 0;
     private int lastSystemBarBottom = 0;
     private int lastSystemBarLeft = 0;
+    private boolean contentHealthProbeStarted = false;
+    private boolean pendingContentSelected = false;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(StatusBarPlugin.class);
         registerPlugin(SecureScreenPlugin.class);
+        registerPlugin(ContentUpdatePlugin.class);
         super.onCreate(savedInstanceState);
 
         WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
@@ -48,6 +53,17 @@ public class MainActivity extends BridgeActivity {
         }
 
         installSystemBarInsetBridge();
+        ContentUpdateManager.scheduleAutomaticCheck(this);
+    }
+
+    @Override
+    protected void load() {
+        String activeContentPath = ContentUpdateManager.resolveActiveContentPath(this);
+        if (activeContentPath != null) {
+            bridgeBuilder.setServerPath(new ServerPath(ServerPath.PathType.BASE_PATH, activeContentPath));
+            pendingContentSelected = ContentUpdateManager.hasPendingContent(this);
+        }
+        super.load();
     }
 
     private boolean hasBundledLegacyShell() {
@@ -72,9 +88,11 @@ public class MainActivity extends BridgeActivity {
 
     private void routeLegacyBundledShellIfRequired(WebView webView) {
         if (!hasBundledLegacyShell() || supportsWasmUnsafeEval(webView)) return;
-        // Both shells use the same HTTPS origin, so IndexedDB/localStorage wallet
-        // state is preserved. Unknown engines deliberately take the compatible tier.
-        webView.post(() -> webView.loadUrl("https://vault.salvium.tools/index-legacy.html"));
+        // bridge.getLocalUrl() is the Capacitor-intercepted local origin. Do not
+        // use a network URL here: the legacy tier must remain the APK/verified
+        // content bundle while preserving IndexedDB/localStorage origin.
+        String legacyUrl = bridge.getLocalUrl() + "/index-legacy.html";
+        webView.post(() -> webView.loadUrl(legacyUrl));
     }
 
     private void installSystemBarInsetBridge() {
@@ -99,11 +117,80 @@ public class MainActivity extends BridgeActivity {
                     super.onPageCommitVisible(view, url);
                     injectSystemBarInsetsCss();
                     ViewCompat.requestApplyInsets(decorView);
+                    startContentHealthProbe(view);
                 }
             });
         }
 
         ViewCompat.requestApplyInsets(decorView);
+    }
+
+    private void startContentHealthProbe(WebView view) {
+        if (contentHealthProbeStarted || !pendingContentSelected || !ContentUpdateManager.hasPendingContent(this)) return;
+        contentHealthProbeStarted = true;
+        String script = "(() => {" +
+            "if (window.__salviumContentHealth === 'pending' || window.__salviumContentHealth === 'healthy') return;" +
+            "window.__salviumContentHealth = 'pending';" +
+            "const id = 739104;" +
+            "let worker;" +
+            "let settled = false;" +
+            "let workerHealthy = false;" +
+            "let timeout;" +
+            "let readinessPoll;" +
+            "const finish = (state) => {" +
+                "if (settled) return;" +
+                "settled = true;" +
+                "clearTimeout(timeout);" +
+                "clearInterval(readinessPoll);" +
+                "window.__salviumContentHealth = state;" +
+                "try { worker && worker.terminate(); } catch (_) {}" +
+            "};" +
+            "const maybeFinish = () => {" +
+                "if (workerHealthy && window.__salviumAppReady === true) finish('healthy');" +
+            "};" +
+            "timeout = setTimeout(() => finish('failed'), 25000);" +
+            "readinessPoll = setInterval(maybeFinish, 100);" +
+            "try {" +
+                "worker = new Worker('/wallet/seed-validator.worker.js');" +
+                "worker.onmessage = (event) => {" +
+                    "if (!event.data || event.data.id !== id) return;" +
+                    "if (event.data.type !== 'HEALTHY') { finish('failed'); return; }" +
+                    "workerHealthy = true;" +
+                    "maybeFinish();" +
+                "};" +
+                "worker.onerror = () => finish('failed');" +
+                "worker.postMessage({" +
+                    "type: 'HEALTH_CHECK'," +
+                    "id," +
+                    "payload: {" +
+                        "wasmVariant: 'simd'," +
+                        "glueUrl: '/wallet/SalviumWallet.js'," +
+                        "wasmUrl: '/wallet/SalviumWallet.wasm'," +
+                        "fallbackGlueUrl: '/wallet/SalviumWalletBaseline.js'," +
+                        "fallbackWasmUrl: '/wallet/SalviumWalletBaseline.wasm'" +
+                    "}" +
+                "});" +
+            "} catch (_) { finish('failed'); }" +
+        "})()";
+        view.evaluateJavascript(script, ignored -> pollContentHealth(view, 0));
+    }
+
+    private void pollContentHealth(WebView view, int poll) {
+        if (isFinishing() || isDestroyed() || poll >= CONTENT_HEALTH_MAX_POLLS) return;
+        view.postDelayed(() -> view.evaluateJavascript(
+            "String(window.__salviumContentHealth || 'pending')",
+            state -> {
+                if ("\"healthy\"".equals(state)) {
+                    ContentUpdateManager.markActiveContentHealthy(MainActivity.this);
+                } else if ("\"failed\"".equals(state)) {
+                    if (ContentUpdateManager.markActiveContentFailed(MainActivity.this)) {
+                        view.post(MainActivity.this::recreate);
+                    }
+                } else {
+                    pollContentHealth(view, poll + 1);
+                }
+            }
+        ), 1500);
     }
 
     private void updateSystemBarInsets(int top, int right, int bottom, int left) {
@@ -138,6 +225,7 @@ public class MainActivity extends BridgeActivity {
             Locale.US,
             "(() => {" +
                 "const root = document.documentElement;" +
+                "if (!root) return;" +
                 "root.style.setProperty('--salvium-safe-area-top', '%dpx');" +
                 "root.style.setProperty('--salvium-safe-area-right', '%dpx');" +
                 "root.style.setProperty('--salvium-safe-area-bottom', '%dpx');" +

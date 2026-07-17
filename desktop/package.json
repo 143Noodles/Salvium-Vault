@@ -36,6 +36,7 @@
           "wallet/**",
           "services/minerManager.cjs",
           "server-csp-worker.cjs",
+          "utils/canonicalTxMembership.cjs",
           "utils/cspPolicy.cjs",
           "utils/salpayRelay.cjs",
           "content-version.json"

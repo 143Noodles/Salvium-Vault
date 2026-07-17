@@ -1,19 +1,7 @@
 #!/usr/bin/env bash
+# Google Play release: bundled wallet floor + signed, opt-in content updates.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-export JAVA_HOME="${JAVA_HOME:-$HOME/.local/jdk-21}"
-export ANDROID_HOME="${ANDROID_HOME:-$HOME/.local/android-sdk}"
-export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-
-cd "$ROOT_DIR"
-npm run build:android
-
-cd android
-if [ ! -f local.properties ]; then
-  printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
-fi
-
-./gradlew lintVitalRelease bundleRelease --no-daemon
+export ANDROID_BUNDLE=1
+exec "$ROOT_DIR/scripts/build-android-bundled.sh"

@@ -25,7 +25,7 @@ Salvium Vault is a fully client-side wallet that lets you create, manage, and tr
 - **Biometric Unlock** - Optional Face ID / Touch ID / Windows Hello support
 - **Encrypted Backups** - Export and import encrypted wallet backups
 - **WebAssembly Powered** - Native performance for cryptographic operations
-- **Native Android App** - Available as an Android app (Capacitor) in addition to the web wallet
+- **Native Android App** - Bundles a known-good wallet and offers user-approved, signed content updates on Google Play builds
 - **Desktop App** - Native Linux/Windows/macOS app (Electron) with signed over-the-air content updates
 - **Responsive Design** - Works on desktop and mobile browsers
 
@@ -79,6 +79,11 @@ for how releases and updates work.
 > Chromium setuid sandbox helper and fails if the helper cannot be secured.
 > AppImage is intentionally not distributed because portable launchers may
 > silently disable the Chromium sandbox on some hosts.
+
+The Android app checks GitHub Releases for a small signed content manifest and
+prompts before downloading anything executable. Users can update now, defer,
+skip that version, or open the matching release notes; F-Droid builds disable
+this out-of-band updater. See [GOOGLE_PLAY_RELEASE.md](GOOGLE_PLAY_RELEASE.md).
 
 ## Docker Deployment
 

@@ -89,6 +89,7 @@ wallet/backups/
 # Android release secrets and generated outputs
 *.jks
 *.keystore
+salvium-content-signing.key
 android/local.properties
 android/**/*.apk
 android/**/*.aab
@@ -110,6 +111,7 @@ desktop/build/*
 desktop/dist/
 desktop/release/
 desktop/content-dist/
+android/content-dist/
 
 # Local WASM/public staging copies
 public/SalviumWallet.js

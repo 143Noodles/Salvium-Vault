@@ -22,6 +22,12 @@ import {
 import { startTaskTelemetry } from '../utils/clientTelemetry';
 import { copySeedWithAutoClear } from '../utils/secureClipboard';
 import { setScreenSecure } from '../utils/secureScreen';
+import { isNativeAndroid } from '../utils/runtime';
+import {
+   checkForContentUpdates,
+   getContentUpdateStatus,
+   type ContentUpdateStatus,
+} from '../utils/contentUpdate';
 
 interface SettingsPageProps {
    autoLockEnabled: boolean;
@@ -145,6 +151,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
    const { t } = useTranslation();
    const wallet = useWallet();
    const [isRescanning, setIsRescanning] = useState(false);
+   const nativeAndroid = isNativeAndroid();
+   const [contentUpdateStatus, setContentUpdateStatus] = useState<ContentUpdateStatus | null>(null);
+   const [checkingContentUpdate, setCheckingContentUpdate] = useState(false);
 
    const [showBackupModal, setShowBackupModal] = useState(false);
    const [backupPassword, setBackupPassword] = useState('');
@@ -198,13 +207,19 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
       setIsBioEnabled(BiometricService.isEnabled());
    }, []);
 
-   // Screenshot / app-switcher protection while the seed or backup is on screen.
    React.useEffect(() => {
-      const sensitive = Boolean(revealedSeed) || showBackupModal;
+      if (!nativeAndroid) return;
+      void getContentUpdateStatus().then(setContentUpdateStatus).catch(() => setContentUpdateStatus(null));
+   }, [nativeAndroid]);
+
+   // Protect the entire seed-reveal flow (including a temporarily visible
+   // password), plus backup export, from screenshots and task previews.
+   React.useEffect(() => {
+      const sensitive = showSeedModal || showBackupModal;
       if (!sensitive) return;
       setScreenSecure(true);
       return () => setScreenSecure(false);
-   }, [revealedSeed, showBackupModal]);
+   }, [showSeedModal, showBackupModal]);
 
    const handleToggleBio = () => {
       if (isBioEnabled) {
@@ -291,6 +306,17 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
          return;
       }
       await runRescan();
+   };
+
+   const handleContentUpdateCheck = async () => {
+      if (checkingContentUpdate) return;
+      setCheckingContentUpdate(true);
+      try {
+         await checkForContentUpdates();
+         setContentUpdateStatus(await getContentUpdateStatus());
+      } finally {
+         setCheckingContentUpdate(false);
+      }
    };
 
    const confirmRescanWithPassword = async () => {
@@ -780,6 +806,44 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                      </Button>
                   </div>
                </Card>
+
+               {nativeAndroid && (
+                  <Card className={isMobileOrTablet ? '!p-4' : 'space-y-6'}>
+                     <div className={`flex ${isMobileOrTablet ? 'items-start gap-3' : 'items-center justify-between'}`}>
+                        <div className={`flex ${isMobileOrTablet ? 'gap-3 min-w-0 flex-1' : 'gap-4'}`}>
+                           <div className={`${isMobileOrTablet ? 'p-2' : 'p-2.5'} bg-bg-primary rounded-lg border border-white/5 h-fit text-text-secondary`}>
+                              <Download size={20} />
+                           </div>
+                           <div className="min-w-0">
+                              <h4 className="text-white font-medium mb-1">Wallet updates</h4>
+                              <p className={`${isMobileOrTablet ? 'text-[13px] leading-5' : 'text-sm'} text-text-muted`}>
+                                 {contentUpdateStatus
+                                    ? `App ${contentUpdateStatus.shellVersion} · Wallet ${contentUpdateStatus.contentVersion}`
+                                    : 'Check for a signed wallet update.'}
+                              </p>
+                              {contentUpdateStatus && !contentUpdateStatus.enabled && (
+                                 <p className="text-xs leading-4 text-text-muted mt-1">
+                                    Signed wallet-content updates are disabled in this build. APK updates still work normally.
+                                 </p>
+                              )}
+                           </div>
+                        </div>
+                        <Button
+                           variant="secondary"
+                           onClick={handleContentUpdateCheck}
+                           disabled={checkingContentUpdate}
+                           className={`${isMobileOrTablet ? 'shrink-0 px-3 py-2 text-xs' : 'px-4 py-2 md:px-6 md:py-2.5'}`}
+                        >
+                           {checkingContentUpdate ? (
+                              <Loader2 size={16} className="mr-2 animate-spin" />
+                           ) : (
+                              <RefreshCw size={16} className="mr-2" />
+                           )}
+                           Check for updates
+                        </Button>
+                     </div>
+                  </Card>
+               )}
             </div>
 
             <div className="space-y-4">

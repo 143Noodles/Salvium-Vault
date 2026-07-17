@@ -47,12 +47,14 @@ describe('desktop package security policy', () => {
     const filters = desktopPackage.build.extraResources[0].filter;
     const publisher = repoFile('desktop/scripts/publish-content.mjs');
     expect(filters).toContain('services/minerManager.cjs');
+    expect(filters).toContain('utils/canonicalTxMembership.cjs');
     expect(filters).toContain('utils/cspPolicy.cjs');
     expect(filters).toContain('utils/salpayRelay.cjs');
     expect(filters).not.toContain('services/**');
     expect(filters).not.toContain('utils/**');
     expect(filters).not.toContain('node_modules/**');
     expect(publisher).toContain("'services/minerManager.cjs'");
+    expect(publisher).toContain("'utils/canonicalTxMembership.cjs'");
     expect(publisher).not.toContain("'services'");
     expect(publisher).not.toContain("'utils'");
   });

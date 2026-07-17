@@ -21,6 +21,6 @@ public class ExampleInstrumentedTest {
         // Context of the app under test.
         Context appContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
 
-        assertEquals("tools.salvium", appContext.getPackageName());
+        assertEquals(BuildConfig.APPLICATION_ID, appContext.getPackageName());
     }
 }

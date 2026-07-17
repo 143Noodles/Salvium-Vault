@@ -71,6 +71,19 @@ const AppContent: React.FC = () => {
   const wallet = useWallet();
   useMobileScaling();
 
+  // Native content activation must prove that the actual app tree committed,
+  // not merely that React mounted a sibling next to an error boundary. If a
+  // provider or AppContent render fails, this effect never runs and the native
+  // health watchdog rolls the downloaded candidate back.
+  useEffect(() => {
+    if (!isNativeApp && !isDesktopApp()) return;
+    const healthWindow = window as typeof window & { __salviumAppReady?: boolean };
+    healthWindow.__salviumAppReady = true;
+    return () => {
+      delete healthWindow.__salviumAppReady;
+    };
+  }, []);
+
   const [appState, setAppState] = useState<AppState>('initializing');
   const [initTimedOut, setInitTimedOut] = useState(false);
   // Desktop-only first-run setup wizard (node + scan-mode). Gated to the

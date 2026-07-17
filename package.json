@@ -9,6 +9,7 @@
     "build:android": "vite build && rm -f dist/salvium-vault.apk && npx cap sync android",
     "build:android:release": "bash scripts/build-android-release.sh",
     "build:android:fdroid": "bash scripts/build-android-fdroid-live.sh",
+    "build:content-release": "node scripts/publish-content-release.mjs",
     "cap:sync": "npx cap sync android",
     "cap:open": "npx cap open android",
     "preview": "vite preview",

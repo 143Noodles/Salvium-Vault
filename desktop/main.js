@@ -30,7 +30,16 @@ const REPO_ROOT = fs.existsSync(path.join(DEV_REPO_ROOT, 'server.cjs'))
 // packaged builds), not inside the independently updated content directory.
 const SHELL_NODE_MODULES = path.join(__dirname, 'node_modules');
 const SERVER_ENTRY = path.join(REPO_ROOT, 'server.cjs');
-const { resolveActiveContentDir, checkForContentUpdate, applyContentUpdate, setSkippedVersion, pruneOldContent } = require('./content-update');
+const {
+  resolveActiveContentDir,
+  checkForContentUpdate,
+  applyContentUpdate,
+  setSkippedVersion,
+  pruneOldContent,
+  markContentHealthy,
+  markContentFailed,
+  formatDownloadSize,
+} = require('./content-update');
 
 // ---------------------------------------------------------------------------
 // Default sidecar configuration. The first-run wizard (in the SPA) lets the
@@ -56,6 +65,8 @@ let sidecar = null;
 let mainWindow = null;
 let currentPort = 0;
 let activeContentDir = null;      // resolved content dir the sidecar runs from (for restart)
+let activeContentVersion = '0.0.0';
+let activeContentDownloaded = false;
 let sidecarRestarting = false;    // guards against overlapping supervised restarts
 let sidecarRestartTimes = [];     // timestamps of recent restarts (windowed crash-loop cap)
 let sidecarGaveUp = false;        // true once the crash-loop cap is hit (stop trying)
@@ -64,8 +75,18 @@ const SIDECAR_MAX_RESTARTS_PER_WINDOW = 3;
 let tray = null;
 let isQuitting = false;
 let lastPromptedVersion = null; // avoid re-prompting the same version every hourly check
+let contentUpdateCheckInFlight = null;
+let updateDecisionShowing = false;
 
 function log(...args) { console.log('[desktop]', ...args); }
+
+function checkForContentUpdateOnce() {
+  if (!contentUpdateCheckInFlight) {
+    contentUpdateCheckInFlight = checkForContentUpdate(REPO_ROOT)
+      .finally(() => { contentUpdateCheckInFlight = null; });
+  }
+  return contentUpdateCheckInFlight;
+}
 
 // ---------------------------------------------------------------------------
 // Small desktop preferences file (close-to-tray choice, etc.).
@@ -91,14 +112,45 @@ function showMainWindow() {
 // Force a content-update check (from the menu): prompt the decision if one is
 // available, otherwise tell the user they're up to date.
 function manualUpdateCheck() {
-  checkForContentUpdate(REPO_ROOT)
+  checkForContentUpdateOnce()
     .then((r) => {
+      if (r && r.activeRevoked) {
+        log('active content v' + r.version + ' was revoked; restarting into the bundled floor');
+        void relaunchApp();
+        return;
+      }
       if (r && r.updateAvailable) { lastPromptedVersion = r.version; promptUpdateDecision(r.manifest, r.version); return; }
+      if (r && r.shellUpdateRequired) { showShellUpdateRequired(r); return; }
       const win = BrowserWindow.getAllWindows()[0] || null;
       const o = { type: 'info', buttons: ['OK'], title: 'Up to date', message: 'Salvium Vault is up to date.' };
       (win ? dialog.showMessageBox(win, o) : dialog.showMessageBox(o)).catch(() => {});
     })
-    .catch((e) => log('manual update check failed:', e && e.message));
+    .catch((e) => {
+      log('manual update check failed:', e && e.message);
+      const win = BrowserWindow.getAllWindows()[0] || null;
+      const o = { type: 'error', buttons: ['OK'], title: 'Update check failed',
+        message: 'Salvium Vault could not check for updates.',
+        detail: String(e && e.message ? e.message : e).slice(0, 240) };
+      (win ? dialog.showMessageBox(win, o) : dialog.showMessageBox(o)).catch(() => {});
+    });
+}
+
+function showShellUpdateRequired(result) {
+  const win = BrowserWindow.getAllWindows()[0] || null;
+  const opts = {
+    type: 'warning',
+    buttons: ['View release', 'Not now'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'App update required',
+    message: 'A newer Salvium Vault app is required.',
+    detail: 'Wallet content ' + result.version + ' requires app ' + result.minShellVersion + ' or newer.',
+  };
+  (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts)).then(({ response }) => {
+    if (response === 0) {
+      shell.openExternal(result.manifest.releasePageUrl).catch(() => {});
+    }
+  }).catch(() => {});
 }
 
 // Version legibility: the shell (installer) version and the active OTA content
@@ -261,9 +313,17 @@ function isPortFree(port) {
 async function resolveStablePort() {
   const prefs = readPrefs();
   const saved = Number(prefs.sidecarPort) || 0;
-  if (saved >= 1024 && saved <= 65535 && await isPortFree(saved)) {
-    log('Reusing persisted sidecar port', saved);
-    return saved;
+  if (saved >= 1024 && saved <= 65535) {
+    // During an intentional content relaunch the old sidecar may need a moment
+    // to release the port. Reusing it preserves the renderer origin and every
+    // wallet IndexedDB; do not abandon it on a transient close race.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (await isPortFree(saved)) {
+        log('Reusing persisted sidecar port', saved);
+        return saved;
+      }
+      if (attempt < 19) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
   }
   const port = await getFreePort();
   writePrefs(Object.assign({}, prefs, { sidecarPort: port }));
@@ -331,6 +391,12 @@ async function restartSidecar() {
     if (sidecarRestartTimes.length >= SIDECAR_MAX_RESTARTS_PER_WINDOW) {
       sidecarGaveUp = true;
       log('sidecar crash-loop cap reached; not restarting again');
+      if (activeContentDownloaded) {
+        markContentFailed(activeContentVersion, 'sidecar-crash-loop');
+        log('rolling back downloaded content v' + activeContentVersion + ' after its sidecar crash loop');
+        await relaunchApp();
+        return;
+      }
       const win = BrowserWindow.getAllWindows()[0] || null;
       const o = { type: 'error', buttons: ['Quit'], defaultId: 0,
         title: 'Salvium Vault stopped',
@@ -352,6 +418,10 @@ async function restartSidecar() {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
     } catch (e) {
       log('sidecar did not become healthy after restart:', e && e.message);
+      if (activeContentDownloaded) {
+        markContentFailed(activeContentVersion, 'sidecar-restart-health-failed: ' + (e && e.message));
+        await relaunchApp();
+      }
     }
   } finally {
     sidecarRestarting = false;
@@ -441,6 +511,60 @@ async function createMainWindow(port) {
   log('SPA window loaded.');
   mainWindow.on('close', handleWindowClose);
   buildAppMenu();
+}
+
+// A sidecar HTTP 200 is necessary but not sufficient for downloaded wallet
+// content. Prove that the real React tree committed and that the selected
+// seed-validator worker can initialize the selected glue/WASM control surface.
+async function verifyRendererContentHealth(window, timeoutMs = 30000) {
+  if (!window || window.isDestroyed()) return { healthy: false, reason: 'window-unavailable' };
+  try {
+    const result = await window.webContents.executeJavaScript(`(() => new Promise((resolve) => {
+      const id = 739105;
+      let settled = false;
+      let workerHealthy = false;
+      let worker = null;
+      const finish = (healthy, reason) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(poll);
+        clearTimeout(timeout);
+        try { if (worker) worker.terminate(); } catch (_) {}
+        resolve({ healthy, reason });
+      };
+      const maybeFinish = () => {
+        if (workerHealthy && window.__salviumAppReady === true) finish(true, 'app-and-wasm-ready');
+      };
+      const poll = setInterval(maybeFinish, 100);
+      const timeout = setTimeout(() => finish(false, 'content-health-timeout'), ${Math.max(1000, timeoutMs)});
+      try {
+        worker = new Worker('/wallet/seed-validator.worker.js');
+        worker.onerror = () => finish(false, 'seed-worker-error');
+        worker.onmessage = (event) => {
+          if (!event.data || event.data.id !== id) return;
+          if (event.data.type !== 'HEALTHY') { finish(false, 'seed-worker-unhealthy'); return; }
+          workerHealthy = true;
+          maybeFinish();
+        };
+        worker.postMessage({
+          type: 'HEALTH_CHECK',
+          id,
+          payload: {
+            wasmVariant: 'simd',
+            glueUrl: '/wallet/SalviumWallet.js',
+            wasmUrl: '/wallet/SalviumWallet.wasm',
+            fallbackGlueUrl: '/wallet/SalviumWalletBaseline.js',
+            fallbackWasmUrl: '/wallet/SalviumWalletBaseline.wasm'
+          }
+        });
+      } catch (_) { finish(false, 'seed-worker-start-failed'); }
+    }))()`, true);
+    return result && result.healthy === true
+      ? { healthy: true, reason: String(result.reason || 'healthy') }
+      : { healthy: false, reason: String(result && result.reason || 'invalid-health-result') };
+  } catch (error) {
+    return { healthy: false, reason: error && error.message ? error.message : String(error) };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -541,14 +665,48 @@ async function boot() {
   }
   log('RPC URL:', resolvedRpcUrl);
 
-  const active = resolveActiveContentDir(REPO_ROOT);
+  const active = resolveActiveContentDir(REPO_ROOT, { activate: true });
   activeContentDir = active.dir;
+  activeContentVersion = active.version;
+  activeContentDownloaded = active.downloaded;
   log('Active content: v' + active.version + ' @ ' + active.dir);
   sidecar = startSidecar(port, active.dir);
-  const healthMs = await waitForHealth(port, HEALTH_TIMEOUT_MS);
+  let healthMs;
+  try {
+    healthMs = await waitForHealth(port, HEALTH_TIMEOUT_MS);
+  } catch (error) {
+    if (active.pending) {
+      markContentFailed(active.version, 'sidecar-health-failed: ' + (error && error.message));
+      log('downloaded content failed sidecar health; rolling back v' + active.version);
+      await relaunchApp();
+      return;
+    }
+    throw error;
+  }
   log('Health ready in', healthMs, 'ms (total boot', Date.now() - bootStart, 'ms)');
 
-  await createMainWindow(port);
+  try {
+    await createMainWindow(port);
+  } catch (error) {
+    if (active.pending) {
+      markContentFailed(active.version, 'renderer-load-failed: ' + (error && error.message));
+      log('downloaded content failed renderer load; rolling back v' + active.version);
+      await relaunchApp();
+      return;
+    }
+    throw error;
+  }
+  if (active.pending) {
+    const contentHealth = await verifyRendererContentHealth(mainWindow);
+    if (!contentHealth.healthy) {
+      markContentFailed(active.version, 'renderer-health-failed: ' + contentHealth.reason);
+      log('downloaded content failed renderer/WASM health; rolling back v' + active.version, contentHealth.reason);
+      await relaunchApp();
+      return;
+    }
+    markContentHealthy(active.version);
+    log('downloaded content v' + active.version + ' passed app + WASM health');
+  }
   log('Total boot to window:', Date.now() - bootStart, 'ms');
 
   // Reclaim disk from superseded OTA content (keeps running + any pending version).
@@ -558,8 +716,14 @@ async function boot() {
   // OTA content update: detect at launch and then hourly, letting the USER
   // decide whether to download each one. Nothing downloads until they opt in,
   // and we never re-prompt the same version (skip is persisted in content-update).
-  const runUpdateCheck = () => checkForContentUpdate(REPO_ROOT)
+  const runUpdateCheck = () => checkForContentUpdateOnce()
     .then((r) => {
+      if (r && r.activeRevoked) {
+        log('active content v' + r.version + ' was revoked; restarting into the bundled floor');
+        void relaunchApp();
+        return;
+      }
+      if (r && r.shellUpdateRequired) { showShellUpdateRequired(r); return; }
       if (r && r.updateAvailable && !r.skipped && r.version !== lastPromptedVersion) {
         lastPromptedVersion = r.version;
         promptUpdateDecision(r.manifest, r.version);
@@ -572,15 +736,18 @@ async function boot() {
 
 // Step 1: an update exists — ask the user what to do (no download yet).
 async function promptUpdateDecision(manifest, version) {
+  if (updateDecisionShowing) return;
+  updateDecisionShowing = true;
   const win = BrowserWindow.getAllWindows()[0] || null;
   const opts = {
     type: 'info',
-    buttons: ['Update now', 'Not now', 'Skip this version'],
+    buttons: ['Update now', 'Not now', 'Skip this version', 'View changes on GitHub'],
     defaultId: 0, cancelId: 1,
     title: 'Update available',
     message: 'Salvium Vault ' + version + ' is available.',
-    detail: 'A verified update is ready. Choose "Update now" to download and install it, '
-      + '"Not now" to be reminded next launch, or "Skip this version" to ignore it.',
+    detail: manifest.summary + '\n\nDownload size: ' + formatDownloadSize(manifest.size)
+      + '\n\nChoose "Update now" to download and install it, "Not now" to be reminded '
+      + 'next launch, or "Skip this version" to ignore it.',
   };
   try {
     const { response } = await (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts));
@@ -591,6 +758,8 @@ async function promptUpdateDecision(manifest, version) {
     } else if (response === 2) {
       setSkippedVersion(version);
       log('user skipped v' + version + '; will not prompt again for it');
+    } else if (response === 3) {
+      await shell.openExternal(manifest.releasePageUrl);
     } else {
       log('user deferred v' + version + '; will prompt again next launch');
     }
@@ -601,13 +770,33 @@ async function promptUpdateDecision(manifest, version) {
       message: 'Could not download the update.',
       detail: 'You can try again next time you open the app. (' + (e && e.message) + ')' };
     (w ? dialog.showMessageBox(w, eo) : dialog.showMessageBox(eo)).catch(() => {});
+  } finally {
+    updateDecisionShowing = false;
   }
 }
 
 // Step 2: the update is downloaded + verified — offer to restart to apply it.
 // Relaunch the installed shell, then exit so the new instance takes over.
-function relaunchApp() {
+async function terminateSidecarForRelaunch(timeoutMs = 5000) {
+  const child = sidecar;
+  if (!child || child.killed || child.exitCode !== null) return;
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = () => { if (!settled) { settled = true; resolve(); } };
+    child.once('exit', finish);
+    try { child.kill('SIGTERM'); } catch (_) { finish(); return; }
+    const force = setTimeout(() => {
+      try { if (child.exitCode === null) child.kill('SIGKILL'); } catch (_) {}
+      finish();
+    }, timeoutMs);
+    child.once('exit', () => clearTimeout(force));
+  });
+}
+
+async function relaunchApp() {
+  if (isQuitting) return;
   isQuitting = true; // an intentional relaunch — do not supervise the sidecar's exit
+  await terminateSidecarForRelaunch();
   try { app.relaunch(); } catch (e) { log('relaunch error:', e && e.message); }
   app.exit(0);
 }
@@ -621,7 +810,7 @@ function promptRestart(version) {
     detail: 'The verified update was downloaded. Restart to apply it now, or it will apply automatically next time you open the app.',
   };
   (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts))
-    .then(({ response }) => { if (response === 0) { relaunchApp(); } })
+    .then(({ response }) => { if (response === 0) { void relaunchApp(); } })
     .catch((e) => log('restart prompt error:', e && e.message));
 }
 
