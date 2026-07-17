@@ -56,4 +56,14 @@ describe('desktop package security policy', () => {
     expect(publisher).not.toContain("'services'");
     expect(publisher).not.toContain("'utils'");
   });
+
+  it('does not bulk-download the raw chain behind the desktop bundle indexes', () => {
+    const server = repoFile('server.cjs');
+    const start = server.indexOf('function startBlockCacheSync()');
+    const end = server.indexOf('\n}\n', start);
+    const blockSync = server.slice(start, end + 3);
+    expect(blockSync).toContain('if (DESKTOP_SIDECAR)');
+    expect(blockSync).toContain('[Block cache sync] Skipped on desktop sidecar');
+    expect(blockSync.indexOf('return;')).toBeLessThan(blockSync.indexOf("console.log('Starting block cache background sync')"));
+  });
 });

@@ -5233,6 +5233,13 @@ async function fetchBlocksFromDaemon(startHeight, endHeight) {
 
 function startBlockCacheSync() {
     if (!CACHE_ENABLED) return;
+    // Desktop restores consume the signed CSP/TXI bundles plus the realtime
+    // tail. Walking the raw chain from height zero duplicates those indexes,
+    // consumes gigabytes of disk/network, and competes with the wallet scan.
+    if (DESKTOP_SIDECAR) {
+        console.log('[Block cache sync] Skipped on desktop sidecar (bundles + realtime tail serve scans).');
+        return;
+    }
     console.log('Starting block cache background sync');
 
     let cadenceMs = 1000;
