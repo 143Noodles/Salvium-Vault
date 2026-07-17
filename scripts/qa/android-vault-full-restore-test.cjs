@@ -10,7 +10,10 @@ const CLEAR_PACKAGE = process.env.ANDROID_CLEAR_PACKAGE || PACKAGE;
 const CDP_PORT = Number(process.env.CDP_PORT || 9230);
 const PASSWORD = process.env.VAULT_PASSWORD || 'PerfTest1234!';
 const SEED = process.env.VAULT_TEST_SEED || '';
-if (!SEED) {
+const RESUME = process.env.ANDROID_RESUME === '1';
+const RESTORE_TIMEOUT_MS = Number(process.env.ANDROID_RESTORE_TIMEOUT_MS || 45 * 60 * 1000);
+const EXPECTED_BALANCE_ATOMIC = String(process.env.VAULT_EXPECTED_BALANCE_ATOMIC || '1682760091');
+if (!SEED && !RESUME) {
   console.error('Set VAULT_TEST_SEED to a 25-word test mnemonic (use a throwaway wallet).');
   process.exit(1);
 }
@@ -143,7 +146,17 @@ async function evalValue(send, expression) {
 
 async function installEventCapture(send) {
   await evalValue(send, `(() => {
-    window.__vaultAndroidEvents = [];
+    window.__vaultAndroidEvents ||= [];
+    window.__vaultAndroidCspViolations ||= [];
+    if (!window.__vaultAndroidCspCaptureInstalled) {
+      window.__vaultAndroidCspCaptureInstalled = true;
+      document.addEventListener('securitypolicyviolation', (event) => {
+        window.__vaultAndroidCspViolations.push({
+          directive: event.violatedDirective,
+          blockedURI: event.blockedURI,
+        });
+      });
+    }
     const capture = async (url, body) => {
       try {
         if (!String(url || '').includes('/api/client-events')) return;
@@ -315,13 +328,14 @@ async function restore(send) {
   await fill(send, 'input[type=password]', PASSWORD);
   await clickText(send, 'restore|create|unlock|finish|continue|next|set password|save', 12000);
   log('restore submitted');
-  return waitDashboard(send, 'android-restore-scan', 20 * 60 * 1000);
+  return waitDashboard(send, 'android-restore-scan', RESTORE_TIMEOUT_MS);
 }
 
 async function unlockAfterReload(send) {
   const reloadStart = Date.now();
   await evalValue(send, `location.reload(); true`);
   await sleep(3000);
+  await installEventCapture(send);
   const afterReload = await state(send);
   log('after-reload', JSON.stringify(afterReload));
   if (/wallet locked|unlock/i.test(afterReload.text) && afterReload.inputs.some((input) => input.type === 'password')) {
@@ -332,9 +346,47 @@ async function unlockAfterReload(send) {
   return { reloadDashboardMs, reloadMs: Date.now() - reloadStart };
 }
 
+async function readSecurityProof(send) {
+  return evalValue(send, `(async () => {
+    const balance = await window.walletService?.getBalance?.();
+    const policy = document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content || '';
+    const tier = document.querySelector('meta[name="salvium-csp-tier"]')?.content || '';
+    const workerPolicy = (policy.match(/(?:^|;)\\s*worker-src\\s+([^;]+)/i) || [])[1] || '';
+    const hasUnsafeEval = /(?:^|[\\s;])'unsafe-eval'(?=$|[\\s;])/i.test(policy);
+    return {
+      bundled: window.__SALVIUM_BUNDLED__ === true,
+      tier,
+      policy,
+      strictModernPolicy: tier === 'modern' && policy.includes("'wasm-unsafe-eval'") &&
+        !hasUnsafeEval && !/(?:^|\\s)blob:(?=$|\\s)/i.test(workerPolicy),
+      balanceAtomic: Number.isSafeInteger(balance?.balance) ? String(balance.balance) : null,
+      runtimeVersion: window.__salviumWasmRuntimeVersion || '',
+      baselineCspViolations: [...(window.__vaultAndroidCspViolations || [])],
+    };
+  })()`);
+}
+
+async function proveStringExecutionBlocked(send) {
+  const result = await evalValue(send, `(() => {
+    try {
+      new Function('return 1')();
+      return { blocked: false, errorName: '' };
+    } catch (error) {
+      return { blocked: error?.name === 'EvalError', errorName: error?.name || '' };
+    }
+  })()`);
+  await sleep(100);
+  result.violationsAfterProbe = await evalValue(send, `window.__vaultAndroidCspViolations || []`);
+  return result;
+}
+
 (async () => {
-  startFreshApp();
-  await sleep(7000);
+  if (RESUME) {
+    log('resuming the currently running native restore without clearing app data');
+  } else {
+    startFreshApp();
+    await sleep(7000);
+  }
   const socket = findWebViewSocket();
   forwardCdp(socket);
   const { ws, send } = await connect(EXPECTED_ORIGIN);
@@ -345,17 +397,41 @@ async function unlockAfterReload(send) {
     }
   }
   await installEventCapture(send);
-  const restoreMs = await restore(send);
+  const restoreMs = RESUME
+    ? await waitDashboard(send, 'android-resume-scan', RESTORE_TIMEOUT_MS)
+    : await restore(send);
+  const preReloadSecurity = await readSecurityProof(send);
+  if (preReloadSecurity.balanceAtomic !== EXPECTED_BALANCE_ATOMIC) {
+    throw new Error(`Android balance ${preReloadSecurity.balanceAtomic}, expected ${EXPECTED_BALANCE_ATOMIC}`);
+  }
+  if (!preReloadSecurity.strictModernPolicy || !preReloadSecurity.bundled) {
+    throw new Error(`Android bundled CSP proof failed: ${JSON.stringify(preReloadSecurity)}`);
+  }
+  if (preReloadSecurity.baselineCspViolations.length !== 0) {
+    throw new Error(`Android emitted CSP violations before the explicit probe: ${JSON.stringify(preReloadSecurity.baselineCspViolations)}`);
+  }
+  const evalProbe = await proveStringExecutionBlocked(send);
+  if (!evalProbe.blocked) throw new Error(`Android string execution was not blocked: ${JSON.stringify(evalProbe)}`);
+  const eventBatches = await evalValue(send, `window.__vaultAndroidEvents || []`);
   const cached = await unlockAfterReload(send);
   const finalState = await state(send);
-  const events = await evalValue(send, `window.__vaultAndroidEvents || []`);
-  const interesting = events.filter((event) => /wallet\\.slow_op|wallet\\.import_cache_phase_timings|wallet\\.runtime_tx_candidate_timings|task\\.timeout|task\\.failed|frontend\\.stale/.test(event.type || ''));
+  const finalSecurity = await readSecurityProof(send);
+  if (finalSecurity.balanceAtomic !== EXPECTED_BALANCE_ATOMIC) {
+    throw new Error(`Android cached balance ${finalSecurity.balanceAtomic}, expected ${EXPECTED_BALANCE_ATOMIC}`);
+  }
+  const batches = [...eventBatches, ...await evalValue(send, `window.__vaultAndroidEvents || []`)];
+  const events = batches.flatMap((batch) => Array.isArray(batch?.events) ? batch.events : [batch]);
+  const interesting = events.filter((event) => /wallet\.slow_op|wallet\.import_cache_phase_timings|wallet\.runtime_tx_candidate_timings|task\.timeout|task\.failed|frontend\.stale/.test(event.type || ''));
   console.log('ANDROID_VAULT_TEST_RESULT ' + JSON.stringify({
+    resumed: RESUME,
     session: finalState.session,
     restoreMs,
     ...cached,
     eventCount: events.length,
     interesting,
+    preReloadSecurity,
+    evalProbe,
+    finalSecurity,
     text: finalState.text.slice(0, 800),
   }));
   ws.close();
