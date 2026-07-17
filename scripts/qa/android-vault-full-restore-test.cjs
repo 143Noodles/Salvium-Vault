@@ -341,14 +341,20 @@ async function unlockAfterReload(send) {
   await evalValue(send, `location.reload(); true`);
   await sleep(3000);
   await installEventCapture(send);
-  const afterReload = await state(send);
-  log('after-reload', JSON.stringify(afterReload));
-  if (/wallet locked|unlock/i.test(afterReload.text) && afterReload.inputs.some((input) => input.type === 'password')) {
-    await fill(send, 'input[type=password]', PASSWORD);
-    await clickText(send, 'unlock|continue|open', 8000);
-  }
+  const afterReload = await unlockIfNeeded(send, 'after-reload');
   const reloadDashboardMs = await waitDashboard(send, 'android-reload-resync', 120000);
   return { reloadDashboardMs, reloadMs: Date.now() - reloadStart };
+}
+
+async function unlockIfNeeded(send, label) {
+  const current = await state(send);
+  log(label, JSON.stringify(current));
+  if (/wallet locked|unlock/i.test(current.text) && current.inputs.some((input) => input.type === 'password')) {
+    await fill(send, 'input[type=password]', PASSWORD);
+    await clickText(send, 'unlock|continue|open', 8000);
+    await sleep(1000);
+  }
+  return current;
 }
 
 async function readSecurityProof(send) {
@@ -402,6 +408,7 @@ async function proveStringExecutionBlocked(send) {
     }
   }
   await installEventCapture(send);
+  if (RESUME) await unlockIfNeeded(send, 'android-resume-entry');
   const restoreMs = RESUME
     ? await waitDashboard(send, 'android-resume-scan', RESTORE_TIMEOUT_MS)
     : await restore(send);
