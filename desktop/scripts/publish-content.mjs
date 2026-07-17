@@ -37,7 +37,15 @@ if (process.env.SKIP_BUILD === '1') {
 
 // The content payload = everything the sidecar + SPA need, EXCEPT node_modules
 // (resolved from the native shell via NODE_PATH) and the native desktop/ dir.
-const INCLUDE = ['dist', 'server.cjs', 'server-csp-worker.cjs', 'wallet', 'utils', 'services'];
+const INCLUDE = [
+  'dist',
+  'server.cjs',
+  'server-csp-worker.cjs',
+  'wallet',
+  'services/minerManager.cjs',
+  'utils/cspPolicy.cjs',
+  'utils/salpayRelay.cjs',
+];
 for (const item of INCLUDE) {
   const src = path.join(REPO, item);
   if (!fs.existsSync(src)) { console.warn('[publish] skip missing', item); continue; }

@@ -15,6 +15,12 @@ describe('desktop package security policy', () => {
     expect(desktopPackage.build.linux.desktop.entry.Name).toBe('Salvium Vault');
     expect(JSON.stringify(desktopPackage)).not.toContain('AppImage');
     expect(JSON.stringify(desktopPackage)).not.toContain('--no-sandbox');
+    expect(desktopPackage.dependencies).toMatchObject({
+      axios: '1.18.1',
+      cors: '2.8.5',
+      express: '4.22.2',
+      tar: '7.5.20',
+    });
   });
 
   it('fails package installation if the setuid sandbox cannot be secured', () => {
@@ -29,8 +35,25 @@ describe('desktop package security policy', () => {
     const main = repoFile('desktop/main.js');
     const publishing = repoFile('desktop/PUBLISHING.md');
     expect(main).toContain('sandbox: true');
+    expect(main).toContain("const SHELL_NODE_MODULES = path.join(__dirname, 'node_modules')");
+    expect(main).toContain('NODE_PATH: SHELL_NODE_MODULES');
     expect(main).not.toContain('process.env.APPIMAGE');
     expect(main).not.toContain('--no-sandbox');
     expect(publishing).not.toContain('`--no-sandbox`');
+  });
+
+  it('packages only the executable sidecar sources, not the TypeScript tree', () => {
+    const desktopPackage = JSON.parse(repoFile('desktop/package.json'));
+    const filters = desktopPackage.build.extraResources[0].filter;
+    const publisher = repoFile('desktop/scripts/publish-content.mjs');
+    expect(filters).toContain('services/minerManager.cjs');
+    expect(filters).toContain('utils/cspPolicy.cjs');
+    expect(filters).toContain('utils/salpayRelay.cjs');
+    expect(filters).not.toContain('services/**');
+    expect(filters).not.toContain('utils/**');
+    expect(filters).not.toContain('node_modules/**');
+    expect(publisher).toContain("'services/minerManager.cjs'");
+    expect(publisher).not.toContain("'services'");
+    expect(publisher).not.toContain("'utils'");
   });
 });

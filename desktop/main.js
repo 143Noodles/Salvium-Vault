@@ -26,6 +26,9 @@ const PACKAGED_REPO_ROOT = path.join(process.resourcesPath || '', 'app');
 const REPO_ROOT = fs.existsSync(path.join(DEV_REPO_ROOT, 'server.cjs'))
   ? DEV_REPO_ROOT
   : PACKAGED_REPO_ROOT;
+// Native-shell dependencies live beside this main process (inside app.asar in
+// packaged builds), not inside the independently updated content directory.
+const SHELL_NODE_MODULES = path.join(__dirname, 'node_modules');
 const SERVER_ENTRY = path.join(REPO_ROOT, 'server.cjs');
 const { resolveActiveContentDir, checkForContentUpdate, applyContentUpdate, setSkippedVersion, pruneOldContent } = require('./content-update');
 
@@ -292,7 +295,7 @@ function startSidecar(port, contentDir) {
     NODE_ENV: 'production',
     // Resolve sidecar deps (axios/cors/express) from the native shell's bundled
     // node_modules, so OTA content bundles don't need to ship them.
-    NODE_PATH: path.join(REPO_ROOT, 'node_modules'),
+    NODE_PATH: SHELL_NODE_MODULES,
   });
   log('Spawning sidecar from content:', serverEntry, 'PORT=' + port);
   // Use Electron's bundled Node via ELECTRON_RUN_AS_NODE so packaged builds need no system node.
