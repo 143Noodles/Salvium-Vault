@@ -90,9 +90,6 @@
       ],
       "category": "Finance",
       "icon": "build/icon.png",
-      "desktop": {
-        "Comment": "Salvium Vault Desktop Wallet"
-      },
       "maintainer": "143Noodles <143Noodles@users.noreply.github.com>"
     },
     "directories": {
