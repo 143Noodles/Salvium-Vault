@@ -13,19 +13,21 @@ import { assertReleaseSource } from './release-source-gate.mjs';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(REPO, 'content-release-dist');
 
-function assertLockedDependency(name) {
-  const lock = JSON.parse(fs.readFileSync(path.join(REPO, 'package-lock.json'), 'utf8'));
+function assertLockedDependency(name, packageRoot = REPO) {
+  const relativeRoot = path.relative(REPO, packageRoot) || '.';
+  const lock = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package-lock.json'), 'utf8'));
   const locked = lock?.packages?.[`node_modules/${name}`]?.version;
-  const installedPath = path.join(REPO, 'node_modules', name, 'package.json');
+  const installedPath = path.join(packageRoot, 'node_modules', name, 'package.json');
   const installed = fs.statSync(installedPath, { throwIfNoEntry: false })?.isFile()
     ? JSON.parse(fs.readFileSync(installedPath, 'utf8')).version
     : null;
   if (!locked || installed !== locked) {
     throw new Error(
-      `release dependency mismatch for ${name}: lockfile=${locked || 'missing'}, installed=${installed || 'missing'}; run npm ci in a clean checkout`
+      `release dependency mismatch for ${relativeRoot}/${name}: lockfile=${locked || 'missing'}, installed=${installed || 'missing'}; ` +
+      'run npm ci && npm --prefix desktop ci in a clean checkout'
     );
   }
-  console.log(`[content-release] ${name} ${installed} matches package-lock.json`);
+  console.log(`[content-release] ${relativeRoot}/${name} ${installed} matches package-lock.json`);
 }
 
 function usage(message) {
@@ -61,6 +63,7 @@ if (skipBuild && process.env.SALVIUM_RELEASE_TEST_MODE !== '1') {
 }
 
 assertLockedDependency('vite');
+assertLockedDependency('tar', path.join(REPO, 'desktop'));
 const sourceDateEpoch = assertReleaseSource(REPO, version);
 const releaseEnvironment = { ...process.env, SOURCE_DATE_EPOCH: sourceDateEpoch };
 console.log(`[content-release] reproducible timestamp ${new Date(Number(sourceDateEpoch) * 1000).toISOString()}`);

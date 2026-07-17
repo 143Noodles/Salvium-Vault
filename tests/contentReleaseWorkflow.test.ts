@@ -16,7 +16,8 @@ describe('unified desktop and Android content release', () => {
     expect(unified).toContain('--verify-tag');
     expect(unified).toContain("SKIP_BUILD: '1'");
     expect(unified).toContain("assertLockedDependency('vite')");
-    expect(unified).toContain('run npm ci in a clean checkout');
+    expect(unified).toContain("assertLockedDependency('tar', path.join(REPO, 'desktop'))");
+    expect(unified).toContain('run npm ci && npm --prefix desktop ci in a clean checkout');
     expect(unified).toContain("SALVIUM_RELEASE_TEST_MODE !== '1'");
     expect(unified).toContain('SOURCE_DATE_EPOCH');
     expect(unified).toContain('reproducible timestamp');
