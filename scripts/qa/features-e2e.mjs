@@ -29,12 +29,14 @@ let seedWords = null;
 for (let i = 0; i < 20 && !seedWords; i++) {
   await page.waitForTimeout(3000);
   seedWords = await page.evaluate(() => {
-    const text = document.body.innerText;
-    if (/generating secure seed/i.test(text)) return null;
-    const m = text.match(/1\s+(\S[\s\S]*?)(?:I saved it|I Saved It|Copy)/i);
-    if (!m) return null;
-    const words = m[1].split(/\s+/).filter((w) => /^[a-z]+$/i.test(w));
-    return words.length >= 25 ? words.slice(0, 25) : null;
+    if (/generating secure seed/i.test(document.body.innerText)) return null;
+    const indexed = Array(25).fill(null);
+    for (const number of document.querySelectorAll('span')) {
+      const index = Number(number.textContent?.trim().replace(/\.$/, '')) - 1;
+      const word = number.nextElementSibling?.textContent?.trim() || '';
+      if (index >= 0 && index < 25 && /^[a-z]+$/i.test(word)) indexed[index] = word;
+    }
+    return indexed.every(Boolean) ? indexed : null;
   });
 }
 if (!seedWords || seedWords.length < 25) {
@@ -66,6 +68,11 @@ await page.getByRole('button', { name: /verify/i }).first().click();
 await page.waitForTimeout(1500);
 
 const pws = page.locator('input[type="password"]');
+let passwordStepVisible = true;
+try { await pws.first().waitFor({ state: 'visible', timeout: 5000 }); } catch { passwordStepVisible = false; }
+if (!passwordStepVisible) {
+  throw new Error(`seed verification did not reach password step: ${(await page.locator('body').innerText()).slice(0, 800)}`);
+}
 await pws.nth(0).fill(PASSWORD);
 await pws.nth(1).fill(PASSWORD);
 await page.getByRole('button', { name: /finish setup/i }).first().click();
