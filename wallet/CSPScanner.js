@@ -164,8 +164,6 @@ class CSPScanner {
         };
 
         this.wasmBinary = null;
-        this.patchedJsCode = null;
-        this.workerScriptSource = null;
     }
 
     emitTelemetry(type, context = {}, level = 'info', message) {
@@ -346,10 +344,7 @@ class CSPScanner {
 
         this._rampInProgress = true;
         try {
-            const [wasmBinary, patchedJsCode] = await Promise.all([
-                this.fetchWasmBinary(),
-                this.fetchPatchedJs()
-            ]);
+            const wasmBinary = await this.fetchWasmBinary();
 
             const initPromises = [];
             const usedWorkerIds = new Set(this.workers.map(w => w.id));
@@ -360,7 +355,7 @@ class CSPScanner {
                     nextWorkerId++;
                 }
                 usedWorkerIds.add(nextWorkerId);
-                initPromises.push(this.createWorker(nextWorkerId, wasmBinary, patchedJsCode));
+                initPromises.push(this.createWorker(nextWorkerId, wasmBinary));
             }
             await Promise.all(initPromises);
         } finally {
@@ -447,6 +442,7 @@ class CSPScanner {
     }
 
     static WASM_VERSION = '8.2.22-v113c-no-dynamic-exec-20260716';
+    static WORKER_VERSION = '6307bffb8d4fc6bf9c0410dd2c3e330d09b83b6064eecbf28b6b1407c50b1347';
 
     // fetch() with a hard timeout so a stuck/half-open connection can't hang init/scan forever.
     static async fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
@@ -507,89 +503,17 @@ class CSPScanner {
 
 
     getWorkerScriptUrl() {
-        const version = encodeURIComponent(CSPScanner.WASM_VERSION);
+        const version = encodeURIComponent(CSPScanner.WORKER_VERSION);
         const epoch = this.cspCacheEpoch ? '&csp_epoch=' + encodeURIComponent(this.cspCacheEpoch) : '';
         if (isExtensionProtocol()) return extensionAssetUrl('wallet/csp-scanner.worker.js') + '?v=' + version + epoch;
         if (isBundledRuntimeFlag()) return '/wallet/csp-scanner.worker.js?v=' + version + epoch;
         return '/vault/wallet/csp-scanner.worker.js?v=' + version + epoch;
     }
 
-    getWorkerScriptFetchUrl() {
-        const version = encodeURIComponent(CSPScanner.WASM_VERSION);
-        if (isExtensionProtocol()) return extensionAssetUrl('wallet/csp-scanner.worker.js') + '?v=' + version;
-        if (isBundledRuntimeFlag()) return '/wallet/csp-scanner.worker.js?v=' + version;
-        return '/vault/wallet/csp-scanner.worker.js?v=' + version;
-    }
-
-    async fetchWorkerScriptSource(workerStartedAt = performance.now()) {
-        if (this.workerScriptSource) return this.workerScriptSource;
-
-        const scriptUrl = this.getWorkerScriptFetchUrl();
-        this.emitTelemetry('scan.worker_script_fetch_started', {
-            workerScriptVersion: CSPScanner.WASM_VERSION,
-            workerScriptUrl: scriptUrl
-        });
-
-        // Default HTTP caching: the URL carries ?v=<WASM_VERSION> and the server serves versioned
-        // requests immutable, so a new deploy = new URL. 'no-store' here forced a ~145KB re-download
-        // on EVERY scan (measured 16 fetches in 8 minutes during catch-up/retry churn).
-        const response = await CSPScanner.fetchWithTimeout(scriptUrl, {}, 90000);
-        if (!response.ok) {
-            throw new Error(`Failed to fetch scanner worker script: ${response.status}`);
-        }
-
-        const source = await response.text();
-        if (!source || !source.includes('requestWasmPayload') || !source.includes('self.onmessage')) {
-            throw new Error('Fetched scanner worker script did not contain the expected bootstrap code');
-        }
-
-        this.workerScriptSource = source;
-        this.emitTelemetry('scan.worker_script_fetch_completed', {
-            durationMs: Math.round(performance.now() - workerStartedAt),
-            jsBytes: source.length,
-            workerScriptVersion: CSPScanner.WASM_VERSION,
-            workerScriptUrl: scriptUrl
-        });
-        return this.workerScriptSource;
-    }
-
     async createWorkerInstance(workerId, workerStartedAt = performance.now()) {
         const workerScriptUrl = this.getWorkerScriptUrl();
-        const canUseBlobWorker = !isExtensionProtocol()
-            && typeof Blob !== 'undefined'
-            && typeof URL !== 'undefined'
-            && typeof URL.createObjectURL === 'function'
-            && typeof fetch === 'function';
-
-        if (canUseBlobWorker) {
-            try {
-                const source = await this.fetchWorkerScriptSource(workerStartedAt);
-                const blob = new Blob([
-                    `${source}\n//# sourceURL=${workerScriptUrl}`
-                ], { type: 'text/javascript' });
-                const objectUrl = URL.createObjectURL(blob);
-                return {
-                    worker: new Worker(objectUrl),
-                    objectUrl,
-                    scriptUrl: workerScriptUrl,
-                    source: 'blob',
-                    workerId
-                };
-            } catch (error) {
-                const message = error?.message || String(error || 'Blob worker creation failed');
-                this.emitTelemetry('scan.worker_blob_create_failed', {
-                    workerId,
-                    durationMs: Math.round(performance.now() - workerStartedAt),
-                    workerScriptVersion: CSPScanner.WASM_VERSION,
-                    workerScriptUrl,
-                    reason: message
-                }, 'warn', message);
-            }
-        }
-
         return {
             worker: new Worker(workerScriptUrl),
-            objectUrl: null,
             scriptUrl: workerScriptUrl,
             source: 'url',
             workerId
@@ -667,34 +591,17 @@ class CSPScanner {
             });
         }
 
-        const response = await CSPScanner.fetchWithTimeout(
-            await CSPScanner.bulkWasmUrl('SalviumWallet.wasm', this.wasmVariant),
-            {},
-            90000
-        );
+        const [wasmUrl, glueUrl] = await Promise.all([
+            CSPScanner.bulkWasmUrl('SalviumWallet.wasm', this.wasmVariant),
+            CSPScanner.bulkWasmUrl('SalviumWallet.js', this.wasmVariant)
+        ]);
+        this.wasmGlueUrl = glueUrl;
+        const response = await CSPScanner.fetchWithTimeout(wasmUrl, {}, 90000);
         if (!response.ok) {
             throw new Error(`Failed to fetch WASM: ${response.status}`);
         }
         this.wasmBinary = await response.arrayBuffer();
         return this.wasmBinary;
-    }
-
-    async fetchPatchedJs() {
-        this.wasmGlueUrl = await CSPScanner.bulkWasmUrl('SalviumWallet.js', this.wasmVariant);
-        if (isExtensionProtocol()) return null;
-        if (this.patchedJsCode) return this.patchedJsCode;
-
-        const response = await CSPScanner.fetchWithTimeout(this.wasmGlueUrl, {}, 90000);
-        if (!response.ok) {
-            throw new Error(`Failed to fetch JS: ${response.status}`);
-        }
-        let jsCode = await response.text();
-
-        jsCode = jsCode.replace(/PThread\.init\(\);/g, '/* CSPScanner: disabled */');
-        jsCode = jsCode.replace(/var pthreadPoolSize = \d+;/g, 'var pthreadPoolSize = 0;');
-
-        this.patchedJsCode = jsCode;
-        return this.patchedJsCode;
     }
 
     _cacheBucketName() {
@@ -1215,14 +1122,11 @@ class CSPScanner {
             return;
         }
 
-        const [wasmBinary, patchedJsCode] = await Promise.all([
-            this.fetchWasmBinary(),
-            this.fetchPatchedJs()
-        ]);
+        const wasmBinary = await this.fetchWasmBinary();
 
         const initPromises = [];
         for (let i = 0; i < this.workerCount; i++) {
-            initPromises.push(this.createWorker(i, wasmBinary, patchedJsCode));
+            initPromises.push(this.createWorker(i, wasmBinary));
         }
         await Promise.all(initPromises);
 
@@ -1230,9 +1134,8 @@ class CSPScanner {
 
     async init() {
 
-        const [wasmBinary, patchedJsCode, batchSupported] = await Promise.all([
+        const [wasmBinary, batchSupported] = await Promise.all([
             this.fetchWasmBinary(),
-            this.fetchPatchedJs(),
             this.checkBatchSupport()
         ]);
 
@@ -1240,13 +1143,13 @@ class CSPScanner {
 
         const initPromises = [];
         for (let i = 0; i < this.workerCount; i++) {
-            initPromises.push(this.createWorker(i, wasmBinary, patchedJsCode));
+            initPromises.push(this.createWorker(i, wasmBinary));
         }
         await Promise.all(initPromises);
 
     }
 
-    async createWorker(id, wasmBinary, patchedJsCode) {
+    async createWorker(id, wasmBinary) {
         const workerStartedAt = performance.now();
         const timeoutMs = this.getWorkerControlTimeoutMs('init');
         let workerRecord;
@@ -1275,12 +1178,6 @@ class CSPScanner {
                 workerScriptUrl: workerRecord.scriptUrl
             });
             const worker = workerRecord.worker;
-            let workerObjectUrl = workerRecord.objectUrl;
-            const revokeWorkerObjectUrl = () => {
-                if (!workerObjectUrl || typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') return;
-                try { URL.revokeObjectURL(workerObjectUrl); } catch (_) { }
-                workerObjectUrl = null;
-            };
             const workerState = {
                 id,
                 worker,
@@ -1303,7 +1200,6 @@ class CSPScanner {
                     clearTimeout(proactiveLoadTimer);
                     proactiveLoadTimer = null;
                 }
-                revokeWorkerObjectUrl();
                 worker.removeEventListener('message', initHandler);
                 worker.removeEventListener('error', initErrorHandler);
             };
@@ -1319,7 +1215,6 @@ class CSPScanner {
                     durationMs: Math.round(performance.now() - workerStartedAt),
                     workerScriptVersion: CSPScanner.WASM_VERSION,
                     wasmBytes: wasmBinary?.byteLength || 0,
-                    jsBytes: patchedJsCode?.length || 0,
                     wasmVariant: this.wasmVariant
                 });
                 try {
@@ -1330,7 +1225,6 @@ class CSPScanner {
                     worker.postMessage({
                         type: 'LOAD_WASM',
                         wasmBinary: payloadWasmBinary,
-                        patchedJsCode: patchedJsCode,
                         glueUrl: this.wasmGlueUrl,
                         wasmVariant: this.wasmVariant
                     }, transferList);
@@ -3115,7 +3009,6 @@ class CSPScanner {
         // bundle + 6MB wasm binary + queued chunk slices alive until GC sees the last external ref.
         this.cachedBundle = null;
         this.wasmBinary = null;
-        this.patchedJsCode = null;
         this.taskQueue = [];
         this.allMatches = [];
         // Server-proven contiguous coverage (exclusive, count-form). null until a
@@ -3212,7 +3105,6 @@ class CSPScanner {
         this.workers = [];
 
         this.wasmBinary = null;
-        this.patchedJsCode = null;
 
         await this.init();
 

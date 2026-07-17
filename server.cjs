@@ -11026,6 +11026,17 @@ app.get([
     '/vault/wallet/SalviumWallet.js', '/vault/wallet/SalviumWallet.wasm', '/vault/wallet/SalviumWalletBaseline.js', '/vault/wallet/SalviumWalletBaseline.wasm', '/vault/wallet/SalviumWallet.worker.js'
 ], rejectNonCanonicalWasmAsset);
 // Mirrors sendConfiguredWasmAsset: versioned (?v=) requests (e.g. CSPScanner.js?v=..., csp-scanner.worker.js?v=...) are immutable-cacheable; unversioned stay no-store.
+const walletStaticHashCache = new Map();
+function getWalletStaticFileSha256(filePath) {
+    const stat = fsSync.statSync(filePath);
+    const cached = walletStaticHashCache.get(filePath);
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+        return cached.sha256;
+    }
+    const sha256 = crypto.createHash('sha256').update(fsSync.readFileSync(filePath)).digest('hex');
+    walletStaticHashCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, sha256 });
+    return sha256;
+}
 function walletStaticSetHeaders(res, filePath) {
     if (filePath.endsWith('.wasm')) {
         res.setHeader('Content-Type', 'application/wasm');
@@ -11034,13 +11045,20 @@ function walletStaticSetHeaders(res, filePath) {
     } else {
         return;
     }
-    // App-spawned worker scripts (wallet-host.worker.js, seed-validator.worker.js, ...) must
-    // NEVER be immutable: the ?v= key is derived from WASM_CACHE_VERSION + the wasm asset hash,
-    // which do not change every release, so an immutable response pins a stale (and, if it was
-    // ever obtained through a COEP:credentialless service worker, tainted) worker in the browser
-    // HTTP cache that survives SW unregistration -- the exact '?v= + immutable = poisonable' trap
-    // the wasm glue/binary were already moved off. Always revalidate; the worker is a few KB.
+    // A worker is immutable only when its URL carries the exact hash of the bytes being served.
+    // Other worker URLs still use broader app/WASM versions and therefore remain no-store: making
+    // those immutable would recreate the stale-worker cache-poisoning failure mode.
     if (filePath.endsWith('.worker.js')) {
+        const v = res.req && res.req.query ? res.req.query.v : undefined;
+        if (typeof v === 'string' && /^[a-f0-9]{64}$/.test(v)) {
+            try {
+                if (getWalletStaticFileSha256(filePath) === v) {
+                    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+                    return;
+                }
+            } catch (_) {
+            }
+        }
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');

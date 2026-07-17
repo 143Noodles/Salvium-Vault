@@ -54,6 +54,55 @@ describe('csp-scanner.worker routing', () => {
     expect(postMessage).toHaveBeenCalledWith({ type: 'NEED_WASM', reason: 'boot' });
   });
 
+  it('loads raw glue with importScripts while pthread creation is suppressed', async () => {
+    const context = createWorkerContext({});
+    const originalWorker = vi.fn();
+    const originalCreateObjectURL = vi.fn(() => 'blob:original');
+    class WorkerURL extends URL {
+      static createObjectURL = originalCreateObjectURL;
+    }
+    const runtimeModule = {
+      get_version: vi.fn(() => 'test-runtime'),
+      scan_csp_batch: vi.fn(),
+      allocate_binary_buffer: vi.fn(),
+      compute_view_tag: vi.fn(),
+    };
+    let factoryOptions: Record<string, unknown> | null = null;
+    const factory = vi.fn(async (options: Record<string, unknown>) => {
+      factoryOptions = options;
+      expect((context as any).self.Worker).not.toBe(originalWorker);
+      expect((context as any).URL.createObjectURL()).toBe('blob:disabled');
+      return runtimeModule;
+    });
+    Object.assign(context as any, {
+      URL: WorkerURL,
+      WebAssembly: {
+        compile: vi.fn(async () => ({ compiled: true })),
+        instantiate: vi.fn(async () => ({ exports: {} })),
+      },
+      importScripts: vi.fn(() => {
+        (context as any).SalviumWallet = factory;
+      }),
+    });
+    (context as any).self.Worker = originalWorker;
+
+    await vm.runInContext(`handleLoadWasm({
+      wasmBinary: new ArrayBuffer(8),
+      glueUrl: '/api/wasm/version/SalviumWallet.js',
+      wasmVariant: 'simd'
+    })`, context);
+
+    expect((context as any).importScripts).toHaveBeenCalledWith('/api/wasm/version/SalviumWallet.js');
+    expect(factoryOptions).toMatchObject({ PTHREAD_POOL_SIZE: 0, PTHREAD_POOL_SIZE_STRICT: 0 });
+    expect((context as any).self.Worker).toBe(originalWorker);
+    expect((context as any).URL.createObjectURL).toBe(originalCreateObjectURL);
+    expect((context as any).self.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'READY',
+      version: 'test-runtime',
+      wasmVariant: 'simd',
+    }));
+  });
+
   it('includes explicit coverage on direct cached scan results', async () => {
     const context = createWorkerContext({
       allocate_binary_buffer: vi.fn(() => 8),

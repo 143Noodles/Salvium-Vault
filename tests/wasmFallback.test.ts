@@ -85,6 +85,7 @@ describe('validated fallback artifact integration', () => {
     const desktopPackage = readRepoFile('desktop/package.json');
     const desktopPublisher = readRepoFile('desktop/scripts/publish-content.mjs');
     const scanner = readRepoFile('wallet/CSPScanner.js');
+    const scannerWorkerSha = sha256('wallet/csp-scanner.worker.js');
     const serviceWorker = readRepoFile('public/sw.js');
 
     expect(server).toContain("getConfiguredWasmAssetInfo('SalviumWalletBaseline.wasm')");
@@ -104,6 +105,9 @@ describe('validated fallback artifact integration', () => {
     expect(desktopPackage).toContain('wallet/**');
     expect(desktopPublisher).toContain("'wallet'");
     expect(scanner).toContain(`static WASM_VERSION = '${WASM_CACHE_VERSION}'`);
+    expect(scanner).toContain(`static WORKER_VERSION = '${scannerWorkerSha}'`);
+    expect(scanner).toContain('encodeURIComponent(CSPScanner.WORKER_VERSION)');
+    expect(server).toContain("getWalletStaticFileSha256(filePath) === v");
     expect(serviceWorker).toContain(`const WASM_VERSION = '${WASM_CACHE_VERSION}'`);
     expect(serviceWorker).toContain("const WASM_CACHE = 'salvium-wasm-v36'");
   });

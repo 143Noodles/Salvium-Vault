@@ -84,15 +84,8 @@ async function initWasm(config) {
 
     try {
         const loadFactory = async () => {
-            if (isExtensionProtocol()) {
-                importScripts(jsUrl);
-            } else {
-                const response = await fetch(jsUrl);
-                if (!response.ok) throw new Error(`WASM glue HTTP ${response.status}`);
-                const jsCode = await response.text();
-                (0, eval)(jsCode);
-            }
-            const factory = self.SalviumWallet;
+            importScripts(jsUrl);
+            const factory = typeof SalviumWallet !== 'undefined' ? SalviumWallet : self.SalviumWallet;
             if (typeof factory !== 'function') throw new Error('SalviumWallet factory unavailable');
             return factory({
                 locateFile: (path) => {

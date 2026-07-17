@@ -27,8 +27,7 @@ type AutoTuneScanner = WatchdogScanner & {
   setEnabledWorkers: (target: number) => void;
   maybeAutoTune: () => Promise<void>;
   fetchWasmBinary: () => Promise<ArrayBuffer>;
-  fetchPatchedJs: () => Promise<string>;
-  createWorker: (id: number, wasmBinary: ArrayBuffer, patchedJsCode: string) => Promise<void>;
+  createWorker: (id: number, wasmBinary: ArrayBuffer) => Promise<void>;
   workers: Array<{ id: number }>;
 };
 
@@ -162,7 +161,7 @@ describe('CSPScanner worker init watchdog', () => {
 
     const { scanner, advance, telemetry } = loadScannerContext({ Worker: FakeWorker });
     const autoTuneScanner = scanner as AutoTuneScanner;
-    const createPromise = autoTuneScanner.createWorker(0, new ArrayBuffer(8), 'patched-js');
+    const createPromise = autoTuneScanner.createWorker(0, new ArrayBuffer(8));
 
     for (let i = 0; i < 20 && createdWorkers.length === 0; i++) {
       await Promise.resolve();
@@ -194,7 +193,7 @@ describe('CSPScanner worker init watchdog', () => {
     expect(telemetry.map((event) => event.type)).toContain('scan.worker_wasm_payload_sent');
   });
 
-  it('creates scanner workers from a fetched Blob script when supported', async () => {
+  it('creates scanner workers directly from the versioned same-origin URL', async () => {
     vi.useFakeTimers();
 
     const createdWorkers: any[] = [];
@@ -233,33 +232,11 @@ describe('CSPScanner worker init watchdog', () => {
       }
     }
 
-    class FakeBlob {
-      parts: unknown[];
-      options: unknown;
-
-      constructor(parts: unknown[], options: unknown) {
-        this.parts = parts;
-        this.options = options;
-      }
-    }
-
-    const fetch = vi.fn(async () => ({
-      ok: true,
-      text: async () => 'function requestWasmPayload() {} self.onmessage = function () {};',
-    }));
-    const URL = {
-      createObjectURL: vi.fn(() => 'blob:scanner-worker'),
-      revokeObjectURL: vi.fn(),
-    };
-
-    const { scanner, advance, telemetry } = loadScannerContext({
-      Worker: FakeWorker,
-      Blob: FakeBlob,
-      URL,
-      fetch,
-    });
+    const fetch = vi.fn();
+    const createObjectURL = vi.fn();
+    const { scanner, advance, telemetry } = loadScannerContext({ Worker: FakeWorker, fetch, Blob: vi.fn(), URL: { createObjectURL } });
     const autoTuneScanner = scanner as AutoTuneScanner;
-    const createPromise = autoTuneScanner.createWorker(0, new ArrayBuffer(8), 'patched-js');
+    const createPromise = autoTuneScanner.createWorker(0, new ArrayBuffer(8));
 
     for (let i = 0; i < 20 && createdWorkers.length === 0; i++) {
       await Promise.resolve();
@@ -268,14 +245,10 @@ describe('CSPScanner worker init watchdog', () => {
     await Promise.resolve();
 
     expect(createdWorkers).toHaveLength(1);
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/vault/wallet/csp-scanner.worker.js?v='),
-      // fetchWithTimeout adds an AbortSignal; the script is fetched with default HTTP caching
-      // (the ?v= version busts the cache on deploy; the server serves versioned files immutable).
-      expect.objectContaining({ signal: expect.anything() })
-    );
-    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
-    expect(createdWorkers[0].url).toBe('blob:scanner-worker');
+    expect(createdWorkers[0].url).toContain('/vault/wallet/csp-scanner.worker.js?v=');
+    expect(createdWorkers[0].url).not.toContain('blob:');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(createObjectURL).not.toHaveBeenCalled();
 
     advance(50);
     expect(createdWorkers[0].messages).toContainEqual(expect.objectContaining({ type: 'LOAD_WASM' }));
@@ -292,8 +265,8 @@ describe('CSPScanner worker init watchdog', () => {
     });
 
     await createPromise;
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:scanner-worker');
-    expect(telemetry.map((event) => event.type)).toContain('scan.worker_script_fetch_completed');
+    expect(telemetry.map((event) => event.type)).toContain('scan.worker_created');
+    expect(telemetry.map((event) => event.type)).not.toContain('scan.worker_script_fetch_completed');
   });
 });
 
@@ -355,7 +328,6 @@ describe('CSPScanner Android worker auto-tune', () => {
     autoTuneScanner.maxWorkerCount = 3;
     autoTuneScanner.workers = [{ id: 1 }];
     autoTuneScanner.fetchWasmBinary = vi.fn(async () => new ArrayBuffer(8));
-    autoTuneScanner.fetchPatchedJs = vi.fn(async () => 'patched');
     autoTuneScanner.createWorker = vi.fn(async (id: number) => {
       createdWorkerIds.push(id);
       autoTuneScanner.workers.push({ id });

@@ -276,22 +276,24 @@ async function handleLoadWasm(msg) {
         stopNeedWasmTimer();
 
         const wasmBinary = msg.wasmBinary;
-        const patchedJsCode = msg.patchedJsCode;
-
         if (!wasmBinary || wasmBinary.byteLength === 0) {
             throw new Error('No WASM binary provided');
+        }
+        const glueUrl = String(msg.glueUrl || '');
+        if (!glueUrl) {
+            throw new Error('WASM glue URL missing');
         }
 
         self.postMessage({
             type: 'WASM_LOAD_STARTED',
             wasmBytes: wasmBinary.byteLength || 0,
-            jsBytes: patchedJsCode?.length || 0,
             wasmVariant
         });
 
         const wasmModule = await WebAssembly.compile(wasmBinary);
 
         const OriginalWorker = self.Worker;
+        const OriginalCreateObjectURL = URL.createObjectURL;
         self.Worker = function (url) {
             return {
                 postMessage: () => { },
@@ -302,33 +304,33 @@ async function handleLoadWasm(msg) {
                 onerror: null
             };
         };
+        URL.createObjectURL = function () {
+            return 'blob:disabled';
+        };
 
-        let jsCode = patchedJsCode;
-        if (!jsCode && isExtensionProtocol()) {
-            importScripts(msg.glueUrl || (wasmVariant === 'simd' ? 'SalviumWallet.js' : 'SalviumWalletBaseline.js'));
-        } else {
-            if (!jsCode) {
-                throw new Error('Patched WASM JS code missing');
+        try {
+            importScripts(glueUrl);
+            const factory = typeof SalviumWallet !== 'undefined' ? SalviumWallet : self.SalviumWallet;
+            if (typeof factory !== 'function') {
+                throw new Error('SalviumWallet factory unavailable');
             }
 
-            const indirectEval = eval;
-            indirectEval(jsCode);
+            Module = await factory({
+                wasmModule: wasmModule,
+                instantiateWasm: (imports, successCallback) => {
+                    WebAssembly.instantiate(wasmModule, imports).then(instance => {
+                        successCallback(instance, wasmModule);
+                    });
+                    return {};
+                },
+                locateFile: (path) => path,
+                PTHREAD_POOL_SIZE: 0,
+                PTHREAD_POOL_SIZE_STRICT: 0
+            });
+        } finally {
+            self.Worker = OriginalWorker;
+            URL.createObjectURL = OriginalCreateObjectURL;
         }
-
-        self.Worker = OriginalWorker;
-
-        const factory = typeof SalviumWallet !== 'undefined' ? SalviumWallet : self.SalviumWallet;
-
-        Module = await factory({
-            wasmModule: wasmModule,
-            instantiateWasm: (imports, successCallback) => {
-                WebAssembly.instantiate(wasmModule, imports).then(instance => {
-                    successCallback(instance);
-                });
-                return {};
-            },
-            locateFile: (path) => path
-        });
 
         isReady = true;
 
