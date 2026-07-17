@@ -63,6 +63,9 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        // The package's `browser` UMD entry carries a Function('return this')
+        // fallback. The equivalent native ESM entry has no string execution.
+        'decimal.js-light': path.resolve(__dirname, 'node_modules/decimal.js-light/decimal.mjs'),
       }
     },
     define: {

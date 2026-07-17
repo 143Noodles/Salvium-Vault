@@ -13,6 +13,9 @@ const browser = await chromium.launch({ headless: true });
 const ctx = await browser.newContext();
 const page = await ctx.newPage();
 const consoleErrors = [];
+const workerUrls = [];
+const failedResponses = [];
+const failedRequests = [];
 await page.addInitScript(() => {
   window.__cspViolations = [];
   document.addEventListener('securitypolicyviolation', (e) => {
@@ -21,6 +24,13 @@ await page.addInitScript(() => {
 });
 page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 250)); });
 page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + String(e).slice(0, 250)));
+page.on('worker', (worker) => workerUrls.push(worker.url()));
+page.on('response', (response) => {
+  if (response.status() >= 400) failedResponses.push({ status: response.status(), url: response.url() });
+});
+page.on('requestfailed', (request) => {
+  failedRequests.push({ url: request.url(), reason: request.failure()?.errorText || 'unknown' });
+});
 
 await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
 await page.waitForTimeout(6000);
@@ -89,6 +99,14 @@ if (success) {
 }
 
 const violations = await page.evaluate(() => window.__cspViolations).catch(() => ['<eval failed>']);
-log('RESULT', JSON.stringify({ success, sweep, violations, consoleErrors: consoleErrors.slice(0, 12) }, null, 1));
+log('RESULT', JSON.stringify({
+  success,
+  sweep,
+  violations,
+  workerUrls: [...new Set(workerUrls)],
+  failedResponses: failedResponses.slice(0, 30),
+  failedRequests: failedRequests.slice(0, 30),
+  consoleErrors: consoleErrors.slice(0, 20),
+}, null, 1));
 await browser.close();
 process.exit(success && violations.length === 0 ? 0 : 1);

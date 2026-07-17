@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -24,5 +25,22 @@ describe('browser wallet runtime string-execution hardening', () => {
     expect(scanWorker).toContain('importScripts(glueUrl)');
     expect(seedWorker).toContain('importScripts(jsUrl)');
     expect(seedWorker).not.toContain('response.text()');
+  });
+
+  it('packages the background heartbeat as an immutable same-origin worker', () => {
+    const walletContext = read('services/WalletContext.tsx');
+    const heartbeat = read('wallet/heartbeat.worker.js');
+    const runtimeList = read('scripts/copy-wallet-runtime.mjs');
+    const server = read('server.cjs');
+    const heartbeatSha = createHash('sha256')
+      .update(readFileSync(path.resolve(process.cwd(), 'wallet/heartbeat.worker.js')))
+      .digest('hex');
+
+    expect(walletContext).not.toMatch(/new\s+Blob\s*\(\[hbSrc\]|URL\.createObjectURL\(blob\)/);
+    expect(walletContext).toContain("getPackagedWalletAssetUrl('heartbeat.worker.js')");
+    expect(walletContext).toContain(`HEARTBEAT_WORKER_SHA256 = '${heartbeatSha}'`);
+    expect(heartbeat).not.toMatch(/\beval\s*\(|new\s+Function\s*\(|new\s+Blob\s*\(/);
+    expect(runtimeList).toContain('"heartbeat.worker.js"');
+    expect(server).toContain("'heartbeat.worker.js'");
   });
 });

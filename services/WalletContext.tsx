@@ -42,6 +42,7 @@ import {
 import { shouldForceReturnedTransferScan } from '../utils/scanHints';
 import { notifyIncomingTransactions } from '../utils/desktopNotify';
 import { isNativePlatform, isDesktopApp } from '../utils/runtime';
+import { getPackagedWalletAssetUrl } from '../utils/bundledRuntime';
 import { reportClientEvent, reportTaskEvent } from '../utils/clientTelemetry';
 import { getSyncWatchdogDecision } from '../utils/syncWatchdog';
 import { getWalletRescanCacheKeys } from '../utils/walletRescan';
@@ -175,6 +176,7 @@ const IDB_VERSION = 1;
 const WALLET_HEALTH_WARNING_LOG_INTERVAL_MS = 15 * 60 * 1000;
 const SYNC_WATCHDOG_INTERVAL_MS = 15 * 1000;
 const SYNC_WATCHDOG_STALE_SCAN_MS = 90 * 1000;
+const HEARTBEAT_WORKER_SHA256 = 'fd172bbc5040f958940f18218d10f0bd723d314edcf9e4df12241a9be53c5c59';
 // Persisted last-known daemon tip (public chain height) to seed daemonHeight on open.
 const LAST_DAEMON_TIP_KEY = 'salvium.lastDaemonTip';
 const readPersistedDaemonTip = (): number => {
@@ -9141,7 +9143,7 @@ const getDeviceMemoryBucket = (): string => {
 
     // Background scanning on desktop: setInterval is throttled to ~1/min in hidden tabs, so the
     // checkSync poll above stalls when backgrounded. A Web Worker's timer is NOT throttled, so a
-    // tiny inline heartbeat worker reliably triggers catch-ups while hidden (the CSP scan workers,
+    // tiny same-origin heartbeat worker reliably triggers catch-ups while hidden (the CSP scan workers,
     // fetches and SSE keep running backgrounded; only main-thread timers are throttled). The
     // coalesce in requestAutomaticCatchupScan dedupes when there is no new block, so this is cheap.
     const heartbeatCatchupRef = React.useRef(requestAutomaticCatchupScan);
@@ -9149,11 +9151,9 @@ const getDeviceMemoryBucket = (): string => {
     useEffect(() => {
         if (!isWalletReady || typeof Worker === 'undefined' || !walletService.hasWallet()) return;
         let hbWorker: Worker | null = null;
-        let hbUrl = '';
         try {
-            const hbSrc = "let i=null;onmessage=function(e){if(e.data==='start'){if(i)return;i=setInterval(function(){postMessage(0)},12000)}else{if(i){clearInterval(i);i=null}}};";
-            const blob = new Blob([hbSrc], { type: 'application/javascript' });
-            hbUrl = URL.createObjectURL(blob);
+            const hbUrl = getPackagedWalletAssetUrl('heartbeat.worker.js')
+                + '?v=' + HEARTBEAT_WORKER_SHA256;
             hbWorker = new Worker(hbUrl);
             hbWorker.onmessage = async () => {
                 try {
@@ -9166,7 +9166,7 @@ const getDeviceMemoryBucket = (): string => {
             hbWorker.postMessage('start');
         } catch {}
         return () => {
-            try { hbWorker?.postMessage('stop'); hbWorker?.terminate(); if (hbUrl) URL.revokeObjectURL(hbUrl); } catch {}
+            try { hbWorker?.postMessage('stop'); hbWorker?.terminate(); } catch {}
         };
     }, [isWalletReady]);
 

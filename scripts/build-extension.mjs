@@ -22,14 +22,6 @@ function copyFile(src, dest) {
   fs.copyFileSync(src, dest);
 }
 
-function replaceRequired(filePath, search, replacement) {
-  const original = fs.readFileSync(filePath, 'utf8');
-  if (!original.includes(search)) {
-    throw new Error('Expected extension hardening pattern was not found in ' + filePath);
-  }
-  fs.writeFileSync(filePath, original.replace(search, replacement));
-}
-
 function copyWalletRuntime() {
   const walletOutDir = path.join(outDir, 'wallet');
   fs.rmSync(walletOutDir, { recursive: true, force: true });
@@ -38,17 +30,19 @@ function copyWalletRuntime() {
   }
 }
 
-function hardenWalletRuntime() {
-  replaceRequired(
-    path.join(outDir, 'wallet/csp-scanner.worker.js'),
-    '            const indirectEval = eval;\n            indirectEval(jsCode);',
-    "            throw new Error('Dynamic scanner glue evaluation is disabled in extension builds');",
-  );
-  replaceRequired(
-    path.join(outDir, 'wallet/seed-validator.worker.js'),
-    '                (0, eval)(jsCode);',
-    "                throw new Error('Dynamic seed validator glue evaluation is disabled in extension builds');",
-  );
+function verifyWalletRuntimeHardening() {
+  for (const fileName of [
+    'CSPScanner.js',
+    'csp-scanner.worker.js',
+    'seed-validator.worker.js',
+    'SalviumWallet.js',
+    'SalviumWalletBaseline.js',
+  ]) {
+    const source = fs.readFileSync(path.join(outDir, 'wallet', fileName), 'utf8');
+    if (/\beval\s*\(|new\s+Function\s*\(/.test(source)) {
+      throw new Error('Dynamic string execution remains in packaged wallet runtime: ' + fileName);
+    }
+  }
 }
 
 function buildManifest() {
@@ -118,7 +112,7 @@ execFileSync('npx', ['vite', 'build', '--config', 'extension/vite.config.ts'], {
 });
 
 copyWalletRuntime();
-hardenWalletRuntime();
+verifyWalletRuntimeHardening();
 copyFile(path.join(repoRoot, 'assets/img/salvium.png'), path.join(outDir, 'assets/img/salvium.png'));
 copyFile(path.join(repoRoot, 'public/salvium-icon.png'), path.join(outDir, 'icons/salvium-icon.png'));
 if (fs.existsSync(path.join(repoRoot, 'content-version.json'))) {

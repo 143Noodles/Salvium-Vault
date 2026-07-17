@@ -13,6 +13,7 @@ const {
     createRelayError,
     relaySalPayCallback,
 } = require('./utils/salpayRelay.cjs');
+const { buildContentSecurityPolicy } = require('./utils/cspPolicy.cjs');
 const { registerMiningRoutes } = require('./services/minerManager.cjs');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const isRender = process.env.RENDER === 'true';
@@ -6222,32 +6223,6 @@ app.use((req, res, next) => {
     });
     next();
 });
-// Two CSP variants selected per request by UA capability. 'wasm-unsafe-eval'
-// and script nonces need Chrome 97+ / Safari 16.4+ / Firefox 102+; older
-// WebViews are still supported (see the .at() polyfill in index.html), so
-// anything below those versions — or unidentifiable — gets the permissive
-// legacy policy. Fail-open: a wrong guess must never block WebAssembly
-// compilation (= wallet load) on a user's device.
-function uaSupportsModernCsp(ua) {
-  if (typeof ua !== 'string' || !ua) return false;
-  try {
-    const chrome = ua.match(/(?:Chrome|CriOS)\/(\d+)/);
-    if (chrome) return parseInt(chrome[1], 10) >= 97;
-    const firefox = ua.match(/Firefox\/(\d+)/);
-    if (firefox) return parseInt(firefox[1], 10) >= 102;
-    if (/Safari\//.test(ua)) {
-      const safari = ua.match(/Version\/(\d+)\.(\d+)/);
-      if (!safari) return false;
-      const major = parseInt(safari[1], 10);
-      const minor = parseInt(safari[2], 10);
-      return major > 16 || (major === 16 && minor >= 4);
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-const CSP_SHARED = "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://*.salvium.io https://*.salvium.io:19081 https://*.salvium.tools; img-src 'self' data: blob: https://dweb.link https://*.ipfs.dweb.link https://ipfs.io https://*.ipfs.ipfs.io https://arweave.net https://*.arweave.net https://*.salvium.tools; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self'; frame-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self';";
 app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -6256,16 +6231,7 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(self), geolocation=(), microphone=(), payment=(), usb=(), bluetooth=(), serial=(), browsing-topics=()');
   const nonce = crypto.randomBytes(16).toString('base64');
   res.locals.cspNonce = nonce;
-  // 'unsafe-eval' is load-bearing: scan workers are blob-created (inherit the
-  // document CSP) and eval patched WASM glue, and embind builds invokers with
-  // new Function. Dropping it requires importScripts-able patched glue plus a
-  // DYNAMIC_EXECUTION=0 WASM rebuild. The modern-browser win here is nonces
-  // replacing 'unsafe-inline': injected inline scripts / handlers / javascript:
-  // URLs are dead without the per-request nonce.
-  const scriptSrc = uaSupportsModernCsp(req.headers['user-agent'])
-    ? `script-src 'self' 'nonce-${nonce}' 'unsafe-eval' blob:;`
-    : "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:;";
-  res.setHeader('Content-Security-Policy', `${CSP_SHARED} ${scriptSrc}`);
+  res.setHeader('Content-Security-Policy', buildContentSecurityPolicy(req.headers['user-agent'], nonce));
   next();
 });
 
@@ -11102,6 +11068,7 @@ const PUBLIC_WALLET_RUNTIME_FILES = new Set([
     'SalviumWallet.worker.js',
     'wasm-feature-detect.js',
     'csp-scanner.worker.js',
+    'heartbeat.worker.js',
     'seed-validator.worker.js',
     'wallet-host.worker.js',
 ].map((name) => name.toLowerCase()));

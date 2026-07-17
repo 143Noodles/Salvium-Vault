@@ -29,6 +29,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': repoRoot,
+      // Avoid the package's UMD global-object fallback, which contains a
+      // Function constructor even though extension pages would not execute it.
+      'decimal.js-light': path.resolve(repoRoot, 'node_modules/decimal.js-light/decimal.mjs'),
     },
   },
   build: {
