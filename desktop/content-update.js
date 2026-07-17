@@ -1,9 +1,9 @@
 // Salvium Vault Desktop — OTA CONTENT updates.
 // ---------------------------------------------------------------------------
 // Updates the wallet CONTENT (the SPA dist + sidecar + wallet wasm) over the
-// air, WITHOUT touching the native Electron binary. No code signing / Apple
-// Developer ID needed: the .app/.exe/AppImage never changes. Works identically
-// on macOS, Windows and Linux.
+// air, WITHOUT touching the native Electron binary. Native-shell and Electron
+// security updates still require a newly signed installer; content updates do
+// not replace or weaken that release boundary.
 //
 // SECURITY: every content bundle is verified with an Ed25519 signature (public
 // key below; private key held by the publisher) AND a sha512 of the archive.

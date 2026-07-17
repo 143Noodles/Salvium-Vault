@@ -1,4 +1,5 @@
 #!/bin/bash
+set -eu
 
 # Symlink into PATH (mirrors electron-builder default template)
 if type update-alternatives 2>/dev/null >&1; then
@@ -11,16 +12,11 @@ else
     ln -sf '/opt/Salvium Vault/salvium-vault-desktop' '/usr/bin/salvium-vault-desktop'
 fi
 
-# SUID chrome-sandbox for Electron 5+
-chmod 4755 '/opt/Salvium Vault/chrome-sandbox' || true
-
-# Load the AppArmor profile so the Chromium user-namespace sandbox works on
-# Ubuntu 23.10+ / 24.04+ (kernel.apparmor_restrict_unprivileged_userns=1).
-# Older parsers that reject the profile are systems that do not restrict
-# user namespaces, so failure here is harmless.
-if [ -d /sys/kernel/security/apparmor ] && command -v apparmor_parser >/dev/null 2>&1; then
-    apparmor_parser -r /etc/apparmor.d/salvium-vault-desktop 2>/dev/null || true
-fi
+# Electron's Chromium renderer must never fall back to --no-sandbox. The
+# Debian package installs as root, so make the setuid sandbox helper ownership
+# and mode explicit and fail the package installation if either operation fails.
+chown root:root '/opt/Salvium Vault/chrome-sandbox'
+chmod 4755 '/opt/Salvium Vault/chrome-sandbox'
 
 if hash update-mime-database 2>/dev/null; then
     update-mime-database /usr/share/mime || true

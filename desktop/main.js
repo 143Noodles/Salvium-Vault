@@ -390,8 +390,7 @@ async function createMainWindow(port) {
     width: 1280,
     height: 860,
     title: 'Salvium Vault',
-    // Linux taskbars/docks take the window icon from here (the AppImage has no
-    // installed icon theme entry to fall back on).
+    // Keep the packaged window identity deterministic across Linux desktops.
     icon: path.join(__dirname, 'build', 'icon.png'),
     // The SPA carries its own chrome; keep the File/Edit/View/Window/Help menu
     // bar hidden (Alt reveals it, and its shortcuts still work).
@@ -403,6 +402,7 @@ async function createMainWindow(port) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.js'),
     },
@@ -602,37 +602,9 @@ async function promptUpdateDecision(manifest, version) {
 }
 
 // Step 2: the update is downloaded + verified — offer to restart to apply it.
-// Relaunch the app, then exit so the new instance takes over.
-// In a packaged AppImage, process.execPath is the temporary /tmp/.mount_* path
-// that gets unmounted on exit, so the default app.relaunch() launches nothing
-// (the app closes and never reopens — observed). Relaunch via the real AppImage
-// path in $APPIMAGE instead. macOS/Windows/dev relaunch normally.
+// Relaunch the installed shell, then exit so the new instance takes over.
 function relaunchApp() {
   isQuitting = true; // an intentional relaunch — do not supervise the sidecar's exit
-  const appImagePath = process.env.APPIMAGE;
-  try {
-    if (appImagePath) {
-      // Spawn a FRESH AppImage instance. Two problems make a naive relaunch fail
-      // to FUSE-mount ("Cannot mount AppImage"): (1) the child inherits the
-      // AppImage runtime/AppRun env (APPDIR, and esp. LD_LIBRARY_PATH/PATH that
-      // point at THIS instance's now-unmounted squashfs, breaking fusermount),
-      // and (2) FUSE remounts are flaky right after the parent unmounts. So we
-      // clear the injected vars AND set APPIMAGE_EXTRACT_AND_RUN=1 to skip FUSE
-      // entirely on relaunch — guaranteed to start regardless of FUSE state.
-      const { spawn } = require('child_process');
-      const env = Object.assign({}, process.env);
-      for (const k of ['APPDIR', 'APPIMAGE', 'ARGV0', 'OWD', 'LD_LIBRARY_PATH',
-                       'PYTHONPATH', 'PYTHONHOME', 'PERLLIB', 'GSETTINGS_SCHEMA_DIR',
-                       'GST_PLUGIN_SYSTEM_PATH', 'GST_PLUGIN_PATH', 'QT_PLUGIN_PATH']) delete env[k];
-      env.APPIMAGE_EXTRACT_AND_RUN = '1';
-      log('relaunching AppImage (extract-and-run):', appImagePath);
-      spawn(appImagePath, [], { detached: true, stdio: 'ignore', env }).unref();
-      app.exit(0);
-      return;
-    }
-  } catch (e) {
-    log('AppImage relaunch failed, falling back to app.relaunch:', e && e.message);
-  }
   try { app.relaunch(); } catch (e) { log('relaunch error:', e && e.message); }
   app.exit(0);
 }
