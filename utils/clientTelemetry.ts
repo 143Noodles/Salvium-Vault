@@ -125,6 +125,9 @@ export const redactSensitiveText = (value: string): string => {
     .replace(/\b([\w.]*(?:balance|unlocked|locked_coins|coins_total|atomic|snapshot|amount|stake|lifecycle)[\w.]*)\s*[:=]\s*-?\d[\d.,eE+-]*/gi, '$1=[redacted]')
     .replace(/\b(payment_id|paymentId)\s*[:=]\s*-?\w+(?:\.\w+)?\b/gi, '$1=[redacted]')
     .replace(/\b(?:seed|mnemonic|private[_ -]?key|secret[_ -]?key|spend[_ -]?key|view[_ -]?key)\b\s*[:=]?\s*[^\n,;)]+/gi, '[redacted-sensitive]')
+    // Seed phrases can surface as an unlabelled library error. Conservatively
+    // suppress mnemonic-shaped lower-case word runs even without a keyword.
+    .replace(/\b(?:[a-z]{3,16}\s+){11,24}[a-z]{3,16}\b/g, '[redacted-word-sequence]')
     .replace(/\b(?:address|txid|tx_hash|key_image|payment_id)\b\s*[:=]\s*[^\n,;)]+/gi, '[redacted-sensitive]')
     .slice(0, MAX_MESSAGE_LENGTH);
 };
@@ -182,6 +185,14 @@ const isExtensionProviderNoise = (message: string): boolean =>
 // Injected-provider noise, not a wallet error; keep out of SSE error telemetry.
 const isMissingSseCallback = (message: string): boolean =>
   /func\s+sseError\s+not\s+found/i.test(message);
+
+// Context values are sanitized without their key being present in the value,
+// so text redaction alone cannot protect an allowlisted numeric balance. Keep
+// useful counts/stages, but drop fields whose key itself identifies a monetary
+// value. This is deliberately enforced in addition to the allowlist.
+const isSensitiveMonetaryContextKey = (key: string): boolean =>
+  /(?:balance|unlocked|spendable|atomic|amount)/i.test(key) ||
+  (/^diag/i.test(key) && /(?:total|largestInput|lockedStake|confirmedSkippedType)/i.test(key));
 
 export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): ClientTelemetryContext => {
   const safe: ClientTelemetryContext = {};
@@ -302,6 +313,7 @@ export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): Clie
 
   for (const [key, rawValue] of Object.entries(context).slice(0, 40)) {
     if (!allowedKeys.has(key)) continue;
+    if (isSensitiveMonetaryContextKey(key)) continue;
     if (typeof rawValue === 'number') {
       safe[key] = Number.isFinite(rawValue) ? Math.round(rawValue * 100) / 100 : null;
     } else if (typeof rawValue === 'boolean' || rawValue === null || rawValue === undefined) {

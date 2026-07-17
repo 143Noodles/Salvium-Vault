@@ -54,6 +54,13 @@ describe('client telemetry privacy sanitizer', () => {
     expect(redacted).not.toContain('500');
   });
 
+  it('redacts an unlabelled mnemonic-shaped word sequence', () => {
+    const phrase = 'abandon ability able about above absent absorb abstract absurd abuse access accident';
+    const redacted = redactSensitiveText(`wallet import failed: ${phrase}`);
+    expect(redacted).not.toContain('abandon ability');
+    expect(redacted).toContain('[redacted-word-sequence]');
+  });
+
   it('keeps only allowlisted low-cardinality context fields', () => {
     const context = sanitizeTelemetryContext({
       task: 'wallet.create',
@@ -72,6 +79,24 @@ describe('client telemetry privacy sanitizer', () => {
       component: 'Onboarding',
       count: 2,
       tokenShape: 'ticker_upper_4',
+    });
+  });
+
+  it('drops exact monetary values even when their diagnostic keys are allowlisted', () => {
+    const context = sanitizeTelemetryContext({
+      task: 'wallet.spendability',
+      diagSnapshotBalance: 16.82760091,
+      diagRequestedAmount: 2.5,
+      diagSweepSelectedTotal: 16.8,
+      diagSweepLargestInput: 8.4,
+      diagSweepSelectedCount: 3,
+      diagOpenFailures: 1,
+    } as any);
+
+    expect(context).toEqual({
+      task: 'wallet.spendability',
+      diagSweepSelectedCount: 3,
+      diagOpenFailures: 1,
     });
   });
 

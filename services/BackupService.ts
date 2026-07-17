@@ -8,7 +8,7 @@ import {
     normalizeWalletStorageNetwork,
     type WalletStorageNetwork
 } from '../utils/walletStorage';
-import { reportTaskEvent, startTaskTelemetry } from '../utils/clientTelemetry';
+import { isClientTelemetryEnabled, reportTaskEvent, setClientTelemetryEnabled, startTaskTelemetry } from '../utils/clientTelemetry';
 
 // v2 added m_recovered_spend_pubkey; v1 vaults are incompatible and must be restored from seed.
 const BACKUP_VERSION = 2;
@@ -259,6 +259,7 @@ export interface BackupData {
     settings: {
         autoLockEnabled: boolean;
         autoLockMinutes: number;
+        telemetryEnabled?: boolean;
     };
     walletCacheCompressed?: string;
     returnOutputMap?: Record<string, any>;
@@ -266,6 +267,29 @@ export interface BackupData {
     integrity?: {
         hash: string;
         chunks?: number;
+    };
+}
+
+function normalizeBackupSettings(
+    value: unknown,
+    allowTelemetryEnable: boolean
+): BackupData['settings'] {
+    const candidate = value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+    const parsedMinutes = typeof candidate.autoLockMinutes === 'number'
+        ? candidate.autoLockMinutes
+        : Number(candidate.autoLockMinutes);
+    const autoLockMinutes = Number.isInteger(parsedMinutes) && parsedMinutes >= 1 && parsedMinutes <= 1440
+        ? parsedMinutes
+        : 15;
+    const telemetryEnabled = allowTelemetryEnable
+        ? candidate.telemetryEnabled !== false
+        : isClientTelemetryEnabled() && candidate.telemetryEnabled !== false;
+    return {
+        autoLockEnabled: typeof candidate.autoLockEnabled === 'boolean' ? candidate.autoLockEnabled : true,
+        autoLockMinutes,
+        telemetryEnabled,
     };
 }
 
@@ -422,10 +446,12 @@ export async function generateBackup(password: string): Promise<Blob> {
     const contacts = contactsJson ? JSON.parse(contactsJson) : [];
 
     const settingsJson = localStorage.getItem('salvium_settings');
-    const settings = settingsJson ? JSON.parse(settingsJson) : {
-        autoLockEnabled: true,
-        autoLockMinutes: 15
-    };
+    let storedSettings: unknown = {};
+    try {
+        storedSettings = settingsJson ? JSON.parse(settingsJson) : {};
+    } catch {
+    }
+    const settings = normalizeBackupSettings(storedSettings, false);
 
     let returnOutputMap: Record<string, any> | undefined;
     if (wallet.address) {
@@ -693,7 +719,15 @@ export async function restoreFromBackup(backupData: BackupData): Promise<void> {
     }
 
     if (backupData.settings) {
-        localStorage.setItem('salvium_settings', JSON.stringify(backupData.settings));
+        // Treat backup settings as untrusted input. Restore only known fields,
+        // bound auto-lock, and never let a backup silently turn diagnostics on
+        // in an install where the user/build has them off. A backed-up opt-out
+        // still follows the wallet across devices.
+        const settings = normalizeBackupSettings(backupData.settings, false);
+        localStorage.setItem('salvium_settings', JSON.stringify(settings));
+        localStorage.setItem('salvium_autolock_enabled', String(settings.autoLockEnabled));
+        localStorage.setItem('salvium_autolock_minutes', String(settings.autoLockMinutes));
+        setClientTelemetryEnabled(settings.telemetryEnabled !== false);
     }
 
     if (backupData.returnOutputMap && backupData.wallet?.address) {
