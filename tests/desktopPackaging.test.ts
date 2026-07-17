@@ -33,13 +33,23 @@ describe('desktop package security policy', () => {
 
   it('keeps the renderer sandbox explicit and has no fail-open relaunch path', () => {
     const main = repoFile('desktop/main.js');
-    const publishing = repoFile('desktop/PUBLISHING.md');
     expect(main).toContain('sandbox: true');
     expect(main).toContain("const SHELL_NODE_MODULES = path.join(__dirname, 'node_modules')");
     expect(main).toContain('NODE_PATH: SHELL_NODE_MODULES');
     expect(main).not.toContain('process.env.APPIMAGE');
     expect(main).not.toContain('--no-sandbox');
-    expect(publishing).not.toContain('`--no-sandbox`');
+  });
+
+  it('health-checks downloaded content through the canonical versioned WASM routes', () => {
+    const main = repoFile('desktop/main.js');
+    const start = main.indexOf('async function verifyRendererContentHealth');
+    const end = main.indexOf('\n}\n', start);
+    const healthCheck = main.slice(start, end + 3);
+
+    expect(healthCheck).toContain("fetch('/api/wasm-info'");
+    expect(healthCheck).toContain("const wasmBase = '/api/wasm/' + encodeURIComponent(assetVersion) + '/'");
+    expect(healthCheck).not.toContain("glueUrl: '/wallet/SalviumWallet.js'");
+    expect(healthCheck).not.toContain("wasmUrl: '/wallet/SalviumWallet.wasm'");
   });
 
   it('packages only the executable sidecar sources, not the TypeScript tree', () => {

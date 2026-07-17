@@ -537,27 +537,44 @@ async function verifyRendererContentHealth(window, timeoutMs = 30000) {
       };
       const poll = setInterval(maybeFinish, 100);
       const timeout = setTimeout(() => finish(false, 'content-health-timeout'), ${Math.max(1000, timeoutMs)});
-      try {
-        worker = new Worker('/wallet/seed-validator.worker.js');
-        worker.onerror = () => finish(false, 'seed-worker-error');
-        worker.onmessage = (event) => {
-          if (!event.data || event.data.id !== id) return;
-          if (event.data.type !== 'HEALTHY') { finish(false, 'seed-worker-unhealthy'); return; }
-          workerHealthy = true;
-          maybeFinish();
-        };
-        worker.postMessage({
-          type: 'HEALTH_CHECK',
-          id,
-          payload: {
-            wasmVariant: 'simd',
-            glueUrl: '/wallet/SalviumWallet.js',
-            wasmUrl: '/wallet/SalviumWallet.wasm',
-            fallbackGlueUrl: '/wallet/SalviumWalletBaseline.js',
-            fallbackWasmUrl: '/wallet/SalviumWalletBaseline.wasm'
-          }
-        });
-      } catch (_) { finish(false, 'seed-worker-start-failed'); }
+      const startWorker = async () => {
+        let assetVersion = '';
+        try {
+          const response = await fetch('/api/wasm-info', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { 'Cache-Control': 'no-cache' }
+          });
+          if (!response.ok) { finish(false, 'wasm-info-http-' + response.status); return; }
+          const info = await response.json();
+          assetVersion = info && typeof info.assetVersion === 'string' ? info.assetVersion.trim() : '';
+        } catch (_) { finish(false, 'wasm-info-failed'); return; }
+        if (!assetVersion) { finish(false, 'wasm-info-missing-version'); return; }
+
+        const wasmBase = '/api/wasm/' + encodeURIComponent(assetVersion) + '/';
+        try {
+          worker = new Worker('/wallet/seed-validator.worker.js');
+          worker.onerror = () => finish(false, 'seed-worker-error');
+          worker.onmessage = (event) => {
+            if (!event.data || event.data.id !== id) return;
+            if (event.data.type !== 'HEALTHY') { finish(false, 'seed-worker-unhealthy'); return; }
+            workerHealthy = true;
+            maybeFinish();
+          };
+          worker.postMessage({
+            type: 'HEALTH_CHECK',
+            id,
+            payload: {
+              wasmVariant: 'simd',
+              glueUrl: wasmBase + 'SalviumWallet.js',
+              wasmUrl: wasmBase + 'SalviumWallet.wasm',
+              fallbackGlueUrl: wasmBase + 'SalviumWalletBaseline.js',
+              fallbackWasmUrl: wasmBase + 'SalviumWalletBaseline.wasm'
+            }
+          });
+        } catch (_) { finish(false, 'seed-worker-start-failed'); }
+      };
+      void startWorker();
     }))()`, true);
     return result && result.healthy === true
       ? { healthy: true, reason: String(result.reason || 'healthy') }

@@ -128,6 +128,8 @@ describe('desktop signed content updater', () => {
       const manifest = JSON.parse(fs.readFileSync(publishedManifestFixture, 'utf8'));
       const archive = fs.readFileSync(publishedArchiveFixture);
 
+      expect(() => updater._test.verifyManifestSignatures(manifest, productionPublicKey)).not.toThrow();
+
       const installStarted = performance.now();
       await updater._test.installVerifiedArchive(manifest, archive);
       const installMs = Math.round(performance.now() - installStarted);
