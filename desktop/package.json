@@ -1,6 +1,7 @@
 {
   "name": "salvium-vault-desktop",
   "productName": "Salvium Vault",
+  "desktopName": "salvium-vault-desktop.desktop",
   "version": "0.1.0",
   "description": "Salvium Vault Desktop Wallet",
   "private": true,
@@ -90,6 +91,7 @@
       ],
       "category": "Finance",
       "icon": "build/icon.png",
+      "syncDesktopName": true,
       "maintainer": "143Noodles <143Noodles@users.noreply.github.com>"
     },
     "directories": {
