@@ -1,7 +1,7 @@
 // Bundled build FULL restore E2E: serve dist-android locally, restore the
-// designated test wallet from height 0 entirely through routed API calls to
-// api.salvium.tools, reach the expected balance, dry-run a spend. Proves the
-// frozen-code APK model works for the real scan pipeline.
+// designated test wallet from height 0 through explicitly approved Salvium
+// data APIs, reach the exact expected balance, and dry-run a spend. Proves the
+// frozen-code APK model works for the real scan pipeline without remote code.
 import { chromium } from 'playwright';
 import http from 'http';
 import fs from 'fs';
@@ -10,6 +10,7 @@ import path from 'path';
 const ROOT = path.resolve('dist-android');
 const SEED = fs.readFileSync('/tmp/.salvium_seed', 'utf8').trim();
 const PASSWORD = 'HeadlessTest123!';
+const EXPECTED_BALANCE = '16.82760091';
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const MIME = { '.html':'text/html','.js':'application/javascript','.css':'text/css','.wasm':'application/wasm','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2','.ico':'image/x-icon' };
 
@@ -30,14 +31,16 @@ log('serving dist-android at', LOCAL);
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 const remoteCodeLoads = [];
-const apiHosts = new Set();
+const remoteRequests = [];
 const workerUrls = [];
 const failedResponses = [];
 const failedRequests = [];
 page.on('request', (req) => {
   const u = new URL(req.url());
   if ((/\.(js|mjs|wasm)$/.test(u.pathname) || u.pathname.startsWith('/wallet/')) && u.hostname !== '127.0.0.1') remoteCodeLoads.push(req.url());
-  if (u.pathname.startsWith('/api/') && u.hostname !== '127.0.0.1') apiHosts.add(u.hostname);
+  if ((u.protocol === 'http:' || u.protocol === 'https:') && u.hostname !== '127.0.0.1') {
+    remoteRequests.push({ method: req.method(), resourceType: req.resourceType(), url: req.url() });
+  }
 });
 page.on('worker', (worker) => workerUrls.push(worker.url()));
 page.on('response', (response) => {
@@ -66,6 +69,7 @@ await pw.nth(0).fill(PASSWORD);
 await pw.nth(1).fill(PASSWORD);
 await page.getByRole('button', { name: /restore wallet/i }).last().click();
 log('restore started; scanning...');
+const restoreStartedAt = Date.now();
 
 const deadline = Date.now() + 13 * 60 * 1000;
 let success = false, last = '';
@@ -74,9 +78,10 @@ while (Date.now() < deadline) {
   const txt = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 400)).catch(() => '');
   const snip = txt.slice(0, 150);
   if (snip !== last) { log('ui:', snip); last = snip; }
-  if (/16\.8\d/.test(txt)) { success = true; break; }
+  if (txt.includes(EXPECTED_BALANCE)) { success = true; break; }
 }
 log('balance reached:', success);
+const restoreElapsedMs = Date.now() - restoreStartedAt;
 
 let sweep = 'skipped';
 const aborted = [];
@@ -92,12 +97,23 @@ if (success) {
 
 const violations = await page.evaluate(() => window.__v).catch(() => ['<fail>']);
 const cspTier = await page.evaluate(() => document.querySelector('meta[name="salvium-csp-tier"]')?.content || null).catch(() => null);
+const isApprovedRemoteRequest = ({ url }) => {
+  const u = new URL(url);
+  if (u.hostname === 'api.salvium.tools' && u.pathname.startsWith('/api/')) return true;
+  return u.hostname === 'explorer.salvium.tools' && u.pathname === '/api/staking';
+};
+const unexpectedRemoteRequests = remoteRequests.filter((request) => !isApprovedRemoteRequest(request));
+const intentionalBroadcastFailures = failedRequests.filter(({ url, reason }) => url.includes('/api/wallet/sendrawtransaction') && reason === 'net::ERR_FAILED');
+const localWorkersOnly = workerUrls.length >= 3 && workerUrls.every((url) => new URL(url).hostname === '127.0.0.1');
 log('RESULT', JSON.stringify({
   success,
+  expectedBalance: EXPECTED_BALANCE,
+  restoreElapsedMs,
   sweep,
   abortedBroadcastBytes: aborted,
   remoteCodeLoads,
-  apiHostsSeen: [...apiHosts],
+  remoteRequests,
+  unexpectedRemoteRequests,
   cspTier,
   workerUrls: [...new Set(workerUrls)],
   failedResponses: failedResponses.slice(0, 30),
@@ -106,5 +122,14 @@ log('RESULT', JSON.stringify({
 }, null, 1));
 await browser.close();
 server.close();
-const pass = success && cspTier === 'modern' && remoteCodeLoads.length === 0 && [...apiHosts].every((x) => x === 'api.salvium.tools') && violations.length === 0 && aborted.some((b) => b > 100);
+const pass = success
+  && cspTier === 'modern'
+  && remoteCodeLoads.length === 0
+  && unexpectedRemoteRequests.length === 0
+  && violations.length === 0
+  && failedResponses.length === 0
+  && failedRequests.length === intentionalBroadcastFailures.length
+  && aborted.length >= 1
+  && aborted.every((bytes) => bytes > 100)
+  && localWorkersOnly;
 process.exit(pass ? 0 : 1);
