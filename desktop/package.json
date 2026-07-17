@@ -11,8 +11,8 @@
     "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "31.7.7",
-    "electron-builder": "^24.13.3"
+    "electron": "43.1.1",
+    "electron-builder": "26.15.3"
   },
   "build": {
     "appId": "io.salvium.vault.desktop",
@@ -123,7 +123,7 @@
     }
   },
   "dependencies": {
-    "tar": "^6.2.1"
+    "tar": "7.5.20"
   },
   "homepage": "https://salvium.io",
   "author": {
