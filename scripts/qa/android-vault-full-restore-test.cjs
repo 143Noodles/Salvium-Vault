@@ -138,8 +138,13 @@ async function connect(expectedOrigin = '') {
   return { ws, send };
 }
 
-async function evalValue(send, expression) {
-  const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+async function evalValue(send, expression, runtimeOptions = {}) {
+  const result = await send('Runtime.evaluate', {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+    ...runtimeOptions,
+  });
   if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
   return result.result.value;
 }
@@ -182,7 +187,7 @@ async function installEventCapture(send) {
       }
     }
     return true;
-  })()`);
+  })()`, { allowUnsafeEvalBlockedByCSP: false });
 }
 
 async function state(send) {
@@ -374,7 +379,7 @@ async function proveStringExecutionBlocked(send) {
     } catch (error) {
       return { blocked: error?.name === 'EvalError', errorName: error?.name || '' };
     }
-  })()`);
+  })()`, { allowUnsafeEvalBlockedByCSP: false });
   await sleep(100);
   result.violationsAfterProbe = await evalValue(send, `window.__vaultAndroidCspViolations || []`);
   return result;
