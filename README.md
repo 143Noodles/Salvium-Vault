@@ -68,16 +68,17 @@ npm start
 
 ## Desktop App
 
-Installers (Linux AppImage/deb, Windows, macOS) are on the
+Installers (Linux `.deb`, Windows, macOS) are on the
 [GitHub Releases](https://github.com/143Noodles/Salvium-Vault/releases) page.
 The desktop app runs the same wallet fully locally (the server component runs as a
 localhost sidecar) and updates itself through Ed25519-signed over-the-air content
-bundles — installers rarely change. See [desktop/PUBLISHING.md](desktop/PUBLISHING.md)
+bundles. Electron or native-shell security changes require a new installer. See [desktop/PUBLISHING.md](desktop/PUBLISHING.md)
 for how releases and updates work.
 
-> **Ubuntu 24.04+ / Debian:** use the **.deb** package. It installs an AppArmor
-> profile the Chromium sandbox needs on these systems. The AppImage cannot ship
-> that profile and will fail to launch on Ubuntu 24.04+.
+> **Linux:** use the **.deb** package. Its installation configures Electron's
+> Chromium setuid sandbox helper and fails if the helper cannot be secured.
+> AppImage is intentionally not distributed because portable launchers may
+> silently disable the Chromium sandbox on some hosts.
 
 ## Docker Deployment
 

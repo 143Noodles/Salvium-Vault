@@ -48,8 +48,12 @@ is ultimately controlled by the deployment — that is inherent to the web
 channel. Mitigations: this source is public, deploys are stamped with the git
 commit they were built from, and strict security headers (CSP with per-request
 script nonces on modern browsers, HSTS, COOP/COEP) are served on every
-response. For the strongest trust model use the desktop app, where code is
-fixed at install time and updates are signature-verified.
+response. Modern browsers receive `script-src` with nonces and
+`'wasm-unsafe-eval'`: WebAssembly compilation is allowed while JavaScript
+string execution is forbidden. A compatibility policy retaining
+`'unsafe-inline'`/`'unsafe-eval'` is limited to browser engines too old to
+support that split. For the strongest trust model use an installed channel,
+where executable content is bundled or signature-verified.
 
 ## Diagnostics (telemetry)
 
@@ -70,6 +74,10 @@ Diagnostics**.
 - The wallet WASM engine is single-threaded and runs inside a dedicated worker.
 - Wallet storage is encrypted with AES-GCM under a PBKDF2-SHA256 key
   (600,000 iterations) derived from your password (`services/CryptoService.ts`).
-- The Android app currently loads the production web app inside a hardened
-  WebView; a fully-bundled build (all code frozen in the APK) is in progress
-  and will be verifiable against this repository.
+- The Android APK bundles the complete SPA, worker scripts, and both WASM
+  variants. Modern WebViews use the strict static CSP; old WebViews use the
+  explicit compatibility shell. Executable code is not loaded remotely.
+- Linux desktop releases are Debian packages. Installation makes Electron's
+  Chromium sandbox helper `root:root` mode `4755` and fails closed if that
+  cannot be done. AppImage is intentionally unsupported because its launcher
+  may fall back to running without the Chromium sandbox.
