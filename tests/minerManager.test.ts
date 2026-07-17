@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { createRequire } from 'module';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -54,4 +55,66 @@ describe('desktop miner security boundaries', () => {
     expect(state.rigId).toMatch(/^desktop-[0-9a-f]{16}$/);
     expect(state.rigId).not.toContain(os.hostname());
   });
+
+  it('never asks an elevated helper to write a PID file in the user-writable miner directory', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'salvium-miner-script-test-'));
+    tempDirs.push(dir);
+    _test.setMinerDirRoot(dir);
+
+    const linuxScript = _test.buildLinuxElevatedScript(
+      path.join(dir, "xmrig'quoted", 'xmrig'),
+      `SC${'1'.repeat(95)}`,
+      2
+    );
+    expect(linuxScript).not.toMatch(/PIDFILE|xmrig\.pid/);
+    expect(linuxScript).toContain(`printf '%s\\n' "$XPID"`);
+    execFileSync('bash', ['-n'], { input: linuxScript });
+
+    const windowsScript = _test.buildWindowsElevatedScript(
+      String.raw`C:\Users\Vault User\xmrig.exe`,
+      `SC${'1'.repeat(95)}`,
+      2
+    );
+    expect(windowsScript).not.toMatch(/Out-File|xmrig\.pid|Add-MpPreference|ExclusionPath/i);
+    expect(windowsScript).toContain('Stop-Process');
+  });
+
+  it('rejects a symlink in place of the persisted state file', async () => {
+    if (process.platform === 'win32') return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'salvium-miner-state-test-'));
+    tempDirs.push(dir);
+    _test.setMinerDirRoot(dir);
+    fs.symlinkSync('/etc/passwd', path.join(dir, 'state.json'));
+    await expect(_test.loadPersistedState()).resolves.toBeNull();
+  });
+
+  it('returns the Linux miner PID over stdout and stops it through the watchdog file', async () => {
+    if (process.platform !== 'linux') return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'salvium-miner-watchdog-test-'));
+    tempDirs.push(dir);
+    _test.setMinerDirRoot(dir);
+    const fakeMiner = path.join(dir, 'fake-xmrig');
+    fs.writeFileSync(fakeMiner, "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n", { mode: 0o700 });
+
+    const script = _test.buildLinuxElevatedScript(fakeMiner, `SC${'1'.repeat(95)}`, 1);
+    const output = execFileSync('bash', ['-s'], {
+      input: script,
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    const pid = Number.parseInt(output.trim(), 10);
+    expect(pid).toBeGreaterThan(0);
+    expect(() => process.kill(pid, 0)).not.toThrow();
+
+    fs.writeFileSync(path.join(dir, 'stop.request'), 'stop', { mode: 0o600 });
+    let stopped = false;
+    for (let i = 0; i < 30; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      try { process.kill(pid, 0); } catch { stopped = true; break; }
+    }
+    if (!stopped) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    expect(stopped).toBe(true);
+  }, 10000);
 });

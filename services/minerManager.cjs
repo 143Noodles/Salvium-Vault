@@ -360,19 +360,52 @@ async function persistState() {
         pid: miner.pid,
         elevated: miner.elevated,
     };
+    const tmp = `${stateFilePath()}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    let fileHandle = null;
     try {
-        const tmp = `${stateFilePath()}.tmp`;
-        await fsp.writeFile(tmp, JSON.stringify(state), { mode: 0o600 });
+        fileHandle = await fsp.open(tmp, 'wx', 0o600);
+        await fileHandle.writeFile(JSON.stringify(state), 'utf8');
+        await fileHandle.sync();
+        await fileHandle.close();
+        fileHandle = null;
         if (process.platform !== 'win32') await fsp.chmod(tmp, 0o600);
         await fsp.rename(tmp, stateFilePath());
-        if (process.platform !== 'win32') await fsp.chmod(stateFilePath(), 0o600);
-    } catch (e) { /* best effort */ }
+        if (process.platform !== 'win32') {
+            await fsp.chmod(stateFilePath(), 0o600);
+            // Persist the rename itself, not merely the temporary file contents.
+            const dirHandle = await fsp.open(minerDirRoot, 'r');
+            try {
+                await dirHandle.sync();
+            } catch (error) {
+                if (!['EINVAL', 'ENOTSUP', 'ENOSYS'].includes(error.code)) throw error;
+            } finally {
+                await dirHandle.close();
+            }
+        }
+    } catch (error) {
+        if (fileHandle) await fileHandle.close().catch(() => {});
+        await fsp.rm(tmp, { force: true }).catch(() => {});
+        throw new Error(`Unable to persist secure miner state: ${error.message}`);
+    }
 }
 
 async function loadPersistedState() {
     try {
-        return JSON.parse(await fsp.readFile(stateFilePath(), 'utf8'));
-    } catch (e) { return null; }
+        const stat = await fsp.lstat(stateFilePath());
+        if (!stat.isFile() || stat.isSymbolicLink()) {
+            throw new Error('state path is not a regular file');
+        }
+        if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
+            await fsp.chmod(stateFilePath(), 0o600);
+        }
+        const parsed = JSON.parse(await fsp.readFile(stateFilePath(), 'utf8'));
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (error) {
+        if (error && error.code !== 'ENOENT') {
+            console.warn(`[miner] Ignoring invalid persisted state: ${error.message}`);
+        }
+        return null;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -404,13 +437,13 @@ async function launchUnix(bin, address, threads) {
                 launchUnix(bin, miner.address, miner.threads).catch((err) => {
                     miner.error = err.message;
                     miner.running = false;
-                    persistState();
+                    void persistState().catch((error) => console.error(`[miner] state persistence failed: ${error.message}`));
                 });
             }, 3000);
         } else {
             miner.error = `Miner stopped unexpectedly (exit code ${code}). ${stderrTail ? stderrTail.split('\n').pop() : ''}`.trim();
             miner.running = false;
-            persistState();
+            void persistState().catch((error) => console.error(`[miner] state persistence failed: ${error.message}`));
         }
     });
     miner.child = child;
@@ -425,13 +458,8 @@ function psQuote(s) {
 function elevatedStopFile() { return path.join(minerDirRoot, 'stop.request'); }
 function windowsStopFile() { return elevatedStopFile(); } // back-compat alias
 
-async function launchWindowsElevated(bin, address, threads) {
-    const dir = minerDir();
-    const pidFile = path.join(dir, 'xmrig.pid');
+function buildWindowsElevatedScript(bin, address, threads) {
     const stopFile = windowsStopFile();
-    await fsp.rm(pidFile, { force: true }).catch(() => {});
-    await fsp.rm(stopFile, { force: true }).catch(() => {});
-
     const argLine = xmrigArgs(address, threads).map((a) => `"${a}"`).join(', ');
     // Runs elevated for the optimized miner launch. Never weaken Defender by adding
     // an exclusion for a user-writable directory. The script stays resident as a watchdog — the unelevated sidecar
@@ -439,7 +467,6 @@ async function launchWindowsElevated(bin, address, threads) {
     // process disappears (app quit/crash) or when the sidecar writes stop.request.
     const inner = [
         `$p = Start-Process -FilePath ${psQuote(bin)} -ArgumentList ${argLine} -WorkingDirectory ${psQuote(path.dirname(bin))} -WindowStyle Hidden -PassThru`,
-        `$p.Id | Out-File -FilePath ${psQuote(pidFile)} -Encoding ascii`,
         `while ($true) {`,
         `  Start-Sleep -Seconds 3`,
         `  if (-not (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) { break }`,
@@ -454,13 +481,21 @@ async function launchWindowsElevated(bin, address, threads) {
         `  }`,
         `}`,
     ].join('\n');
+    return inner;
+}
+
+async function launchWindowsElevated(bin, address, threads) {
+    const stopFile = windowsStopFile();
+    await fsp.rm(stopFile, { force: true }).catch(() => {});
+
+    const inner = buildWindowsElevatedScript(bin, address, threads);
     const encodedCommand = Buffer.from(inner, 'utf16le').toString('base64');
 
     // Pass immutable command bytes through UAC. Never ask an elevated process to
     // execute a file that the unelevated user can replace during the prompt.
-    await runCmd('powershell.exe', [
+    const helperPidOutput = await runCmd('powershell.exe', [
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-        `Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',${psQuote(encodedCommand)} | Out-Null`,
+        `$helper = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',${psQuote(encodedCommand)} -PassThru; $helper.Id`,
     ]).catch((err) => {
         const msg = /canceled|cancelled|denied|1223/i.test(err.message)
             ? 'Administrator permission was declined. Mining needs it once per session for full-speed hardware optimizations.'
@@ -468,61 +503,56 @@ async function launchWindowsElevated(bin, address, threads) {
         throw new Error(msg);
     });
 
-    // The elevated helper wrote the xmrig pid; give the file a moment to appear.
-    for (let i = 0; i < 20; i++) {
-        try {
-            const pid = parseInt((await fsp.readFile(pidFile, 'utf8')).trim(), 10);
-            if (Number.isFinite(pid) && pid > 0) {
-                miner.pid = pid;
-                miner.child = null;
-                miner.elevated = true;
-                return;
-            }
-        } catch (e) { /* not yet */ }
-        await new Promise((r) => setTimeout(r, 250));
+    const helperPid = parseInt(String(helperPidOutput).trim().split(/\s+/).pop(), 10);
+    if (!Number.isFinite(helperPid) || helperPid <= 0) {
+        throw new Error('Miner was authorized but its elevated watchdog PID was not reported.');
     }
-    throw new Error('Miner was authorized but did not start (no pid reported).');
+    // Use the helper PID only as a temporary liveness sentinel. Once the API is
+    // listening, startMining resolves the actual xmrig PID from the loopback port.
+    miner.pid = helperPid;
+    miner.child = null;
+    miner.elevated = true;
 }
 
 function shQuote(str) {
     return `'${String(str).replace(/'/g, `'\\''`)}'`;
 }
 
-async function launchLinuxElevated(bin, address, threads) {
-    const dir = minerDir();
-    const pidFile = path.join(dir, 'xmrig.pid');
+function buildLinuxElevatedScript(bin, address, threads) {
     const stopFile = elevatedStopFile();
-    await fsp.rm(pidFile, { force: true }).catch(() => {});
-    await fsp.rm(stopFile, { force: true }).catch(() => {});
-
     const argLine = xmrigArgs(address, threads).map(shQuote).join(' ');
     const HUGEPAGES = 1280; // ~2.5GB of 2MB pages: RandomX dataset + per-thread scratchpads
     // pkexec reads immutable script bytes over stdin. The root shell never opens a
     // user-writable helper path after the authorization prompt.
     const script = [
         '#!/bin/bash',
-        `PIDFILE=${shQuote(pidFile)}`,
         `STOPFILE=${shQuote(stopFile)}`,
+        `HP=$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)`,
+        `if [ "$HP" -lt ${HUGEPAGES} ]; then sysctl -w vm.nr_hugepages=${HUGEPAGES} >/dev/null 2>&1 || true; fi`,
+        `modprobe msr >/dev/null 2>&1 || true`,
+        `${shQuote(bin)} ${argLine} </dev/null >/dev/null 2>&1 &`,
+        `XPID=$!`,
+        `printf '%s\\n' "$XPID"`,
+        `SIDECAR=${process.pid}`,
         `(`,
-        `  HP=$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)`,
-        `  if [ "$HP" -lt ${HUGEPAGES} ]; then sysctl -w vm.nr_hugepages=${HUGEPAGES} >/dev/null 2>&1 || true; fi`,
-        `  modprobe msr >/dev/null 2>&1 || true`,
-        `  ${shQuote(bin)} ${argLine} &`,
-        `  XPID=$!`,
-        `  echo $XPID > "$PIDFILE"`,
-        `  SIDECAR=${process.pid}`,
         `  while kill -0 $XPID 2>/dev/null; do`,
         `    sleep 3`,
         `    if [ -f "$STOPFILE" ]; then kill -TERM $XPID 2>/dev/null; sleep 2; kill -KILL $XPID 2>/dev/null; rm -f "$STOPFILE"; break; fi`,
         `    if ! kill -0 $SIDECAR 2>/dev/null; then kill -TERM $XPID 2>/dev/null; sleep 2; kill -KILL $XPID 2>/dev/null; break; fi`,
         `  done`,
-        `  rm -f "$PIDFILE"`,
         `) </dev/null >/dev/null 2>&1 &`,
-        `for i in $(seq 1 60); do [ -s "$PIDFILE" ] && exit 0; sleep 0.25; done`,
-        `exit 1`,
+        `exit 0`,
     ].join('\n');
+    return script;
+}
 
-    await runCmd('pkexec', ['bash', '-s'], { input: script }).catch((err) => {
+async function launchLinuxElevated(bin, address, threads) {
+    const stopFile = elevatedStopFile();
+    await fsp.rm(stopFile, { force: true }).catch(() => {});
+
+    const script = buildLinuxElevatedScript(bin, address, threads);
+
+    const pidOutput = await runCmd('pkexec', ['bash', '-s'], { input: script }).catch((err) => {
         // Declined prompt, missing pkexec/polkit, or any other failure of the
         // elevation step: the caller falls back to standard unprivileged mining.
         const e = new Error(`Elevated launch unavailable: ${err.message}`);
@@ -530,19 +560,23 @@ async function launchLinuxElevated(bin, address, threads) {
         throw e;
     });
 
-    for (let i = 0; i < 20; i++) {
-        try {
-            const pid = parseInt((await fsp.readFile(pidFile, 'utf8')).trim(), 10);
-            if (Number.isFinite(pid) && pid > 0) {
-                miner.pid = pid;
-                miner.child = null;
-                miner.elevated = true;
-                return;
-            }
-        } catch (e) { /* not yet */ }
-        await new Promise((r) => setTimeout(r, 250));
+    const pid = parseInt(String(pidOutput).trim().split(/\s+/).pop(), 10);
+    if (!Number.isFinite(pid) || pid <= 0) {
+        throw new Error('Miner was authorized but its PID was not reported.');
     }
-    throw new Error('Miner was authorized but did not start (no pid reported).');
+    miner.pid = pid;
+    miner.child = null;
+    miner.elevated = true;
+}
+
+async function findWindowsListenerPid(port) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    const output = await runCmd('powershell.exe', [
+        '-NoProfile', '-Command',
+        `(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction Stop | Select-Object -First 1 -ExpandProperty OwningProcess)`,
+    ]);
+    const pid = parseInt(String(output).trim(), 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
 }
 
 async function waitForApi(maxMs = 30000) {
@@ -605,10 +639,20 @@ async function startMining({ address, threads, afk }) {
             throw new Error(miner.error || 'The miner started but its status interface never came up.');
         }
 
+        if (process.platform === 'win32' && miner.elevated) {
+            const listenerPid = await findWindowsListenerPid(miner.apiPort).catch(() => null);
+            if (listenerPid) miner.pid = listenerPid;
+        }
+
         miner.running = true;
         miner.startedAt = Date.now();
+        try {
+            await persistState();
+        } catch (error) {
+            await hardStop().catch(() => {});
+            throw error;
+        }
         startMonitors();
-        await persistState();
         console.log(`[miner] Mining started (threads=${threads}, elevated=${miner.elevated}, afk=${miner.afk})`);
     } finally {
         miner.starting = false;
@@ -627,16 +671,17 @@ async function hardStop() {
             try { miner.child.kill('SIGTERM'); } catch (e) {}
             const child = miner.child;
             setTimeout(() => { try { child.kill('SIGKILL'); } catch (e) {} }, 4000).unref?.();
-        } else if (miner.pid && process.platform === 'win32') {
+        } else if (miner.pid && miner.elevated && process.platform === 'win32') {
             // The unelevated sidecar cannot terminate the elevated xmrig directly:
-            // ask the resident elevated watchdog to do it (picked up within ~3s),
-            // plus a direct taskkill in case xmrig ever ran unelevated.
-            await fsp.writeFile(elevatedStopFile(), String(Date.now())).catch(() => {});
+            // ask the resident elevated watchdog to do it (picked up within ~3s).
+            // Never target a persisted PID directly across a privilege boundary.
+            await fsp.writeFile(elevatedStopFile(), String(Date.now()), { mode: 0o600 });
+        } else if (miner.pid && process.platform === 'win32') {
             spawn('taskkill', ['/PID', String(miner.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => {});
         } else if (miner.pid && miner.elevated && process.platform === 'linux') {
             // Elevated Linux xmrig: signal the resident root watchdog via the stop-file
             // (it kills xmrig within ~3s), plus a best-effort direct SIGTERM.
-            await fsp.writeFile(elevatedStopFile(), String(Date.now())).catch(() => {});
+            await fsp.writeFile(elevatedStopFile(), String(Date.now()), { mode: 0o600 });
             try { process.kill(miner.pid, 'SIGTERM'); } catch (e) {}
         } else if (miner.pid) {
             try { process.kill(miner.pid, 'SIGTERM'); } catch (e) {}
@@ -674,7 +719,7 @@ function startMonitors() {
                 miner.error = 'Miner stopped unexpectedly.';
                 miner.running = false;
                 stopMonitors();
-                persistState();
+                void persistState().catch((error) => console.error(`[miner] state persistence failed: ${error.message}`));
             }
         }
         sampleCpu().catch(() => {});
@@ -816,19 +861,33 @@ async function reconcilePersistedState() {
         await persistState();
         return;
     }
-    miner.apiPort = persisted.apiPort || 0;
-    miner.apiToken = persisted.apiToken || '';
-    miner.address = persisted.address || null;
-    miner.threads = persisted.threads || 0;
+    const apiPort = Number(persisted.apiPort);
+    const pid = Number(persisted.pid);
+    const threads = Number(persisted.threads);
+    const validActiveState = persisted.running === true
+        && Number.isInteger(apiPort) && apiPort >= 1 && apiPort <= 65535
+        && /^[0-9a-f]{48}$/.test(String(persisted.apiToken || ''))
+        && isValidSalviumAddress(persisted.address)
+        && Number.isInteger(threads) && threads >= 1 && threads <= cpuCountRef
+        && Number.isInteger(pid) && pid > 0;
+    if (!validActiveState) {
+        console.warn('[miner] Discarding malformed active miner state');
+        await persistState();
+        return;
+    }
+    miner.apiPort = apiPort;
+    miner.apiToken = persisted.apiToken;
+    miner.address = persisted.address;
+    miner.threads = threads;
     miner.afk = !!persisted.afk;
-    miner.pid = persisted.pid || null;
+    miner.pid = pid;
     miner.elevated = !!persisted.elevated;
-    await persistState();
     try {
         miner.lastSummary = await xmrigApi('GET', '/2/summary');
         miner.lastSummaryAt = Date.now();
         miner.running = true;
         miner.startedAt = Date.now() - Math.floor(((miner.lastSummary.uptime || 0) * 1000));
+        await persistState();
         startMonitors();
         console.log('[miner] Re-attached to running xmrig from previous session');
     } catch (e) {
@@ -842,7 +901,11 @@ function killOnExit() {
     // Synchronous best effort: signal the child; ask the API to stop the elevated one.
     try { if (miner.child) miner.child.kill('SIGKILL'); } catch (e) {}
     if (process.platform === 'win32' && miner.pid) {
-        try { spawn('taskkill', ['/PID', String(miner.pid), '/T', '/F'], { stdio: 'ignore', detached: true }); } catch (e) {}
+        if (miner.elevated) {
+            try { fs.writeFileSync(elevatedStopFile(), String(Date.now()), { mode: 0o600 }); } catch (e) {}
+        } else {
+            try { spawn('taskkill', ['/PID', String(miner.pid), '/T', '/F'], { stdio: 'ignore', detached: true }); } catch (e) {}
+        }
         try {
             // Fire-and-forget API stop for the elevated case; may not complete on hard exits.
             http.request({
@@ -952,8 +1015,8 @@ function registerMiningRoutes(app, ctx) {
     });
 
     // ------------------------- control (desktop sidecar only) ----------------
-    // The sidecar binds all interfaces, so the desktop gate alone is not enough:
-    // control requires loopback, and mutations require the SPA's CSRF token.
+    // Defense in depth: the desktop server binds loopback, control independently
+    // requires a loopback peer, and mutations require the SPA's CSRF token.
     function gateControl(req, res, { mutating }) {
         if (!desktopSidecar) return blockIfNotAdmin(req, res);
         if (!isLoopbackRequest(req)) {
@@ -1048,7 +1111,9 @@ function registerMiningRoutes(app, ctx) {
     });
 
     if (desktopSidecar) {
-        reconcilePersistedState().catch(() => {});
+        reconcilePersistedState().catch((error) => {
+            console.error(`[miner] persisted-state reconciliation failed: ${error.message}`);
+        });
         process.on('exit', killOnExit);
         const signalExit = () => { killOnExit(); process.exit(0); };
         process.once('SIGINT', signalExit);
@@ -1061,7 +1126,11 @@ module.exports = {
     _test: {
         assertAllowedDownloadUrl,
         validateArchiveListing,
+        extractArchive,
+        buildLinuxElevatedScript,
+        buildWindowsElevatedScript,
         expectedAssetHashes: XMRIG_ASSET_SHA256,
+        releaseBase: XMRIG_RELEASE_BASE,
         persistState,
         loadPersistedState,
         setMinerDirRoot: (dir) => { minerDirRoot = dir; },
