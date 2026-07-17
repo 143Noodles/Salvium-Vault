@@ -4,6 +4,7 @@ import { TabView } from '../utils/tabView';
 import { useWallet } from '../services/WalletContext';
 import { Settings, Lock, X, Activity, Server, Database } from './Icons';
 import { isDesktop } from '../utils/device';
+import salLogo from '../assets/img/salvium.png';
 
 const isDesktopOnly = isDesktop;
 
@@ -26,6 +27,7 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
         wallet.scanHealth.committed &&
         wallet.scanHealth.cacheCommitted &&
         wallet.scanHealth.balanceTrusted &&
+        wallet.stats.isBalanceReady &&
         !wallet.scanHealth.repairRequired &&
         hasDaemonHeight &&
         wallet.scanHealth.currentHeight >= wallet.syncStatus.daemonHeight;
@@ -56,7 +58,7 @@ export const MobileHeader: React.FC<MobileHeaderProps> = ({ activeTab, onNavigat
             >
                 <div className="mobile-brand flex items-center">
                     <img
-                        src="/assets/img/salvium.png"
+                        src={salLogo}
                         alt="Salvium"
                         className="mobile-brand-logo shrink-0"
                     />

@@ -14,7 +14,7 @@ function createWorkerContext(moduleMock: Record<string, unknown>, options: Recor
     self: {
       postMessage: vi.fn(),
       location: {
-        href: 'blob:https://vault.salvium.tools/worker',
+        href: 'https://vault.salvium.tools/wallet/csp-scanner.worker.js',
         origin: 'https://vault.salvium.tools',
       },
     },
@@ -54,13 +54,8 @@ describe('csp-scanner.worker routing', () => {
     expect(postMessage).toHaveBeenCalledWith({ type: 'NEED_WASM', reason: 'boot' });
   });
 
-  it('loads raw glue with importScripts while pthread creation is suppressed', async () => {
+  it('loads raw glue with importScripts using the single-threaded runtime', async () => {
     const context = createWorkerContext({});
-    const originalWorker = vi.fn();
-    const originalCreateObjectURL = vi.fn(() => 'blob:original');
-    class WorkerURL extends URL {
-      static createObjectURL = originalCreateObjectURL;
-    }
     const runtimeModule = {
       get_version: vi.fn(() => 'test-runtime'),
       scan_csp_batch: vi.fn(),
@@ -70,12 +65,9 @@ describe('csp-scanner.worker routing', () => {
     let factoryOptions: Record<string, unknown> | null = null;
     const factory = vi.fn(async (options: Record<string, unknown>) => {
       factoryOptions = options;
-      expect((context as any).self.Worker).not.toBe(originalWorker);
-      expect((context as any).URL.createObjectURL()).toBe('blob:disabled');
       return runtimeModule;
     });
     Object.assign(context as any, {
-      URL: WorkerURL,
       WebAssembly: {
         compile: vi.fn(async () => ({ compiled: true })),
         instantiate: vi.fn(async () => ({ exports: {} })),
@@ -84,8 +76,6 @@ describe('csp-scanner.worker routing', () => {
         (context as any).SalviumWallet = factory;
       }),
     });
-    (context as any).self.Worker = originalWorker;
-
     await vm.runInContext(`handleLoadWasm({
       wasmBinary: new ArrayBuffer(8),
       glueUrl: '/api/wasm/version/SalviumWallet.js',
@@ -94,8 +84,7 @@ describe('csp-scanner.worker routing', () => {
 
     expect((context as any).importScripts).toHaveBeenCalledWith('/api/wasm/version/SalviumWallet.js');
     expect(factoryOptions).toMatchObject({ PTHREAD_POOL_SIZE: 0, PTHREAD_POOL_SIZE_STRICT: 0 });
-    expect((context as any).self.Worker).toBe(originalWorker);
-    expect((context as any).URL.createObjectURL).toBe(originalCreateObjectURL);
+    expect(readFileSync(path.resolve(process.cwd(), 'wallet/csp-scanner.worker.js'), 'utf8')).not.toContain('createObjectURL');
     expect((context as any).self.postMessage).toHaveBeenCalledWith(expect.objectContaining({
       type: 'READY',
       version: 'test-runtime',
@@ -187,7 +176,7 @@ describe('csp-scanner.worker routing', () => {
     }));
   });
 
-  it('resolves root-relative fetches against the owning origin for blob workers', () => {
+  it('resolves root-relative fetches against the owning worker origin', () => {
     const context = createWorkerContext({});
 
     const url = vm.runInContext(
@@ -196,18 +185,6 @@ describe('csp-scanner.worker routing', () => {
     );
 
     expect(url).toBe('https://vault.salvium.tools/api/csp-cached?start_height=497000&count=1000');
-  });
-
-  it('falls back to parsing the blob URL when WorkerLocation origin is null', () => {
-    const context = createWorkerContext({});
-
-    const url = vm.runInContext(`
-      apiBaseUrl = '';
-      self.location = { href: 'blob:https://vault.salvium.tools/6f1d', origin: 'null' };
-      resolveFetchUrl('/api/csp-batch?start_height=497000&chunks=1');
-    `, context);
-
-    expect(url).toBe('https://vault.salvium.tools/api/csp-batch?start_height=497000&chunks=1');
   });
 
   it('normalizes an explicit API base URL before worker fetches', () => {

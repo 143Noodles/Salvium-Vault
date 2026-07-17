@@ -4,21 +4,14 @@ import vm from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 
 describe('seed-validator worker glue loading', () => {
-  it('uses importScripts with pthread suppression and never fetches glue text', async () => {
+  it('uses importScripts with the single-threaded glue and never fetches glue text', async () => {
     const source = readFileSync(path.resolve(process.cwd(), 'wallet/seed-validator.worker.js'), 'utf8');
-    const originalWorker = vi.fn();
-    const originalCreateObjectURL = vi.fn(() => 'blob:original');
-    class WorkerURL extends URL {
-      static createObjectURL = originalCreateObjectURL;
-    }
     const fetch = vi.fn();
     let factoryOptions: Record<string, unknown> | null = null;
     let context: vm.Context;
     const module = { WasmWallet: class {} };
     const factory = vi.fn(async (options: Record<string, unknown>) => {
       factoryOptions = options;
-      expect((context as any).self.Worker).not.toBe(originalWorker);
-      expect((context as any).URL.createObjectURL()).toBe('blob:disabled');
       return module;
     });
     const importedUrls: string[] = [];
@@ -27,7 +20,7 @@ describe('seed-validator worker glue loading', () => {
       Error,
       Promise,
       String,
-      URL: WorkerURL,
+      URL,
       console,
       fetch,
       importScripts: (url: string) => {
@@ -37,7 +30,6 @@ describe('seed-validator worker glue loading', () => {
       self: {
         location: { href: 'https://vault.salvium.tools/wallet/seed-validator.worker.js', protocol: 'https:' },
         postMessage: vi.fn(),
-        Worker: originalWorker,
         SalviumWasmFeatures: { selectVariant: () => 'simd' },
       },
     });
@@ -54,7 +46,7 @@ describe('seed-validator worker glue loading', () => {
     expect(importedUrls).toContain('/api/wasm/version/SalviumWallet.js');
     expect(fetch).not.toHaveBeenCalled();
     expect(factoryOptions).toMatchObject({ PTHREAD_POOL_SIZE: 0, PTHREAD_POOL_SIZE_STRICT: 0 });
-    expect((context as any).self.Worker).toBe(originalWorker);
-    expect((context as any).URL.createObjectURL).toBe(originalCreateObjectURL);
+    expect(source).not.toContain('createObjectURL');
+    expect(source).not.toContain('self.Worker =');
   });
 });

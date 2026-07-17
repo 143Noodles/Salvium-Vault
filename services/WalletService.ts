@@ -20,6 +20,10 @@ import { WorkerEngine, guardEngineSurface } from './walletWorker/WorkerEngine';
 import { DirectEngine } from './walletWorker/DirectEngine';
 
 const DEBUG = false;
+// Bump this whenever the native proof semantics change. Equality is deliberate:
+// a downgraded client must not silently trust a cache produced under a future
+// proof contract that it does not understand.
+const CURRENT_OUTPUT_OWNERSHIP_VALIDATION_VERSION = 2;
 
 function isNativeAuditEnabled(): boolean {
   if (typeof window === 'undefined') {
@@ -317,6 +321,26 @@ export interface SyncStatus {
   isSyncing: boolean;
   progress: number;
   scanStartHeight?: number;
+}
+
+export interface OutputOwnershipRevalidationResult {
+  success: boolean;
+  supported: boolean;
+  requested: number;
+  candidateOutputs: number;
+  stored: number;
+  evaluated: number;
+  matched: number;
+  ordinaryMatched: number;
+  returnMatched: number;
+  returnDecryptedMatched: number;
+  returnOpeningMatched: number;
+  returnProtocolMatched: number;
+  returnIncomplete: number;
+  neutralized: number;
+  amountMismatches: number;
+  incomplete: number;
+  error?: string;
 }
 
 interface SeedValidationResult {
@@ -7367,6 +7391,7 @@ export class WalletService {
 
   async importOutputs(outputs_hex: string): Promise<number> {
     this.invalidateStateSnapshot();
+    this.importedOutputOwnershipRevalidated = false;
     if (!this.isWalletReadySync()) {
       return -1;
     }
@@ -7418,6 +7443,7 @@ export class WalletService {
 
   async importWalletCache(cache_hex: string, minTransfers: number = 1): Promise<boolean> {
     this.invalidateStateSnapshot();
+    this.importedOutputOwnershipRevalidated = false;
     if (!this.isWalletReadySync()) {
       return false;
     }
@@ -7456,6 +7482,8 @@ export class WalletService {
         const accepted = transfers >= Math.max(0, minTransfers);
         if (accepted) {
           this.resetCachedNativeReads();
+          this.importedOutputOwnershipRevalidated =
+            Number(result.output_ownership_validation_version || 0) === CURRENT_OUTPUT_OWNERSHIP_VALIDATION_VERSION;
         }
         return accepted;
       } else {
@@ -7495,6 +7523,7 @@ export class WalletService {
     this.healOutgoingHistoryPromise = null;
     this._lastHydrationAt = 0;
     this.attemptedRuntimeFullTxHashes.clear();
+    this.importedOutputOwnershipRevalidated = false;
   }
 
   private async _healOutgoingHistoryInner(): Promise<number> {
@@ -8619,6 +8648,7 @@ export class WalletService {
   }
 
   private _hydrationInFlight: Promise<{ requested: number; hydrated: number }> | null = null;
+  private _outputOwnershipRevalidationInFlight: Promise<OutputOwnershipRevalidationResult> | null = null;
   private _lastHydrationAt = 0;
   private _lastHydrationResult: { requested: number; hydrated: number } = { requested: 0, hydrated: 0 };
   // opts.force: retry even hashes that already failed this session (used by the send path,
@@ -8628,6 +8658,9 @@ export class WalletService {
   // continuous fetch+ingest grinder (measured live: 4+ minutes of main-thread WASM per page load,
   // re-triggered all session). force bypasses the attempted-hash filter, NOT the cooldown.
   async hydrateRuntimeFullTxContext(opts?: { force?: boolean }): Promise<{ requested: number; hydrated: number }> {
+    if (this._outputOwnershipRevalidationInFlight) {
+      await this._outputOwnershipRevalidationInFlight.catch(() => undefined);
+    }
     if (this._hydrationInFlight) return this._hydrationInFlight;
     if (Date.now() - this._lastHydrationAt < 60000) {
       return this._lastHydrationResult;
@@ -8805,6 +8838,249 @@ export class WalletService {
     }
 
     return { requested, hydrated };
+  }
+
+  /**
+   * Revalidate every positive unspent output imported from an older wallet cache
+   * against transaction bytes freshly supplied by the daemon. Ordinary outputs
+   * use the production incoming scanner; PROTOCOL/RETURN outputs use the canonical
+   * return-enote context and wallet opening proof. Only a complete ordinary-scan
+   * rejection may be neutralized. Incomplete evidence and amount disagreements
+   * fail closed and leave the cache untouched.
+   */
+  revalidateImportedOutputOwnership(): Promise<OutputOwnershipRevalidationResult> {
+    if (this._outputOwnershipRevalidationInFlight) {
+      return this._outputOwnershipRevalidationInFlight;
+    }
+
+    const run = this._revalidateImportedOutputOwnershipInner();
+    this._outputOwnershipRevalidationInFlight = run.finally(() => {
+      this._outputOwnershipRevalidationInFlight = null;
+    });
+    return this._outputOwnershipRevalidationInFlight;
+  }
+
+  private async _revalidateImportedOutputOwnershipInner(): Promise<OutputOwnershipRevalidationResult> {
+    const emptyResult = (overrides: Partial<OutputOwnershipRevalidationResult> = {}): OutputOwnershipRevalidationResult => ({
+      success: false,
+      supported: true,
+      requested: 0,
+      candidateOutputs: 0,
+      stored: 0,
+      evaluated: 0,
+      matched: 0,
+      ordinaryMatched: 0,
+      returnMatched: 0,
+      returnDecryptedMatched: 0,
+      returnOpeningMatched: 0,
+      returnProtocolMatched: 0,
+      returnIncomplete: 0,
+      neutralized: 0,
+      amountMismatches: 0,
+      incomplete: 0,
+      ...overrides,
+    });
+
+    if (!this.isWalletReadySync()) {
+      return emptyResult({ error: 'Wallet not initialized' });
+    }
+
+    if (this._hydrationInFlight) {
+      await this._hydrationInFlight.catch(() => undefined);
+    }
+
+    const walletAddress = this.getAddress();
+    let revalidationStarted = false;
+    const startedAt = Date.now();
+    try {
+      const beginJson = await this.engineCallOptional<string>(
+        'begin_output_ownership_revalidation',
+        [],
+        { timeoutMs: 120000 }
+      );
+      if (beginJson === null) {
+        return emptyResult({
+          supported: false,
+          error: 'Output ownership revalidation unavailable in this WASM build',
+        });
+      }
+      // A supported begin call arms the native revalidation session even if its
+      // response is malformed. Cancel in finally unless repair consumes it.
+      revalidationStarted = true;
+      const begin = safeJsonParse<any>(beginJson, null, 'begin_output_ownership_revalidation');
+      const hashes = Array.isArray(begin?.hashes)
+        ? Array.from(new Set(begin.hashes.filter(
+            (hash: unknown): hash is string => typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash)
+          )))
+        : [];
+      const candidateOutputs = Number(begin?.candidate_outputs);
+      const invalidCandidates = Number(begin?.invalid_candidates);
+      if (begin?.success !== true || hashes.length !== Number(begin?.count) ||
+          !Number.isSafeInteger(candidateOutputs) || candidateOutputs < 0 ||
+          invalidCandidates !== 0 || candidateOutputs < hashes.length) {
+        return emptyResult({ error: begin?.error || 'Invalid output revalidation candidate set' });
+      }
+      let stored = 0;
+      const BATCH_SIZE = 100;
+      for (let offset = 0; offset < hashes.length; offset += BATCH_SIZE) {
+        if (!this.isWalletReadySync() || this.getAddress() !== walletAddress) {
+          throw new Error('Wallet changed during output ownership revalidation');
+        }
+        const batch = hashes.slice(offset, offset + BATCH_SIZE);
+        const response = await fetchWithTimeout('/api/wallet/get-transactions-by-hash', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hashes: batch, require_canonical: true }),
+        }, 60000);
+        if (!response.ok) {
+          throw new Error(`Output revalidation fetch failed (HTTP ${response.status})`);
+        }
+        if (response.headers.get('X-Canonical-Verified') !== 'true') {
+          throw new Error('Output revalidation response did not prove canonical membership');
+        }
+
+        const sparseData = new Uint8Array(await response.arrayBuffer());
+        const cacheJson = await this.engine!.op<string>(
+          'cacheRuntimeFullTxsFromSparse',
+          { buffer: sparseData, deferDerived: true },
+          { transfer: [sparseData.buffer], timeoutMs: 120000 }
+        );
+        const cached = safeJsonParse<any>(cacheJson, null, 'output ownership sparse cache');
+        const batchStored = Number(cached?.stored || 0);
+        if (cached?.success !== true || batchStored !== batch.length) {
+          throw new Error(
+            `Output revalidation received ${batchStored}/${batch.length} canonical transaction(s)`
+          );
+        }
+        stored += batchStored;
+      }
+
+      if (!this.isWalletReadySync() || this.getAddress() !== walletAddress) {
+        throw new Error('Wallet changed during output ownership revalidation');
+      }
+      const repairJson = await this.engineCallOptional<string>(
+        'repair_stale_output_ownership',
+        [],
+        { timeoutMs: 120000 }
+      );
+      if (repairJson === null) {
+        throw new Error('Output ownership repair unavailable in this WASM build');
+      }
+      revalidationStarted = false;
+      const repair = safeJsonParse<any>(repairJson, null, 'repair_stale_output_ownership');
+      const repairEvaluated = Number(repair?.evaluated);
+      const repairCandidateOutputs = Number(repair?.candidate_outputs);
+      const repairMatched = Number(repair?.matched);
+      const repairOrdinaryMatched = Number(repair?.ordinary_matched);
+      const repairReturnMatched = Number(repair?.return_matched);
+      const repairReturnDecryptedMatched = Number(repair?.return_decrypted_matched);
+      const repairReturnOpeningMatched = Number(repair?.return_opening_matched);
+      const repairReturnProtocolMatched = Number(repair?.return_protocol_matched);
+      const repairReturnIncomplete = Number(repair?.return_incomplete);
+      const repairNeutralized = Number(repair?.neutralized);
+      const repairAmountMismatches = Number(repair?.amount_mismatches);
+      const repairIncomplete = Number(repair?.incomplete);
+      const repairCounts = [
+        repairEvaluated,
+        repairCandidateOutputs,
+        repairMatched,
+        repairOrdinaryMatched,
+        repairReturnMatched,
+        repairReturnDecryptedMatched,
+        repairReturnOpeningMatched,
+        repairReturnProtocolMatched,
+        repairReturnIncomplete,
+        repairNeutralized,
+        repairAmountMismatches,
+        repairIncomplete,
+      ];
+      const repairShapeValid = repairCounts.every(
+        value => Number.isSafeInteger(value) && value >= 0
+      ) && repairCandidateOutputs === candidateOutputs &&
+        repairEvaluated === candidateOutputs && repair?.candidate_count_matches === true &&
+        repairOrdinaryMatched + repairReturnMatched === repairMatched &&
+        repairReturnDecryptedMatched + repairReturnOpeningMatched +
+          repairReturnProtocolMatched === repairReturnMatched &&
+        repairReturnIncomplete <= repairIncomplete &&
+        repairMatched + repairNeutralized + repairAmountMismatches + repairIncomplete === repairEvaluated;
+      const result = emptyResult({
+        success: repair?.success === true && repairShapeValid,
+        requested: hashes.length,
+        candidateOutputs,
+        stored,
+        evaluated: Number.isSafeInteger(repairEvaluated) ? repairEvaluated : 0,
+        matched: Number.isSafeInteger(repairMatched) ? repairMatched : 0,
+        ordinaryMatched: Number.isSafeInteger(repairOrdinaryMatched) ? repairOrdinaryMatched : 0,
+        returnMatched: Number.isSafeInteger(repairReturnMatched) ? repairReturnMatched : 0,
+        returnDecryptedMatched: Number.isSafeInteger(repairReturnDecryptedMatched) ? repairReturnDecryptedMatched : 0,
+        returnOpeningMatched: Number.isSafeInteger(repairReturnOpeningMatched) ? repairReturnOpeningMatched : 0,
+        returnProtocolMatched: Number.isSafeInteger(repairReturnProtocolMatched) ? repairReturnProtocolMatched : 0,
+        returnIncomplete: Number.isSafeInteger(repairReturnIncomplete) ? repairReturnIncomplete : 0,
+        neutralized: Number.isSafeInteger(repairNeutralized) ? repairNeutralized : 0,
+        amountMismatches: Number.isSafeInteger(repairAmountMismatches) ? repairAmountMismatches : 0,
+        incomplete: Number.isSafeInteger(repairIncomplete) ? repairIncomplete : 0,
+        ...(repair?.error ? { error: String(repair.error) } : {}),
+      });
+      if (!result.success || result.amountMismatches > 0 || result.incomplete > 0) {
+        return {
+          ...result,
+          success: false,
+          error: result.error || (!repairShapeValid
+            ? 'Invalid output ownership repair result'
+            : `Output revalidation incomplete (amount mismatches=${result.amountMismatches}, incomplete=${result.incomplete})`),
+        };
+      }
+
+      const flushJson = await this.engine!.op<string>(
+        'flushDerivedState',
+        {},
+        { timeoutMs: 120000 }
+      );
+      const flush = typeof flushJson === 'string'
+        ? safeJsonParse<any>(flushJson, null, 'output ownership flush')
+        : flushJson;
+      if (flush?.success === false) {
+        throw new Error(`Output ownership flush failed: ${flush.error || 'unknown error'}`);
+      }
+      this.resetCachedNativeReads();
+      await this.refreshMirror();
+      this.importedOutputOwnershipRevalidated = true;
+
+      reportClientEvent('wallet.output_ownership_revalidated', {
+        level: result.neutralized > 0 ? 'warn' : 'info',
+        message: result.neutralized > 0 ? 'Stale imported wallet outputs repaired' : undefined,
+        context: {
+          requested: result.requested,
+          candidateOutputs: result.candidateOutputs,
+          stored: result.stored,
+          evaluated: result.evaluated,
+          matched: result.matched,
+          ordinaryMatched: result.ordinaryMatched,
+          returnMatched: result.returnMatched,
+          returnDecryptedMatched: result.returnDecryptedMatched,
+          returnOpeningMatched: result.returnOpeningMatched,
+          returnProtocolMatched: result.returnProtocolMatched,
+          returnIncomplete: result.returnIncomplete,
+          neutralized: result.neutralized,
+          durationMs: Date.now() - startedAt,
+        },
+      });
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reportClientEvent('wallet.output_ownership_revalidation_failed', {
+        level: 'error',
+        message,
+        context: { durationMs: Date.now() - startedAt },
+      });
+      return emptyResult({ error: message });
+    } finally {
+      if (revalidationStarted) {
+        try {
+          await this.engineCallOptional('cancel_output_ownership_revalidation', []);
+        } catch {}
+      }
+    }
   }
 
   async getMempoolTxInfo(txBlobHex: string): Promise<any> {
@@ -9021,15 +9297,10 @@ export class WalletService {
       .test(String(message || ''));
   }
 
-  private hasSatisfiedRuntimeFullTxHydration(): boolean {
-    const hydration = this.lastRuntimeFullTxHydration;
-    if (!hydration.attempted || hydration.error) {
-      return false;
-    }
-    if (hydration.requested > 0) {
-      return hydration.hydrated >= hydration.requested;
-    }
-    return hydration.candidateCount === 0;
+  private importedOutputOwnershipRevalidated = false;
+
+  hasRevalidatedImportedOutputOwnership(): boolean {
+    return this.importedOutputOwnershipRevalidated;
   }
 
   private reconcileReturnMetadataHealth<T extends Record<string, any>>(health: T): T {
@@ -9037,7 +9308,7 @@ export class WalletService {
       return health;
     }
 
-    if (!this.hasSatisfiedRuntimeFullTxHydration()) {
+    if (!this.importedOutputOwnershipRevalidated) {
       return health;
     }
 

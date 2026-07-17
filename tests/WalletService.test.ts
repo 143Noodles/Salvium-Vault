@@ -1625,8 +1625,10 @@ describe('WalletService', () => {
     afterEach(() => {
       const service = WalletService.getInstance() as unknown as {
         walletInstance: unknown;
+        importedOutputOwnershipRevalidated: boolean;
       };
       service.walletInstance = null;
+      service.importedOutputOwnershipRevalidated = false;
     });
 
     it('should parse check_wallet_health JSON', async () => {
@@ -1643,9 +1645,10 @@ describe('WalletService', () => {
       expect(result).toEqual({ success: true, healthy: false, issue_count: 1 });
     });
 
-    it('trusts return metadata health after runtime full-tx hydration succeeds', async () => {
+    it('trusts narrow return metadata health only after canonical output-ownership revalidation', async () => {
       const service = WalletService.getInstance() as unknown as {
         walletInstance: unknown;
+        importedOutputOwnershipRevalidated: boolean;
         lastRuntimeFullTxHydration: {
           attempted: boolean;
           requested: number;
@@ -1661,6 +1664,7 @@ describe('WalletService', () => {
         candidateCount: 2,
         error: null,
       };
+      service.importedOutputOwnershipRevalidated = true;
       service.walletInstance = {
         check_wallet_health: () =>
           JSON.stringify({
@@ -1684,7 +1688,7 @@ describe('WalletService', () => {
       });
     });
 
-    it('does not trust return metadata health before hydration runs', async () => {
+    it('does not trust return metadata health from hydration alone', async () => {
       const service = WalletService.getInstance() as unknown as {
         walletInstance: unknown;
         lastRuntimeFullTxHydration: {
@@ -1696,10 +1700,10 @@ describe('WalletService', () => {
         };
       };
       service.lastRuntimeFullTxHydration = {
-        attempted: false,
-        requested: 0,
-        hydrated: 0,
-        candidateCount: 0,
+        attempted: true,
+        requested: 2,
+        hydrated: 2,
+        candidateCount: 2,
         error: null,
       };
       service.walletInstance = {

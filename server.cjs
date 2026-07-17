@@ -14,6 +14,7 @@ const {
     relaySalPayCallback,
 } = require('./utils/salpayRelay.cjs');
 const { buildContentSecurityPolicy, uaSupportsModernCsp } = require('./utils/cspPolicy.cjs');
+const { fetchCanonicalTransactionHashes } = require('./utils/canonicalTxMembership.cjs');
 const { registerMiningRoutes } = require('./services/minerManager.cjs');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const isRender = process.env.RENDER === 'true';
@@ -569,8 +570,8 @@ function redactClientTelemetryText(value, maxLength = CLIENT_EVENT_MAX_MESSAGE_L
     return String(value || '')
         .replace(/https?:\/\/[^\s"'<>]+/gi, '[redacted-url]')
         .replace(/\b[0-9a-fA-F]{32,}\b/g, '[redacted-hex]')
-        .replace(/\b(?:sal|svm|s)[1-9A-HJ-NP-Za-km-z]{35,}\b/g, '[redacted-address]')
-        .replace(/\b(balance|unlockedBalance|balanceSAL|unlockedBalanceSAL|amount|stake|snapshot|lifecycle|atomic|payment_id|paymentId)\s*[:=]\s*-?\w+(?:\.\w+)?\b/gi, '$1=[redacted]')
+        .replace(/\b(?:sc1|sal|svm|s)[1-9A-HJ-NP-Za-km-z]{35,}\b/gi, '[redacted-address]')
+        .replace(/\b([\w.]*(?:balance|unlocked|locked_coins|coins_total|atomic|snapshot|amount|stake|lifecycle)[\w.]*)\s*[:=]\s*-?\d[\d.,eE+-]*/gi, '$1=[redacted]')
         .replace(/\b(?:seed|mnemonic|private[_ -]?key|secret[_ -]?key|spend[_ -]?key|view[_ -]?key)\b\s*[:=]?\s*[^\n,;)]+/gi, '[redacted-sensitive]')
         .replace(/\b(?:address|txid|tx_hash|key_image|payment_id)\b\s*[:=]\s*[^\n,;)]+/gi, '[redacted-sensitive]')
         .slice(0, maxLength);
@@ -726,6 +727,8 @@ function sanitizeClientTelemetryContext(context) {
     if (!context || typeof context !== 'object' || Array.isArray(context)) return safe;
     for (const [key, value] of Object.entries(context).slice(0, CLIENT_EVENT_MAX_CONTEXT_KEYS)) {
         if (!allowedKeys.has(key)) continue;
+        if (/(?:balance|unlocked|spendable|atomic|amount)/i.test(key) ||
+            (/^diag/i.test(key) && /(?:total|largestInput|lockedStake|confirmedSkippedType)/i.test(key))) continue;
         if (typeof value === 'number') {
             safe[key] = Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
         } else if (typeof value === 'boolean' || value === null) {
@@ -1128,7 +1131,7 @@ const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19081';
 const GLOBAL_DAEMON_BASE_URL = GLOBAL_DAEMON_URL.replace(/\/$/, '');
 const DEFAULT_WASM_BASENAME = 'SalviumWallet';
 const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c';
-const SALVIUM_WASM_RUNTIME_BUILD = '5.54.8-hf13-v113c-assetrefs-20260710';
+const SALVIUM_WASM_RUNTIME_BUILD = '5.54.10-hf14-v113c-outputproof7-encodingdispatch-20260716';
 const SALVIUM_WASM_BASENAME = String(process.env.SALVIUM_WASM_BASENAME || inferWasmBasenameFromNetwork(SALVIUM_NETWORK))
     .replace(/\.(js|wasm)$/i, '')
     .replace(/\.worker$/i, '') || inferWasmBasenameFromNetwork(SALVIUM_NETWORK);
@@ -1999,8 +2002,7 @@ function resolveConfiguredWasmFilename(requestedFilename) {
         'SalviumWallet.wasm',
         'SalviumWallet.js',
         'SalviumWalletBaseline.wasm',
-        'SalviumWalletBaseline.js',
-        'SalviumWallet.worker.js'
+        'SalviumWalletBaseline.js'
     ]);
     if (!allowedFiles.has(requestedFilename)) {
         return null;
@@ -2131,8 +2133,7 @@ function getConfiguredWasmAssetVersion() {
         ['js', getConfiguredWasmAssetInfo('SalviumWallet.js')],
         ['wasm', getConfiguredWasmAssetInfo('SalviumWallet.wasm')],
         ['baseline-js', getConfiguredWasmAssetInfo('SalviumWalletBaseline.js')],
-        ['baseline-wasm', getConfiguredWasmAssetInfo('SalviumWalletBaseline.wasm')],
-        ['worker', getConfiguredWasmAssetInfo('SalviumWallet.worker.js')]
+        ['baseline-wasm', getConfiguredWasmAssetInfo('SalviumWalletBaseline.wasm')]
     ];
     return descriptors
         .filter(([, asset]) => !!asset)
@@ -5383,10 +5384,17 @@ function parseRuntimeConstant(source, name) {
 }
 
 function getCspEvalFreeRuntimeDescriptor() {
-    if (cspEvalFreeRuntimeDescriptorCache) return cspEvalFreeRuntimeDescriptorCache;
     try {
-        const indexHtml = fsSync.readFileSync(path.join(__dirname, 'dist', 'index.html'), 'utf8');
-        const swSource = fsSync.readFileSync(path.join(__dirname, 'dist', 'sw.js'), 'utf8');
+        const indexPath = path.join(__dirname, 'dist', 'index.html');
+        const swPath = path.join(__dirname, 'dist', 'sw.js');
+        const indexStat = fsSync.statSync(indexPath);
+        const swStat = fsSync.statSync(swPath);
+        const cacheKey = `${indexStat.size}:${indexStat.mtimeMs}:${swStat.size}:${swStat.mtimeMs}`;
+        if (cspEvalFreeRuntimeDescriptorCache?.cacheKey === cacheKey) {
+            return cspEvalFreeRuntimeDescriptorCache.descriptor;
+        }
+        const indexHtml = fsSync.readFileSync(indexPath, 'utf8');
+        const swSource = fsSync.readFileSync(swPath, 'utf8');
         const bundleMatch = indexHtml.match(/\/assets\/(vault-[^"'?]+\.js)/);
         const bundleId = bundleMatch ? bundleMatch[1] : null;
         const swBuildId = parseRuntimeConstant(swSource, 'SW_BUILD_ID');
@@ -5397,13 +5405,14 @@ function getCspEvalFreeRuntimeDescriptor() {
         const generation = crypto.createHash('sha256')
             .update(`${bundleId}\n${swBuildId}\n${wasmVersion}`, 'utf8')
             .digest('hex');
-        cspEvalFreeRuntimeDescriptorCache = Object.freeze({
+        const descriptor = Object.freeze({
             generation,
             bundleId,
             swBuildId,
             wasmVersion,
         });
-        return cspEvalFreeRuntimeDescriptorCache;
+        cspEvalFreeRuntimeDescriptorCache = { cacheKey, descriptor };
+        return descriptor;
     } catch {
         return null;
     }
@@ -6320,13 +6329,13 @@ app.use((req, res, next) => {
     nonce,
     { modernMode }
   ));
-  if (modernUa && isCspVariantSensitiveRequest(req)) {
-    // The bridge and strict worker policies must never share a browser/CDN cache
-    // entry. Bridge worker responses are also kept out of long-lived caches below.
+  if (isCspVariantSensitiveRequest(req)) {
+    // Legacy, bridge, and strict worker/document policies must never share a
+    // browser/CDN cache entry. Make every policy-bearing executable response
+    // private and non-cacheable; a legacy response without Vary would otherwise
+    // be able to seed a shared cache with the unsafe-eval compatibility policy.
     appendVaryHeader(res, ['User-Agent', 'Cookie']);
-    if (!strictReady) {
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    }
+    res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate, proxy-revalidate');
   }
   next();
 });
@@ -7672,7 +7681,6 @@ app.get('/api/wasm-info', noCacheHeaders, (req, res) => {
         const jsInfo = getConfiguredWasmAssetInfo('SalviumWallet.js');
         const baselineWasmInfo = getConfiguredWasmAssetInfo('SalviumWalletBaseline.wasm');
         const baselineJsInfo = getConfiguredWasmAssetInfo('SalviumWalletBaseline.js');
-        const workerInfo = getConfiguredWasmAssetInfo('SalviumWallet.worker.js');
 
         let serverBuildId = null;
         let serverRuntimeVersion = null;
@@ -7707,7 +7715,6 @@ app.get('/api/wasm-info', noCacheHeaders, (req, res) => {
                     ? { wasm: baselineWasmInfo, js: baselineJsInfo }
                     : null
             },
-            worker: workerInfo,
             serverBuildId,
             serverRuntimeVersion,
             serverWasmLoaded: !!wasmModule
@@ -11052,18 +11059,21 @@ const SALVIUM_DESKTOP_SIDECAR = process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1';
 // so stamping unconditionally is safe for both variants.
 let indexHtmlTemplateCache = null;
 function getIndexHtmlTemplate() {
-    if (!indexHtmlTemplateCache) {
-        let html = fsSync.readFileSync(path.join(__dirname, 'dist', 'index.html'), 'utf8');
+    const indexPath = path.join(__dirname, 'dist', 'index.html');
+    const stat = fsSync.statSync(indexPath);
+    const cacheKey = `${stat.size}:${stat.mtimeMs}`;
+    if (!indexHtmlTemplateCache || indexHtmlTemplateCache.cacheKey !== cacheKey) {
+        let html = fsSync.readFileSync(indexPath, 'utf8');
         html = html.replace(/<script(?![^>]*\bnonce=)/g, '<script nonce="__CSP_NONCE__"');
         if (SALVIUM_DESKTOP_SIDECAR) {
             html = html.replace('<head>', '<head><script nonce="__CSP_NONCE__">window.__SALVIUM_DESKTOP__=true;</script>');
         }
-        indexHtmlTemplateCache = html;
+        indexHtmlTemplateCache = { cacheKey, html };
     }
-    return indexHtmlTemplateCache;
+    return indexHtmlTemplateCache.html;
 }
 function serveIndexHtml(req, res) {
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate, proxy-revalidate');
     try {
         const nonce = (res.locals && res.locals.cspNonce) || '';
         res.type('html').send(getIndexHtmlTemplate().split('__CSP_NONCE__').join(nonce));
@@ -11144,18 +11154,8 @@ app.get([
     '/wallet/SalviumWallet.js', '/wallet/SalviumWallet.wasm', '/wallet/SalviumWalletBaseline.js', '/wallet/SalviumWalletBaseline.wasm', '/wallet/SalviumWallet.worker.js',
     '/vault/wallet/SalviumWallet.js', '/vault/wallet/SalviumWallet.wasm', '/vault/wallet/SalviumWalletBaseline.js', '/vault/wallet/SalviumWalletBaseline.wasm', '/vault/wallet/SalviumWallet.worker.js'
 ], rejectNonCanonicalWasmAsset);
-// Mirrors sendConfiguredWasmAsset: versioned (?v=) requests (e.g. CSPScanner.js?v=..., csp-scanner.worker.js?v=...) are immutable-cacheable; unversioned stay no-store.
-const walletStaticHashCache = new Map();
-function getWalletStaticFileSha256(filePath) {
-    const stat = fsSync.statSync(filePath);
-    const cached = walletStaticHashCache.get(filePath);
-    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
-        return cached.sha256;
-    }
-    const sha256 = crypto.createHash('sha256').update(fsSync.readFileSync(filePath)).digest('hex');
-    walletStaticHashCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, sha256 });
-    return sha256;
-}
+// Main worker scripts carry their own CSP response policy, so even exact-hash
+// URLs remain private/no-store across legacy, bridge, and strict policy tiers.
 function walletStaticSetHeaders(res, filePath) {
     if (filePath.endsWith('.wasm')) {
         res.setHeader('Content-Type', 'application/wasm');
@@ -11164,28 +11164,9 @@ function walletStaticSetHeaders(res, filePath) {
     } else {
         return;
     }
-    // A worker is immutable only when its URL carries the exact hash of the bytes being served.
-    // Other worker URLs still use broader app/WASM versions and therefore remain no-store: making
-    // those immutable would recreate the stale-worker cache-poisoning failure mode.
+    // Never persist policy-bearing worker responses in a browser or shared cache.
     if (filePath.endsWith('.worker.js') || path.basename(filePath).toLowerCase() === 'cspscanner.js') {
-        if (res.locals && res.locals.cspMode === 'bridge') {
-            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-            res.setHeader('Pragma', 'no-cache');
-            res.setHeader('Expires', '0');
-            res.setHeader('Surrogate-Control', 'no-store');
-            return;
-        }
-        const v = res.req && res.req.query ? res.req.query.v : undefined;
-        if (typeof v === 'string' && /^[a-f0-9]{64}$/.test(v)) {
-            try {
-                if (getWalletStaticFileSha256(filePath) === v) {
-                    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-                    return;
-                }
-            } catch (_) {
-            }
-        }
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate, proxy-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
         res.setHeader('Surrogate-Control', 'no-store');
@@ -11225,7 +11206,6 @@ const PUBLIC_WALLET_RUNTIME_FILES = new Set([
     'SalviumWallet.wasm',
     'SalviumWalletBaseline.js',
     'SalviumWalletBaseline.wasm',
-    'SalviumWallet.worker.js',
     'wasm-feature-detect.js',
     'csp-scanner.worker.js',
     'heartbeat.worker.js',
@@ -13188,17 +13168,23 @@ app.post(['/api/wallet/sparse-by-heights', '/vault/api/wallet/sparse-by-heights'
 
 app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transactions-by-hash'], express.json({ limit: '1mb' }), async (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Expose-Headers', 'X-Tx-Count, X-Canonical-Verified');
 
     try {
-        const { hashes } = req.body;
+        const rawHashes = req.body?.hashes;
+        const requireCanonical = req.body?.require_canonical === true;
 
-        if (!Array.isArray(hashes) || hashes.length === 0) {
+        if (!Array.isArray(rawHashes) || rawHashes.length === 0) {
             return res.status(400).json({ error: 'Invalid request: need hashes array' });
         }
 
-        if (hashes.length > 100) {
+        if (rawHashes.length > 100) {
             return res.status(400).json({ error: 'Too many hashes (max 100)' });
         }
+        if (!rawHashes.every((hash) => typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash))) {
+            return res.status(400).json({ error: 'Invalid transaction hash' });
+        }
+        const hashes = Array.from(new Set(rawHashes.map((hash) => hash.toLowerCase())));
         console.log(`[Sparse By Hash] Fetching ${hashes.length} transactions from daemon`);
 
         const indicesByHash = await fetchTxOutputAndAssetIndices(hashes, { bestEffort: true });
@@ -13212,14 +13198,27 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
                 'Content-Type': 'application/octet-stream',
                 'Content-Length': emptyOutput.length,
                 'Access-Control-Allow-Origin': '*',
-                'X-Tx-Count': 0
+                'Access-Control-Expose-Headers': 'X-Tx-Count, X-Canonical-Verified',
+                'X-Tx-Count': 0,
+                'X-Canonical-Verified': requireCanonical ? 'true' : 'false',
+                'Cache-Control': 'no-store'
             });
             return res.send(emptyOutput);
         }
 
+        const canonicalHashes = requireCanonical
+            ? await fetchCanonicalTransactionHashes(
+                indicesByHash,
+                (height) => rpcCallPrimaryNode('get_block', { height })
+            )
+            : null;
+        if (requireCanonical) {
+            console.log(`[Sparse By Hash] Canonical block membership verified for ${canonicalHashes.size}/${indicesByHash.size} transaction(s)`);
+        }
+
         const heightsNeeded = new Set();
         for (const [hash, info] of indicesByHash) {
-            if (info.block_height) {
+            if ((!canonicalHashes || canonicalHashes.has(hash)) && info.block_height) {
                 heightsNeeded.add(info.block_height);
             }
         }
@@ -13231,9 +13230,13 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
         let txIdx = 0;
 
         for (const hash of hashes) {
-            const info = indicesByHash.get(hash.toLowerCase());
+            const normalizedHash = String(hash || '').toLowerCase();
+            const info = indicesByHash.get(normalizedHash);
             if (!info || !info.tx_blob) {
                 // No per-tx miss logging: avoid leaking tx hashes.
+                continue;
+            }
+            if (canonicalHashes && !canonicalHashes.has(normalizedHash)) {
                 continue;
             }
 
@@ -13242,7 +13245,7 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
             const txBlob = Buffer.isBuffer(info.tx_blob) ? info.tx_blob : Buffer.from(info.tx_blob, 'hex');
             const blockHeight = info.block_height || 0;
             const blockTimestamp = timestamps.get(blockHeight) || Math.floor(Date.now() / 1000);
-            const txHashBuf = Buffer.from(hash, 'hex');
+            const txHashBuf = Buffer.from(normalizedHash, 'hex');
 
             const hashSize = 32;
             const headerSize =
@@ -13304,7 +13307,10 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
             'Content-Type': 'application/octet-stream',
             'Content-Length': output.length,
             'Access-Control-Allow-Origin': '*',
-            'X-Tx-Count': foundCount
+            'Access-Control-Expose-Headers': 'X-Tx-Count, X-Canonical-Verified',
+            'X-Tx-Count': foundCount,
+            'X-Canonical-Verified': requireCanonical ? 'true' : 'false',
+            'Cache-Control': 'no-store'
         });
         res.send(output);
 

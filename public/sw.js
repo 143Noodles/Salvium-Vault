@@ -10,10 +10,10 @@
 
 const SW_BUILD_ID = '__SW_BUILD_ID__'; // replaced at build time by the stamp-sw vite plugin
 const CACHE_VERSION = 'salvium-vault-' + SW_BUILD_ID;
-const WASM_CACHE = 'salvium-wasm-v36';
+const WASM_CACHE = 'salvium-wasm-v37';
 const STATIC_CACHE = 'salvium-static-' + SW_BUILD_ID;
 const API_CACHE = 'salvium-api-' + SW_BUILD_ID;
-const WASM_VERSION = '8.2.22-v113c-no-dynamic-exec-20260716';
+const WASM_VERSION = '8.2.29-v113c-outputproof7-encodingdispatch-20260716';
 
 // Critical assets that must be cached for offline use
 const PRECACHE_ASSETS = [
@@ -377,7 +377,11 @@ async function checkEvalFreeScopeReadiness(sourceClient, data) {
 // Handle messages from main thread
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
-    self.skipWaiting();
+    // Keep the worker alive until activation is committed. Electron/Android can
+    // terminate the message event before an unobserved skipWaiting promise runs,
+    // leaving the verified generation stranded in "waiting" indefinitely.
+    event.waitUntil(self.skipWaiting());
+    return;
   }
 
   if (event.data && event.data.type === 'CLEAR_CACHE') {

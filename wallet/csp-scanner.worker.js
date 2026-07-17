@@ -52,9 +52,6 @@ function getWorkerDefaultOrigin() {
         }
 
         const href = String(location?.href || '');
-        const blobOriginMatch = href.match(/^blob:(https?:\/\/[^/]+)/i);
-        if (blobOriginMatch) return blobOriginMatch[1];
-
         if (href) {
             const parsed = new URL(href);
             if (parsed.origin && parsed.origin !== 'null') return parsed.origin;
@@ -83,9 +80,8 @@ function resolveFetchUrl(pathOrUrl) {
     // 2026-07-02), so this is version-safe for both hosts. vault-test always uses it
     // (Cloudflare bundle throttle); prod fails over to it after a Cloudflare 403.
     try {
-        // Workers are spawned from blob: URLs, where self.location.hostname is the
-        // EMPTY string — derive the host from the effective API base instead, or the
-        // cdn rerouting below can never trigger inside workers.
+        // Derive the host from the effective API base so extension and bundled
+        // worker origins route bulk scans consistently with the hosted wallet.
         const h = baseUrl ? new URL(baseUrl).hostname : '';
         if (/^\/?api\/csp-(batch|cached)/.test(pathOrUrl) &&
             (h === 'vault-test.salvium.tools' ||
@@ -292,45 +288,24 @@ async function handleLoadWasm(msg) {
 
         const wasmModule = await WebAssembly.compile(wasmBinary);
 
-        const OriginalWorker = self.Worker;
-        const OriginalCreateObjectURL = URL.createObjectURL;
-        self.Worker = function (url) {
-            return {
-                postMessage: () => { },
-                terminate: () => { },
-                addEventListener: () => { },
-                removeEventListener: () => { },
-                onmessage: null,
-                onerror: null
-            };
-        };
-        URL.createObjectURL = function () {
-            return 'blob:disabled';
-        };
-
-        try {
-            importScripts(glueUrl);
-            const factory = typeof SalviumWallet !== 'undefined' ? SalviumWallet : self.SalviumWallet;
-            if (typeof factory !== 'function') {
-                throw new Error('SalviumWallet factory unavailable');
-            }
-
-            Module = await factory({
-                wasmModule: wasmModule,
-                instantiateWasm: (imports, successCallback) => {
-                    WebAssembly.instantiate(wasmModule, imports).then(instance => {
-                        successCallback(instance, wasmModule);
-                    });
-                    return {};
-                },
-                locateFile: (path) => path,
-                PTHREAD_POOL_SIZE: 0,
-                PTHREAD_POOL_SIZE_STRICT: 0
-            });
-        } finally {
-            self.Worker = OriginalWorker;
-            URL.createObjectURL = OriginalCreateObjectURL;
+        importScripts(glueUrl);
+        const factory = typeof SalviumWallet !== 'undefined' ? SalviumWallet : self.SalviumWallet;
+        if (typeof factory !== 'function') {
+            throw new Error('SalviumWallet factory unavailable');
         }
+
+        Module = await factory({
+            wasmModule: wasmModule,
+            instantiateWasm: (imports, successCallback) => {
+                WebAssembly.instantiate(wasmModule, imports).then(instance => {
+                    successCallback(instance, wasmModule);
+                });
+                return {};
+            },
+            locateFile: (path) => path,
+            PTHREAD_POOL_SIZE: 0,
+            PTHREAD_POOL_SIZE_STRICT: 0
+        });
 
         isReady = true;
 

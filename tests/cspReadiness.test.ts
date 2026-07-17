@@ -28,14 +28,33 @@ describe('upgrade-safe strict CSP readiness gate', () => {
     expect(serviceWorker).toContain("runtime.wasmVersion !== WASM_VERSION");
     expect(app).toContain("data.type === 'SALVIUM_CSP_CLIENT_PROBE'");
     expect(app).toContain("if (!scope.ready)");
+    expect(app).toContain("scope.reason === 'service-worker-generation-mismatch'");
+    expect(app).toContain('service_worker_generation_mismatch:${runtime.swBuildId}:${runtime.wasmVersion}');
     expect(app.indexOf("if (!scope.ready)")).toBeLessThan(app.indexOf("fetch('/api/csp-readiness/ack'"));
   });
 
   it('does not persist a permissive worker response into the strict generation', () => {
     const server = read('server.cjs');
 
-    expect(server).toContain("res.locals.cspMode === 'bridge'");
     expect(server).toContain("appendVaryHeader(res, ['User-Agent', 'Cookie'])");
-    expect(server).toContain("'Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'");
+    expect(server).toContain("'Cache-Control', 'private, no-store, no-cache, must-revalidate, proxy-revalidate'");
+    expect(server).toContain('if (isCspVariantSensitiveRequest(req))');
+    expect(server).not.toContain("res.locals.cspMode !== 'legacy'");
+    const workerHeaders = server.slice(
+      server.indexOf('function walletStaticSetHeaders'),
+      server.indexOf('const v = res.req', server.indexOf('function walletStaticSetHeaders')),
+    );
+    expect(workerHeaders).not.toContain('immutable');
+  });
+
+  it('activates an update whose installation started before register resolved', () => {
+    const app = read('index.tsx');
+    const watchExisting = 'watchInstallingServiceWorker(registration, registration.installing);';
+    const forceUpdate = 'registration.update().catch((error) => {';
+
+    expect(app).toContain('worker.postMessage({ type: \'SKIP_WAITING\' })');
+    expect(app).toContain(watchExisting);
+    expect(app.indexOf(watchExisting)).toBeLessThan(app.indexOf(forceUpdate));
+    expect(read('public/sw.js')).toContain('event.waitUntil(self.skipWaiting())');
   });
 });

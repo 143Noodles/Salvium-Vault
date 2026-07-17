@@ -1301,6 +1301,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         trusted: false,
         reason: 'Wallet balance not verified yet',
     });
+    const nativeBalanceTrustRef = React.useRef(nativeBalanceTrust);
+    const importedOutputOwnershipFailureRef = React.useRef<string | null>(null);
+    nativeBalanceTrustRef.current = nativeBalanceTrust;
     const balanceVersionRef = React.useRef(0);
     const stakeRefreshVersionRef = React.useRef(0);
     // The wallet-value chart must derive its current point from the SAME authoritative balance and
@@ -1892,6 +1895,12 @@ const getDeviceMemoryBucket = (): string => {
         if (!walletService.hasWallet()) {
             return { trusted: false, reason: 'Wallet not initialized' };
         }
+        if (importedOutputOwnershipFailureRef.current) {
+            return {
+                trusted: false,
+                reason: importedOutputOwnershipFailureRef.current,
+            };
+        }
 
         await refreshNativeHealthExtras();
         const snapshotHealth = assessNativeSnapshotHealth(snapshot, balanceState);
@@ -1917,11 +1926,10 @@ const getDeviceMemoryBucket = (): string => {
                 return { trusted: true };
             }
 
-            // KNOWN-BENIGN allowlist: return payouts that predate the 6.0.0 origin
-            // recompute lack canonical spend metadata forever — an archaeological gap,
-            // not corruption (balances CLI-verified exact; real spent-state is guarded
-            // independently by the chain-truth reverse audit each scan). Downgrade ONLY
-            // when every reported issue matches; anything novel still blocks trust.
+            // Historical return payouts can lack canonical spend metadata forever.
+            // Accept that narrow archaeological gap only after every positive imported
+            // output has been freshly revalidated against daemon-supplied transaction
+            // bytes by the current ownership scanner. Anything novel still blocks trust.
             const KNOWN_BENIGN_ISSUE_PREFIXES = [
                 'Return payout has scan hint but no canonical spend metadata',
             ];
@@ -1931,6 +1939,7 @@ const getDeviceMemoryBucket = (): string => {
                     .filter(Boolean)
                 : [];
             if (
+                walletService.hasRevalidatedImportedOutputOwnership() &&
                 issueMessages.length > 0 &&
                 issueMessages.every(msg => KNOWN_BENIGN_ISSUE_PREFIXES.some(prefix => msg.startsWith(prefix)))
             ) {
@@ -2426,7 +2435,24 @@ const getDeviceMemoryBucket = (): string => {
                     if (cachedOutputsHex && typeof cachedOutputsHex === 'string') {
                         const importResult = await walletService.importWalletCache(cachedOutputsHex, 1);
                         if (importResult) {
-                            needsFullRescanRef.current = false;
+                            const storedWallet = safeReadWallet();
+                            if (storedWallet) {
+                                const ownership = await revalidateAndPersistImportedOutputOwnership({
+                                    wallet: storedWallet,
+                                    cacheHex: cachedOutputsHex,
+                                    restoreHeight: storedWallet.snapshotHeight || storedWallet.height || 0,
+                                    restoredAddress: address,
+                                });
+                                if (!ownership.failure) {
+                                    needsFullRescanRef.current = false;
+                                } else {
+                                    setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
+                                    setNativeBalanceTrust({
+                                        trusted: false,
+                                        reason: ownership.failure,
+                                    });
+                                }
+                            }
                         }
                     }
                 } catch {
@@ -2795,14 +2821,6 @@ const getDeviceMemoryBucket = (): string => {
                     isReady: true,
                 };
             }
-
-            const snapshotHealth = assessNativeSnapshotHealth(snapshot, normalizedBalance);
-            if (snapshotHealth.severity !== 'critical') {
-                return {
-                    balance: normalizedBalance,
-                    isReady: true,
-                };
-            }
         }
 
         return {
@@ -3064,6 +3082,20 @@ const getDeviceMemoryBucket = (): string => {
 
             if (sync.daemonHeight > 0) {
                 await walletService.setBlockchainHeight(sync.daemonHeight);
+            }
+
+            // A failed imported-output proof is a hard display boundary. The
+            // periodic refresh previously copied the same untrusted native
+            // balance back into React state after the failure path zeroed it,
+            // allowing non-dashboard surfaces to show stale funds even though
+            // spending was blocked. Keep sync-height status alive, but expose no
+            // native monetary state until a fresh proof succeeds.
+            if (importedOutputOwnershipFailureRef.current) {
+                setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
+                setSubaddresses(prev => prev.map(subaddress => (
+                    subaddress.balance === 0 ? subaddress : { ...subaddress, balance: 0 }
+                )));
+                return;
             }
 
             // Skip the O(wallet) reload (getBalance + getTransactions over all txs + merge + subs)
@@ -3998,6 +4030,174 @@ const getDeviceMemoryBucket = (): string => {
         return true;
     };
 
+    const revalidateAndPersistImportedOutputOwnership = async ({
+        wallet,
+        cacheHex,
+        restoreHeight,
+        restoredAddress,
+    }: {
+        wallet: EncryptedWallet;
+        cacheHex: string;
+        restoreHeight: number;
+        restoredAddress?: string;
+    }): Promise<{
+        failure: string | null;
+        cacheHex: string;
+        correctedBalance?: BalanceInfo;
+        correctedTransactions?: WalletTransaction[];
+        correctedSubaddresses?: SubAddress[];
+    }> => {
+        // The authoritative marker lives inside wallet2's encrypted serialized
+        // attribute map. It survives legitimate cache rewrites but is absent on
+        // an old/unverified backup, unlike a digest stored beside the cache.
+        const alreadyValidated = walletService.hasRevalidatedImportedOutputOwnership();
+        if (!alreadyValidated) {
+            const ownershipResult = await walletService.revalidateImportedOutputOwnership();
+            if (!ownershipResult.success) {
+                const failure = ownershipResult.error ||
+                    'Imported wallet output ownership could not be verified';
+                importedOutputOwnershipFailureRef.current = failure;
+                setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
+                setSubaddresses(prev => prev.map(subaddress => (
+                    subaddress.balance === 0 ? subaddress : { ...subaddress, balance: 0 }
+                )));
+                setNativeBalanceTrust({ trusted: false, reason: failure });
+                reportClientEvent('wallet.imported_output_ownership_untrusted', {
+                    level: 'error',
+                    message: failure,
+                    context: {
+                        requested: ownershipResult.requested,
+                        stored: ownershipResult.stored,
+                        evaluated: ownershipResult.evaluated,
+                        amountMismatches: ownershipResult.amountMismatches,
+                        incomplete: ownershipResult.incomplete,
+                    },
+                });
+                return { failure, cacheHex };
+            }
+        }
+        importedOutputOwnershipFailureRef.current = null;
+
+        const correctedTransactions = walletService.getTransactions();
+        const correctedBalance = getAuthoritativeNativeBalance(
+            walletService.getBalance()
+        ).balance;
+        const wasmSubaddresses = await walletService.getSubaddresses();
+        const correctedSubaddresses: SubAddress[] = wasmSubaddresses.map((sub, idx) => ({
+            index: sub.index?.minor ?? idx,
+            label: sub.label || '',
+            address: sub.address,
+            balance: sub.unlocked_balance || 0,
+        }));
+
+        wallet.cachedBalance = correctedBalance;
+        wallet.cachedBalanceVersion = BASE_ASSET_CACHED_BALANCE_VERSION;
+        wallet.cachedTransactions = correctedTransactions;
+        if (correctedSubaddresses.length > 0) {
+            wallet.cachedSubaddresses = correctedSubaddresses;
+        }
+        setTransactions(correctedTransactions);
+        setBalance(correctedBalance);
+        if (correctedSubaddresses.length > 0) {
+            setSubaddresses(correctedSubaddresses);
+            subaddressesRef.current = correctedSubaddresses;
+        }
+
+        // Always repair the display metadata, including the marker fast path.
+        // React/localStorage may have hydrated stale pre-proof subaddress values
+        // before the native encrypted cache was imported. This write is separate
+        // from the native cache export so an IndexedDB failure cannot resurrect a
+        // stale visible balance on the next launch.
+        try {
+            const storedWallet = safeReadWallet();
+            if (storedWallet && storedWallet.address === (restoredAddress || wallet.address)) {
+                storedWallet.cachedBalance = correctedBalance;
+                storedWallet.cachedBalanceVersion = BASE_ASSET_CACHED_BALANCE_VERSION;
+                storedWallet.cachedTransactions = correctedTransactions;
+                if (correctedSubaddresses.length > 0) {
+                    storedWallet.cachedSubaddresses = correctedSubaddresses;
+                }
+                if (!safeWriteWallet(storedWallet)) {
+                    throw new Error('Could not persist corrected wallet display metadata');
+                }
+            }
+        } catch (error) {
+            reportClientEvent('wallet.output_ownership_repair_persist_failed', {
+                level: 'warn',
+                message: error instanceof Error ? error.message : String(error),
+                context: { target: 'display_metadata' },
+            });
+        }
+
+        if (alreadyValidated) {
+            return {
+                failure: null,
+                cacheHex,
+                correctedBalance,
+                correctedTransactions,
+                correctedSubaddresses,
+            };
+        }
+
+        let repairedCacheHex = cacheHex;
+        // The current session is already cryptographically verified. Cache
+        // persistence is best-effort: a failed write only causes a safe retry
+        // on the next open and must not lock the user out now.
+        try {
+            const repairedExport = await walletService.exportWalletCache();
+            if (!repairedExport?.cache_hex) {
+                throw new Error('Repaired wallet cache export was empty');
+            }
+            repairedCacheHex = repairedExport.cache_hex;
+            const cacheAddress = restoredAddress || wallet.address;
+            const subaddressMap: SubaddressMapEntry[] = wasmSubaddresses.map((sub, idx) => ({
+                index: sub.index?.minor ?? idx,
+                label: sub.label || '',
+                address: sub.address,
+            }));
+            const [primarySave, fallbackSave] = await Promise.all([
+                saveToIndexedDB(`wallet_cache_${cacheAddress}`, repairedCacheHex),
+                walletStateService.save(
+                    cacheAddress,
+                    repairedCacheHex,
+                    subaddressMap,
+                    walletService.getSyncStatus().walletHeight || restoreHeight,
+                    walletService.getOutputCount(),
+                    walletService.getWasmVersion()
+                ),
+            ]);
+            if (!primarySave.success || !fallbackSave.success) {
+                reportClientEvent('wallet.output_ownership_repair_persist_failed', {
+                    level: 'warn',
+                    context: {
+                        primarySaved: primarySave.success,
+                        fallbackSaved: fallbackSave.success,
+                    },
+                });
+                return {
+                    failure: null,
+                    cacheHex: repairedCacheHex,
+                    correctedBalance,
+                    correctedTransactions,
+                    correctedSubaddresses,
+                };
+            }
+
+        } catch (error) {
+            reportClientEvent('wallet.output_ownership_repair_persist_failed', {
+                level: 'warn',
+                message: error instanceof Error ? error.message : String(error),
+            });
+        }
+        return {
+            failure: null,
+            cacheHex: repairedCacheHex,
+            correctedBalance,
+            correctedTransactions,
+            correctedSubaddresses,
+        };
+    };
+
     const continueUnlockFlow = async (
         wallet: EncryptedWallet,
         mnemonic: string,
@@ -4013,6 +4213,7 @@ const getDeviceMemoryBucket = (): string => {
         unlockBootstrapInFlightRef.current = true;
         try {
         const forceCleanRestoreScan = options?.forceCleanRestoreScan === true;
+        importedOutputOwnershipFailureRef.current = null;
         forceCleanRestoreScanRef.current = forceCleanRestoreScan;
         setNativeBalanceTrust({
             trusted: false,
@@ -4032,7 +4233,7 @@ const getDeviceMemoryBucket = (): string => {
 
         let finalRestoreHeight = wallet.height || 0;
         const cacheMissing = !cachedOutputsHex || cachedOutputsHex.length === 0;
-        const trustedCachedBalance = getTrustedCachedBalance(wallet);
+        let trustedCachedBalance = getTrustedCachedBalance(wallet);
         const cacheMissingRequiresFullScan = shouldForceFullScanForMissingWalletCache({
             cacheMissing,
             hadCachedWalletData: hadData,
@@ -4045,6 +4246,7 @@ const getDeviceMemoryBucket = (): string => {
             finalRestoreHeight = 0;
         }
         const willImportCache = !forceCleanRestoreScan && !!cachedOutputsHex && cachedOutputsHex.length > 0;
+        let outputOwnershipRevalidationFailure: string | null = null;
 
         const restoreSessionRequested = options?.scanSessionType === 'restore-full-rescan';
         const restoreSource = options?.restoreSource || (restoreSessionRequested ? 'restore-unlock' : 'unlock');
@@ -4188,6 +4390,17 @@ const getDeviceMemoryBucket = (): string => {
                 importSuccess = await walletService.importWalletCache(cachedOutputsHex, minTransfers);
                 if (importSuccess) {
                     fullWalletCacheImportedRef.current = true;
+                    const ownership = await revalidateAndPersistImportedOutputOwnership({
+                        wallet,
+                        cacheHex: cachedOutputsHex,
+                        restoreHeight: finalRestoreHeight,
+                        restoredAddress,
+                    });
+                    outputOwnershipRevalidationFailure = ownership.failure;
+                    cachedOutputsHex = ownership.cacheHex;
+                    if (ownership.correctedBalance) {
+                        trustedCachedBalance = ownership.correctedBalance;
+                    }
                     requestOpenTimeHistoryHeal('cache-import');
                     // Self-heal the tx display from the just-imported wallet (authoritative). The idb tx
                     // cache (~3214) can be empty/partial (interrupted resync) and the catch-up commit that
@@ -4215,6 +4428,17 @@ const getDeviceMemoryBucket = (): string => {
                 importSuccess = numImported > 0;
                 if (importSuccess) {
                     try { const wasmTxs = walletService.getTransactions(); if (wasmTxs && wasmTxs.length > 0) setTransactions(wasmTxs); } catch {}
+                    const ownership = await revalidateAndPersistImportedOutputOwnership({
+                        wallet,
+                        cacheHex: cachedOutputsHex,
+                        restoreHeight: finalRestoreHeight,
+                        restoredAddress,
+                    });
+                    outputOwnershipRevalidationFailure = ownership.failure;
+                    cachedOutputsHex = ownership.cacheHex;
+                    if (ownership.correctedBalance) {
+                        trustedCachedBalance = ownership.correctedBalance;
+                    }
                     const snapshot = captureNativeSnapshot('outputs_import_complete', {
                         importedFullCache: false,
                         importedOutputs: numImported,
@@ -4318,14 +4542,18 @@ const getDeviceMemoryBucket = (): string => {
             });
         }
 
-        const unlockHydratedBalance = getPreferredHydratedBalance(
-            trustedCachedBalance,
-            wallet.cachedTransactions || [],
-            [],
-            actualNetworkHeight || finalRestoreHeight || 0
-        );
-        if (unlockHydratedBalance) {
-            setBalance(unlockHydratedBalance);
+        if (outputOwnershipRevalidationFailure) {
+            setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
+        } else {
+            const unlockHydratedBalance = getPreferredHydratedBalance(
+                trustedCachedBalance,
+                wallet.cachedTransactions || [],
+                [],
+                actualNetworkHeight || finalRestoreHeight || 0
+            );
+            if (unlockHydratedBalance) {
+                setBalance(unlockHydratedBalance);
+            }
         }
 
         const bootHeight = actualNetworkHeight || finalRestoreHeight || 0;
@@ -4460,7 +4688,8 @@ const getDeviceMemoryBucket = (): string => {
 
         try {
             const storedWallet = safeReadWallet();
-            if (storedWallet && walletService.hasWallet() && !cacheMissingRequiresFullScan && !confirmedNativeStateMissingForExistingWallet) {
+            if (storedWallet && walletService.hasWallet() && !cacheMissingRequiresFullScan &&
+                !confirmedNativeStateMissingForExistingWallet && !outputOwnershipRevalidationFailure) {
                 storedWallet.cachedBalance = { ...unlockNativeBalance };
                 storedWallet.cachedBalanceVersion = BASE_ASSET_CACHED_BALANCE_VERSION;
                 safeWriteWallet(storedWallet);
@@ -4472,7 +4701,12 @@ const getDeviceMemoryBucket = (): string => {
             unlockSnapshot,
             unlockNativeBalance
         );
-        const effectiveUnlockBalanceTrust = wallet.scanRepairRequired
+        const effectiveUnlockBalanceTrust = outputOwnershipRevalidationFailure
+            ? {
+                trusted: false,
+                reason: outputOwnershipRevalidationFailure,
+            }
+            : wallet.scanRepairRequired
             ? {
                 trusted: false,
                 reason: wallet.scanRepairReason || 'Pending scan repair from a previous session',
@@ -7364,6 +7598,11 @@ const getDeviceMemoryBucket = (): string => {
         metadata: string = '',
         burnCostSal: number = 1000
     ): Promise<string[]> => {
+        // Token creation burns/spends wallet funds just like a transfer. It must
+        // share the same imported-output ownership and native-state trust gate;
+        // otherwise a failed cache proof could still reach transaction building
+        // through this less common path.
+        await assertWalletReadyForSpend();
         const normalizedAssetType = `sal${assetType.trim().toUpperCase()}`.toLowerCase();
         reportClientEvent('asset.create_token_ui_started', {
             level: 'info',
@@ -7569,6 +7808,7 @@ const getDeviceMemoryBucket = (): string => {
     } = {}) => {
         isResettingRef.current = true;
         scanRequestsSuspendedRef.current = true;
+        importedOutputOwnershipFailureRef.current = null;
 
         try {
 
@@ -8205,9 +8445,12 @@ const getDeviceMemoryBucket = (): string => {
                     let cachedOutputsHex = '';
                     let cachedSpentKeyImages: Record<string, number> = {};
                     let cachedReturnAddressCount = 0;
+                    let storedWalletForBootstrap: EncryptedWallet | null = null;
+                    let bootstrapOwnershipFailure: string | null = null;
                     try {
                         const encryptedWallet = safeReadWallet();
                         if (encryptedWallet) {
+                            storedWalletForBootstrap = encryptedWallet;
                             const addr = encryptedWallet.address;
 
                             const [idbCache, idbTxs, idbHistory, idbKeyImages, idbReturnAddressCount] = await Promise.all([
@@ -8325,11 +8568,33 @@ const getDeviceMemoryBucket = (): string => {
                             }
                             if (!importSuccess) {
                                 const numImported = await walletService.importOutputs(cachedOutputsHex);
-                                if (numImported > 0 && Object.keys(cachedSpentKeyImages).length > 0) {
+                                importSuccess = numImported > 0;
+                                if (importSuccess && Object.keys(cachedSpentKeyImages).length > 0) {
                                     await walletService.restoreSpentStatusFromCache(cachedSpentKeyImages);
                                 }
                             }
+                            if (importSuccess && storedWalletForBootstrap) {
+                                const ownership = await revalidateAndPersistImportedOutputOwnership({
+                                    wallet: storedWalletForBootstrap,
+                                    cacheHex: cachedOutputsHex,
+                                    restoreHeight,
+                                    restoredAddress: cachedAddress,
+                                });
+                                bootstrapOwnershipFailure = ownership.failure;
+                                cachedOutputsHex = ownership.cacheHex;
+                                if (ownership.correctedBalance) {
+                                    cachedBalance = ownership.correctedBalance;
+                                }
+                                if (ownership.correctedTransactions) {
+                                    cachedTxs = ownership.correctedTransactions;
+                                }
+                                if (ownership.correctedSubaddresses?.length) {
+                                    cachedSubaddrsData = ownership.correctedSubaddresses;
+                                }
+                            }
                         } catch {
+                            bootstrapOwnershipFailure =
+                                'Imported wallet output ownership could not be verified';
                         }
                     }
 
@@ -8352,14 +8617,23 @@ const getDeviceMemoryBucket = (): string => {
                     }
 
                     const bootHeight = actualNetworkHeight || restoreHeight || 0;
-                    const bootBalance = getPreferredHydratedBalance(
-                        cachedBalance,
-                        cachedTxs,
-                        [],
-                        bootHeight
-                    );
+                    const bootBalance = bootstrapOwnershipFailure
+                        ? null
+                        : getPreferredHydratedBalance(
+                            cachedBalance,
+                            cachedTxs,
+                            [],
+                            bootHeight
+                        );
                     if (bootBalance) {
                         setBalance(bootBalance);
+                    }
+                    if (bootstrapOwnershipFailure) {
+                        setBalance({ balance: 0, unlockedBalance: 0, balanceSAL: 0, unlockedBalanceSAL: 0 });
+                        setNativeBalanceTrust({
+                            trusted: false,
+                            reason: bootstrapOwnershipFailure,
+                        });
                     }
 
                     const bootStakes = await getNativeStakeState(bootHeight);
@@ -9658,6 +9932,13 @@ const getDeviceMemoryBucket = (): string => {
     const assertWalletReadyForSpend = useCallback(async (): Promise<void> => {
         if (!walletService.hasWallet()) {
             throw new Error('Wallet not initialized');
+        }
+        if (importedOutputOwnershipFailureRef.current || !nativeBalanceTrustRef.current.trusted) {
+            throw new Error(
+                importedOutputOwnershipFailureRef.current ||
+                nativeBalanceTrustRef.current.reason ||
+                'Wallet balance has not been verified yet'
+            );
         }
 
         if (scanInProgressRef.current) {

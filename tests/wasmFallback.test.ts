@@ -61,14 +61,14 @@ describe('WASM feature routing', () => {
 
 describe('validated fallback artifact integration', () => {
   it('installs the atomic v1.1.3c SIMD and baseline pair', () => {
-    expect(WASM_CACHE_VERSION).toBe('8.2.22-v113c-no-dynamic-exec-20260716');
-    expect(sha256('wallet/SalviumWallet.js')).toBe('afa986193dff84056d539d32b5db173da33f9dd8ea39ef5736ecd1e53ae3ddd1');
-    expect(sha256('wallet/SalviumWallet.wasm')).toBe('854e6a0f109269ff4019f5c12050fa1ce443f30aca196866d7c221e077b67e2d');
-    expect(sha256('wallet/SalviumWalletBaseline.js')).toBe('26e0fb88fc3ffcfdd700a4f22006e6be9520f1c865219f37ab9db3668a463a72');
-    expect(sha256('wallet/SalviumWalletBaseline.wasm')).toBe('95d4896d90270f7c81fc1b1299d95dce4fb10e7000712571394824770039c863');
+    expect(WASM_CACHE_VERSION).toBe('8.2.29-v113c-outputproof7-encodingdispatch-20260716');
+    expect(sha256('wallet/SalviumWallet.js')).toBe('41d0b776d9501ce74978cb1b71e2f39db4c4344e794771714f459717fe1b5ca9');
+    expect(sha256('wallet/SalviumWallet.wasm')).toBe('f9f16ecbc28c6d3eda917b3a882e24950589e4cd2d0506f72b36c315466b0cb5');
+    expect(sha256('wallet/SalviumWalletBaseline.js')).toBe('6fce74916dc9f166a38db69a8049e632df016ea4fc9c82f7e61f4c8948aaa7cb');
+    expect(sha256('wallet/SalviumWalletBaseline.wasm')).toBe('3de161f4cac823a8f242fc17d06933b04ea6d00eeea8de008d88fb06d9376342');
   });
 
-  it('does not invalidate wallet-derived ownership data for a glue-only relink', () => {
+  it('does not invalidate scanner-derived ownership data for an index-stable cache repair build', () => {
     expect(SUBADDRESS_OWNERSHIP_CACHE_VERSION).toBe('8.2.22-v113c-dual-wasm-20260709');
     expect(SUBADDRESS_OWNERSHIP_CACHE_VERSION).not.toBe(WASM_CACHE_VERSION);
     const scanService = readRepoFile('services/CSPScanService.ts');
@@ -91,7 +91,7 @@ describe('validated fallback artifact integration', () => {
     expect(server).toContain("getConfiguredWasmAssetInfo('SalviumWalletBaseline.wasm')");
     expect(server).toContain("getConfiguredWasmAssetInfo('SalviumWalletBaseline.js')");
     expect(server).toContain("const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c'");
-    expect(server).toContain("const SALVIUM_WASM_RUNTIME_BUILD = '5.54.8-hf13-v113c-assetrefs-20260710'");
+    expect(server).toContain("const SALVIUM_WASM_RUNTIME_BUILD = '5.54.10-hf14-v113c-outputproof7-encodingdispatch-20260716'");
     expect(server).toContain('loadedRuntimeVersion.includes(SALVIUM_WASM_RUNTIME_BUILD)');
     expect(server).toContain('hf13-v1.1.3c-asset-index-20260709');
     expect(server).toContain('responseOuts[i].output_id = lookupOutputs[i].index');
@@ -99,6 +99,8 @@ describe('validated fallback artifact integration', () => {
     expect(extensionBuild).toContain('walletRuntimeFiles');
     expect(walletRuntimeList).toContain('SalviumWalletBaseline.wasm');
     expect(walletRuntimeList).toContain('wasm-feature-detect.js');
+    expect(walletRuntimeList).not.toContain('SalviumWallet.worker.js');
+    expect(server).not.toContain("getConfiguredWasmAssetInfo('SalviumWallet.worker.js')");
     expect(dockerfile).toContain('test -s ./wallet/SalviumWalletBaseline.wasm');
     expect(clientTelemetry).toContain("'wasmVariant', 'fallbackAvailable'");
     expect(server).toContain("'wasmVariant', 'fallbackAvailable'");
@@ -107,9 +109,9 @@ describe('validated fallback artifact integration', () => {
     expect(scanner).toContain(`static WASM_VERSION = '${WASM_CACHE_VERSION}'`);
     expect(scanner).toContain(`static WORKER_VERSION = '${scannerWorkerSha}'`);
     expect(scanner).toContain('encodeURIComponent(CSPScanner.WORKER_VERSION)');
-    expect(server).toContain("getWalletStaticFileSha256(filePath) === v");
+    expect(server).toContain("'Cache-Control', 'private, no-store, no-cache, must-revalidate, proxy-revalidate'");
     expect(serviceWorker).toContain(`const WASM_VERSION = '${WASM_CACHE_VERSION}'`);
-    expect(serviceWorker).toContain("const WASM_CACHE = 'salvium-wasm-v36'");
+    expect(serviceWorker).toContain("const WASM_CACHE = 'salvium-wasm-v37'");
   });
 
   it('routes fallback state through all three worker surfaces', () => {

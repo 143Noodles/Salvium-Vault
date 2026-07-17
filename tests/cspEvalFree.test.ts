@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { walletRuntimeFiles } from '../scripts/copy-wallet-runtime.mjs';
 
 const read = (file: string) => readFileSync(path.resolve(process.cwd(), file), 'utf8');
 
@@ -25,6 +26,15 @@ describe('browser wallet runtime string-execution hardening', () => {
     expect(scanWorker).toContain('importScripts(glueUrl)');
     expect(seedWorker).toContain('importScripts(jsUrl)');
     expect(seedWorker).not.toContain('response.text()');
+  });
+
+  it('allows no string execution or Blob worker creation in any packaged wallet script', () => {
+    expect(walletRuntimeFiles).not.toContain('SalviumWallet.worker.js');
+    for (const file of walletRuntimeFiles.filter((name) => name.endsWith('.js'))) {
+      const source = read(`wallet/${file}`);
+      expect(source, file).not.toMatch(/(^|[^\w$])eval\s*\(|\(\s*0\s*,\s*eval\s*\)|new\s+Function\s*\(|(^|[^\w$])Function\s*\(/);
+      expect(source, file).not.toMatch(/URL\.createObjectURL\s*\(|new\s+Blob\s*\(/);
+    }
   });
 
   it('packages the background heartbeat as an immutable same-origin worker', () => {

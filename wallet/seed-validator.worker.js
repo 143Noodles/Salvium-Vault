@@ -24,7 +24,19 @@ self.onerror = function (message, filename, lineno, colno, error) {
 self.onmessage = async (e) => {
     const { type, payload, id } = e.data;
 
-    if (type === 'VALIDATE') {
+    if (type === 'HEALTH_CHECK') {
+        try {
+            await initWasm(payload || {});
+            const wallet = new Module.WasmWallet();
+            const healthy = typeof wallet.restore_from_seed === 'function';
+            if (wallet.delete) wallet.delete();
+            if (!healthy) throw new Error('WASM wallet control surface unavailable');
+            self.postMessage({ type: 'HEALTHY', id, wasmVariant: activeWasmVariant });
+        } catch (error) {
+            const errorMsg = error?.message || String(error);
+            self.postMessage({ type: 'ERROR', id, error: errorMsg });
+        }
+    } else if (type === 'VALIDATE') {
         try {
             const { mnemonic } = payload;
             await initWasm(payload || {});
@@ -63,49 +75,25 @@ async function initWasm(config) {
         if (activeWasmVariant === 'simd') activateBaseline();
     }
 
-    // Disable pthreads: WASM spawns workers via URL.createObjectURL, which fails in nested workers.
-    const origWorker = self.Worker;
-    const origCreateObjectURL = URL.createObjectURL;
-
-    self.Worker = function () {
-        return {
-            postMessage: () => { },
-            terminate: () => { },
-            addEventListener: () => { },
-            removeEventListener: () => { },
-            onmessage: null,
-            onerror: null
-        };
-    };
-
-    URL.createObjectURL = function () {
-        return 'blob:disabled';
+    const loadFactory = async () => {
+        importScripts(jsUrl);
+        const factory = typeof SalviumWallet !== 'undefined' ? SalviumWallet : self.SalviumWallet;
+        if (typeof factory !== 'function') throw new Error('SalviumWallet factory unavailable');
+        return factory({
+            locateFile: (path) => {
+                if (path.endsWith('.wasm')) return wasmUrl;
+                return path;
+            },
+            PTHREAD_POOL_SIZE: 0,
+            PTHREAD_POOL_SIZE_STRICT: 0
+        });
     };
 
     try {
-        const loadFactory = async () => {
-            importScripts(jsUrl);
-            const factory = typeof SalviumWallet !== 'undefined' ? SalviumWallet : self.SalviumWallet;
-            if (typeof factory !== 'function') throw new Error('SalviumWallet factory unavailable');
-            return factory({
-                locateFile: (path) => {
-                    if (path.endsWith('.wasm')) return wasmUrl;
-                    return path;
-                },
-                PTHREAD_POOL_SIZE: 0,
-                PTHREAD_POOL_SIZE_STRICT: 0
-            });
-        };
-
-        try {
-            Module = await loadFactory();
-        } catch (error) {
-            if (activeWasmVariant !== 'simd' || !activateBaseline()) throw error;
-            Module = await loadFactory();
-        }
-    } finally {
-        self.Worker = origWorker;
-        URL.createObjectURL = origCreateObjectURL;
+        Module = await loadFactory();
+    } catch (error) {
+        if (activeWasmVariant !== 'simd' || !activateBaseline()) throw error;
+        Module = await loadFactory();
     }
 }
 

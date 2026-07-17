@@ -96,8 +96,21 @@ try {
   assert.equal(strictWorker.status(), 200);
   assert.ok((strictWorker.headers()['content-security-policy'] || '').includes("'wasm-unsafe-eval'"));
   assert.ok(!(strictWorker.headers()['content-security-policy'] || '').includes("'unsafe-eval'"));
-  assert.match(strictWorker.headers()['cache-control'] || '', /immutable/);
+  assert.match(strictWorker.headers()['cache-control'] || '', /no-store/);
   assert.match(strictWorker.headers().vary || '', /Cookie/);
+
+  // A compatibility-UA request must also be non-cacheable and Vary by UA. A
+  // shared cache must never replay its unsafe-eval worker policy to modern
+  // bridge/strict clients.
+  const legacyWorker = await context.request.get(`${base}/wallet/heartbeat.worker.js?v=${heartbeatSha}`, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 Chrome/96.0.4664.45 Safari/537.36',
+    },
+  });
+  assert.equal(legacyWorker.status(), 200);
+  assert.match(legacyWorker.headers()['content-security-policy'] || '', /'unsafe-eval'/);
+  assert.match(legacyWorker.headers()['cache-control'] || '', /no-store/);
+  assert.match(legacyWorker.headers().vary || '', /User-Agent/);
 
   assert.deepEqual(violations, [], 'bootstrap CSP violations occurred before the deliberate string-code probe');
   await page.evaluate(() => {
@@ -127,6 +140,7 @@ try {
     },
     bridgeWorkerCacheControl: bridgeWorker.headers()['cache-control'],
     strictWorkerCacheControl: strictWorker.headers()['cache-control'],
+    legacyWorkerCacheControl: legacyWorker.headers()['cache-control'],
     violations,
     pageErrors,
   }));

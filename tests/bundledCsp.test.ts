@@ -42,7 +42,8 @@ describe('bundled runtime CSP', () => {
 
     expect(activity).toContain('hasBundledLegacyShell()');
     expect(activity).toContain('Integer.parseInt(chrome.group(1)) >= 97');
-    expect(activity).toContain('https://vault.salvium.tools/index-legacy.html');
+    expect(activity).toContain('bridge.getLocalUrl() + "/index-legacy.html"');
+    expect(activity).not.toContain('webView.loadUrl("https://vault.salvium.tools/index-legacy.html")');
     expect(activity).toContain('if (!chrome.find()) return false');
   });
 });

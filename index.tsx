@@ -388,10 +388,8 @@ const attemptStrictCspReadiness = async (source: string): Promise<void> => {
     });
     if (!response.ok) throw new Error(`readiness status HTTP ${response.status}`);
     const status = await response.json() as CspReadinessResponse;
-    if (status.ready || status.mode === 'strict' || status.mode === 'legacy' || !status.eligible) {
-      cspReadinessSettled = true;
-      return;
-    }
+    const policyAlreadySettled =
+      !!status.ready || status.mode === 'strict' || status.mode === 'legacy' || !status.eligible;
     const runtime = status.runtime;
     if (
       !runtime ||
@@ -403,13 +401,31 @@ const attemptStrictCspReadiness = async (source: string): Promise<void> => {
         level: 'warn',
         context: { source, reason: 'runtime_generation_mismatch' },
       });
+      if (policyAlreadySettled) cspReadinessSettled = true;
       return;
     }
 
     const registration = await navigator.serviceWorker.ready;
     const worker = navigator.serviceWorker.controller || registration.active;
-    if (!worker) return;
+    if (!worker) {
+      if (policyAlreadySettled) cspReadinessSettled = true;
+      return;
+    }
     const scope = await askServiceWorkerForCspReadiness(worker, runtime);
+    if (scope.reason === 'service-worker-generation-mismatch') {
+      reportClientEvent('frontend.service_worker_generation_recovery', {
+        level: 'warn',
+        context: { source, reason: scope.reason },
+      });
+      await clearVaultCachesAndReload(
+        `service_worker_generation_mismatch:${runtime.swBuildId}:${runtime.wasmVersion}`
+      );
+      return;
+    }
+    if (policyAlreadySettled) {
+      cspReadinessSettled = true;
+      return;
+    }
     if (!scope.ready) {
       reportClientEvent('frontend.csp_readiness_deferred', {
         level: 'info',
@@ -642,6 +658,37 @@ const activateWaitingServiceWorker = (registration: ServiceWorkerRegistration) =
   registration.waiting.postMessage({ type: 'SKIP_WAITING' });
 };
 
+const activateInstalledServiceWorker = (
+  registration: ServiceWorkerRegistration,
+  worker: ServiceWorker,
+) => {
+  if (worker.state !== 'installed' || !navigator.serviceWorker.controller) return;
+  swStatus.updateAvailable = true;
+  reportClientEvent('sw.update_available', { level: 'info', context: { swState: worker.state } });
+  // postMessage the worker directly as well as registration.waiting. An update
+  // may finish in the small interval before registration.waiting is observable.
+  worker.postMessage({ type: 'SKIP_WAITING' });
+  activateWaitingServiceWorker(registration);
+  window.dispatchEvent(new CustomEvent('sw-update-available', {
+    detail: { registration }
+  }));
+};
+
+const watchInstallingServiceWorker = (
+  registration: ServiceWorkerRegistration,
+  worker: ServiceWorker | null,
+) => {
+  if (!worker) return;
+  const handleState = () => {
+    reportTaskEvent('stage', 'service_worker.update', 'state_change', 'index', {
+      swState: worker.state,
+    });
+    activateInstalledServiceWorker(registration, worker);
+  };
+  worker.addEventListener('statechange', handleState);
+  handleState();
+};
+
 // Make status available globally for components to check
 (window as any).__swStatus = swStatus;
 
@@ -704,37 +751,14 @@ if (!isNativePlatform() && 'serviceWorker' in navigator) {
         });
         swStatus.registered = true;
 
-        // Always check for a fresher service worker on load instead of trusting
-        // the browser's HTTP cache for the registration script.
-        registration.update().catch((error) => {
-          reportTaskEvent('failed', 'service_worker.update_check', 'update', 'index', {
-            reason: 'update_failed',
-          }, 'warn', error instanceof Error ? error.message : String(error || 'update failed'));
-        });
-
-        // Check for updates
+        // Attach to both future and already-started installation. register() can
+        // resolve after updatefound fired, which otherwise strands the new worker
+        // in waiting until another launch.
         registration.addEventListener('updatefound', () => {
           reportTaskEvent('stage', 'service_worker.update', 'update_found', 'index');
-          const newWorker = registration.installing;
-          if (newWorker) {
-            newWorker.addEventListener('statechange', () => {
-              reportTaskEvent('stage', 'service_worker.update', 'state_change', 'index', {
-                swState: newWorker.state,
-              });
-              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                // New service worker available - notify user
-                swStatus.updateAvailable = true;
-                reportClientEvent('sw.update_available', { level: 'info', context: { swState: newWorker.state } });
-                activateWaitingServiceWorker(registration);
-
-                // Dispatch custom event for app to show update notification
-                window.dispatchEvent(new CustomEvent('sw-update-available', {
-                  detail: { registration }
-                }));
-              }
-            });
-          }
+          watchInstallingServiceWorker(registration, registration.installing);
         });
+        watchInstallingServiceWorker(registration, registration.installing);
 
         // Check for waiting service worker on load (update available from previous session)
         if (registration.waiting) {
@@ -747,6 +771,15 @@ if (!isNativePlatform() && 'serviceWorker' in navigator) {
             detail: { registration }
           }));
         }
+
+        // Always check for a fresher service worker on load instead of trusting
+        // the browser's HTTP cache for the registration script. Do this only
+        // after every installation state is covered by the listeners above.
+        registration.update().catch((error) => {
+          reportTaskEvent('failed', 'service_worker.update_check', 'update', 'index', {
+            reason: 'update_failed',
+          }, 'warn', error instanceof Error ? error.message : String(error || 'update failed'));
+        });
       })
       .catch((error) => {
         swStatus.error = error.message || 'Registration failed';
@@ -789,6 +822,7 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
+
 root.render(
   <React.StrictMode>
     <AppErrorBoundary>

@@ -63,6 +63,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
    const unlockedBalance = stats.unlockedBalance;
    const lockedBalance = stats.lockedBalance || 0;
    const isBalanceReady = stats.isBalanceReady;
+   const maskAuxiliaryBalanceData = hideBalance || !isBalanceReady;
    const hasLockedBalance = isBalanceReady && lockedBalance > 0.000001;
 
    const activeStakes = useMemo(() =>
@@ -267,8 +268,8 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
                            return (
                               <div key={stake.id} className="p-4 rounded-xl bg-black/20 border border-white/5 hover:border-accent-primary/30 transition-all hover:bg-white/5 group">
                                  <div className="flex justify-between mb-3">
-                                    <span className="font-mono font-bold text-white text-sm">{hideBalance ? '****' : formatSAL(stake.amount) + ' SAL'}</span>
-                                    <span className="font-mono text-accent-success shadow-glow-sm text-xs">{hideBalance ? '****' : '+' + stake.rewards + ' SAL'}</span>
+                                    <span className="font-mono font-bold text-white text-sm">{maskAuxiliaryBalanceData ? '****' : formatSAL(stake.amount) + ' SAL'}</span>
+                                    <span className="font-mono text-accent-success shadow-glow-sm text-xs">{maskAuxiliaryBalanceData ? '****' : '+' + stake.rewards + ' SAL'}</span>
                                  </div>
 
                                  <div className="h-1.5 w-full bg-black rounded-full overflow-hidden mb-3 border border-white/5">
@@ -320,15 +321,15 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
                   </div>
                </div>
                <div className={`flex flex-col flex-1 w-full bg-gradient-to-b from-[#131320] to-[#0f0f18]/50 relative min-h-0 ${isMobileOrTablet ? 'px-[1px] pb-2' : 'pb-1'}`}>
-                  {hideBalance && (
+                  {maskAuxiliaryBalanceData && (
                      <div className="absolute inset-0 z-10 flex items-center justify-center backdrop-blur-sm bg-bg-primary/20">
                         <div className="flex flex-col items-center gap-2 text-text-muted">
-                           <EyeOff size={24} />
-                           <span className="text-sm">{t('dashboard.chartHidden')}</span>
+                           {hideBalance ? <EyeOff size={24} /> : <Clock size={24} />}
+                           <span className="text-sm">{hideBalance ? t('dashboard.chartHidden') : t('common.loading')}</span>
                         </div>
                      </div>
                   )}
-                  <div className={`w-full flex-1 flex flex-col min-h-0 transition-all duration-300 ${!isMobileOrTablet ? 'md:min-h-[18.75rem]' : ''} ${hideBalance ? 'opacity-10 blur-md' : 'opacity-100'}`}>
+                  <div className={`w-full flex-1 flex flex-col min-h-0 transition-all duration-300 ${!isMobileOrTablet ? 'md:min-h-[18.75rem]' : ''} ${maskAuxiliaryBalanceData ? 'opacity-10 blur-md' : 'opacity-100'}`}>
                      <BalanceChart />
                   </div>
                </div>
@@ -344,15 +345,15 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, onNavigate, resetKey }) =>
                      </h3>
                      <Button variant="ghost" size="sm" className="text-xs h-8 hover:bg-white/5 text-transparent bg-clip-text bg-gradient-to-r from-accent-primary to-accent-secondary" onClick={() => onNavigate(TabView.HISTORY)}>{t('dashboard.viewAll')}</Button>
                   </div>
-                  {hideBalance && (
+                  {maskAuxiliaryBalanceData && (
                      <div className="absolute inset-0 z-10 flex items-center justify-center backdrop-blur-sm bg-bg-primary/20">
                         <div className="flex flex-col items-center gap-2 text-text-muted">
-                           <EyeOff size={24} />
-                           <span className="text-sm">{t('dashboard.activityHidden')}</span>
+                           {hideBalance ? <EyeOff size={24} /> : <Clock size={24} />}
+                           <span className="text-sm">{hideBalance ? t('dashboard.activityHidden') : t('common.loading')}</span>
                         </div>
                      </div>
                   )}
-                  <div className={`flex-1 overflow-auto custom-scrollbar transition-all duration-300 ${hideBalance ? 'opacity-10 blur-md' : 'opacity-100'}`}>
+                  <div className={`flex-1 overflow-auto custom-scrollbar transition-all duration-300 ${maskAuxiliaryBalanceData ? 'opacity-10 blur-md' : 'opacity-100'}`}>
                      <TransactionList compact={true} onTxClick={(txId) => setSelectedTxId(txId)} />
                   </div>
                </Card>
