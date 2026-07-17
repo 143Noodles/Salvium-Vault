@@ -116,6 +116,10 @@ android/content-dist/
 public/SalviumWallet.js
 public/SalviumWallet.wasm
 
+# Deployment-local Android app links and generated build provenance
+public/.well-known/
+public/build-info.json
+
 # Runtime data, caches, agent state - never commit (blockchain cache + telemetry logs live here)
 data/
 .gradle/
