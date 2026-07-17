@@ -7,6 +7,7 @@ import fs from 'fs';
 const BASE = process.env.SMOKE_URL || 'https://vault-test.salvium.tools';
 const SEED = fs.readFileSync('/tmp/.salvium_seed', 'utf8').trim();
 const PASSWORD = 'HeadlessTest123!';
+const EXPECTED_BALANCE_ATOMIC = '1682760091';
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 const browser = await chromium.launch({ headless: true });
@@ -59,24 +60,34 @@ await pws.nth(0).fill(PASSWORD);
 await pws.nth(1).fill(PASSWORD);
 await page.getByRole('button', { name: /restore wallet/i }).last().click();
 log('restore started');
+const restoreStartedAt = Date.now();
 
-// Poll for scan completion: dashboard with the expected ~16.88 SAL balance.
+// Poll for scan completion and require the designated wallet's exact atomic
+// balance. A loose 16.8x UI match would miss a lost or duplicated output.
 const deadline = Date.now() + 14 * 60 * 1000;
 let lastSnippet = '';
 let success = false;
+let observedBalanceAtomic = null;
 while (Date.now() < deadline) {
   await page.waitForTimeout(15000);
   const txt = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 1200)).catch(() => '');
   const snippet = txt.slice(0, 220);
   if (snippet !== lastSnippet) { log('ui:', snippet); lastSnippet = snippet; }
-  if (/16\.8\d/.test(txt)) { success = true; break; }
+  if (txt.includes('Dashboard')) {
+    observedBalanceAtomic = await page.evaluate(async () => {
+      const balance = await window.walletService?.getBalance?.();
+      return Number.isSafeInteger(balance?.balance) ? String(balance.balance) : null;
+    }).catch(() => null);
+    if (observedBalanceAtomic === EXPECTED_BALANCE_ATOMIC) { success = true; break; }
+  }
 }
-log('balance reached:', success);
+const restoreElapsedMs = Date.now() - restoreStartedAt;
+log('exact balance reached:', success, observedBalanceAtomic);
 
 let sweep = 'skipped';
+const abortedUrls = [];
 if (success) {
   log('step: spendability dry-run (broadcast blocked)');
-  const abortedUrls = [];
   await page.route('**/*sendrawtransaction*', (r) => {
     const req = r.request();
     abortedUrls.push({ url: req.url(), bodyBytes: (req.postData() || '').length });
@@ -99,14 +110,41 @@ if (success) {
 }
 
 const violations = await page.evaluate(() => window.__cspViolations).catch(() => ['<eval failed>']);
+const intentionalBroadcastFailures = failedRequests.filter(({ url, reason }) =>
+  url.includes('/api/wallet/sendrawtransaction') && reason === 'net::ERR_FAILED'
+);
+const unexpectedFailedRequests = failedRequests.filter((failure) =>
+  !intentionalBroadcastFailures.includes(failure)
+);
+const unexpectedConsoleErrors = consoleErrors.filter((message) =>
+  !/^Failed to load resource: net::ERR_FAILED$/.test(message)
+);
 log('RESULT', JSON.stringify({
   success,
+  expectedBalanceAtomic: EXPECTED_BALANCE_ATOMIC,
+  observedBalanceAtomic,
+  restoreElapsedMs,
   sweep,
+  abortedBroadcasts: abortedUrls,
   violations,
   workerUrls: [...new Set(workerUrls)],
   failedResponses: failedResponses.slice(0, 30),
   failedRequests: failedRequests.slice(0, 30),
   consoleErrors: consoleErrors.slice(0, 20),
+  unexpectedFailedRequests,
+  unexpectedConsoleErrors,
 }, null, 1));
 await browser.close();
-process.exit(success && violations.length === 0 ? 0 : 1);
+const pass = success
+  && observedBalanceAtomic === EXPECTED_BALANCE_ATOMIC
+  && sweep.startsWith('threw:')
+  && abortedUrls.length >= 1
+  && abortedUrls.every(({ bodyBytes }) => bodyBytes > 100)
+  && violations.length === 0
+  && failedResponses.length === 0
+  && unexpectedFailedRequests.length === 0
+  && unexpectedConsoleErrors.length === 0
+  && workerUrls.some((url) => url.includes('/wallet/wallet-host.worker.js'))
+  && workerUrls.some((url) => url.includes('/wallet/csp-scanner.worker.js'))
+  && workerUrls.every((url) => !url.startsWith('blob:'));
+process.exit(pass ? 0 : 1);
