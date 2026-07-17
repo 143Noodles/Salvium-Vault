@@ -4,7 +4,17 @@ A secure, non-custodial web wallet for the [Salvium](https://salvium.io) cryptoc
 
 ## Overview
 
-Salvium Vault is a fully client-side wallet that lets you create, manage, and transact with SAL without trusting a third party with your keys. All cryptographic operations happen locally in your browser using WebAssembly compiled from Salvium's C++ codebase. Blockchain scanning is also done client-side using compact view-tag data, so the server never learns which transactions or outputs belong to you.
+Salvium Vault keeps seed material and private-key operations on your device.
+Wallet cryptography and ownership checks run locally using WebAssembly compiled
+from Salvium's C++ codebase. The hosted service supplies compact blockchain
+data, daemon responses, transaction relay, and price data.
+
+Vault is a light wallet, not a validating node. It does not independently
+validate proof-of-work or establish the canonical chain, and network operators
+can observe ordinary connection metadata and request patterns. The service does
+not receive your seed or private keys, but users who need an independently
+validated chain view should use a local full node with a compatible installed
+wallet.
 
 **Live Site:** [https://vault.salvium.tools](https://vault.salvium.tools)
 
@@ -20,7 +30,7 @@ Salvium Vault is a fully client-side wallet that lets you create, manage, and tr
 - **Fiat Currency Display** - View balances and charts in your preferred currency
 - **Sweep Support** - Consolidate all spendable outputs in one transaction
 - **Fast Restores** - Parallel client-side scanning restores wallets in minutes (benchmarked faster than the native CLI)
-- **Client-Side Scanning** - The blockchain is scanned locally using compact view-tag data; the server never learns which outputs are yours
+- **Client-Side Scanning** - Compact chain data is ownership-scanned locally without sending view or spend keys to the server
 - **Node Selection** - Use the default hosted node or add your own custom node (validated and proxied through the server); the desktop app can also talk to local or official seed nodes directly
 - **Biometric Unlock** - Optional Face ID / Touch ID / Windows Hello support
 - **Encrypted Backups** - Export and import encrypted wallet backups
@@ -308,10 +318,10 @@ Vault version/hash pins together.
 
 See **[SECURITY.md](SECURITY.md)** for release-signing fingerprints, how to verify downloads, the update trust model, telemetry details, and how to report vulnerabilities.
 
-- **Client-Side Only** - All wallet operations happen in your browser
+- **Client-Side Key Operations** - Seed and private-key operations happen on your device
 - **No Key Transmission** - Private keys and seed phrases are never sent to any server
 - **Encrypted Storage** - Wallet data is encrypted with AES-256-GCM before storage
-- **Memory Protection** - Sensitive data is wiped from memory after use
+- **Sensitive-State Controls** - The app limits retained plaintext state and clears reachable sensitive buffers on lock; JavaScript runtimes cannot guarantee complete physical-memory erasure
 - **Open Source** - Full source code available for audit
 
 ### Security Considerations

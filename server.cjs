@@ -1131,7 +1131,7 @@ const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19081';
 const GLOBAL_DAEMON_BASE_URL = GLOBAL_DAEMON_URL.replace(/\/$/, '');
 const DEFAULT_WASM_BASENAME = 'SalviumWallet';
 const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c';
-const SALVIUM_WASM_RUNTIME_BUILD = '5.54.10-hf14-v113c-outputproof7-encodingdispatch-20260716';
+const SALVIUM_WASM_RUNTIME_BUILD = '5.54.11-hf14-v113c';
 const SALVIUM_WASM_BASENAME = String(process.env.SALVIUM_WASM_BASENAME || inferWasmBasenameFromNetwork(SALVIUM_NETWORK))
     .replace(/\.(js|wasm)$/i, '')
     .replace(/\.worker$/i, '') || inferWasmBasenameFromNetwork(SALVIUM_NETWORK);

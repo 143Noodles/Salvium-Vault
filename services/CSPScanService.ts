@@ -74,7 +74,7 @@ export const SUBADDRESS_OWNERSHIP_CACHE_VERSION = '8.2.22-v113c-dual-wasm-202607
 // CSPScanner.js changes independently of the WASM asset. Pin the script URL to
 // its exact bytes so a long-lived wallet cannot reuse an immutable pre-hardening
 // scanner from a prior deploy and silently fall back to blob workers.
-export const CSP_SCANNER_SCRIPT_SHA256 = 'c4417034a9ff187304d44c170f5d67d3fb451c032c5ddae27cdb12fa9bd6d3db';
+export const CSP_SCANNER_SCRIPT_SHA256 = 'ef50799167853f004dcc033e179288fa0212345ac07b43b1f4211e696f2764b8';
 
 interface CachedSubaddressOwnership {
   walletKey: string;

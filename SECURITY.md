@@ -4,6 +4,14 @@ Salvium Vault is a non-custodial wallet. Your seed and private keys never leave
 your device in any configuration; the services below supply blockchain data
 (scan data, transaction relay, price info) only.
 
+Vault is a light wallet. The web service or selected daemon supplies its chain
+view; the wallet verifies wallet ownership and transaction cryptography but
+does not validate proof-of-work or independently determine the canonical
+chain. A data source can delay, omit, or misreport chain data, and network
+operators can observe connection metadata and request patterns. These risks do
+not disclose the seed or private spend key, but they remain part of the
+light-client trust model.
+
 ## Reporting a vulnerability
 
 Email **contact@salvium.tools**. Please include reproduction steps. We respond
@@ -57,6 +65,21 @@ summary digest, minimum shell, revocations, and every file hash. The download
 host and DNS therefore cannot substitute executable content. Updates are opt-in
 on both installed channels; neither app silently downloads a content archive.
 
+## Operational credentials
+
+Private signing keys, RPC credentials, deployment environment files, and
+hosting/DNS credentials are not stored in this repository. Google retains the
+Play app-signing private key; the separate upload key is used only to
+authenticate submissions to Play. The content-update signing key is separate
+from both Android keys and is supplied to the release command through a
+protected external path.
+
+Repository contents can demonstrate key separation, signature verification,
+and clean-build deployment gates, but cannot independently prove the access
+controls on GitHub, DNS, hosting, or the release host. Those accounts and
+machines should use least-privilege access, hardware-backed MFA where
+available, protected recovery credentials, and audited access.
+
 ### Web (vault.salvium.tools)
 
 The web app is built from this repository. Like any web app, the served code
@@ -92,6 +115,9 @@ Diagnostics**.
 - The wallet WASM engine is single-threaded and runs inside a dedicated worker.
 - Wallet storage is encrypted with AES-GCM under a PBKDF2-SHA256 key
   (600,000 iterations) derived from your password (`services/CryptoService.ts`).
+- Reachable sensitive buffers are cleared on lock where practical, but the
+  JavaScript/WebView garbage collectors do not provide a guarantee that every
+  historical copy is physically erased from process memory.
 - The Android APK bundles the complete SPA, worker scripts, and both WASM
   variants. Modern WebViews use the strict static CSP; old WebViews use the
   explicit compatibility shell. Google Play builds can install only a
