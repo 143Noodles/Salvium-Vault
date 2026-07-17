@@ -9,25 +9,23 @@ import {
 } from '../utils/salpay';
 import { reportTaskEvent, startTaskTelemetry } from '../utils/clientTelemetry';
 
+export interface SalPaySendRequest {
+  address: string;
+  amount: number;
+  amountAtomic: string;
+  priority: number;
+  paymentId?: string;
+  sweepAll: false;
+  assetType: string;
+  // A SalPay result is not complete without the proof payload, and that proof
+  // always contains the transaction key. Keep this a literal so adapters cannot
+  // accidentally downgrade a proof send to the ordinary no-key send path.
+  requireTxKey: true;
+}
+
 export interface SalPayWalletSender {
-  sendTransactionWithDetails(
-    address: string,
-    amount: number,
-    priority?: number,
-    paymentId?: string,
-    sweepAll?: boolean,
-    assetType?: string,
-    requireTxKey?: boolean
-  ): Promise<SentTransactionDetails>;
-  sendTransactionWithDetailsAtomic?(
-    address: string,
-    amountAtomic: string,
-    priority?: number,
-    paymentId?: string,
-    sweepAll?: boolean,
-    assetType?: string,
-    requireTxKey?: boolean
-  ): Promise<SentTransactionDetails>;
+  sendTransactionWithDetails(request: SalPaySendRequest): Promise<SentTransactionDetails>;
+  sendTransactionWithDetailsAtomic?(request: SalPaySendRequest): Promise<SentTransactionDetails>;
 }
 
 export interface SalPayCallbackResult {
@@ -84,33 +82,45 @@ export async function sendSalPayRequest(
     hasMetadata: Boolean(request.description || request.order || request.callbackUrl || request.returnUrl),
   });
 
-  const sender = options.sender || walletService;
+  const sender: SalPayWalletSender = options.sender || {
+    sendTransactionWithDetails: (sendRequest) => walletService.sendTransactionWithDetails(
+      sendRequest.address,
+      sendRequest.amount,
+      sendRequest.priority,
+      sendRequest.paymentId,
+      sendRequest.sweepAll,
+      sendRequest.assetType,
+      sendRequest.requireTxKey
+    ),
+    sendTransactionWithDetailsAtomic: (sendRequest) => walletService.sendTransactionWithDetailsAtomic(
+      sendRequest.address,
+      sendRequest.amountAtomic,
+      sendRequest.priority,
+      sendRequest.paymentId,
+      sendRequest.sweepAll,
+      sendRequest.assetType,
+      sendRequest.requireTxKey
+    ),
+  };
   try {
     if (sendParams.callbackUrl && callbackTransport === 'relay') {
       task.stage('callback_validate');
       assertSafeSalPayUrl(sendParams.callbackUrl, 'callback URL', { allowLocalhost: false });
     }
-    const requireTxKey = Boolean(sendParams.callbackUrl && !options.skipCallback);
-    task.stage('wallet_send', { tokenShape, requireTxKey });
+    const sendRequest: SalPaySendRequest = {
+      address: sendParams.address,
+      amount: sendParams.amountNumber,
+      amountAtomic: sendParams.amountAtomic,
+      priority: 1,
+      paymentId: undefined,
+      sweepAll: false,
+      assetType: sendParams.assetType,
+      requireTxKey: true,
+    };
+    task.stage('wallet_send', { tokenShape, requireTxKey: true });
     const transaction = sender.sendTransactionWithDetailsAtomic
-      ? await sender.sendTransactionWithDetailsAtomic(
-          sendParams.address,
-          sendParams.amountAtomic,
-          1,
-          undefined,
-          false,
-          sendParams.assetType,
-          requireTxKey
-        )
-      : await sender.sendTransactionWithDetails(
-          sendParams.address,
-          sendParams.amountNumber,
-          1,
-          undefined,
-          false,
-          sendParams.assetType,
-          requireTxKey
-        );
+      ? await sender.sendTransactionWithDetailsAtomic(sendRequest)
+      : await sender.sendTransactionWithDetails(sendRequest);
 
     task.stage('proof_build', { tokenShape });
     const proof = buildSalPayProofPayload(

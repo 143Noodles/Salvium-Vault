@@ -1,0 +1,84 @@
+# Canonical direct-origin Vault routes. Keep this file under review with the
+# application release; production's Caddyfile must use these blocks verbatim.
+
+# Public blockchain bulk data. This host intentionally permits every Origin,
+# but exposes only the explicit bulk-data allowlist and never credentials.
+cdn.salvium.tools {
+	@bulkRoutes path /api/csp-bundle /api/csp-batch /api/wallet/get-spent-index.bin /api/wallet/getblocks.bin /api/wallet/gethashes.bin /api/wallet-rpc/getblocks.bin /api/wallet-rpc/gethashes.bin /vault/api/csp-bundle /vault/api/csp-batch /vault/api/wallet/get-spent-index.bin /vault/api/wallet/getblocks.bin /vault/api/wallet/gethashes.bin /vault/api/wallet-rpc/getblocks.bin /vault/api/wallet-rpc/gethashes.bin
+	@bulkPreflight {
+		method OPTIONS
+		path /api/csp-bundle /api/csp-batch /api/wallet/get-spent-index.bin /api/wallet/getblocks.bin /api/wallet/gethashes.bin /api/wallet-rpc/getblocks.bin /api/wallet-rpc/gethashes.bin /vault/api/csp-bundle /vault/api/csp-batch /vault/api/wallet/get-spent-index.bin /vault/api/wallet/getblocks.bin /vault/api/wallet/gethashes.bin /vault/api/wallet-rpc/getblocks.bin /vault/api/wallet-rpc/gethashes.bin
+	}
+
+	route {
+		handle @bulkPreflight {
+			header Access-Control-Allow-Origin "*"
+			header Access-Control-Allow-Methods "GET, POST, OPTIONS"
+			header Access-Control-Allow-Headers "Content-Type, Cache-Control, Range, X-CSRF-Token, X-Session-ID, X-Vault-Network, X-Vault-Node, X-Asset-Type, X-Request-ID, X-Sparse-Request-Id"
+			header Access-Control-Max-Age "86400"
+			respond 204
+		}
+
+		handle @bulkRoutes {
+			reverse_proxy salvium-vault:3000 {
+				header_down -Access-Control-Allow-Origin
+				header_down -Access-Control-Allow-Credentials
+				header_down -Access-Control-Allow-Methods
+				header_down -Access-Control-Allow-Headers
+				header_down -Access-Control-Expose-Headers
+			}
+			header Access-Control-Allow-Origin "*"
+			header Access-Control-Expose-Headers "Content-Length, Content-Range, Accept-Ranges, Content-Type, X-CSP-Start-Height, X-CSP-End-Height, X-CSP-Source, X-CSP-Cache-Status, X-CSP-Size, X-CSP-Incomplete, X-CSP-Manifest-Version, X-CSP-Chunks, X-CSP-Total-Size, X-CSP-Start, X-CSP-End, X-CSP-Chunk-Starts, X-CSP-Missing-Chunk-Starts, X-CSP-Missing-Reason, X-CSP-Requested-Chunk-Starts, X-CSP-Known-Height, X-CSP-Cache-Epoch, X-CSP-Covered-Heights, X-CSP-Covered-Height"
+		}
+
+		handle {
+			respond 404
+		}
+	}
+}
+
+# Bundled Android API. Capacitor deliberately retains this exact HTTPS origin
+# to preserve existing wallet storage during the wrapper-to-bundled upgrade.
+api.salvium.tools {
+	@apiDisallowedOrigin {
+		header Origin *
+		not header Origin https://vault.salvium.tools
+	}
+	@apiPreflight {
+		method OPTIONS
+		path /api/* /vault/api/*
+		header Origin https://vault.salvium.tools
+	}
+	@apiRoutes path /api/* /vault/api/*
+	@apiAllowedOrigin header Origin https://vault.salvium.tools
+
+	route {
+		respond @apiDisallowedOrigin 403
+
+		handle @apiPreflight {
+			header Access-Control-Allow-Origin "https://vault.salvium.tools"
+			header Access-Control-Allow-Methods "GET, POST, OPTIONS"
+			header Access-Control-Allow-Headers "Content-Type, Cache-Control, Range, X-CSRF-Token, X-Session-ID, X-Vault-Network, X-Vault-Node, X-Asset-Type, X-Request-ID, X-Sparse-Request-Id"
+			header Access-Control-Max-Age "86400"
+			header Vary "Origin"
+			respond 204
+		}
+
+		handle @apiRoutes {
+			reverse_proxy salvium-vault:3000 {
+				header_down -Access-Control-Allow-Origin
+				header_down -Access-Control-Allow-Credentials
+				header_down -Access-Control-Allow-Methods
+				header_down -Access-Control-Allow-Headers
+				header_down -Access-Control-Expose-Headers
+			}
+			header @apiAllowedOrigin Access-Control-Allow-Origin "https://vault.salvium.tools"
+			header @apiAllowedOrigin Access-Control-Expose-Headers "Content-Length, Content-Range, Accept-Ranges, Content-Type, X-CSP-Start-Height, X-CSP-End-Height, X-CSP-Source, X-CSP-Cache-Status, X-CSP-Size, X-CSP-Incomplete, X-CSP-Manifest-Version, X-CSP-Chunks, X-CSP-Total-Size, X-CSP-Start, X-CSP-End, X-CSP-Chunk-Starts, X-CSP-Missing-Chunk-Starts, X-CSP-Missing-Reason, X-CSP-Requested-Chunk-Starts, X-CSP-Known-Height, X-CSP-Cache-Epoch, X-CSP-Covered-Heights, X-CSP-Covered-Height"
+			header Vary "Origin"
+		}
+
+		handle {
+			respond 404
+		}
+	}
+}

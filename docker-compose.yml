@@ -28,7 +28,7 @@ services:
     depends_on:
       - salpay-agent
     healthcheck:
-      test: ["CMD-SHELL", "sh -c 'wget -q -T 10 -O /dev/null \"http://127.0.0.1:$${PORT:-3000}/vault/api/healthz\" || exit 1'"]
+      test: ["CMD-SHELL", "sh -c 'wget -q -T 10 -O /dev/null \"http://127.0.0.1:$${PORT:-3000}/vault/api/readyz\" || exit 1'"]
       interval: 30s
       timeout: 15s
       retries: 5

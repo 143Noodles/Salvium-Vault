@@ -214,9 +214,13 @@ const MiningPage: React.FC = () => {
    const isDesktopShell = isDesktopApp();
    const address = wallet.address || '';
 
-   // Data is fetched in the background by MiningProvider (starts at wallet-open,
-   // stays fresh), so the tab is instant with no per-navigation load.
-   const { snapshot, liveWorkers, snapshotLoaded, snapshotError, status, setStatus, refreshStatus } = useMining();
+   // Pool queries disclose the public wallet address, so enable them only after
+   // the user explicitly opens this page. Polling remains enabled thereafter.
+   const { snapshot, liveWorkers, snapshotLoaded, snapshotError, status, setStatus, refreshStatus, enableStats } = useMining();
+
+   useEffect(() => {
+      enableStats();
+   }, [enableStats]);
 
    const [busy, setBusy] = useState(false);
    const [controlError, setControlError] = useState<string | null>(null);

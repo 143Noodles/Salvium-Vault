@@ -151,4 +151,42 @@ describe('SendPage asset gating', () => {
     expect(await screen.findByText('This SalPay request belongs to this wallet. Use a different wallet to test the payer flow.')).not.toBeNull();
     expect(screen.getByRole('button', { name: /Send SalPay/i })).toHaveProperty('disabled', true);
   });
+
+  it('forwards the proof-required flag through the real SalPay UI adapter', async () => {
+    const sendTransactionWithDetailsAtomic = vi.fn().mockResolvedValue({
+      txHash: 'b'.repeat(64),
+      txKey: 'a'.repeat(64),
+      txBlob: 'deadbeef',
+      amount: 1.25,
+      amountAtomic: '125000000',
+      assetType: 'SAL1',
+    });
+    mockUseWallet.mockReturnValue({
+      ...mockUseWallet(),
+      validateAddress: vi.fn().mockResolvedValue(true),
+      sendTransactionWithDetailsAtomic,
+      address: 'SC1payerwallet',
+      transactions: [],
+    });
+
+    render(<SendPage enableAssetSend={false} />);
+
+    fireEvent.change(screen.getByPlaceholderText('SC1...'), {
+      target: { value: 'salvium:SC1merchantdestination?tx_amount=1.25&tx_asset=SAL1' },
+    });
+
+    const sendButton = await screen.findByRole('button', { name: /Send SalPay/i });
+    await waitFor(() => expect(sendButton).toHaveProperty('disabled', false));
+    fireEvent.click(sendButton);
+    fireEvent.click(await screen.findByRole('button', { name: 'send.confirmSendButton' }));
+
+    await waitFor(() => expect(sendTransactionWithDetailsAtomic).toHaveBeenCalledWith(
+      'SC1merchantdestination',
+      '125000000',
+      undefined,
+      false,
+      'SAL1',
+      true
+    ));
+  });
 });

@@ -47,24 +47,29 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [createStep, setCreateStep] = useState<CreateStep>('seed');
   const [generatedSeed, setGeneratedSeed] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [restoreStep, setRestoreStep] = useState<RestoreStep>('method');
+  const [restoreSeed, setRestoreSeed] = useState('');
+  const [restoreHeight, setRestoreHeight] = useState('0');
+  const [hasReturnedTransfers] = useState<boolean>(true);
 
-  // Screenshot / app-switcher protection while the generated seed is visible.
+  // Screenshot / app-switcher protection while seed material is visible or
+  // being entered. A restored seed is just as sensitive as a newly generated
+  // one and must never appear in screenshots or the Android task preview.
   useEffect(() => {
-    const seedVisible = mode === 'create' && Boolean(generatedSeed) && (createStep === 'seed' || createStep === 'verify');
+    const seedVisible = (
+      mode === 'create'
+      && Boolean(generatedSeed)
+      && (createStep === 'seed' || createStep === 'verify')
+    ) || (mode === 'restore' && restoreStep === 'input');
     if (!seedVisible) return;
     setScreenSecure(true);
     return () => setScreenSecure(false);
-  }, [mode, generatedSeed, createStep]);
+  }, [mode, generatedSeed, createStep, restoreStep]);
 
   const [verifyIndices, setVerifyIndices] = useState<[number, number]>([0, 0]);
   const [verifyInput1, setVerifyInput1] = useState('');
   const [verifyInput2, setVerifyInput2] = useState('');
   const [verifyError, setVerifyError] = useState('');
-
-  const [restoreStep, setRestoreStep] = useState<RestoreStep>('method');
-  const [restoreSeed, setRestoreSeed] = useState('');
-  const [restoreHeight, setRestoreHeight] = useState('0');
-  const [hasReturnedTransfers] = useState<boolean>(true);
 
   const [backupFile, setBackupFile] = useState<File | null>(null);
   const [backupData, setBackupData] = useState<BackupData | null>(null);

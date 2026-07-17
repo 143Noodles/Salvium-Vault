@@ -116,9 +116,6 @@ desktop/content-dist/
 public/SalviumWallet.js
 public/SalviumWallet.wasm
 
-# Android app links file (local-only)
-public/.well-known/
-
 # Runtime data, caches, agent state - never commit (blockchain cache + telemetry logs live here)
 data/
 .gradle/
@@ -148,9 +145,6 @@ wallet/backup-*/
 wallet-legacy/backup-*/
 INVESTIGATION_BRIEF.md
 stakeable-balance-deploy-ts.txt
-
-# Generated per-deploy by deploy.sh
-public/build-info.json
 
 # Bundled Android build output
 dist-android/

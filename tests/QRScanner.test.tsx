@@ -13,14 +13,16 @@ const html5QrcodeMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('html5-qrcode', () => {
-    const Html5Qrcode = html5QrcodeMocks.constructor.mockImplementation(() => ({
-        start: html5QrcodeMocks.start,
-        stop: html5QrcodeMocks.stop,
-        clear: html5QrcodeMocks.clear,
-        get isScanning() {
-            return true;
-        },
-    }));
+    const Html5Qrcode = html5QrcodeMocks.constructor.mockImplementation(function Html5QrcodeMock() {
+        return {
+            start: html5QrcodeMocks.start,
+            stop: html5QrcodeMocks.stop,
+            clear: html5QrcodeMocks.clear,
+            get isScanning() {
+                return true;
+            },
+        };
+    });
     (Html5Qrcode as any).getCameras = html5QrcodeMocks.getCameras;
 
     return {

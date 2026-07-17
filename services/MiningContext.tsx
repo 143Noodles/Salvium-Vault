@@ -35,6 +35,8 @@ interface MiningContextValue {
    status: MinerStatus | null;
    setStatus: (s: MinerStatus | null) => void;
    refreshStatus: () => Promise<void>;
+   statsEnabled: boolean;
+   enableStats: () => void;
 }
 
 const MiningContext = createContext<MiningContextValue | null>(null);
@@ -70,13 +72,16 @@ export const MiningProvider: React.FC<{ children: React.ReactNode }> = ({ childr
    const [snapshotLoaded, setSnapshotLoaded] = useState(false);
    const [snapshotError, setSnapshotError] = useState(false);
    const [status, setStatus] = useState<MinerStatus | null>(null);
+   const [statsEnabled, setStatsEnabled] = useState(false);
    const statusRef = useRef<MinerStatus | null>(null);
    statusRef.current = status;
 
-   // Snapshot + workers polling — runs in the background the whole time the wallet
-   // is open, so navigating to the Mining tab is instant and the data stays fresh.
+   const enableStats = useCallback(() => setStatsEnabled(true), []);
+
+   // Pool queries disclose the wallet address. Do not make them merely because a
+   // wallet was opened; begin only after the user explicitly opens Mining.
    useEffect(() => {
-      if (!address) {
+      if (!address || !statsEnabled) {
          setSnapshot(null);
          setLiveWorkers(null);
          setSnapshotLoaded(false);
@@ -133,7 +138,7 @@ export const MiningProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       poll();
       return () => { cancelled = true; if (timer) clearTimeout(timer); };
-   }, [address]);
+   }, [address, statsEnabled]);
 
    // Miner status polling (desktop shell only) — also background, so the control
    // panel is live the moment the tab opens.
@@ -169,6 +174,8 @@ export const MiningProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       status,
       setStatus,
       refreshStatus,
+      statsEnabled,
+      enableStats,
    };
 
    return <MiningContext.Provider value={value}>{children}</MiningContext.Provider>;
@@ -186,6 +193,8 @@ export const useMining = (): MiningContextValue => {
          status: null,
          setStatus: () => {},
          refreshStatus: async () => {},
+         statsEnabled: false,
+         enableStats: () => {},
       };
    }
    return ctx;

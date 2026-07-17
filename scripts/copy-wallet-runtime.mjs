@@ -11,6 +11,7 @@ export const walletRuntimeFiles = [
   "SalviumWallet.wasm",
   "SalviumWalletBaseline.js",
   "SalviumWalletBaseline.wasm",
+  "SalviumWallet.worker.js",
   "wasm-feature-detect.js",
   "csp-scanner.worker.js",
   "seed-validator.worker.js",

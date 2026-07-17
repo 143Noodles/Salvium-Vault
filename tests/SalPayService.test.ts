@@ -46,15 +46,16 @@ describe('SalPay service', () => {
       now: () => new Date('2026-04-30T18:00:00.000Z'),
     });
 
-    expect(mockSender.sendTransactionWithDetails).toHaveBeenCalledWith(
-      'SC1abc123',
-      1.25,
-      1,
-      undefined,
-      false,
-      'SAL1',
-      true
-    );
+    expect(mockSender.sendTransactionWithDetails).toHaveBeenCalledWith({
+      address: 'SC1abc123',
+      amount: 1.25,
+      amountAtomic: '125000000',
+      priority: 1,
+      paymentId: undefined,
+      sweepAll: false,
+      assetType: 'SAL1',
+      requireTxKey: true,
+    });
     expect(result.proof).toEqual({
       version: 1,
       txid: txHash,
@@ -117,6 +118,9 @@ describe('SalPay service', () => {
 
     expect(result.callback).toEqual({ attempted: false, ok: true });
     expect(fetchImpl).not.toHaveBeenCalled();
+    expect(mockSender.sendTransactionWithDetails).toHaveBeenCalledWith(
+      expect.objectContaining({ requireTxKey: true })
+    );
   });
 
 
@@ -136,15 +140,16 @@ describe('SalPay service', () => {
 
     await sendSalPayRequest(request, { sender: mockSender, skipCallback: true });
 
-    expect(mockSender.sendTransactionWithDetailsAtomic).toHaveBeenCalledWith(
-      'SC1abc123',
-      '3',
-      1,
-      undefined,
-      false,
-      'SAL1',
-      false
-    );
+    expect(mockSender.sendTransactionWithDetailsAtomic).toHaveBeenCalledWith({
+      address: 'SC1abc123',
+      amount: 0.00000003,
+      amountAtomic: '3',
+      priority: 1,
+      paymentId: undefined,
+      sweepAll: false,
+      assetType: 'SAL1',
+      requireTxKey: true,
+    });
     expect(mockSender.sendTransactionWithDetails).not.toHaveBeenCalled();
   });
 

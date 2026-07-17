@@ -6480,8 +6480,25 @@ async function extractAllSparseTxsFromChunk(chunkStart) {
     }
 }
 
+let startupReady = false;
+let startupError = null;
+
 app.get(['/api/healthz', '/vault/api/healthz'], noCacheHeaders, (_req, res) => {
     res.json({ status: 'ok' });
+});
+
+// Deployment readiness is deliberately stronger than liveness: do not cut
+// traffic to a freshly started image until its server-side wallet runtime and
+// persistent caches have completed their required initialization.
+app.get(['/api/readyz', '/vault/api/readyz'], noCacheHeaders, (_req, res) => {
+    if (!startupReady || !wasmModuleReady) {
+        return res.status(503).json({
+            status: 'starting',
+            wasmReady: wasmModuleReady,
+            startupError: startupError ? 'initialization_failed' : undefined,
+        });
+    }
+    return res.json({ status: 'ready', wasmReady: true });
 });
 
 app.get(['/api/debug/health', '/vault/api/debug/health'], noCacheHeaders, (req, res) => {
@@ -11058,6 +11075,31 @@ app.use(['/wallet', '/vault/wallet'], (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(404).type('text/plain').send('Not found');
 });
+const PUBLIC_WALLET_RUNTIME_FILES = new Set([
+    'CSPScanner.js',
+    'SalviumWallet.js',
+    'SalviumWallet.wasm',
+    'SalviumWalletBaseline.js',
+    'SalviumWalletBaseline.wasm',
+    'SalviumWallet.worker.js',
+    'wasm-feature-detect.js',
+    'csp-scanner.worker.js',
+    'seed-validator.worker.js',
+    'wallet-host.worker.js',
+].map((name) => name.toLowerCase()));
+app.use(['/wallet', '/vault/wallet'], (req, res, next) => {
+    let requestedPath;
+    try {
+        requestedPath = decodeURIComponent(String(req.path || '')).replace(/^\/+/, '');
+    } catch {
+        requestedPath = '';
+    }
+    if (requestedPath && !requestedPath.includes('/') && PUBLIC_WALLET_RUNTIME_FILES.has(requestedPath.toLowerCase())) {
+        return next();
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(404).type('text/plain').send('Not found');
+});
 app.use('/wallet', express.static(path.join(__dirname, 'wallet'), { setHeaders: walletStaticSetHeaders }));
 app.use('/vault/wallet', express.static(path.join(__dirname, 'wallet'), { setHeaders: walletStaticSetHeaders }));
 
@@ -14785,8 +14827,9 @@ if (true) {
         console.error('[uncaughtException]', err?.stack || err?.message || err);
         setTimeout(() => process.exit(1), 100);
     });
-    app.listen(PORT, () => {
-        console.log(`Salvium Vault Backend running on port ${PORT}`);
+    const LISTEN_HOST = SALVIUM_DESKTOP_SIDECAR ? '127.0.0.1' : '0.0.0.0';
+    app.listen(PORT, LISTEN_HOST, () => {
+        console.log(`Salvium Vault Backend running on ${LISTEN_HOST}:${PORT}`);
         console.log(`Salvium RPC Nodes: ${RPC_NODES.join(', ')}`);
         console.log(`\nWallet API Endpoints:`);
         console.log(`  GET  /api/csp-cached - Get pre-generated CSP data`);
@@ -14825,6 +14868,11 @@ if (true) {
                 ensureTxiBundleFresh().catch(err => console.warn('[TXI bundle] initial build failed:', err.message));
                 setInterval(() => { ensureTxiBundleFresh().catch(() => {}); }, 6 * 60 * 60 * 1000).unref();
 
+                if (!wasmModuleReady) {
+                    throw new Error('Required server-side wallet runtime did not initialize');
+                }
+                startupReady = true;
+                startupError = null;
                 console.log('\n[Vault] Startup complete');
 
                 // Desktop sidecar: if the local indexes are far behind the tip (fresh
@@ -14881,6 +14929,8 @@ if (true) {
                 }, 60 * 60 * 1000);
 
             } catch (err) {
+                startupReady = false;
+                startupError = err;
                 console.error('Error during cache pre-load:', err.message);
             }
         })();

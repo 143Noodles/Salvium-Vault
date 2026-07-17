@@ -6,7 +6,7 @@ import {
   useWallet,
 } from './services/WalletContext';
 import { CurrencyProvider } from './services/CurrencyContext';
-import { MiningProvider, useMining } from './services/MiningContext';
+import { MiningProvider } from './services/MiningContext';
 import { walletService } from './services/WalletService';
 import Dashboard from './components/Dashboard';
 import Onboarding from './components/Onboarding';
@@ -69,7 +69,6 @@ const isNativeApp = isNativePlatform();
 const AppContent: React.FC = () => {
   const { t } = useTranslation();
   const wallet = useWallet();
-  const { snapshot: miningSnapshot } = useMining();
   useMobileScaling();
 
   const [appState, setAppState] = useState<AppState>('initializing');
@@ -162,18 +161,9 @@ const AppContent: React.FC = () => {
     setActiveTab(tab);
   };
 
-  // Mining tab visibility: always on the desktop shell; on web/Android only when
-  // the wallet address has pool activity. Derived from the shared MiningProvider
-  // snapshot (already warm from cache + background polling), so no separate fetch.
-  const miningStats = miningSnapshot?.stats;
-  const miningActive = !!miningStats && (
-    miningStats.lastHash != null ||
-    Number(miningStats.pending) > 0 ||
-    Number(miningStats.totalPaid) > 0 ||
-    Number(miningStats.amtPaid) > 0 ||
-    Number(miningStats.amtDue) > 0
-  );
-  const showMiningTab = isDesktopApp() || miningActive;
+  // Keep Mining discoverable, but MiningProvider does not disclose the wallet
+  // address to pool APIs until the user explicitly opens the tab.
+  const showMiningTab = true;
 
   const [needsScan, setNeedsScan] = useState(false);
   const [autoLockEnabled, setAutoLockEnabled] = useState(true);

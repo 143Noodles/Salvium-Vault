@@ -20,16 +20,21 @@ const POOL_HOST = 'pool.salvium.tools';
 const POOL_API_BASE = `https://${POOL_HOST}`;
 const POOL_STRATUM_PORT = 1230;
 
-// Worker name on the pool: the pool derives worker identity from the stratum
-// password, so an unnamed miner (-p x) merges with the user's other unnamed rigs
-// in per-worker stats. Name this device so it always shows as its own worker.
-const RIG_ID = (() => {
-    const host = String(os.hostname() || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 20);
-    return host ? ('desktop-' + host) : 'desktop';
-})();
-
 const XMRIG_VERSION = '6.26.0';
 const XMRIG_RELEASE_BASE = `https://github.com/xmrig/xmrig/releases/download/v${XMRIG_VERSION}`;
+const XMRIG_MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
+const XMRIG_ASSET_SHA256 = Object.freeze({
+    [`xmrig-${XMRIG_VERSION}-linux-static-x64.tar.gz`]: 'fc6f8ae5f64e4f17481f7e3be29a1c56949f216a998414188003eae1db20c9e5',
+    [`xmrig-${XMRIG_VERSION}-macos-arm64.tar.gz`]: '6ae4eb4216e99a201ae9a3d2c3a7c275207c5165cfc25da1f3d735d6c4829c18',
+    [`xmrig-${XMRIG_VERSION}-macos-x64.tar.gz`]: '1da924b358c0089e361540c4a9e6f8b09538b29efeafa2379590e0f6db358ff4',
+    [`xmrig-${XMRIG_VERSION}-windows-arm64.zip`]: '958952de131c392a4e1e9656a1d70c3916d09d5a1f5e3f8c67dc0e6f35dbd76a',
+    [`xmrig-${XMRIG_VERSION}-windows-x64.zip`]: 'bba8097cb37d9b458a1cb1137876b27cde6740d17fe4ccbc086ba07d87d9e147',
+});
+const XMRIG_DOWNLOAD_HOSTS = new Set([
+    'github.com',
+    'release-assets.githubusercontent.com',
+    'objects.githubusercontent.com',
+]);
 
 // Salvium mainnet addresses: base58, "SC…" prefixes, ~97-106 chars.
 function isValidSalviumAddress(addr) {
@@ -76,6 +81,7 @@ const miner = {
     afkSupported: null,   // null = unknown yet
     apiPort: 0,
     apiToken: '',
+    rigId: `desktop-${crypto.randomBytes(8).toString('hex')}`,
     error: null,
     startedAt: 0,
     restarts: 0,
@@ -115,24 +121,46 @@ function xmrigAssetName() {
 }
 
 // Redirect-following buffered download (GitHub release assets 302 to a CDN).
+function assertAllowedDownloadUrl(url) {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' || !XMRIG_DOWNLOAD_HOSTS.has(parsed.hostname)) {
+        throw new Error(`Blocked xmrig download URL: ${parsed.protocol}//${parsed.hostname}`);
+    }
+    return parsed;
+}
+
 function fetchBuffer(url, redirects = 5, onProgress = null) {
     return new Promise((resolve, reject) => {
-        const mod = url.startsWith('https:') ? https : http;
-        const req = mod.get(url, { headers: { 'User-Agent': 'salvium-vault-miner' } }, (res) => {
+        let parsed;
+        try { parsed = assertAllowedDownloadUrl(url); }
+        catch (error) { reject(error); return; }
+        const req = https.get(parsed, { headers: { 'User-Agent': 'salvium-vault-miner' } }, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
                 res.resume();
                 return resolve(fetchBuffer(new URL(res.headers.location, url).toString(), redirects - 1, onProgress));
+            }
+            if (res.statusCode >= 300 && res.statusCode < 400) {
+                res.resume();
+                return reject(new Error(`Too many redirects for ${url}`));
             }
             if (res.statusCode !== 200) {
                 res.resume();
                 return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
             }
             const total = Number(res.headers['content-length'] || 0);
+            if (total > XMRIG_MAX_ARCHIVE_BYTES) {
+                res.resume();
+                return reject(new Error(`xmrig download exceeds ${XMRIG_MAX_ARCHIVE_BYTES} bytes`));
+            }
             const chunks = [];
             let got = 0;
             res.on('data', (c) => {
-                chunks.push(c);
                 got += c.length;
+                if (got > XMRIG_MAX_ARCHIVE_BYTES) {
+                    req.destroy(new Error(`xmrig download exceeds ${XMRIG_MAX_ARCHIVE_BYTES} bytes`));
+                    return;
+                }
+                chunks.push(c);
                 if (onProgress && total > 0) onProgress(Math.min(99, Math.round((got / total) * 100)));
             });
             res.on('end', () => resolve(Buffer.concat(chunks)));
@@ -145,7 +173,8 @@ function fetchBuffer(url, redirects = 5, onProgress = null) {
 
 function runCmd(cmd, args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+        const { input, ...spawnOptions } = opts;
+        const child = spawn(cmd, args, { stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], ...spawnOptions });
         let out = '';
         let errOut = '';
         child.stdout.on('data', (d) => { out += d; });
@@ -155,23 +184,42 @@ function runCmd(cmd, args, opts = {}) {
             if (code === 0) resolve(out.trim());
             else reject(new Error(`${cmd} exited ${code}: ${errOut.trim().slice(0, 400)}`));
         });
+        if (input !== undefined) child.stdin.end(input);
     });
 }
 
+function validateArchiveListing(names, verboseListing = '') {
+    const entries = String(names || '').split(/\r?\n/).filter(Boolean);
+    if (!entries.length || entries.length > 10000) throw new Error('Invalid or excessive archive entry count');
+    for (const entry of entries) {
+        const normalized = entry.replace(/\\/g, '/');
+        if (normalized.includes('\0') || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
+            throw new Error(`Unsafe absolute archive entry: ${entry}`);
+        }
+        const parts = normalized.split('/').filter((part) => part && part !== '.');
+        if (parts.some((part) => part === '..')) throw new Error(`Unsafe archive traversal entry: ${entry}`);
+    }
+    for (const line of String(verboseListing || '').split(/\r?\n/).filter(Boolean)) {
+        const type = line.trimStart()[0];
+        if (type && type !== '-' && type !== 'd') {
+            throw new Error(`Unsafe non-file archive entry type: ${type}`);
+        }
+    }
+}
+
 async function extractArchive(archivePath, destDir) {
+    const compressedTar = archivePath.endsWith('.tar.gz');
+    const listArgs = compressedTar ? ['-tzf', archivePath] : ['-tf', archivePath];
+    const verboseArgs = compressedTar ? ['-tvzf', archivePath] : ['-tvf', archivePath];
+    const names = await runCmd('tar', listArgs);
+    const verbose = await runCmd('tar', verboseArgs);
+    validateArchiveListing(names, verbose);
     if (archivePath.endsWith('.tar.gz')) {
-        await runCmd('tar', ['-xzf', archivePath, '-C', destDir]);
+        await runCmd('tar', ['-xzf', archivePath, '-C', destDir, '--no-same-owner', '--no-same-permissions']);
         return;
     }
-    // Windows zip. Windows 10 1803+ ships bsdtar (handles zip); fall back to Expand-Archive.
-    try {
-        await runCmd('tar', ['-xf', archivePath, '-C', destDir]);
-    } catch (e) {
-        await runCmd('powershell.exe', [
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-            `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${destDir}' -Force`,
-        ]);
-    }
+    // Supported Windows releases ship bsdtar. Refuse a less-auditable fallback.
+    await runCmd('tar', ['-xf', archivePath, '-C', destDir]);
 }
 
 async function ensureXmrig() {
@@ -181,14 +229,12 @@ async function ensureXmrig() {
     const asset = xmrigAssetName();
     if (!asset) throw new Error(`Mining is not supported on ${process.platform}/${process.arch}`);
 
-    await fsp.mkdir(versionDir(), { recursive: true });
+    await fsp.mkdir(versionDir(), { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') await fsp.chmod(versionDir(), 0o700);
     try {
         miner.installing = { phase: 'download', pct: 0 };
-        const sums = (await fetchBuffer(`${XMRIG_RELEASE_BASE}/SHA256SUMS`)).toString('utf8');
-        const line = sums.split('\n').find((l) => l.trim().endsWith(asset));
-        if (!line) throw new Error(`No SHA256 entry for ${asset}`);
-        const expected = line.trim().split(/\s+/)[0].toLowerCase();
-        if (!/^[0-9a-f]{64}$/.test(expected)) throw new Error('Malformed SHA256SUMS entry');
+        const expected = XMRIG_ASSET_SHA256[asset];
+        if (!expected) throw new Error(`No source-pinned SHA256 for ${asset}`);
 
         const archive = await fetchBuffer(`${XMRIG_RELEASE_BASE}/${asset}`, 5, (pct) => {
             miner.installing = { phase: 'download', pct };
@@ -200,11 +246,17 @@ async function ensureXmrig() {
 
         miner.installing = { phase: 'extract', pct: 100 };
         const archivePath = path.join(versionDir(), asset);
-        await fsp.writeFile(archivePath, archive);
+        await fsp.writeFile(archivePath, archive, { mode: 0o600 });
         await extractArchive(archivePath, versionDir());
         await fsp.unlink(archivePath).catch(() => {});
 
         if (!fs.existsSync(bin)) throw new Error('xmrig binary missing after extraction');
+        const binStat = await fsp.lstat(bin);
+        const resolvedBin = await fsp.realpath(bin);
+        const resolvedRoot = `${await fsp.realpath(versionDir())}${path.sep}`;
+        if (!binStat.isFile() || binStat.isSymbolicLink() || !resolvedBin.startsWith(resolvedRoot)) {
+            throw new Error('xmrig binary escaped the verified extraction directory');
+        }
         if (process.platform !== 'win32') await fsp.chmod(bin, 0o755);
         console.log(`[miner] Installed xmrig ${XMRIG_VERSION} (sha256 verified) at ${bin}`);
         return bin;
@@ -284,7 +336,7 @@ function xmrigArgs(address, threads) {
     return [
         '-o', `${POOL_HOST}:${POOL_STRATUM_PORT}`,
         '-u', address,
-        '-p', RIG_ID,
+        '-p', miner.rigId,
         '-a', 'rx/0',
         '-t', String(threads),
         '-k',
@@ -304,13 +356,16 @@ async function persistState() {
         afk: miner.afk,
         apiPort: miner.apiPort,
         apiToken: miner.apiToken,
+        rigId: miner.rigId,
         pid: miner.pid,
         elevated: miner.elevated,
     };
     try {
         const tmp = `${stateFilePath()}.tmp`;
-        await fsp.writeFile(tmp, JSON.stringify(state));
+        await fsp.writeFile(tmp, JSON.stringify(state), { mode: 0o600 });
+        if (process.platform !== 'win32') await fsp.chmod(tmp, 0o600);
         await fsp.rename(tmp, stateFilePath());
+        if (process.platform !== 'win32') await fsp.chmod(stateFilePath(), 0o600);
     } catch (e) { /* best effort */ }
 }
 
@@ -373,18 +428,16 @@ function windowsStopFile() { return elevatedStopFile(); } // back-compat alias
 async function launchWindowsElevated(bin, address, threads) {
     const dir = minerDir();
     const pidFile = path.join(dir, 'xmrig.pid');
-    const scriptFile = path.join(dir, 'start-miner.ps1');
     const stopFile = windowsStopFile();
     await fsp.rm(pidFile, { force: true }).catch(() => {});
     await fsp.rm(stopFile, { force: true }).catch(() => {});
 
     const argLine = xmrigArgs(address, threads).map((a) => `"${a}"`).join(', ');
-    // Runs elevated: one UAC prompt covers the Defender exclusion + MSR/huge-pages
-    // launch. The script then stays resident as a watchdog — the unelevated sidecar
+    // Runs elevated for the optimized miner launch. Never weaken Defender by adding
+    // an exclusion for a user-writable directory. The script stays resident as a watchdog — the unelevated sidecar
     // cannot signal an elevated xmrig, so the watchdog kills it when the sidecar
     // process disappears (app quit/crash) or when the sidecar writes stop.request.
     const inner = [
-        `try { Add-MpPreference -ExclusionPath ${psQuote(dir)} -ErrorAction SilentlyContinue } catch {}`,
         `$p = Start-Process -FilePath ${psQuote(bin)} -ArgumentList ${argLine} -WorkingDirectory ${psQuote(path.dirname(bin))} -WindowStyle Hidden -PassThru`,
         `$p.Id | Out-File -FilePath ${psQuote(pidFile)} -Encoding ascii`,
         `while ($true) {`,
@@ -401,16 +454,16 @@ async function launchWindowsElevated(bin, address, threads) {
         `  }`,
         `}`,
     ].join('\n');
-    await fsp.writeFile(scriptFile, inner, 'utf8');
+    const encodedCommand = Buffer.from(inner, 'utf16le').toString('base64');
 
-    // Outer (unelevated) PowerShell triggers the UAC prompt via -Verb RunAs. No -Wait:
-    // the elevated script stays resident as the watchdog; RunAs throws on UAC decline.
+    // Pass immutable command bytes through UAC. Never ask an elevated process to
+    // execute a file that the unelevated user can replace during the prompt.
     await runCmd('powershell.exe', [
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-        `Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',${psQuote(scriptFile)} | Out-Null`,
+        `Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',${psQuote(encodedCommand)} | Out-Null`,
     ]).catch((err) => {
         const msg = /canceled|cancelled|denied|1223/i.test(err.message)
-            ? 'Administrator permission was declined. Mining needs it once per session for full speed and to keep Windows Defender from blocking the miner.'
+            ? 'Administrator permission was declined. Mining needs it once per session for full-speed hardware optimizations.'
             : `Could not launch the miner: ${err.message}`;
         throw new Error(msg);
     });
@@ -438,46 +491,38 @@ function shQuote(str) {
 async function launchLinuxElevated(bin, address, threads) {
     const dir = minerDir();
     const pidFile = path.join(dir, 'xmrig.pid');
-    const scriptFile = path.join(dir, 'start-miner.sh');
     const stopFile = elevatedStopFile();
     await fsp.rm(pidFile, { force: true }).catch(() => {});
     await fsp.rm(stopFile, { force: true }).catch(() => {});
 
     const argLine = xmrigArgs(address, threads).map(shQuote).join(' ');
     const HUGEPAGES = 1280; // ~2.5GB of 2MB pages: RandomX dataset + per-thread scratchpads
-    // Self-daemonizing root helper: on first entry it re-execs itself detached (setsid)
-    // so pkexec returns as soon as xmrig is up, then the detached copy enables huge
-    // pages + the msr module (xmrig applies the MSR mod itself once privileged),
-    // launches xmrig, and stays resident as a watchdog (stop-file + sidecar-pid).
+    // pkexec reads immutable script bytes over stdin. The root shell never opens a
+    // user-writable helper path after the authorization prompt.
     const script = [
         '#!/bin/bash',
         `PIDFILE=${shQuote(pidFile)}`,
         `STOPFILE=${shQuote(stopFile)}`,
-        `if [ -z "$SALVIUM_MINER_DAEMON" ]; then`,
-        `  SALVIUM_MINER_DAEMON=1 setsid "$0" </dev/null >/dev/null 2>&1 &`,
-        `  for i in $(seq 1 60); do [ -s "$PIDFILE" ] && exit 0; sleep 0.25; done`,
-        `  exit 0`,
-        `fi`,
-        `HP=$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)`,
-        `if [ "$HP" -lt ${HUGEPAGES} ]; then sysctl -w vm.nr_hugepages=${HUGEPAGES} >/dev/null 2>&1 || true; fi`,
-        `modprobe msr >/dev/null 2>&1 || true`,
-        `${shQuote(bin)} ${argLine} &`,
-        `XPID=$!`,
-        `echo $XPID > "$PIDFILE"`,
-        `SIDECAR=${process.pid}`,
-        `while kill -0 $XPID 2>/dev/null; do`,
-        `  sleep 3`,
-        `  if [ -f "$STOPFILE" ]; then kill -TERM $XPID 2>/dev/null; sleep 2; kill -KILL $XPID 2>/dev/null; rm -f "$STOPFILE"; break; fi`,
-        `  if ! kill -0 $SIDECAR 2>/dev/null; then kill -TERM $XPID 2>/dev/null; sleep 2; kill -KILL $XPID 2>/dev/null; break; fi`,
-        `done`,
-        `rm -f "$PIDFILE"`,
+        `(`,
+        `  HP=$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)`,
+        `  if [ "$HP" -lt ${HUGEPAGES} ]; then sysctl -w vm.nr_hugepages=${HUGEPAGES} >/dev/null 2>&1 || true; fi`,
+        `  modprobe msr >/dev/null 2>&1 || true`,
+        `  ${shQuote(bin)} ${argLine} &`,
+        `  XPID=$!`,
+        `  echo $XPID > "$PIDFILE"`,
+        `  SIDECAR=${process.pid}`,
+        `  while kill -0 $XPID 2>/dev/null; do`,
+        `    sleep 3`,
+        `    if [ -f "$STOPFILE" ]; then kill -TERM $XPID 2>/dev/null; sleep 2; kill -KILL $XPID 2>/dev/null; rm -f "$STOPFILE"; break; fi`,
+        `    if ! kill -0 $SIDECAR 2>/dev/null; then kill -TERM $XPID 2>/dev/null; sleep 2; kill -KILL $XPID 2>/dev/null; break; fi`,
+        `  done`,
+        `  rm -f "$PIDFILE"`,
+        `) </dev/null >/dev/null 2>&1 &`,
+        `for i in $(seq 1 60); do [ -s "$PIDFILE" ] && exit 0; sleep 0.25; done`,
+        `exit 1`,
     ].join('\n');
-    await fsp.writeFile(scriptFile, script, { mode: 0o755 });
 
-    // pkexec shows the desktop's graphical polkit prompt (one per session) and exits
-    // non-zero (126/127) on cancel. The script daemonizes itself, so pkexec returns
-    // once xmrig's pid file appears.
-    await runCmd('pkexec', ['bash', scriptFile]).catch((err) => {
+    await runCmd('pkexec', ['bash', '-s'], { input: script }).catch((err) => {
         // Declined prompt, missing pkexec/polkit, or any other failure of the
         // elevation step: the caller falls back to standard unprivileged mining.
         const e = new Error(`Elevated launch unavailable: ${err.message}`);
@@ -755,7 +800,7 @@ function statusPayload() {
         totalShares: Number(results.shares_total) || 0,
         uptimeSec: miner.startedAt ? Math.floor((Date.now() - miner.startedAt) / 1000) : 0,
         pool: `${POOL_HOST}:${POOL_STRATUM_PORT}`,
-        rigId: RIG_ID,
+        rigId: miner.rigId,
         error: miner.error,
     };
 }
@@ -764,7 +809,13 @@ function statusPayload() {
 // tab reflects reality (and an orphaned xmrig from a crashed sidecar gets stopped).
 async function reconcilePersistedState() {
     const persisted = await loadPersistedState();
-    if (!persisted || !persisted.running) return;
+    if (persisted && /^desktop-[0-9a-f]{16}$/.test(String(persisted.rigId || ''))) {
+        miner.rigId = persisted.rigId;
+    }
+    if (!persisted || !persisted.running) {
+        await persistState();
+        return;
+    }
     miner.apiPort = persisted.apiPort || 0;
     miner.apiToken = persisted.apiToken || '';
     miner.address = persisted.address || null;
@@ -772,6 +823,7 @@ async function reconcilePersistedState() {
     miner.afk = !!persisted.afk;
     miner.pid = persisted.pid || null;
     miner.elevated = !!persisted.elevated;
+    await persistState();
     try {
         miner.lastSummary = await xmrigApi('GET', '/2/summary');
         miner.lastSummaryAt = Date.now();
@@ -823,7 +875,12 @@ function registerMiningRoutes(app, ctx) {
 
     minerDirRoot = path.join(dataDir, 'miner');
     if (Number.isFinite(cpuCount) && cpuCount > 0) cpuCountRef = cpuCount;
-    try { fs.mkdirSync(minerDirRoot, { recursive: true }); } catch (e) {}
+    try {
+        fs.mkdirSync(minerDirRoot, { recursive: true, mode: 0o700 });
+        if (process.platform !== 'win32') fs.chmodSync(minerDirRoot, 0o700);
+    } catch (e) {
+        throw new Error(`Unable to secure miner data directory: ${e.message}`);
+    }
 
     // ------------------------- stats proxy (all platforms) -------------------
     async function proxyPoolJson(res, cacheKey, ttlMs, poolPath) {
@@ -999,4 +1056,15 @@ function registerMiningRoutes(app, ctx) {
     }
 }
 
-module.exports = { registerMiningRoutes };
+module.exports = {
+    registerMiningRoutes,
+    _test: {
+        assertAllowedDownloadUrl,
+        validateArchiveListing,
+        expectedAssetHashes: XMRIG_ASSET_SHA256,
+        persistState,
+        loadPersistedState,
+        setMinerDirRoot: (dir) => { minerDirRoot = dir; },
+        getMinerState: () => ({ ...miner }),
+    },
+};

@@ -484,10 +484,22 @@ const SendPage: React.FC<SendPageProps> = ({ initialParams, enableAssetSend = fa
 
         const result = await sendSalPayRequest(request, {
           sender: {
-            sendTransactionWithDetails: (toAddress, sendAmount, _priority, requestPaymentId, requestSweepAll, requestAssetType) =>
-              wallet.sendTransactionWithDetails(toAddress, sendAmount, requestPaymentId, requestSweepAll, requestAssetType),
-            sendTransactionWithDetailsAtomic: (toAddress, requestAmountAtomic, _priority, requestPaymentId, requestSweepAll, requestAssetType) =>
-              wallet.sendTransactionWithDetailsAtomic(toAddress, requestAmountAtomic, requestPaymentId, requestSweepAll, requestAssetType),
+            sendTransactionWithDetails: (sendRequest) => wallet.sendTransactionWithDetails(
+              sendRequest.address,
+              sendRequest.amount,
+              sendRequest.paymentId,
+              sendRequest.sweepAll,
+              sendRequest.assetType,
+              sendRequest.requireTxKey
+            ),
+            sendTransactionWithDetailsAtomic: (sendRequest) => wallet.sendTransactionWithDetailsAtomic(
+              sendRequest.address,
+              sendRequest.amountAtomic,
+              sendRequest.paymentId,
+              sendRequest.sweepAll,
+              sendRequest.assetType,
+              sendRequest.requireTxKey
+            ),
           },
         });
         setTxHash(result.transaction.txHash);
