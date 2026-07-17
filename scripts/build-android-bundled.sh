@@ -20,6 +20,7 @@ cd "$ROOT_DIR"
 
 echo "=== vite build (bundled -> dist-android) ==="
 npx vite build
+node scripts/apply-bundled-csp.mjs dist-android
 
 echo "=== packaging wallet runtime ==="
 node scripts/copy-wallet-runtime.mjs dist-android/wallet
@@ -33,7 +34,11 @@ grep -q "\"hostname\"" "$CONFIG_JSON" || { echo "FATAL: bundled config missing h
 if grep -q "\"url\"" "$CONFIG_JSON"; then echo "FATAL: bundled config still has server.url"; exit 1; fi
 test -s dist-android/wallet/SalviumWallet.wasm || { echo "FATAL: WASM not packaged"; exit 1; }
 test -s dist-android/index.html || { echo "FATAL: index.html missing"; exit 1; }
+test -s dist-android/index-legacy.html || { echo "FATAL: bundled legacy CSP shell missing"; exit 1; }
+grep -q 'http-equiv="Content-Security-Policy"' dist-android/index.html || { echo "FATAL: strict bundled CSP missing"; exit 1; }
+grep -q 'name="salvium-csp-tier" content="legacy"' dist-android/index-legacy.html || { echo "FATAL: legacy bundled CSP tier missing"; exit 1; }
 test -s android/app/src/main/assets/public/wallet/SalviumWallet.wasm || { echo "FATAL: WASM not in android assets"; exit 1; }
+test -s android/app/src/main/assets/public/index-legacy.html || { echo "FATAL: legacy bundled CSP shell not in Android assets"; exit 1; }
 echo "assertions passed"
 
 cd android

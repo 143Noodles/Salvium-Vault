@@ -15,7 +15,11 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.WebViewListener;
 import com.capacitorjs.plugins.statusbar.StatusBarPlugin;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends BridgeActivity {
     private int lastSystemBarTop = 0;
@@ -40,9 +44,37 @@ public class MainActivity extends BridgeActivity {
             webView.setOverScrollMode(android.view.View.OVER_SCROLL_NEVER);
             webView.setVerticalScrollBarEnabled(false);
             webView.setHorizontalScrollBarEnabled(false);
+            routeLegacyBundledShellIfRequired(webView);
         }
 
         installSystemBarInsetBridge();
+    }
+
+    private boolean hasBundledLegacyShell() {
+        try (InputStream ignored = getAssets().open("public/index-legacy.html")) {
+            return true;
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    private boolean supportsWasmUnsafeEval(WebView webView) {
+        String userAgent = webView.getSettings().getUserAgentString();
+        if (userAgent == null) return false;
+        Matcher chrome = Pattern.compile("(?:Chrome|Chromium)/(\\d+)").matcher(userAgent);
+        if (!chrome.find()) return false;
+        try {
+            return Integer.parseInt(chrome.group(1)) >= 97;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+    }
+
+    private void routeLegacyBundledShellIfRequired(WebView webView) {
+        if (!hasBundledLegacyShell() || supportsWasmUnsafeEval(webView)) return;
+        // Both shells use the same HTTPS origin, so IndexedDB/localStorage wallet
+        // state is preserved. Unknown engines deliberately take the compatible tier.
+        webView.post(() -> webView.loadUrl("https://vault.salvium.tools/index-legacy.html"));
     }
 
     private void installSystemBarInsetBridge() {

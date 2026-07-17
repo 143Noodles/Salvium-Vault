@@ -31,10 +31,20 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 const remoteCodeLoads = [];
 const apiHosts = new Set();
+const workerUrls = [];
+const failedResponses = [];
+const failedRequests = [];
 page.on('request', (req) => {
   const u = new URL(req.url());
   if ((/\.(js|mjs|wasm)$/.test(u.pathname) || u.pathname.startsWith('/wallet/')) && u.hostname !== '127.0.0.1') remoteCodeLoads.push(req.url());
   if (u.pathname.startsWith('/api/') && u.hostname !== '127.0.0.1') apiHosts.add(u.hostname);
+});
+page.on('worker', (worker) => workerUrls.push(worker.url()));
+page.on('response', (response) => {
+  if (response.status() >= 400) failedResponses.push({ status: response.status(), url: response.url() });
+});
+page.on('requestfailed', (request) => {
+  failedRequests.push({ url: request.url(), reason: request.failure()?.errorText || 'unknown' });
 });
 await page.addInitScript(() => { window.__v = []; document.addEventListener('securitypolicyviolation', (e) => window.__v.push(e.violatedDirective)); });
 
@@ -81,8 +91,20 @@ if (success) {
 }
 
 const violations = await page.evaluate(() => window.__v).catch(() => ['<fail>']);
-log('RESULT', JSON.stringify({ success, sweep, abortedBroadcastBytes: aborted, remoteCodeLoads, apiHostsSeen: [...apiHosts], violations }, null, 1));
+const cspTier = await page.evaluate(() => document.querySelector('meta[name="salvium-csp-tier"]')?.content || null).catch(() => null);
+log('RESULT', JSON.stringify({
+  success,
+  sweep,
+  abortedBroadcastBytes: aborted,
+  remoteCodeLoads,
+  apiHostsSeen: [...apiHosts],
+  cspTier,
+  workerUrls: [...new Set(workerUrls)],
+  failedResponses: failedResponses.slice(0, 30),
+  failedRequests: failedRequests.slice(0, 30),
+  violations,
+}, null, 1));
 await browser.close();
 server.close();
-const pass = success && remoteCodeLoads.length === 0 && [...apiHosts].every((x) => x === 'api.salvium.tools') && violations.length === 0 && aborted.some((b) => b > 100);
+const pass = success && cspTier === 'modern' && remoteCodeLoads.length === 0 && [...apiHosts].every((x) => x === 'api.salvium.tools') && violations.length === 0 && aborted.some((b) => b > 100);
 process.exit(pass ? 0 : 1);
