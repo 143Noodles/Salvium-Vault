@@ -1,12 +1,13 @@
-// CSP smoke: load vault-test in headless Chromium (modern CSP variant),
-// create a wallet, assert zero CSP violations and a working WASM engine.
-import { chromium } from 'playwright';
+// CSP smoke: load vault-test in a modern browser, assert the strict response
+// policy, prove the WASM engine works, and prove JS string execution is blocked.
+import { chromium, firefox } from 'playwright';
 
 const BASE = process.env.SMOKE_URL || 'https://vault-test.salvium.tools';
-const violations = [];
+const BROWSER_NAME = process.env.SMOKE_BROWSER || 'chromium';
+const browserType = BROWSER_NAME === 'firefox' ? firefox : chromium;
 const consoleErrors = [];
 
-const browser = await chromium.launch({ headless: true });
+const browser = await browserType.launch({ headless: true });
 const page = await browser.newPage();
 await page.addInitScript(() => {
   window.__cspViolations = [];
@@ -18,34 +19,67 @@ page.on('console', (msg) => {
   if (msg.type() === 'error') consoleErrors.push(msg.text().slice(0, 300));
 });
 
-await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
+const documentResponse = await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
 await page.waitForTimeout(12000); // let bootstrap + WASM worker init run
 
-// Try to reach the create-wallet flow if onboarding is shown.
 const bodyText = await page.evaluate(() => document.body.innerText.slice(0, 2000));
 const wasmState = await page.evaluate(() => ({
   hasApp: !!document.querySelector('#root > *'),
   violations: window.__cspViolations,
 }));
+const csp = await documentResponse?.headerValue('content-security-policy') || '';
 
-// Drive wallet creation via the visible UI if present.
-let created = 'skipped';
+let engineProbe = 'n/a';
 try {
-  const createBtn = page.getByText(/create.*wallet|new wallet/i).first();
-  if (await createBtn.isVisible({ timeout: 3000 })) {
-    await createBtn.click();
-    await page.waitForTimeout(4000);
-    created = 'clicked-create';
-  }
-} catch { /* onboarding variant differs; violations check is the core assert */ }
+  engineProbe = await page.evaluate(async () => {
+    const ws = window.walletService;
+    if (!ws?.validateMnemonic) return 'no validateMnemonic';
+    const result = await ws.validateMnemonic('not a real seed phrase at all just words here to test the engine path zzzz');
+    return `engine-responded:${JSON.stringify(result).slice(0, 80)}`;
+  });
+} catch (error) {
+  engineProbe = `threw:${String(error?.message || error).slice(0, 120)}`;
+}
+
+// Trigger from a real page-realm event handler. DevTools evaluation alone can
+// bypass page CSP and therefore is not a valid unsafe-eval assertion.
+await page.evaluate(() => {
+  window.__dynamicCodeProbe = null;
+  const button = document.createElement('button');
+  button.id = 'qa-dynamic-code-probe';
+  button.textContent = 'CSP probe';
+  button.addEventListener('click', () => {
+    const before = window.__cspViolations.length;
+    let blocked = false;
+    try { new Function('return 1')(); } catch (error) { blocked = error?.name === 'EvalError'; }
+    setTimeout(() => {
+      window.__dynamicCodeProbe = { blocked, violations: window.__cspViolations.slice(before) };
+    }, 0);
+  });
+  document.body.appendChild(button);
+});
+await page.click('#qa-dynamic-code-probe');
+await page.waitForFunction(() => window.__dynamicCodeProbe !== null);
+const dynamicCodeProbe = await page.evaluate(() => window.__dynamicCodeProbe);
 
 const finalViolations = await page.evaluate(() => window.__cspViolations);
 console.log(JSON.stringify({
+  browser: BROWSER_NAME,
   appRendered: wasmState.hasApp,
   bodyPreview: bodyText.slice(0, 200).replace(/\n/g, ' | '),
-  created,
+  csp,
+  engineProbe,
+  dynamicCodeProbe,
+  bootstrapCspViolations: wasmState.violations,
   cspViolations: finalViolations,
   consoleErrors: consoleErrors.slice(0, 10),
 }, null, 2));
 await browser.close();
-process.exit(finalViolations.length === 0 && wasmState.hasApp ? 0 : 1);
+const pass = wasmState.hasApp
+  && csp.includes("'wasm-unsafe-eval'")
+  && !csp.includes("'unsafe-eval'")
+  && engineProbe.startsWith('engine-responded:')
+  && wasmState.violations.length === 0
+  && dynamicCodeProbe.blocked
+  && dynamicCodeProbe.violations.some((violation) => violation.startsWith('script-src'));
+process.exit(pass ? 0 : 1);

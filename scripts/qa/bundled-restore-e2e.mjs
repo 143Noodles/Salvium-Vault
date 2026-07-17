@@ -109,6 +109,16 @@ const isApprovedRemoteRequest = ({ url }) => {
   return u.hostname === 'explorer.salvium.tools' && u.pathname === '/api/staking';
 };
 const unexpectedRemoteRequests = remoteRequests.filter((request) => !isApprovedRemoteRequest(request));
+const remoteRequestCounts = new Map();
+for (const request of remoteRequests) {
+  const u = new URL(request.url);
+  const key = `${request.method}\t${request.resourceType}\t${u.hostname}\t${u.pathname}`;
+  remoteRequestCounts.set(key, (remoteRequestCounts.get(key) || 0) + 1);
+}
+const remoteRequestSummary = [...remoteRequestCounts.entries()].map(([key, count]) => {
+  const [method, resourceType, hostname, pathname] = key.split('\t');
+  return { method, resourceType, hostname, pathname, count };
+});
 const intentionalBroadcastFailures = failedRequests.filter(({ url, reason }) => url.includes('/api/wallet/sendrawtransaction') && reason === 'net::ERR_FAILED');
 const localWorkersOnly = workerUrls.length >= 3 && workerUrls.every((url) => new URL(url).hostname === '127.0.0.1');
 log('RESULT', JSON.stringify({
@@ -119,7 +129,8 @@ log('RESULT', JSON.stringify({
   sweep,
   abortedBroadcastBytes: aborted,
   remoteCodeLoads,
-  remoteRequests,
+  remoteRequestCount: remoteRequests.length,
+  remoteRequestSummary,
   unexpectedRemoteRequests,
   cspTier,
   workerUrls: [...new Set(workerUrls)],
