@@ -67,6 +67,10 @@ const RETURN_ADDR_STORE = 'addresses';
 const SUBADDRESS_OWNERSHIP_DB_NAME = 'salvium-subaddress-ownership';
 const SUBADDRESS_OWNERSHIP_DB_VERSION = 1;
 const SUBADDRESS_OWNERSHIP_STORE = 'ownership';
+// This cache contains wallet-derived data, not generated glue state. Keep its compatibility
+// key independent from WASM_CACHE_VERSION so a byte-only glue relink cannot discard it and
+// add avoidable work to the next launch. The value matches already-persisted v1.1.3c entries.
+export const SUBADDRESS_OWNERSHIP_CACHE_VERSION = '8.2.22-v113c-dual-wasm-20260709';
 
 interface CachedSubaddressOwnership {
   walletKey: string;
@@ -327,7 +331,7 @@ async function saveSubaddressOwnershipCsv(walletAddress: string, csv: string, re
         walletAddress,
         csv,
         count,
-        wasmVersion: WASM_CACHE_VERSION,
+        wasmVersion: SUBADDRESS_OWNERSHIP_CACHE_VERSION,
         updatedAt: Date.now(),
       } satisfies CachedSubaddressOwnership);
       tx.oncomplete = () => resolve();
@@ -350,7 +354,7 @@ async function loadSubaddressOwnershipCsv(walletAddress: string, requiredCount: 
       request.onerror = () => reject(request.error);
     });
 
-    if (!cached || cached.walletAddress !== walletAddress || cached.wasmVersion !== WASM_CACHE_VERSION) {
+    if (!cached || cached.walletAddress !== walletAddress || cached.wasmVersion !== SUBADDRESS_OWNERSHIP_CACHE_VERSION) {
       return null;
     }
     if (!cached.csv || cached.count < requiredCount) {
