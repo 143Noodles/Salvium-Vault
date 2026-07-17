@@ -155,12 +155,27 @@ if (clipboardCopied) {
 // --- legacy UA smoke ---------------------------------------------------------
 const legacyCtx = await browser.newContext({ userAgent: 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.210 Mobile Safari/537.36' });
 const lp = await legacyCtx.newPage();
-await lp.goto(BASE, { waitUntil: 'domcontentloaded' });
+const legacyErrors = [];
+lp.on('console', (message) => { if (message.type() === 'error') legacyErrors.push(message.text()); });
+lp.on('pageerror', (error) => legacyErrors.push(String(error)));
+const legacyResponse = await lp.goto(BASE, { waitUntil: 'domcontentloaded' });
 await lp.waitForTimeout(9000);
-results.legacyUa = { rendered: await lp.evaluate(() => /create wallet|restore wallet/i.test(document.body.innerText)) };
+const legacyText = await lp.evaluate(() => document.body.innerText);
+const legacyCsp = await legacyResponse?.headerValue('content-security-policy') || '';
+results.legacyUa = {
+  rendered: /create wallet|restore wallet|install app required/i.test(legacyText),
+  compatibilityCsp: legacyCsp.includes("'unsafe-eval'") && !legacyCsp.includes("'wasm-unsafe-eval'"),
+  errors: legacyErrors.slice(0, 10),
+};
+results.legacyUa.pass = results.legacyUa.rendered && results.legacyUa.compatibilityCsp && results.legacyUa.errors.length === 0;
 log('legacy UA render:', JSON.stringify(results.legacyUa));
 
 console.log('FINAL', JSON.stringify(results, null, 1));
-const pass = results.walletCreated && results.telemetryToggle.pass && results.kdfRewrap.pass && results.legacyUa.rendered;
+const pass = results.walletCreated
+  && results.telemetryToggle.pass
+  && results.telemetryFlagStored === 'false'
+  && results.kdfRewrap.pass
+  && results.clipboard?.pass === true
+  && results.legacyUa.pass;
 await browser.close();
 process.exit(pass ? 0 : 1);
