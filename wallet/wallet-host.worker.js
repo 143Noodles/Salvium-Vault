@@ -305,13 +305,12 @@ async function handleInit(config) {
         // PAIR SELF-VERIFICATION: stale wasm bytes survive in cache layers we cannot
         // clear remotely (e.g. a WebView HTTP cache honoring a historically-served
         // immutable header). Probe a signature whose arity changed across builds; on
-        // mismatch refetch with a cache-busting param no cache can answer.
+        // mismatch refetch with a cache-busting param no cache can answer. Embind's
+        // DYNAMIC_EXECUTION=0 wrappers have Function.length=0, so derive their declared
+        // arity from embind's pre-invocation argument-count error instead.
         try {
-            const proto = Module && Module.WasmWallet && Module.WasmWallet.prototype;
-            const arity = proto && typeof proto.ingest_sparse_transactions === 'function'
-                ? proto.ingest_sparse_transactions.length
-                : -1;
-            if (arity >= 0 && arity !== 5) {
+            const arity = getEmbindExpectedArity(wallet, 'ingest_sparse_transactions');
+            if (arity !== 5) {
                 postTelemetry('wallet.wasm_pair_mismatch_healed', 'warn', 'stale arity=' + arity, {
                     endpoint: String(activeWasmUrl || ''),
                     reason: 'stale-wasm-bytes',
@@ -323,9 +322,18 @@ async function handleInit(config) {
                 wasmFetchBust = Math.random().toString(36).slice(2);
                 importScripts(bustUrl(activeGlueUrl));
                 const freshFactory = (typeof SalviumWallet !== 'undefined') ? SalviumWallet : self.SalviumWallet;
-                Module = await freshFactory(buildFactoryOptions());
+                const freshModule = await freshFactory(buildFactoryOptions());
+                disposeWalletInstance(wallet);
+                Module = freshModule;
+                wallet = createWalletInstance(config.network);
+                const healedArity = getEmbindExpectedArity(wallet, 'ingest_sparse_transactions');
+                if (healedArity !== 5) {
+                    throw new Error('WASM pair verification failed after cache bust: arity=' + healedArity);
+                }
             }
-        } catch (verifyErr) { }
+        } catch (verifyErr) {
+            throw verifyErr;
+        }
         postToClient({ kind: 'ready', wasmVersion: resolveWasmVersion(), wasmVariant: activeWasmVariant });
     } catch (err) {
         initInProgress = false;
@@ -355,6 +363,25 @@ function createWalletInstance(network) {
         }
         return new Module.WasmWallet();
     }
+}
+
+function disposeWalletInstance(instance) {
+    if (!instance || typeof instance.delete !== 'function') return;
+    try { instance.delete(); } catch (_) { }
+}
+
+function getEmbindExpectedArity(instance, method) {
+    const fn = instance && instance[method];
+    if (typeof fn !== 'function') return -1;
+    if (fn.length > 0) return fn.length;
+    try {
+        fn.call(instance);
+    } catch (error) {
+        const message = (error && error.message) ? error.message : String(error || '');
+        const match = message.match(/called with 0 arguments, expected (\d+)/i);
+        if (match) return parseInt(match[1], 10);
+    }
+    return -1;
 }
 
 function resolveWasmVersion() {
