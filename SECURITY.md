@@ -21,8 +21,12 @@ signing certificate is the stable anchor to verify, e.g. with
 
 | Certificate | SHA-256 fingerprint |
 |---|---|
+| Play app-signing key (what your device sees) | `AD:FE:AE:3B:C0:A1:67:02:FE:28:33:B1:D0:3E:AB:8D:FF:B3:09:05:30:23:FC:99:37:A9:BE:0D:FA:42:78:10` |
 | Upload key (signs what we send to Google) | `FA:83:AD:00:06:2B:48:AE:C2:88:C5:67:DC:1A:9E:87:E8:EC:DE:85:D1:46:E1:7E:CF:9F:F9:61:E3:C2:FC:C6` |
-| Play app-signing key (what your device sees) | *publication pending — will be added here from the Play Console* |
+
+The Play app-signing fingerprint is the identity users should compare against an
+installed Play build. The upload-key fingerprint is published only as release-
+pipeline provenance; Google replaces that signature before delivery to users.
 
 The APK/AAB contains a complete known-good wallet. Google Play builds may also
 offer a newer wallet-content bundle from the project GitHub release. The app

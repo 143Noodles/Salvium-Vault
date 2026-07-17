@@ -36,12 +36,10 @@ describe('upgrade-safe strict CSP readiness gate', () => {
   it('can force strict CSP on the cacheless public test host', () => {
     const server = read('server.cjs');
     const app = read('index.tsx');
-    const rollout = read('scripts/qa/CSP_UNSAFE_EVAL_ROLLOUT.md');
 
     expect(app).toContain('if (isTestVaultHost)');
     expect(app).toContain('Service worker disabled on test vault domain');
     expect(server).toContain("process.env.SALVIUM_CSP_FORCE_STRICT === '1'");
-    expect(rollout).toContain('SALVIUM_CSP_FORCE_STRICT=1');
   });
 
   it('does not persist a permissive worker response into the strict generation', () => {

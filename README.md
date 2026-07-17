@@ -33,8 +33,15 @@ Salvium Vault is a fully client-side wallet that lets you create, manage, and tr
 
 ### Prerequisites
 
-- Node.js 20+
-- npm or yarn
+- Node.js 22.12+
+- npm
+
+Additional native targets require:
+
+- **Android:** JDK 21+ and Android SDK platform 36 (`JAVA_HOME` and
+  `ANDROID_HOME`)
+- **Desktop:** the packaging toolchain for the target OS
+- **WASM:** Docker and a checkout of the separate Salvium-WASM repository
 
 ### Installation
 
@@ -43,8 +50,8 @@ Salvium Vault is a fully client-side wallet that lets you create, manage, and tr
 git clone https://github.com/143Noodles/Salvium-Vault.git
 cd Salvium-Vault
 
-# Install dependencies
-npm install
+# Install the exact locked dependencies
+npm ci
 ```
 
 ### Development
@@ -66,24 +73,149 @@ npm run build
 npm start
 ```
 
-## Desktop App
+Before producing any release artifact, run:
+
+```bash
+npm run typecheck
+npm test
+```
+
+## Android app
+
+The official Android build is fully bundled: the SPA, strict/legacy CSP shells,
+workers, and both matched WASM variants are packaged into the APK/AAB. API
+requests still use the configured Salvium service endpoints.
+
+Set JDK 21+ and Android SDK locations, then install the locked dependencies:
+
+```bash
+export JAVA_HOME=/path/to/jdk-21
+export ANDROID_HOME=/path/to/android-sdk
+npm ci
+```
+
+Build the desired artifact:
+
+```bash
+# QA/debug APK (package tools.salvium.qa; separate from production wallet data)
+BUNDLED_DEBUG=1 ./scripts/build-android-bundled.sh
+
+# Bundled release APK
+./scripts/build-android-bundled.sh
+
+# Bundled Google Play AAB
+npm run build:android:release
+
+# Bundled F-Droid release APK (no out-of-band content updater)
+npm run build:android:fdroid
+```
+
+Outputs:
+
+- Debug APK: `android/app/build/outputs/apk/debug/app-debug.apk`
+- Release APK: `android/app/build/outputs/apk/release/`
+- Play AAB: `android/app/build/outputs/bundle/release/app-release.aab`
+
+Release signing uses `SALVIUM_RELEASE_STORE_FILE`,
+`SALVIUM_RELEASE_STORE_PASSWORD`, `SALVIUM_RELEASE_KEY_ALIAS`, and
+`SALVIUM_RELEASE_KEY_PASSWORD`. Keep them in
+`~/.gradle/gradle.properties`, environment/CI secrets, or another protected
+release-host configuration—never in the repository. Without all four
+properties the release task can build an artifact, but it is not upload-ready.
+
+The build script runs the bundled-content and WASM-presence assertions before
+Gradle packaging. Bump `versionCode` and `versionName` in
+`android/app/build.gradle` before building a new Play release. Verify the AAB
+signing certificate and bundled `content-version.json`, then test through the
+internal Play track before promotion.
+
+With a connected QA device/emulator, run the Android instrumentation suite:
+
+```bash
+cd android
+./gradlew testDebugUnitTest connectedDebugAndroidTest --no-daemon
+```
+
+## Desktop app
+
+Build the web floor and install both locked dependency trees:
+
+```bash
+npm ci
+npm run build
+npm --prefix desktop ci
+```
+
+Run the unpackaged shell:
+
+```bash
+npm --prefix desktop start
+```
+
+Build an installer on its target OS:
+
+```bash
+# Linux Debian package
+npm --prefix desktop run dist -- --linux deb --publish never
+
+# Windows NSIS installer (run on Windows)
+npm --prefix desktop run dist -- --win nsis --publish never
+
+# macOS DMG (run on macOS)
+npm --prefix desktop run dist -- --mac dmg --publish never
+```
+
+Artifacts are written to `desktop/release/`. Production Windows installers must
+be code-signed; production macOS installers must be signed and notarized.
+Linux is intentionally distributed as a `.deb`, not an AppImage.
 
 Installers (Linux `.deb`, Windows, macOS) are on the
 [GitHub Releases](https://github.com/143Noodles/Salvium-Vault/releases) page.
 The desktop app runs the same wallet fully locally (the server component runs as a
 localhost sidecar) and updates itself through Ed25519-signed over-the-air content
-bundles. Electron or native-shell security changes require a new installer. See [desktop/PUBLISHING.md](desktop/PUBLISHING.md)
-for how releases and updates work.
+bundles. Electron or native-shell security changes require a new installer.
 
 > **Linux:** use the **.deb** package. Its installation configures Electron's
 > Chromium setuid sandbox helper and fails if the helper cannot be secured.
 > AppImage is intentionally not distributed because portable launchers may
 > silently disable the Chromium sandbox on some hosts.
 
+For a shell release, bump `desktop/package.json`, build on each target OS, and
+runtime-test the resulting installer on supported real hardware.
+
+## Signed content updates
+
+Desktop and Google Play Android builds use separate signed manifests from one
+GitHub release. Build both archives and manifests together from a clean,
+reviewed tag:
+
+```bash
+npm ci
+npm --prefix desktop ci
+SALVIUM_CONTENT_SIGNING_KEY=/protected/path/salvium-content-signing.key \
+  npm run build:content-release -- <content-version> --summary-file <notes-file>
+```
+
+The complete five-file release set is written to `content-release-dist/`.
+Review it and run `sha256sum -c SHA256SUMS.txt` inside that directory before
+publishing. The signing key is independent of the Play upload key.
+
 The Android app checks GitHub Releases for a small signed content manifest and
 prompts before downloading anything executable. Users can update now, defer,
 skip that version, or open the matching release notes; F-Droid builds disable
-this out-of-band updater. See [GOOGLE_PLAY_RELEASE.md](GOOGLE_PLAY_RELEASE.md).
+this out-of-band updater.
+
+## Browser extensions
+
+```bash
+npm ci
+npm run build:extensions
+npm run test:extension:headless
+```
+
+Chrome and Firefox packages are written under `dist-extension/`. Install the
+Playwright browser binaries first when needed with
+`npm run install:extension-browsers`.
 
 ## Docker Deployment
 
@@ -126,8 +258,9 @@ salvium-vault/
 ├── services/          # Business logic & API services
 ├── wallet/            # WebAssembly wallet core
 ├── server.cjs         # Express.js backend (RPC proxy)
-├── desktop/           # Electron desktop shell (see desktop/PUBLISHING.md)
-└── wasm-build/        # WASM compilation source & tools
+├── desktop/           # Electron desktop shell
+├── android/           # Capacitor Android shell
+└── scripts/           # Build, release, verification, and QA tooling
 ```
 
 ### Technology Stack
@@ -139,18 +272,22 @@ salvium-vault/
 
 ## WASM Build
 
-The wallet's cryptographic core is compiled to WebAssembly from the Salvium C++ source code. Pre-built WASM files are included in the `/wallet` directory.
+The wallet's cryptographic core is compiled to WebAssembly from the Salvium C++
+source code. The reviewed runtime files consumed by this repository live in
+`wallet/`.
 
 ### Building WASM from Source
 
-The WASM build requires Docker. Full build instructions and source code are available in the dedicated repository:
+The WASM build requires Docker. The pinned production build is maintained in
+the dedicated repository:
 
 **WASM Build Repository:** [https://github.com/143Noodles/Salvium-WASM](https://github.com/143Noodles/Salvium-WASM)
 
-To build locally:
+To build both production variants locally:
 
 ```bash
-cd wasm-build
+git clone https://github.com/143Noodles/Salvium-WASM.git
+cd Salvium-WASM
 
 # Windows (PowerShell)
 .\build.ps1
@@ -158,8 +295,14 @@ cd wasm-build
 # Linux/macOS
 ./build.sh
 
-# Output files will be in wasm-build/output/
+# Output files are written to output/
 ```
+
+The production Vault requires matched JavaScript/WASM files for both SIMD and
+baseline variants. The build rejects glue that uses dynamic JavaScript
+execution and writes all four hashes to `output/SHA256SUMS`. Copy the artifacts
+into `wallet/` only as a reviewed, versioned update and update the corresponding
+Vault version/hash pins together.
 
 ## Security
 

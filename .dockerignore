@@ -48,7 +48,6 @@ android/
 # Local edit backups
 *.bak-*
 **/*.bak-*
-.local-backups/
 wallet/backups/
 wallet/*.before-*
 wallet-legacy/backup-*/

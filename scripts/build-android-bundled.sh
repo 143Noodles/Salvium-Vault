@@ -22,8 +22,8 @@ jdk_is_21_or_newer() {
 if [ -z "${JAVA_HOME:-}" ] || ! jdk_is_21_or_newer "$JAVA_HOME"; then
   if command -v javac >/dev/null 2>&1; then
     JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
-  elif [ -d $HOME/.local/jdk-21 ]; then
-    JAVA_HOME=$HOME/.local/jdk-21
+  elif [ -n "${HOME:-}" ] && [ -d "$HOME/.local/jdk-21" ]; then
+    JAVA_HOME="$HOME/.local/jdk-21"
   else
     echo "FATAL: set JAVA_HOME to JDK 21 or newer"; exit 1
   fi
@@ -32,8 +32,8 @@ jdk_is_21_or_newer "$JAVA_HOME" || { echo "FATAL: JDK 21 or newer not found"; ex
 if [ -z "${ANDROID_HOME:-}" ]; then
   if [ -n "${ANDROID_SDK_ROOT:-}" ]; then
     ANDROID_HOME="$ANDROID_SDK_ROOT"
-  elif [ -d $HOME/.local/android-sdk ]; then
-    ANDROID_HOME=$HOME/.local/android-sdk
+  elif [ -n "${HOME:-}" ] && [ -d "$HOME/.local/android-sdk" ]; then
+    ANDROID_HOME="$HOME/.local/android-sdk"
   elif [ -d /opt/android-sdk ]; then
     ANDROID_HOME=/opt/android-sdk
   else
