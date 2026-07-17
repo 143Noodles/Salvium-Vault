@@ -10,7 +10,7 @@ import path from 'path';
 const ROOT = path.resolve('dist-android');
 const SEED = fs.readFileSync('/tmp/.salvium_seed', 'utf8').trim();
 const PASSWORD = 'HeadlessTest123!';
-const EXPECTED_BALANCE = '16.82760091';
+const EXPECTED_BALANCE_ATOMIC = '1682760091';
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const MIME = { '.html':'text/html','.js':'application/javascript','.css':'text/css','.wasm':'application/wasm','.json':'application/json','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2','.ico':'image/x-icon' };
 
@@ -72,13 +72,19 @@ log('restore started; scanning...');
 const restoreStartedAt = Date.now();
 
 const deadline = Date.now() + 13 * 60 * 1000;
-let success = false, last = '';
+let success = false, last = '', observedBalanceAtomic = null;
 while (Date.now() < deadline) {
   await page.waitForTimeout(15000);
   const txt = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 400)).catch(() => '');
   const snip = txt.slice(0, 150);
   if (snip !== last) { log('ui:', snip); last = snip; }
-  if (txt.includes(EXPECTED_BALANCE)) { success = true; break; }
+  if (txt.includes('Dashboard')) {
+    observedBalanceAtomic = await page.evaluate(async () => {
+      const balance = await window.walletService?.getBalance?.();
+      return Number.isSafeInteger(balance?.balance) ? String(balance.balance) : null;
+    }).catch(() => null);
+    if (observedBalanceAtomic === EXPECTED_BALANCE_ATOMIC) { success = true; break; }
+  }
 }
 log('balance reached:', success);
 const restoreElapsedMs = Date.now() - restoreStartedAt;
@@ -107,7 +113,8 @@ const intentionalBroadcastFailures = failedRequests.filter(({ url, reason }) => 
 const localWorkersOnly = workerUrls.length >= 3 && workerUrls.every((url) => new URL(url).hostname === '127.0.0.1');
 log('RESULT', JSON.stringify({
   success,
-  expectedBalance: EXPECTED_BALANCE,
+  expectedBalanceAtomic: EXPECTED_BALANCE_ATOMIC,
+  observedBalanceAtomic,
   restoreElapsedMs,
   sweep,
   abortedBroadcastBytes: aborted,
