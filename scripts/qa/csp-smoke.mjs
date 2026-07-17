@@ -28,6 +28,12 @@ page.on('response', (response) => {
   });
 });
 
+const strictNavigation = page.waitForResponse(
+  (response) => response.request().resourceType() === 'document'
+    && response.url().startsWith(BASE)
+    && response.headers()['x-salvium-csp-mode'] === 'strict',
+  { timeout: 60_000 },
+);
 await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
 await page.waitForFunction(async () => {
   try {
@@ -38,7 +44,10 @@ await page.waitForFunction(async () => {
     return false;
   }
 }, undefined, { timeout: 30000, polling: 500 });
-await page.waitForTimeout(5000); // let any migration reload + WASM worker init settle
+await strictNavigation;
+await page.waitForLoadState('domcontentloaded');
+await page.waitForFunction(() => document.querySelector('#root > *'), undefined, { timeout: 60_000 });
+await page.waitForTimeout(2000); // let the strict document's WASM worker init settle
 
 const bodyText = await page.evaluate(() => document.body.innerText.slice(0, 2000));
 const wasmState = await page.evaluate(() => ({
@@ -67,6 +76,12 @@ await page.evaluate(() => {
   const button = document.createElement('button');
   button.id = 'qa-dynamic-code-probe';
   button.textContent = 'CSP probe';
+  Object.assign(button.style, {
+    position: 'fixed',
+    right: '8px',
+    bottom: '8px',
+    zIndex: '2147483647',
+  });
   button.addEventListener('click', () => {
     const before = window.__cspViolations.length;
     let blocked = false;
