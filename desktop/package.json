@@ -17,7 +17,7 @@
   },
   "build": {
     "appId": "io.salvium.vault.desktop",
-    "productName": "Salvium Vault",
+    "productName": "SalviumVault",
     "files": [
       "main.js",
       "content-update.js",
@@ -86,6 +86,12 @@
       "category": "Finance",
       "icon": "build/icon.png",
       "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "Name": "Salvium Vault",
+          "Comment": "Salvium Vault Desktop Wallet"
+        }
+      },
       "maintainer": "143Noodles <143Noodles@users.noreply.github.com>"
     },
     "directories": {

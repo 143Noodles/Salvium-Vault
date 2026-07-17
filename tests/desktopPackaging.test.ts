@@ -11,6 +11,8 @@ describe('desktop package security policy', () => {
     expect(desktopPackage.build.linux.target).toEqual([
       { target: 'deb', arch: ['x64'] },
     ]);
+    expect(desktopPackage.build.productName).not.toMatch(/\s/);
+    expect(desktopPackage.build.linux.desktop.entry.Name).toBe('Salvium Vault');
     expect(JSON.stringify(desktopPackage)).not.toContain('AppImage');
     expect(JSON.stringify(desktopPackage)).not.toContain('--no-sandbox');
   });
@@ -18,8 +20,8 @@ describe('desktop package security policy', () => {
   it('fails package installation if the setuid sandbox cannot be secured', () => {
     const postinst = repoFile('desktop/build/deb-postinst.sh');
     expect(postinst).toContain('set -eu');
-    expect(postinst).toContain("chown root:root '/opt/Salvium Vault/chrome-sandbox'");
-    expect(postinst).toContain("chmod 4755 '/opt/Salvium Vault/chrome-sandbox'");
+    expect(postinst).toContain("chown root:root '/opt/SalviumVault/chrome-sandbox'");
+    expect(postinst).toContain("chmod 4755 '/opt/SalviumVault/chrome-sandbox'");
     expect(postinst).not.toMatch(/(?:chown|chmod).*\|\|\s*true/);
   });
 
