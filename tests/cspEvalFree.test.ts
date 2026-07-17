@@ -32,6 +32,7 @@ describe('browser wallet runtime string-execution hardening', () => {
     const heartbeat = read('wallet/heartbeat.worker.js');
     const runtimeList = read('scripts/copy-wallet-runtime.mjs');
     const server = read('server.cjs');
+    const scanService = read('services/CSPScanService.ts');
     const heartbeatSha = createHash('sha256')
       .update(readFileSync(path.resolve(process.cwd(), 'wallet/heartbeat.worker.js')))
       .digest('hex');
@@ -42,5 +43,12 @@ describe('browser wallet runtime string-execution hardening', () => {
     expect(heartbeat).not.toMatch(/\beval\s*\(|new\s+Function\s*\(|new\s+Blob\s*\(/);
     expect(runtimeList).toContain('"heartbeat.worker.js"');
     expect(server).toContain("'heartbeat.worker.js'");
+    const scannerSha = createHash('sha256')
+      .update(readFileSync(path.resolve(process.cwd(), 'wallet/CSPScanner.js')))
+      .digest('hex');
+    expect(scanService).toContain(`CSP_SCANNER_SCRIPT_SHA256 = '${scannerSha}'`);
+    expect(scanService).toContain('CSPScanner.js?v=${CSP_SCANNER_SCRIPT_SHA256}');
+    expect(scanService).not.toContain('-wasmcanon1');
+    expect(server).toContain("path.basename(filePath).toLowerCase() === 'cspscanner.js'");
   });
 });

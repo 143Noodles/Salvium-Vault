@@ -71,6 +71,10 @@ const SUBADDRESS_OWNERSHIP_STORE = 'ownership';
 // key independent from WASM_CACHE_VERSION so a byte-only glue relink cannot discard it and
 // add avoidable work to the next launch. The value matches already-persisted v1.1.3c entries.
 export const SUBADDRESS_OWNERSHIP_CACHE_VERSION = '8.2.22-v113c-dual-wasm-20260709';
+// CSPScanner.js changes independently of the WASM asset. Pin the script URL to
+// its exact bytes so a long-lived wallet cannot reuse an immutable pre-hardening
+// scanner from a prior deploy and silently fall back to blob workers.
+export const CSP_SCANNER_SCRIPT_SHA256 = 'af75b17e05a946cc5349132a1d7a6e250b520577d729ab265f65fdc4cb1282d2';
 
 interface CachedSubaddressOwnership {
   walletKey: string;
@@ -1178,7 +1182,7 @@ class CSPScanService {
 
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = `/wallet/CSPScanner.js?v=${encodeURIComponent(WASM_CACHE_VERSION)}-wasmcanon1`;
+      script.src = `/wallet/CSPScanner.js?v=${CSP_SCANNER_SCRIPT_SHA256}`;
       script.async = true;
 
       // Some proxies/browsers can leave a script element with neither onload nor

@@ -11014,7 +11014,7 @@ function walletStaticSetHeaders(res, filePath) {
     // A worker is immutable only when its URL carries the exact hash of the bytes being served.
     // Other worker URLs still use broader app/WASM versions and therefore remain no-store: making
     // those immutable would recreate the stale-worker cache-poisoning failure mode.
-    if (filePath.endsWith('.worker.js')) {
+    if (filePath.endsWith('.worker.js') || path.basename(filePath).toLowerCase() === 'cspscanner.js') {
         const v = res.req && res.req.query ? res.req.query.v : undefined;
         if (typeof v === 'string' && /^[a-f0-9]{64}$/.test(v)) {
             try {
