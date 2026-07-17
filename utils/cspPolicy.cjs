@@ -52,8 +52,16 @@ function uaSupportsModernCsp(ua) {
 
 const CSP_BASE = "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://*.salvium.io https://*.salvium.io:19081 https://*.salvium.tools; img-src 'self' data: blob: https://dweb.link https://*.ipfs.dweb.link https://ipfs.io https://*.ipfs.ipfs.io https://arweave.net https://*.arweave.net https://*.salvium.tools; object-src 'none'; frame-ancestors 'self'; frame-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self';";
 
-function buildContentSecurityPolicy(ua, nonce) {
+function buildContentSecurityPolicy(ua, nonce, options = {}) {
     if (uaSupportsModernCsp(ua)) {
+        if (options.modernMode === 'bridge') {
+            // Upgrade bridge for profiles that may still have the pre-hardening
+            // page/service worker alive. Keep the production nonce boundary, but
+            // temporarily retain the two capabilities the old scanner requires.
+            // The server selects this only until the eval-free runtime proves all
+            // clients in the service-worker scope are on the new generation.
+            return `${CSP_BASE} worker-src 'self' blob:; script-src 'self' 'nonce-${nonce}' 'unsafe-eval' blob:;`;
+        }
         return `${CSP_BASE} worker-src 'self'; script-src 'self' 'nonce-${nonce}' 'wasm-unsafe-eval';`;
     }
     return `${CSP_BASE} worker-src 'self' blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:;`;

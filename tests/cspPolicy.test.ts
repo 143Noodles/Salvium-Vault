@@ -6,7 +6,7 @@ const {
   buildContentSecurityPolicy,
   uaSupportsModernCsp,
 } = require('../utils/cspPolicy.cjs') as {
-  buildContentSecurityPolicy: (ua: string, nonce: string) => string;
+  buildContentSecurityPolicy: (ua: string, nonce: string, options?: { modernMode?: 'bridge' | 'strict' }) => string;
   uaSupportsModernCsp: (ua: string) => boolean;
 };
 
@@ -53,6 +53,15 @@ describe('CSP policy construction', () => {
     expect(policy).not.toContain("'unsafe-eval'");
     expect(policy).not.toMatch(/worker-src[^;]*blob:/);
     expect(policy).not.toMatch(/script-src[^;]*blob:/);
+  });
+
+  it('retains only the production nonce bridge capabilities before a profile proves the eval-free runtime', () => {
+    const policy = buildContentSecurityPolicy(chrome(140), 'bridge-nonce', { modernMode: 'bridge' });
+
+    expect(policy).toContain("worker-src 'self' blob:;");
+    expect(policy).toContain("script-src 'self' 'nonce-bridge-nonce' 'unsafe-eval' blob:;");
+    expect(policy).not.toMatch(/script-src[^;]*'unsafe-inline'/);
+    expect(policy).not.toContain('wasm-unsafe-eval');
   });
 
   it('keeps the compatibility fallback unchanged for legacy engines', () => {

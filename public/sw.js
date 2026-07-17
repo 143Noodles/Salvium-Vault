@@ -310,6 +310,70 @@ function isLiveScanRequest(url) {
   return liveScanPaths.some((livePath) => path.startsWith(livePath));
 }
 
+const CSP_CLIENT_PROBE_TIMEOUT_MS = 1500;
+const pendingCspClientProbes = new Map();
+
+function sameClientIdSet(left, right) {
+  if (left.size !== right.size) return false;
+  for (const id of left) {
+    if (!right.has(id)) return false;
+  }
+  return true;
+}
+
+async function checkEvalFreeScopeReadiness(sourceClient, data) {
+  const requestId = typeof data.requestId === 'string' ? data.requestId.slice(0, 128) : '';
+  const runtime = data.runtime && typeof data.runtime === 'object' ? data.runtime : {};
+  if (!requestId || !sourceClient || !sourceClient.id) {
+    return { ready: false, reason: 'invalid-request' };
+  }
+  if (runtime.swBuildId !== SW_BUILD_ID || runtime.wasmVersion !== WASM_VERSION) {
+    return { ready: false, reason: 'service-worker-generation-mismatch' };
+  }
+
+  const initialClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const expectedIds = new Set(initialClients.map((client) => client.id));
+  if (!expectedIds.has(sourceClient.id) || expectedIds.size === 0) {
+    return { ready: false, reason: 'requesting-client-not-in-scope' };
+  }
+
+  const pending = {
+    expectedIds,
+    acknowledgedIds: new Set(),
+    runtime,
+  };
+  pendingCspClientProbes.set(requestId, pending);
+  try {
+    for (const client of initialClients) {
+      client.postMessage({
+        type: 'SALVIUM_CSP_CLIENT_PROBE',
+        requestId,
+        runtime,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, CSP_CLIENT_PROBE_TIMEOUT_MS));
+
+    // Close the open/close race: a client that appeared during the probe has not
+    // proved its generation, while a closed client no longer needs to block it.
+    const finalClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const finalIds = new Set(finalClients.map((client) => client.id));
+    if (!sameClientIdSet(expectedIds, finalIds)) {
+      return { ready: false, reason: 'client-set-changed', clientCount: finalIds.size };
+    }
+    const allAcknowledged = [...expectedIds].every((id) => pending.acknowledgedIds.has(id));
+    return {
+      ready: allAcknowledged,
+      reason: allAcknowledged ? 'all-clients-eval-free' : 'client-generation-unproven',
+      clientCount: expectedIds.size,
+      acknowledgedCount: pending.acknowledgedIds.size,
+      swBuildId: SW_BUILD_ID,
+      wasmVersion: WASM_VERSION,
+    };
+  } finally {
+    pendingCspClientProbes.delete(requestId);
+  }
+}
+
 // Handle messages from main thread
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
@@ -321,6 +385,31 @@ self.addEventListener('message', (event) => {
       caches.keys().then((keys) => {
         return Promise.all(keys.map((key) => caches.delete(key)));
       })
+    );
+  }
+
+  if (event.data && event.data.type === 'SALVIUM_CSP_CLIENT_PROBE_RESULT') {
+    const requestId = typeof event.data.requestId === 'string' ? event.data.requestId : '';
+    const pending = pendingCspClientProbes.get(requestId);
+    const clientId = event.source && event.source.id;
+    if (
+      pending &&
+      clientId &&
+      pending.expectedIds.has(clientId) &&
+      event.data.bundleId === pending.runtime.bundleId &&
+      event.data.wasmVersion === pending.runtime.wasmVersion
+    ) {
+      pending.acknowledgedIds.add(clientId);
+    }
+  }
+
+  if (event.data && event.data.type === 'SALVIUM_CSP_SCOPE_READINESS_CHECK') {
+    const responsePort = event.ports && event.ports[0];
+    if (!responsePort) return;
+    event.waitUntil(
+      checkEvalFreeScopeReadiness(event.source, event.data)
+        .then((result) => responsePort.postMessage(result))
+        .catch(() => responsePort.postMessage({ ready: false, reason: 'readiness-check-failed' }))
     );
   }
 });

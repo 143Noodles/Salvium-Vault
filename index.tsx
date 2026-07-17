@@ -300,6 +300,16 @@ const startRuntimeFreshnessMonitor = () => {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', (event) => {
       const data = event.data || {};
+      if (data.type === 'SALVIUM_CSP_CLIENT_PROBE') {
+        const source = event.source as unknown as { postMessage?: (message: unknown) => void } | null;
+        source?.postMessage?.({
+          type: 'SALVIUM_CSP_CLIENT_PROBE_RESULT',
+          requestId: String(data.requestId || ''),
+          bundleId: BUILD_ID,
+          wasmVersion: WASM_CACHE_VERSION,
+        });
+        return;
+      }
       if (data.type !== 'VAULT_SW_UPDATED') return;
 
       reportClientEvent('frontend.service_worker_update_message', {
@@ -319,6 +329,143 @@ const startRuntimeFreshnessMonitor = () => {
       }
     });
   }
+};
+
+type CspReadinessRuntime = {
+  generation: string;
+  bundleId: string;
+  swBuildId: string;
+  wasmVersion: string;
+};
+
+type CspReadinessResponse = {
+  eligible?: boolean;
+  ready?: boolean;
+  mode?: 'bridge' | 'strict' | 'legacy';
+  runtime?: CspReadinessRuntime | null;
+};
+
+let cspReadinessCheckInFlight = false;
+let cspReadinessSettled = false;
+
+const askServiceWorkerForCspReadiness = async (
+  worker: ServiceWorker,
+  runtime: CspReadinessRuntime,
+): Promise<{ ready?: boolean; reason?: string }> => {
+  const channel = new MessageChannel();
+  const requestId = typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise((resolve) => {
+    const timeout = window.setTimeout(
+      () => resolve({ ready: false, reason: 'service-worker-readiness-timeout' }),
+      5000,
+    );
+    channel.port1.onmessage = (event) => {
+      window.clearTimeout(timeout);
+      resolve(event.data && typeof event.data === 'object'
+        ? event.data
+        : { ready: false, reason: 'invalid-service-worker-readiness-response' });
+    };
+    worker.postMessage({
+      type: 'SALVIUM_CSP_SCOPE_READINESS_CHECK',
+      requestId,
+      runtime,
+    }, [channel.port2]);
+  });
+};
+
+const attemptStrictCspReadiness = async (source: string): Promise<void> => {
+  if (cspReadinessCheckInFlight || cspReadinessSettled) return;
+  if (isBundledNativeRuntime() || isNativePlatform()) return;
+  if (BUILD_ID === 'unknown' || !('serviceWorker' in navigator)) return;
+  cspReadinessCheckInFlight = true;
+  try {
+    const response = await fetch('/api/csp-readiness', {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (!response.ok) throw new Error(`readiness status HTTP ${response.status}`);
+    const status = await response.json() as CspReadinessResponse;
+    if (status.ready || status.mode === 'strict' || status.mode === 'legacy' || !status.eligible) {
+      cspReadinessSettled = true;
+      return;
+    }
+    const runtime = status.runtime;
+    if (
+      !runtime ||
+      runtime.bundleId !== BUILD_ID ||
+      runtime.wasmVersion !== WASM_CACHE_VERSION ||
+      !/^[a-f0-9]{64}$/.test(runtime.generation)
+    ) {
+      reportClientEvent('frontend.csp_readiness_deferred', {
+        level: 'warn',
+        context: { source, reason: 'runtime_generation_mismatch' },
+      });
+      return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    const worker = navigator.serviceWorker.controller || registration.active;
+    if (!worker) return;
+    const scope = await askServiceWorkerForCspReadiness(worker, runtime);
+    if (!scope.ready) {
+      reportClientEvent('frontend.csp_readiness_deferred', {
+        level: 'info',
+        context: { source, reason: String(scope.reason || 'scope_not_ready') },
+      });
+      return;
+    }
+
+    const marker = `strict:${runtime.generation}`;
+    try {
+      if (window.sessionStorage.getItem('salvium_csp_readiness_reload') === marker) {
+        cspReadinessSettled = true;
+        return;
+      }
+    } catch {}
+    const acknowledgement = await fetch('/api/csp-readiness/ack', {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(runtime),
+    });
+    if (!acknowledgement.ok) {
+      throw new Error(`readiness acknowledgement HTTP ${acknowledgement.status}`);
+    }
+    const result = await acknowledgement.json();
+    if (!result?.ok || result.generation !== runtime.generation) {
+      throw new Error('readiness acknowledgement mismatch');
+    }
+    try { window.sessionStorage.setItem('salvium_csp_readiness_reload', marker); } catch {}
+    reportClientEvent('frontend.csp_strict_enabled', {
+      level: 'info',
+      context: { source, reason: 'all_scope_clients_eval_free' },
+    });
+    window.location.reload();
+  } catch (error) {
+    reportClientEvent('frontend.csp_readiness_deferred', {
+      level: 'warn',
+      message: error instanceof Error ? error.message : String(error || 'CSP readiness failed'),
+      context: { source, reason: 'readiness_check_failed' },
+    });
+  } finally {
+    cspReadinessCheckInFlight = false;
+  }
+};
+
+const startStrictCspReadinessMonitor = () => {
+  if (isBundledNativeRuntime() || isNativePlatform() || !('serviceWorker' in navigator)) return;
+  window.addEventListener('load', () => {
+    window.setTimeout(() => void attemptStrictCspReadiness('load'), 5000);
+  });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    window.setTimeout(() => void attemptStrictCspReadiness('controllerchange'), 1000);
+  });
+  window.setInterval(() => void attemptStrictCspReadiness('interval'), 30_000);
+  window.addEventListener('focus', () => void attemptStrictCspReadiness('focus'));
 };
 
 const isRecoverableDomMutationError = (error: Error): boolean => {
@@ -352,6 +499,7 @@ const scheduleDomMutationRecoveryReload = (error: Error): boolean => {
 
 if (typeof window !== 'undefined') {
   startRuntimeFreshnessMonitor();
+  startStrictCspReadinessMonitor();
 
   window.addEventListener('vite:preloadError', (event) => {
     const preloadEvent = event as Event & { payload?: Error };

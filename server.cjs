@@ -13,7 +13,7 @@ const {
     createRelayError,
     relaySalPayCallback,
 } = require('./utils/salpayRelay.cjs');
-const { buildContentSecurityPolicy } = require('./utils/cspPolicy.cjs');
+const { buildContentSecurityPolicy, uaSupportsModernCsp } = require('./utils/cspPolicy.cjs');
 const { registerMiningRoutes } = require('./services/minerManager.cjs');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const isRender = process.env.RENDER === 'true';
@@ -5365,6 +5365,77 @@ function parseCookieHeader(cookieHeader) {
     }
     return parsed;
 }
+
+// Strict-CSP migration state. Profiles that may still own pre-hardening pages
+// first receive the nonce + unsafe-eval bridge policy. The eval-free bundle and
+// active service worker prove every open scope client is on this exact runtime,
+// then acknowledge once and receive the strict policy on the reload.
+const CSP_EVAL_FREE_READY_COOKIE = 'salvium_eval_free_ready';
+const CSP_EVAL_FREE_READY_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
+const CSP_EVAL_FREE_FORCE_STRICT = DESKTOP_SIDECAR ||
+    SALVIUM_DEPLOYMENT_CHANNEL === 'vault-test' ||
+    process.env.SALVIUM_CSP_FORCE_STRICT === '1';
+let cspEvalFreeRuntimeDescriptorCache = null;
+
+function parseRuntimeConstant(source, name) {
+    const match = String(source || '').match(new RegExp(`\\bconst\\s+${name}\\s*=\\s*['\"]([^'\"]+)['\"]`));
+    return match ? match[1] : null;
+}
+
+function getCspEvalFreeRuntimeDescriptor() {
+    if (cspEvalFreeRuntimeDescriptorCache) return cspEvalFreeRuntimeDescriptorCache;
+    try {
+        const indexHtml = fsSync.readFileSync(path.join(__dirname, 'dist', 'index.html'), 'utf8');
+        const swSource = fsSync.readFileSync(path.join(__dirname, 'dist', 'sw.js'), 'utf8');
+        const bundleMatch = indexHtml.match(/\/assets\/(vault-[^"'?]+\.js)/);
+        const bundleId = bundleMatch ? bundleMatch[1] : null;
+        const swBuildId = parseRuntimeConstant(swSource, 'SW_BUILD_ID');
+        const wasmVersion = parseRuntimeConstant(swSource, 'WASM_VERSION');
+        if (!bundleId || !swBuildId || !wasmVersion || swBuildId === '__SW_BUILD_ID__') {
+            return null;
+        }
+        const generation = crypto.createHash('sha256')
+            .update(`${bundleId}\n${swBuildId}\n${wasmVersion}`, 'utf8')
+            .digest('hex');
+        cspEvalFreeRuntimeDescriptorCache = Object.freeze({
+            generation,
+            bundleId,
+            swBuildId,
+            wasmVersion,
+        });
+        return cspEvalFreeRuntimeDescriptorCache;
+    } catch {
+        return null;
+    }
+}
+
+function hasMatchingCspReadinessCookie(req, descriptor = getCspEvalFreeRuntimeDescriptor()) {
+    if (!descriptor) return false;
+    const supplied = parseCookieHeader(req.headers.cookie)[CSP_EVAL_FREE_READY_COOKIE];
+    if (typeof supplied !== 'string' || supplied.length !== descriptor.generation.length) return false;
+    try {
+        return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(descriptor.generation));
+    } catch {
+        return false;
+    }
+}
+
+function appendVaryHeader(res, values) {
+    const existing = String(res.getHeader('Vary') || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+    const merged = new Set([...existing, ...values]);
+    res.setHeader('Vary', Array.from(merged).join(', '));
+}
+
+function isCspVariantSensitiveRequest(req) {
+    const requestPath = String(req.path || req.url || '').split('?')[0].toLowerCase();
+    if (req.get && req.get('Sec-Fetch-Dest') === 'document') return true;
+    return requestPath === '/' || requestPath === '/vault' || requestPath.endsWith('/index.html') ||
+        requestPath.endsWith('/sw.js') || requestPath.endsWith('.worker.js') ||
+        requestPath.endsWith('/cspscanner.js');
+}
 function getRequestedVaultNetwork(req) {
     const nativeNetwork = normalizeRequestedBrowserNetwork(SALVIUM_NETWORK, DEFAULT_BROWSER_NETWORK);
     if (FORCE_NATIVE_BROWSER_NETWORK) {
@@ -6238,7 +6309,25 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(self), geolocation=(), microphone=(), payment=(), usb=(), bluetooth=(), serial=(), browsing-topics=()');
   const nonce = crypto.randomBytes(16).toString('base64');
   res.locals.cspNonce = nonce;
-  res.setHeader('Content-Security-Policy', buildContentSecurityPolicy(req.headers['user-agent'], nonce));
+  const modernUa = uaSupportsModernCsp(req.headers['user-agent']);
+  const runtimeDescriptor = getCspEvalFreeRuntimeDescriptor();
+  const strictReady = CSP_EVAL_FREE_FORCE_STRICT || hasMatchingCspReadinessCookie(req, runtimeDescriptor);
+  const modernMode = strictReady ? 'strict' : 'bridge';
+  res.locals.cspMode = modernUa ? modernMode : 'legacy';
+  res.setHeader('X-Salvium-CSP-Mode', res.locals.cspMode);
+  res.setHeader('Content-Security-Policy', buildContentSecurityPolicy(
+    req.headers['user-agent'],
+    nonce,
+    { modernMode }
+  ));
+  if (modernUa && isCspVariantSensitiveRequest(req)) {
+    // The bridge and strict worker policies must never share a browser/CDN cache
+    // entry. Bridge worker responses are also kept out of long-lived caches below.
+    appendVaryHeader(res, ['User-Agent', 'Cookie']);
+    if (!strictReady) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    }
+  }
   next();
 });
 
@@ -6247,6 +6336,63 @@ app.use(generalRateLimit);
 app.use(csrfProtection);
 
 app.use(express.json({ limit: '10mb' }));
+
+function cspReadinessResponse(req) {
+    const descriptor = getCspEvalFreeRuntimeDescriptor();
+    const modern = uaSupportsModernCsp(req.headers['user-agent']);
+    const ready = modern && hasMatchingCspReadinessCookie(req, descriptor);
+    return {
+        eligible: modern && !CSP_EVAL_FREE_FORCE_STRICT && !!descriptor,
+        ready,
+        mode: modern ? (CSP_EVAL_FREE_FORCE_STRICT || ready ? 'strict' : 'bridge') : 'legacy',
+        runtime: descriptor,
+    };
+}
+
+app.get(['/api/csp-readiness', '/vault/api/csp-readiness'], (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    appendVaryHeader(res, ['User-Agent', 'Cookie']);
+    res.json(cspReadinessResponse(req));
+});
+
+app.post(['/api/csp-readiness/ack', '/vault/api/csp-readiness/ack'], (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    appendVaryHeader(res, ['User-Agent', 'Cookie']);
+    const state = cspReadinessResponse(req);
+    if (!state.eligible || !state.runtime) {
+        return res.status(409).json({ ok: false, error: 'runtime is not eligible for strict CSP' });
+    }
+
+    let publicOrigin;
+    try {
+        publicOrigin = getPublicRequestOrigin(req);
+    } catch {
+        return res.status(400).json({ ok: false, error: 'invalid public origin' });
+    }
+    const requestOrigin = getFirstHeaderValue(req.headers.origin);
+    const fetchSite = getFirstHeaderValue(req.headers['sec-fetch-site']);
+    if (!requestOrigin || requestOrigin !== publicOrigin || (fetchSite && fetchSite !== 'same-origin')) {
+        return res.status(403).json({ ok: false, error: 'same-origin readiness acknowledgement required' });
+    }
+
+    const supplied = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+        ? req.body
+        : {};
+    const matchesRuntime = ['generation', 'bundleId', 'swBuildId', 'wasmVersion']
+        .every((key) => supplied[key] === state.runtime[key]);
+    if (!matchesRuntime) {
+        return res.status(409).json({ ok: false, error: 'runtime generation mismatch' });
+    }
+
+    res.cookie(CSP_EVAL_FREE_READY_COOKIE, state.runtime.generation, {
+        httpOnly: true,
+        secure: publicOrigin.startsWith('https://'),
+        sameSite: 'strict',
+        maxAge: CSP_EVAL_FREE_READY_MAX_AGE_MS,
+        path: '/',
+    });
+    return res.json({ ok: true, reload: true, generation: state.runtime.generation });
+});
 
 app.get(['/api/csrf-token', '/vault/api/csrf-token'], (req, res) => {
     const sessionId = req.headers['x-session-id'] || generateSecureId(16);
@@ -11022,6 +11168,13 @@ function walletStaticSetHeaders(res, filePath) {
     // Other worker URLs still use broader app/WASM versions and therefore remain no-store: making
     // those immutable would recreate the stale-worker cache-poisoning failure mode.
     if (filePath.endsWith('.worker.js') || path.basename(filePath).toLowerCase() === 'cspscanner.js') {
+        if (res.locals && res.locals.cspMode === 'bridge') {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+            res.setHeader('Surrogate-Control', 'no-store');
+            return;
+        }
         const v = res.req && res.req.query ? res.req.query.v : undefined;
         if (typeof v === 'string' && /^[a-f0-9]{64}$/.test(v)) {
             try {

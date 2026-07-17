@@ -6,6 +6,7 @@ const BASE = process.env.SMOKE_URL || 'https://vault-test.salvium.tools';
 const BROWSER_NAME = process.env.SMOKE_BROWSER || 'chromium';
 const browserType = BROWSER_NAME === 'firefox' ? firefox : chromium;
 const consoleErrors = [];
+const documentPolicies = [];
 
 const browser = await browserType.launch({ headless: true });
 const page = await browser.newPage();
@@ -18,16 +19,34 @@ await page.addInitScript(() => {
 page.on('console', (msg) => {
   if (msg.type() === 'error') consoleErrors.push(msg.text().slice(0, 300));
 });
+page.on('response', (response) => {
+  if (response.request().resourceType() !== 'document') return;
+  documentPolicies.push({
+    url: response.url(),
+    mode: response.headers()['x-salvium-csp-mode'] || '',
+    csp: response.headers()['content-security-policy'] || '',
+  });
+});
 
-const documentResponse = await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-await page.waitForTimeout(12000); // let bootstrap + WASM worker init run
+await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.waitForFunction(async () => {
+  try {
+    const response = await fetch('/api/csp-readiness', { cache: 'no-store', credentials: 'same-origin' });
+    const status = await response.json();
+    return status.mode === 'strict';
+  } catch {
+    return false;
+  }
+}, undefined, { timeout: 30000, polling: 500 });
+await page.waitForTimeout(5000); // let any migration reload + WASM worker init settle
 
 const bodyText = await page.evaluate(() => document.body.innerText.slice(0, 2000));
 const wasmState = await page.evaluate(() => ({
   hasApp: !!document.querySelector('#root > *'),
   violations: window.__cspViolations,
 }));
-const csp = await documentResponse?.headerValue('content-security-policy') || '';
+const strictDocument = [...documentPolicies].reverse().find(({ mode }) => mode === 'strict');
+const csp = strictDocument?.csp || '';
 
 let engineProbe = 'n/a';
 try {
@@ -68,6 +87,7 @@ console.log(JSON.stringify({
   appRendered: wasmState.hasApp,
   bodyPreview: bodyText.slice(0, 200).replace(/\n/g, ' | '),
   csp,
+  documentPolicies,
   engineProbe,
   dynamicCodeProbe,
   bootstrapCspViolations: wasmState.violations,
