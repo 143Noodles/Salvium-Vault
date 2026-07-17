@@ -24,6 +24,7 @@ if (mode === 'verify') {
 
 const requests = [];
 const pageErrors = [];
+let postUpdateReunlock = false;
 const context = await chromium.launchPersistentContext(profileDir, { headless: true });
 try {
   await context.addInitScript(() => {
@@ -85,6 +86,27 @@ try {
   // Allow journal and cache writes triggered by the final balance update to settle.
   await page.waitForTimeout(mode === 'prepare' ? 10_000 : 15_000);
 
+  // An installed Service Worker from the old build can activate its replacement
+  // only after the first post-update unlock. The freshness monitor then performs
+  // one intentional cache-clearing reload, which returns to the lock screen. Test
+  // the real user path through that one-time re-unlock instead of taking a false
+  // failure after the balance was already restored successfully.
+  if (mode === 'verify') {
+    const lockedAfterUpdateReload = await page.locator('input#password').isVisible().catch(() => false);
+    if (lockedAfterUpdateReload) {
+      postUpdateReunlock = true;
+      log('one-time update reload returned to lock screen; unlocking retained wallet again');
+      await page.locator('input#password').fill(password);
+      await page.getByRole('button', { name: /unlock/i }).first().click();
+      await page.waitForFunction(
+        () => /16\.8\d/.test(document.body.innerText.replace(/\s+/g, ' ')),
+        undefined,
+        { timeout: 3 * 60_000, polling: 2_000 },
+      );
+      await page.waitForTimeout(5_000);
+    }
+  }
+
   const snapshot = await page.evaluate(async () => {
     const service = window.walletService;
     const databases = typeof indexedDB.databases === 'function'
@@ -128,7 +150,11 @@ try {
       if (parsed.searchParams.get('start_height') !== '0') return false;
       return parsed.searchParams.get('chunks') !== '1';
     });
-    assert.ok(batchCapabilityProbes.length <= 1, 'unexpected repeated height-0 batch probes');
+    const allowedCapabilityProbes = Math.max(1, snapshot.navigationCount);
+    assert.ok(
+      batchCapabilityProbes.length <= allowedCapabilityProbes,
+      `unexpected repeated height-0 batch probes (${batchCapabilityProbes.length} probes across ${snapshot.navigationCount} navigations)`,
+    );
     assert.deepEqual(fullRescanRequests, [], 'the update triggered a height-0/full-bundle rescan');
     assert.deepEqual(snapshot.balance, prepared.snapshot.balance, 'wallet balance changed across the glue-only update');
     assert.deepEqual(snapshot.databases, prepared.snapshot.databases, 'wallet IndexedDB database set changed');
@@ -136,6 +162,7 @@ try {
     const result = {
       elapsedMs: Date.now() - startedAt,
       navigationCount: snapshot.navigationCount,
+      postUpdateReunlock,
       requestCount: requests.length,
       batchCapabilityProbes,
       fullRescanRequests,
