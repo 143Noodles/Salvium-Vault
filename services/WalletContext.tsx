@@ -60,6 +60,7 @@ import {
     resolveScanResumeHeight,
     resolveUnlockScheduledScanFromHeight,
     shouldForceFullScanForMissingWalletCache,
+    shouldRepairMissingNativeWalletState,
     shouldSchedulePostScanFollowup,
     shouldRunCompletedChunkGapCheck,
     type ScanTriggerRequest,
@@ -3426,7 +3427,11 @@ const getDeviceMemoryBucket = (): string => {
         return keys;
     };
 
-    const prepareForAuthoritativeSeedRestore = useCallback(async () => {
+    const prepareForAuthoritativeSeedRestore = useCallback(async ({
+        preserveDurableWalletState = false,
+    }: {
+        preserveDurableWalletState?: boolean;
+    } = {}) => {
         const existingWallet = safeReadWallet();
         const walletAddress = existingWallet?.address || address || walletService.getAddress();
 
@@ -3471,14 +3476,22 @@ const getDeviceMemoryBucket = (): string => {
         hydratedWalletHistoryFromCacheRef.current = false;
 
         if (walletAddress) {
-            const deletePromises = getWalletRescanCacheKeys(walletAddress).map((key) => deleteFromIndexedDB(key));
+            const deletePromises = getWalletRescanCacheKeys(walletAddress, {
+                preserveForInterruptedRescan: preserveDurableWalletState,
+            }).map((key) => deleteFromIndexedDB(key));
             await Promise.allSettled([
                 ...deletePromises,
-                walletStateService.clear(walletAddress),
+                ...(preserveDurableWalletState ? [] : [walletStateService.clear(walletAddress)]),
                 forceCleanSlate(walletAddress),
                 clearReturnAddressCache(),
                 clearSubaddressOwnershipCache(),
             ]);
+            if (preserveDurableWalletState) {
+                reportClientEvent('wallet.rescan_durable_state_preserved', {
+                    level: 'info',
+                    context: { source: 'prepare-authoritative-seed-restore' },
+                });
+            }
         }
 
         if (walletService.hasWallet()) {
@@ -3514,7 +3527,9 @@ const getDeviceMemoryBucket = (): string => {
             hasReturnedTransfers,
         });
 
-        await prepareForAuthoritativeSeedRestore();
+        await prepareForAuthoritativeSeedRestore({
+            preserveDurableWalletState: source === 'rescanWallet',
+        });
 
         const keys = await restoreWalletRecordFromSeed(
             mnemonic,
@@ -3949,16 +3964,12 @@ const getDeviceMemoryBucket = (): string => {
                 (!Number.isFinite(postUnlockUnlockedAmount) || postUnlockUnlockedAmount <= 0);
             const postUnlockSpentKeyImageCount = wallet.cachedSpentKeyImages ? Object.keys(wallet.cachedSpentKeyImages).length : 0;
             const postUnlockSubaddressCount = wallet.cachedSubaddresses?.length || 0;
-            const postUnlockHasPersistedWalletState =
-                hadData ||
-                cachedReturnAddressCount > 0 ||
-                (!!cachedOutputsHex && cachedOutputsHex.length > 0) ||
-                postUnlockSpentKeyImageCount > 0 ||
-                postUnlockSubaddressCount > 1;
+            const postUnlockHasExpectedNativeState =
+                hadData || postUnlockSpentKeyImageCount > 0;
             reportClientEvent('wallet.post_unlock_state_gate', {
                 level: 'warn',
                 context: {
-                    hasPersistedWalletState: postUnlockHasPersistedWalletState,
+                    hasExpectedNativeState: postUnlockHasExpectedNativeState,
                     hadData,
                     cachePresent: !!cachedOutputsHex,
                     cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
@@ -3972,15 +3983,13 @@ const getDeviceMemoryBucket = (): string => {
                     walletHeight: wallet.height || 0,
                 },
             });
-            // transferCount must be 0, matching the other native-state gates. An
-            // exactSal1Empty OR-clause here condemned every zero-balance wallet WITH
-            // history (all-spent, token-only) to a full rescan on every unlock.
-            if (
-                postUnlockHasPersistedWalletState &&
-                (wallet.height || 0) > 0 &&
-                postUnlockNativeBalanceEmpty &&
-                postUnlockNativeTransferCount === 0
-            ) {
+            if (shouldRepairMissingNativeWalletState({
+                hadCachedWalletData: hadData,
+                cachedSpentKeyImageCount: postUnlockSpentKeyImageCount,
+                nativeTransferCount: postUnlockNativeTransferCount,
+                nativeBalanceEmpty: postUnlockNativeBalanceEmpty,
+                walletHeight: wallet.height || 0,
+            })) {
                 const repairReason = 'Native wallet state is empty for an existing wallet';
                 needsFullRescanRef.current = true;
                 preferredScanStartHeightRef.current = 0;
@@ -4013,7 +4022,7 @@ const getDeviceMemoryBucket = (): string => {
                         nativeBalanceEmpty: postUnlockNativeBalanceEmpty,
                         walletHeight: wallet.height || 0,
                         cachePresent: !!cachedOutputsHex,
-                        hasPersistedWalletState: postUnlockHasPersistedWalletState,
+                        hasExpectedNativeState: postUnlockHasExpectedNativeState,
                     },
                 });
             }
@@ -4576,17 +4585,13 @@ const getDeviceMemoryBucket = (): string => {
         const hasCachedOutputs = !!cachedOutputsHex && cachedOutputsHex.length > 0;
         const cachedSpentKeyImageCount = wallet.cachedSpentKeyImages ? Object.keys(wallet.cachedSpentKeyImages).length : 0;
         const cachedSubaddressCount = wallet.cachedSubaddresses?.length || 0;
-        const hasPersistedWalletState =
-            hadData ||
-            hasCachedOutputs ||
-            cachedSpentKeyImageCount > 0 ||
-            cachedSubaddressCount > 1 ||
-            persistedSubaddressCount > 1;
+        const hasExpectedNativeState =
+            hadData || cachedSpentKeyImageCount > 0;
         reportClientEvent('wallet.native_state_gate', {
             level: 'info',
             context: {
                 source: 'unlock_bootstrap_complete',
-                hasPersistedWalletState,
+                hasExpectedNativeState,
                 hadData,
                 cachePresent: hasCachedOutputs,
                 cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
@@ -4604,12 +4609,15 @@ const getDeviceMemoryBucket = (): string => {
                 restoreSessionRequested,
             },
         });
-        const nativeStateMissingForExistingWallet =
-            hasPersistedWalletState &&
-            !forceCleanRestoreScan &&
-            !cacheMissingRequiresFullScan &&
-            nativeTransferCount === 0 &&
-            nativeBalanceEmpty;
+        const nativeStateMissingForExistingWallet = shouldRepairMissingNativeWalletState({
+            hadCachedWalletData: hadData,
+            cachedSpentKeyImageCount,
+            nativeTransferCount,
+            nativeBalanceEmpty,
+            walletHeight: finalRestoreHeight,
+            forceCleanRestoreScan,
+            cacheMissingRequiresFullScan,
+        });
         let confirmedNativeStateMissingForExistingWallet = false;
         if (nativeStateMissingForExistingWallet) {
             await new Promise(resolve => setTimeout(resolve, 0));
@@ -4671,7 +4679,7 @@ const getDeviceMemoryBucket = (): string => {
                     nativeTransferCount,
                     nativeBalanceEmpty,
                     hadData,
-                    hasPersistedWalletState,
+                    hasExpectedNativeState,
                     finalRestoreHeight,
                     actualNetworkHeight,
                     cachePresent: !cacheMissing,
@@ -7850,7 +7858,7 @@ const getDeviceMemoryBucket = (): string => {
         }
 
         const currentAddress = address || walletService.getAddress();
-        if (currentAddress) {
+        if (currentAddress && !preserveSeedInMemory) {
             await deleteFromIndexedDB(`wallet_cache_${currentAddress}`);
             await walletStateService.clear(currentAddress);
         }
@@ -7876,13 +7884,20 @@ const getDeviceMemoryBucket = (): string => {
 
         walletService.clearWallet();
 
-        try {
-            const DB_DELETE_REQUEST = indexedDB.deleteDatabase(IDB_NAME);
-            await new Promise<void>((resolve) => {
-                DB_DELETE_REQUEST.onsuccess = () => resolve();
-                DB_DELETE_REQUEST.onerror = () => resolve();
+        if (!preserveSeedInMemory) {
+            try {
+                const DB_DELETE_REQUEST = indexedDB.deleteDatabase(IDB_NAME);
+                await new Promise<void>((resolve) => {
+                    DB_DELETE_REQUEST.onsuccess = () => resolve();
+                    DB_DELETE_REQUEST.onerror = () => resolve();
+                });
+            } catch (e) { }
+        } else {
+            reportClientEvent('wallet.rescan_durable_state_preserved', {
+                level: 'info',
+                context: { source: 'perform-wallet-reset' },
             });
- } catch (e) { }
+        }
 
         // The restore checkpoint lives in its own database so it survives the
         // cache-DB wipe above during rescans; only a true reset removes it.
@@ -8708,22 +8723,20 @@ const getDeviceMemoryBucket = (): string => {
                     const sessionNativeBalanceEmpty =
                         sessionNativeBalance.balance === 0 &&
                         sessionNativeBalance.unlockedBalance === 0;
-                    const hasPersistedWalletStateForInit =
-                        hadDataForInit ||
-                        !!cachedOutputsHex ||
-                        Object.keys(cachedSpentKeyImages).length > 0 ||
-                        cachedSubaddrsData.length > 1;
+                    const cachedSpentKeyImageCountForInit = Object.keys(cachedSpentKeyImages).length;
+                    const hasExpectedNativeStateForInit =
+                        hadDataForInit || cachedSpentKeyImageCountForInit > 0;
                     reportClientEvent('wallet.native_state_gate', {
                         level: 'info',
                         context: {
                             source: 'session_restore_complete',
-                            hasPersistedWalletState: hasPersistedWalletStateForInit,
+                            hasExpectedNativeState: hasExpectedNativeStateForInit,
                             hadData: hadDataForInit,
                             cachePresent: !!cachedOutputsHex,
                             cacheSizeBucket: getCacheSizeBucket(cachedOutputsHex),
                             cachedTxCount: cachedTxs.length,
                             cachedReturnAddressCount,
-                            cachedSpentKeyImageCount: Object.keys(cachedSpentKeyImages).length,
+                            cachedSpentKeyImageCount: cachedSpentKeyImageCountForInit,
                             cachedSubaddressCount: cachedSubaddrsData.length,
                             nativeTransferCount: sessionNativeTransferCount,
                             nativeBalanceEmpty: sessionNativeBalanceEmpty,
@@ -8731,11 +8744,13 @@ const getDeviceMemoryBucket = (): string => {
                             actualNetworkHeight,
                         },
                     });
-                    const sessionNativeStateMissing =
-                        hasPersistedWalletStateForInit &&
-                        restoreHeight > 0 &&
-                        sessionNativeTransferCount === 0 &&
-                        sessionNativeBalanceEmpty;
+                    const sessionNativeStateMissing = shouldRepairMissingNativeWalletState({
+                        hadCachedWalletData: hadDataForInit,
+                        cachedSpentKeyImageCount: cachedSpentKeyImageCountForInit,
+                        nativeTransferCount: sessionNativeTransferCount,
+                        nativeBalanceEmpty: sessionNativeBalanceEmpty,
+                        walletHeight: restoreHeight,
+                    });
                     if (sessionNativeStateMissing) {
                         const repairReason = 'Native wallet state is empty for an existing wallet';
                         needsFullRescanRef.current = true;
@@ -8765,7 +8780,7 @@ const getDeviceMemoryBucket = (): string => {
                                 source: 'session_restore_complete',
                                 cachedTxCount: cachedTxs.length,
                                 cachedReturnAddressCount,
-                                cachedSpentKeyImageCount: Object.keys(cachedSpentKeyImages).length,
+                                cachedSpentKeyImageCount: cachedSpentKeyImageCountForInit,
                                 cachedSubaddressCount: cachedSubaddrsData.length,
                                 nativeTransferCount: sessionNativeTransferCount,
                                 nativeBalanceEmpty: sessionNativeBalanceEmpty,
@@ -8773,7 +8788,7 @@ const getDeviceMemoryBucket = (): string => {
                                 actualNetworkHeight,
                                 cachePresent: !!cachedOutputsHex,
                                 hadData: hadDataForInit,
-                                hasPersistedWalletState: hasPersistedWalletStateForInit,
+                                hasExpectedNativeState: hasExpectedNativeStateForInit,
                             },
                         });
                     }

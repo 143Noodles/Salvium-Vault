@@ -66,6 +66,43 @@ export function shouldForceFullScanForMissingWalletCache({
   return Number.isFinite(walletHeight) && walletHeight > 0;
 }
 
+export function shouldRepairMissingNativeWalletState({
+  hadCachedWalletData,
+  cachedSpentKeyImageCount,
+  nativeTransferCount,
+  nativeBalanceEmpty,
+  walletHeight,
+  forceCleanRestoreScan = false,
+  cacheMissingRequiresFullScan = false,
+}: {
+  hadCachedWalletData: boolean;
+  cachedSpentKeyImageCount: number;
+  nativeTransferCount: number;
+  nativeBalanceEmpty: boolean;
+  walletHeight: number;
+  forceCleanRestoreScan?: boolean;
+  cacheMissingRequiresFullScan?: boolean;
+}): boolean {
+  // A serialized native cache is non-empty even for a wallet that has never
+  // received an output. Likewise, extra subaddresses can exist without any
+  // transaction history. Neither is evidence that an empty native wallet lost
+  // state. Only persisted balance/transaction/return-address data (folded into
+  // hadCachedWalletData) or spent key images prove that native state is missing.
+  const hasExpectedNativeState =
+    hadCachedWalletData ||
+    (Number.isFinite(cachedSpentKeyImageCount) && cachedSpentKeyImageCount > 0);
+
+  return (
+    hasExpectedNativeState &&
+    Number.isFinite(walletHeight) &&
+    walletHeight > 0 &&
+    !forceCleanRestoreScan &&
+    !cacheMissingRequiresFullScan &&
+    nativeTransferCount === 0 &&
+    nativeBalanceEmpty
+  );
+}
+
 export function resolveUnlockScheduledScanFromHeight({
   preferredScanStartHeight,
   finalRestoreHeight,

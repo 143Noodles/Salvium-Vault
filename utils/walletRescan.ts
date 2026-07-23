@@ -1,4 +1,13 @@
-export function getWalletRescanCacheKeys(address: string): string[] {
+export function getWalletRescanCacheKeys(
+  address: string,
+  { preserveForInterruptedRescan = false }: { preserveForInterruptedRescan?: boolean } = {}
+): string[] {
+  // A seed rescan rebuilds an isolated in-memory wallet and replaces these
+  // records only after a successful scan commit. Keeping the previous durable
+  // snapshot lets a mobile reopen recover immediately if Android/iOS kills the
+  // WebView mid-rescan. True wallet deletion still uses the destructive path.
+  if (preserveForInterruptedRescan) return [];
+
   return [
     `wallet_cache_${address}`,
     `wallet_txs_${address}`,

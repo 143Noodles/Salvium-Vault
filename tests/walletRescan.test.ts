@@ -56,4 +56,10 @@ describe('walletRescan', () => {
       'wallet_keyimages_SC1-test-address',
     ]);
   });
+
+  it('preserves the last committed cache while an in-memory rescan is interruptible', () => {
+    expect(getWalletRescanCacheKeys('SC1-test-address', {
+      preserveForInterruptedRescan: true,
+    })).toEqual([]);
+  });
 });

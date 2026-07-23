@@ -12,6 +12,7 @@ import {
   resolveScanResumeHeight,
   resolveUnlockScheduledScanFromHeight,
   shouldForceFullScanForMissingWalletCache,
+  shouldRepairMissingNativeWalletState,
   shouldRunCompletedChunkGapCheck,
   shouldSchedulePostScanFollowup,
   shouldUseNarrowPhase3IncrementalWindow,
@@ -82,6 +83,60 @@ describe('scanPolicy', () => {
         cacheMissing: false,
         hadCachedWalletData: true,
         walletHeight: 264000,
+      })).toBe(false);
+    });
+  });
+
+  describe('shouldRepairMissingNativeWalletState', () => {
+    const emptyNativeState = {
+      hadCachedWalletData: false,
+      cachedSpentKeyImageCount: 0,
+      nativeTransferCount: 0,
+      nativeBalanceEmpty: true,
+      walletHeight: 264000,
+    };
+
+    it('does not condemn a valid empty wallet merely because its native cache exists', () => {
+      expect(shouldRepairMissingNativeWalletState(emptyNativeState)).toBe(false);
+    });
+
+    it('repairs an empty native wallet when persisted wallet data proves outputs existed', () => {
+      expect(shouldRepairMissingNativeWalletState({
+        ...emptyNativeState,
+        hadCachedWalletData: true,
+      })).toBe(true);
+
+      expect(shouldRepairMissingNativeWalletState({
+        ...emptyNativeState,
+        cachedSpentKeyImageCount: 3,
+      })).toBe(true);
+    });
+
+    it('does not repair when native transfers or balance survived cache import', () => {
+      expect(shouldRepairMissingNativeWalletState({
+        ...emptyNativeState,
+        hadCachedWalletData: true,
+        nativeTransferCount: 1,
+      })).toBe(false);
+
+      expect(shouldRepairMissingNativeWalletState({
+        ...emptyNativeState,
+        hadCachedWalletData: true,
+        nativeBalanceEmpty: false,
+      })).toBe(false);
+    });
+
+    it('leaves explicit clean restores and missing-cache recovery to their owners', () => {
+      expect(shouldRepairMissingNativeWalletState({
+        ...emptyNativeState,
+        hadCachedWalletData: true,
+        forceCleanRestoreScan: true,
+      })).toBe(false);
+
+      expect(shouldRepairMissingNativeWalletState({
+        ...emptyNativeState,
+        hadCachedWalletData: true,
+        cacheMissingRequiresFullScan: true,
       })).toBe(false);
     });
   });
