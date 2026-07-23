@@ -68,7 +68,7 @@
     "selenium-webdriver": "^4.45.0",
     "sharp": "^0.35.3",
     "tailwindcss": "^3.4.17",
-    "typescript": "~5.8.2",
+    "typescript": "~7.0.2",
     "vite": "^8.1.4",
     "vitest": "^4.1.10"
   },
