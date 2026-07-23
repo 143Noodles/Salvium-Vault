@@ -4,6 +4,7 @@
 // build so the file list lives in exactly one place.
 import fs from "fs";
 import path from "path";
+import { pathToFileURL } from "url";
 
 export const walletRuntimeFiles = [
   "CSPScanner.js",
@@ -31,7 +32,7 @@ export function copyWalletRuntime(repoRoot, destDir) {
 }
 
 // CLI: node scripts/copy-wallet-runtime.mjs <destDir>
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const dest = process.argv[2];
   if (!dest) {
     console.error("usage: copy-wallet-runtime.mjs <destDir>");

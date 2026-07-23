@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -50,5 +52,19 @@ describe('unified desktop and Android content release', () => {
     expect(updater).toContain('verGt(metadata.minShellVersion, app.getVersion())');
     expect(updater).toContain('assertOfficialArchiveUrl(manifest.url, manifest.version)');
     expect(updater).toContain("parsed.protocol !== 'https:'");
+  });
+
+  it('runs the wallet-runtime copy CLI from worktrees whose paths contain spaces', () => {
+    const fixtureRoot = mkdtempSync(path.join(tmpdir(), 'salvium path with spaces-'));
+    const copier = path.join(fixtureRoot, 'copy-wallet-runtime.mjs');
+    const destination = path.join(fixtureRoot, 'runtime output');
+
+    try {
+      cpSync(path.resolve(process.cwd(), 'scripts/copy-wallet-runtime.mjs'), copier);
+      execFileSync(process.execPath, [copier, destination], { cwd: process.cwd() });
+      expect(readFileSync(path.join(destination, 'SalviumWallet.wasm')).byteLength).toBeGreaterThan(0);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });
