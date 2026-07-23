@@ -40,7 +40,8 @@ wait_for_endpoint() {
       docker logs "$container" --tail 100 2>&1 || true
       return 1
     fi
-    if docker exec "$container" sh -c "wget -q -T 10 -O /dev/null 'http://127.0.0.1:\${PORT:-3000}$endpoint'"; then
+    if docker exec "$container" sh -c \
+      'wget -q -T 10 -O /dev/null "http://127.0.0.1:${PORT:-3000}$1"' sh "$endpoint"; then
       return 0
     fi
     sleep 2
