@@ -19,6 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..', '..');           // repo root
 const OWNER = '143Noodles', NAME = 'Salvium-Vault';
 const EXPECTED_PUBLIC_KEY_BASE64 = 'MCowBQYDK2VwAyEAVQ+q5oKmQSAJxrGzgW3wo2LLexXtQ9nws//5kD/LGYg=';
+const MAX_SIGNED_UPDATE_SUMMARY_LENGTH = 160;
 
 const args = process.argv.slice(2);
 const version = args.shift();
@@ -46,7 +47,9 @@ if (skipBuild && process.env.SALVIUM_RELEASE_TEST_MODE !== '1') {
   throw new Error('--skip-build is test-only; set SALVIUM_RELEASE_TEST_MODE=1 explicitly');
 }
 summary = summary.trim();
-if (!summary || summary.length > 4000) throw new Error('summary must contain 1-4000 characters');
+if (!summary || summary.length > MAX_SIGNED_UPDATE_SUMMARY_LENGTH) {
+  throw new Error(`summary must contain 1-${MAX_SIGNED_UPDATE_SUMMARY_LENGTH} characters`);
+}
 if (revokedVersions.length > 100 || new Set(revokedVersions).size !== revokedVersions.length ||
     revokedVersions.some((value) => !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(value))) {
   throw new Error('revoked versions must be unique stable versions (maximum 100)');

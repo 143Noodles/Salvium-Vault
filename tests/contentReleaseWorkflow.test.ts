@@ -32,13 +32,18 @@ describe('unified desktop and Android content release', () => {
 
   it('warns platform-specific publishers not to replace Latest alone', () => {
     const desktop = read('desktop/scripts/publish-content.mjs');
+    const android = read('scripts/publish-android-content.mjs');
     expect(desktop).toContain('Do not mark a desktop-only release Latest');
     expect(desktop).toContain('EXPECTED_PUBLIC_KEY_BASE64');
     expect(desktop).toContain('content signing key permissions must be owner-only');
     expect(desktop).toContain('minShellVersion');
     expect(desktop).toContain('mtime: sourceDate');
-    expect(read('scripts/publish-android-content.mjs')).toContain('Do not mark an Android-only release Latest');
-    expect(read('scripts/publish-android-content.mjs')).toContain('normalizeTreeTimes(stagingDir, sourceDate)');
+    expect(android).toContain('Do not mark an Android-only release Latest');
+    expect(android).toContain('normalizeTreeTimes(stagingDir, sourceDate)');
+    expect(desktop).toContain('MAX_SIGNED_UPDATE_SUMMARY_LENGTH = 160');
+    expect(android).toContain('MAX_SIGNED_UPDATE_SUMMARY_LENGTH = 160');
+    expect(desktop).not.toContain('summary.length > 4000');
+    expect(android).not.toContain('options.summary.length > 4000');
   });
 
   it('packages every sidecar module required by the updated server', () => {

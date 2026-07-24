@@ -21,6 +21,7 @@ const EXPECTED_PUBLIC_KEY_BASE64 = 'MCowBQYDK2VwAyEAVQ+q5oKmQSAJxrGzgW3wo2LLexXt
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES = 256 * 1024 * 1024;
 const MAX_FILES = 5000;
+const MAX_SIGNED_UPDATE_SUMMARY_LENGTH = 160;
 
 function normalizeTreeTimes(root, date) {
   const entries = fs.readdirSync(root, { withFileTypes: true })
@@ -98,7 +99,9 @@ if (options.skipBuild && process.env.SALVIUM_RELEASE_TEST_MODE !== '1') {
 }
 assertVersion(options.minShellVersion, 'minimum shell version');
 for (const version of options.revokedVersions) assertVersion(version, 'revoked version');
-if (!options.summary.trim() || options.summary.length > 4000) usage('summary must contain 1-4000 characters');
+if (!options.summary.trim() || options.summary.length > MAX_SIGNED_UPDATE_SUMMARY_LENGTH) {
+  usage(`summary must contain 1-${MAX_SIGNED_UPDATE_SUMMARY_LENGTH} characters`);
+}
 if (new Set(options.revokedVersions).size !== options.revokedVersions.length) usage('revoked versions must be unique');
 if (options.revokedVersions.length > 100) usage('too many revoked versions');
 
