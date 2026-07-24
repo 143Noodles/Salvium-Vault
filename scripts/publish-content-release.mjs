@@ -32,7 +32,7 @@ function assertLockedDependency(name, packageRoot = REPO) {
 
 function usage(message) {
   if (message) console.error(message);
-  console.error('usage: publish-content-release.mjs <version> --summary <text> [--min-shell <version>] [--revoke <v1,v2>] [--skip-build]');
+  console.error('usage: publish-content-release.mjs <version> --summary <text> [--desktop-min-shell <version>] [--android-min-shell <version>] [--revoke <v1,v2>] [--skip-build]');
   process.exit(2);
 }
 
@@ -40,18 +40,28 @@ const argv = process.argv.slice(2);
 const version = argv.shift();
 if (!version || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(version)) usage('release version must be stable x.y.z semver');
 
+const desktopArgs = [version];
 const androidArgs = [version];
 let hasSummary = false;
 let skipBuild = false;
 for (let i = 0; i < argv.length; i += 1) {
   const arg = argv[i];
-  if (arg === '--summary' || arg === '--summary-file' || arg === '--min-shell' || arg === '--revoke') {
+  if (arg === '--summary' || arg === '--summary-file' || arg === '--revoke') {
     const value = argv[++i];
     if (!value) usage('missing value for ' + arg);
+    desktopArgs.push(arg, value);
     androidArgs.push(arg, value);
     if (arg === '--summary' || arg === '--summary-file') hasSummary = true;
+  } else if (arg === '--desktop-min-shell' || arg === '--android-min-shell') {
+    const value = argv[++i];
+    if (!value) usage('missing value for ' + arg);
+    const platformArgs = arg === '--desktop-min-shell' ? desktopArgs : androidArgs;
+    platformArgs.push('--min-shell', value);
+  } else if (arg === '--min-shell') {
+    usage('--min-shell is ambiguous for a unified release; use --desktop-min-shell and/or --android-min-shell');
   } else if (arg === '--skip-build') {
     skipBuild = true;
+    desktopArgs.push(arg);
     androidArgs.push(arg);
   } else {
     usage('unknown argument: ' + arg);
@@ -69,7 +79,7 @@ const releaseEnvironment = { ...process.env, SOURCE_DATE_EPOCH: sourceDateEpoch 
 console.log(`[content-release] reproducible timestamp ${new Date(Number(sourceDateEpoch) * 1000).toISOString()}`);
 
 const node = process.execPath;
-execFileSync(node, [path.join(REPO, 'desktop/scripts/publish-content.mjs'), version, ...argv], {
+execFileSync(node, [path.join(REPO, 'desktop/scripts/publish-content.mjs'), ...desktopArgs], {
   cwd: REPO,
   env: { ...releaseEnvironment, ...(skipBuild ? { SKIP_BUILD: '1' } : {}) },
   stdio: 'inherit',
