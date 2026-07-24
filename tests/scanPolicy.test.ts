@@ -11,8 +11,9 @@ import {
   resolveRestoreRetryResumePolicy,
   resolveScanResumeHeight,
   resolveUnlockScheduledScanFromHeight,
+  shouldAutoStartRequiredFullRescan,
   shouldForceFullScanForMissingWalletCache,
-  shouldRepairMissingNativeWalletState,
+  shouldReportMissingNativeWalletState,
   shouldRunCompletedChunkGapCheck,
   shouldSchedulePostScanFollowup,
   shouldUseNarrowPhase3IncrementalWindow,
@@ -87,7 +88,7 @@ describe('scanPolicy', () => {
     });
   });
 
-  describe('shouldRepairMissingNativeWalletState', () => {
+  describe('shouldReportMissingNativeWalletState', () => {
     const emptyNativeState = {
       hadCachedWalletData: false,
       cachedSpentKeyImageCount: 0,
@@ -97,29 +98,29 @@ describe('scanPolicy', () => {
     };
 
     it('does not condemn a valid empty wallet merely because its native cache exists', () => {
-      expect(shouldRepairMissingNativeWalletState(emptyNativeState)).toBe(false);
+      expect(shouldReportMissingNativeWalletState(emptyNativeState)).toBe(false);
     });
 
-    it('repairs an empty native wallet when persisted wallet data proves outputs existed', () => {
-      expect(shouldRepairMissingNativeWalletState({
+    it('reports an empty native wallet when persisted wallet data proves outputs existed', () => {
+      expect(shouldReportMissingNativeWalletState({
         ...emptyNativeState,
         hadCachedWalletData: true,
       })).toBe(true);
 
-      expect(shouldRepairMissingNativeWalletState({
+      expect(shouldReportMissingNativeWalletState({
         ...emptyNativeState,
         cachedSpentKeyImageCount: 3,
       })).toBe(true);
     });
 
-    it('does not repair when native transfers or balance survived cache import', () => {
-      expect(shouldRepairMissingNativeWalletState({
+    it('does not report when native transfers or balance survived cache import', () => {
+      expect(shouldReportMissingNativeWalletState({
         ...emptyNativeState,
         hadCachedWalletData: true,
         nativeTransferCount: 1,
       })).toBe(false);
 
-      expect(shouldRepairMissingNativeWalletState({
+      expect(shouldReportMissingNativeWalletState({
         ...emptyNativeState,
         hadCachedWalletData: true,
         nativeBalanceEmpty: false,
@@ -127,17 +128,24 @@ describe('scanPolicy', () => {
     });
 
     it('leaves explicit clean restores and missing-cache recovery to their owners', () => {
-      expect(shouldRepairMissingNativeWalletState({
+      expect(shouldReportMissingNativeWalletState({
         ...emptyNativeState,
         hadCachedWalletData: true,
         forceCleanRestoreScan: true,
       })).toBe(false);
 
-      expect(shouldRepairMissingNativeWalletState({
+      expect(shouldReportMissingNativeWalletState({
         ...emptyNativeState,
         hadCachedWalletData: true,
         cacheMissingRequiresFullScan: true,
       })).toBe(false);
+    });
+  });
+
+  describe('shouldAutoStartRequiredFullRescan', () => {
+    it('auto-starts only when the durable wallet cache is genuinely missing', () => {
+      expect(shouldAutoStartRequiredFullRescan({ cacheMissingRequiresFullScan: true })).toBe(true);
+      expect(shouldAutoStartRequiredFullRescan({ cacheMissingRequiresFullScan: false })).toBe(false);
     });
   });
 

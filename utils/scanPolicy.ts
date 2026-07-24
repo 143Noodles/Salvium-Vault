@@ -66,7 +66,7 @@ export function shouldForceFullScanForMissingWalletCache({
   return Number.isFinite(walletHeight) && walletHeight > 0;
 }
 
-export function shouldRepairMissingNativeWalletState({
+export function shouldReportMissingNativeWalletState({
   hadCachedWalletData,
   cachedSpentKeyImageCount,
   nativeTransferCount,
@@ -83,11 +83,10 @@ export function shouldRepairMissingNativeWalletState({
   forceCleanRestoreScan?: boolean;
   cacheMissingRequiresFullScan?: boolean;
 }): boolean {
-  // A serialized native cache is non-empty even for a wallet that has never
-  // received an output. Likewise, extra subaddresses can exist without any
-  // transaction history. Neither is evidence that an empty native wallet lost
-  // state. Only persisted balance/transaction/return-address data (folded into
-  // hadCachedWalletData) or spent key images prove that native state is missing.
+  // This is a diagnostic signal, not permission to destroy durable state or
+  // start a height-zero scan. Cache import and the native state mirror can
+  // settle independently on Android; field telemetry proved that treating this
+  // momentary mismatch as corruption forced balanced wallets into rescan loops.
   const hasExpectedNativeState =
     hadCachedWalletData ||
     (Number.isFinite(cachedSpentKeyImageCount) && cachedSpentKeyImageCount > 0);
@@ -101,6 +100,17 @@ export function shouldRepairMissingNativeWalletState({
     nativeTransferCount === 0 &&
     nativeBalanceEmpty
   );
+}
+
+export function shouldAutoStartRequiredFullRescan({
+  cacheMissingRequiresFullScan,
+}: {
+  cacheMissingRequiresFullScan: boolean;
+}): boolean {
+  // Automatic recovery is safe only when there is no durable wallet cache to
+  // preserve. Native snapshot diagnostics and partial-history warnings require
+  // an explicit user decision; they must never turn into a mobile auto-rescan.
+  return cacheMissingRequiresFullScan;
 }
 
 export function resolveUnlockScheduledScanFromHeight({

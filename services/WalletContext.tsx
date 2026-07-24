@@ -59,8 +59,9 @@ import {
     resolveRestoreRetryResumePolicy,
     resolveScanResumeHeight,
     resolveUnlockScheduledScanFromHeight,
+    shouldAutoStartRequiredFullRescan,
     shouldForceFullScanForMissingWalletCache,
-    shouldRepairMissingNativeWalletState,
+    shouldReportMissingNativeWalletState,
     shouldSchedulePostScanFollowup,
     shouldRunCompletedChunkGapCheck,
     type ScanTriggerRequest,
@@ -2029,53 +2030,27 @@ const getDeviceMemoryBucket = (): string => {
             return false;
         }
 
-        needsFullRescanRef.current = true;
-        preferredScanStartHeightRef.current = 0;
-        needsGapCheckRef.current = false;
-        setSyncStatus(prev => ({
-            ...prev,
-            walletHeight: 0,
-            isSyncing: true,
-            scanStartHeight: 0,
-            progress: 0,
-        }));
-
-        if (address) {
-            void deleteFromIndexedDB(`wallet_cache_${address}`);
-            void walletStateService.clear(address);
-            void import('./restoreCheckpoint').then(({ deleteRestoreCheckpoint }) =>
-                deleteRestoreCheckpoint(address)).catch(() => { });
-        }
-
-        debugWarn('[WalletContext] Scheduling native integrity recovery via clean seed restore path', {
+        // Native health checks are evidence for blocking spend/persistence, not
+        // permission to erase durable state or launch a height-zero scan. Android
+        // cache import and mirror propagation can settle independently; making this
+        // destructive produced repeated rescans on otherwise intact balanced wallets.
+        reportClientEvent('wallet.native_integrity_recovery_requires_user', {
+            level: 'warn',
+            message: health.issues[0] || 'Native wallet state requires repair',
+            context: {
+                stage,
+                severity: health.severity,
+                issueCount: health.issues.length,
+                cachePresent: !!address,
+            },
+        });
+        debugWarn('[WalletContext] Native integrity recovery requires an explicit user decision', {
             stage,
             severity: health.severity,
             issues: health.issues,
         });
-
-        if (unlockBootstrapInFlightRef.current) {
-            debugWarn('[WalletContext] Deferring integrity recovery until unlock bootstrap completes');
-            return true;
-        }
-
-        if (isWalletReady && !scanInProgressRef.current && !autoIntegrityRecoveryInFlightRef.current && rescanWalletRef.current) {
-            setTimeout(() => {
-                if (autoIntegrityRecoveryInFlightRef.current || scanInProgressRef.current || !needsFullRescanRef.current || !rescanWalletRef.current) {
-                    return;
-                }
-                if ((window as any)?.Capacitor?.isNativePlatform?.()) {
-                    window.dispatchEvent(new CustomEvent('salvium:auto-rescan'));
-                }
-                needsFullRescanRef.current = false;
-                autoIntegrityRecoveryInFlightRef.current = true;
-                void rescanWalletRef.current().finally(() => {
-                    autoIntegrityRecoveryInFlightRef.current = false;
-                });
-            }, 150);
-        }
-
-        return true;
-    }, [address, assessNativeSnapshotHealth, isWalletReady]);
+        return false;
+    }, [address, assessNativeSnapshotHealth]);
 
     const logInit = (msg: string) => {
         setInitLog(prev => [...prev.slice(-19), msg].slice(-20));
@@ -2619,9 +2594,7 @@ const getDeviceMemoryBucket = (): string => {
                         void (async () => {
                             try {
                                 if (!startScanRef.current) return;
-                                if (needsFullRescanRef.current) {
-                                    await startScanRef.current(0);
-                                } else {
+                                if (!needsFullRescanRef.current) {
                                     const networkHeight = await cspScanService.getNetworkHeight();
                                     await requestAutomaticCatchupScan(networkHeight, 'page-lifecycle-visible');
                                 }
@@ -2694,9 +2667,7 @@ const getDeviceMemoryBucket = (): string => {
                                     return;
                                 }
                                 if (!startScanRef.current) return;
-                                if (needsFullRescanRef.current) {
-                                    await startScanRef.current(0);
-                                } else {
+                                if (!needsFullRescanRef.current) {
                                     const networkHeight = await cspScanService.getNetworkHeight();
                                     await requestAutomaticCatchupScan(networkHeight, 'page-lifecycle-pageshow');
                                 }
@@ -3983,35 +3954,16 @@ const getDeviceMemoryBucket = (): string => {
                     walletHeight: wallet.height || 0,
                 },
             });
-            if (shouldRepairMissingNativeWalletState({
+            if (shouldReportMissingNativeWalletState({
                 hadCachedWalletData: hadData,
                 cachedSpentKeyImageCount: postUnlockSpentKeyImageCount,
                 nativeTransferCount: postUnlockNativeTransferCount,
                 nativeBalanceEmpty: postUnlockNativeBalanceEmpty,
                 walletHeight: wallet.height || 0,
             })) {
-                const repairReason = 'Native wallet state is empty for an existing wallet';
-                needsFullRescanRef.current = true;
-                preferredScanStartHeightRef.current = 0;
-                markFullRescanRequired(
-                    repairReason,
-                    wallet.height || 0,
-                    syncStatusRef.current.daemonHeight || wallet.height || 0
-                );
-                setNativeBalanceTrust({
-                    trusted: false,
-                    reason: repairReason,
-                });
-                setSyncStatus(prev => ({
-                    ...prev,
-                    walletHeight: 0,
-                    isSyncing: true,
-                    scanStartHeight: 0,
-                    progress: 0,
-                }));
-                reportClientEvent('wallet.native_state_missing_requires_rescan', {
+                reportClientEvent('wallet.native_state_missing_observed', {
                     level: 'warn',
-                    message: repairReason,
+                    message: 'Native wallet state is empty while durable cached state is present',
                     context: {
                         source: 'post_unlock_diag_guard',
                         cachedTxCount: wallet.cachedTransactions?.length || 0,
@@ -4609,7 +4561,7 @@ const getDeviceMemoryBucket = (): string => {
                 restoreSessionRequested,
             },
         });
-        const nativeStateMissingForExistingWallet = shouldRepairMissingNativeWalletState({
+        const nativeStateMissingForExistingWallet = shouldReportMissingNativeWalletState({
             hadCachedWalletData: hadData,
             cachedSpentKeyImageCount,
             nativeTransferCount,
@@ -4634,16 +4586,32 @@ const getDeviceMemoryBucket = (): string => {
                 settledNativeTransferCount === 0 &&
                 settledNativeBalanceEmpty;
         }
+        if (confirmedNativeStateMissingForExistingWallet) {
+            reportClientEvent('wallet.native_state_missing_observed', {
+                level: 'warn',
+                message: 'Native wallet state is empty while durable cached state is present',
+                context: {
+                    source: 'unlock_bootstrap_complete',
+                    cachedTxCount,
+                    cachedReturnAddressCount: unlockReturnAddressCount,
+                    cachedSpentKeyImageCount,
+                    cachedSubaddressCount,
+                    persistedSubaddressCount,
+                    nativeTransferCount,
+                    nativeBalanceEmpty,
+                    hadData,
+                    hasExpectedNativeState,
+                    finalRestoreHeight,
+                    actualNetworkHeight,
+                    cachePresent: !cacheMissing,
+                },
+            });
+        }
         const severeRestoreMismatch =
             !!unlockSnapshot &&
-            (
-                confirmedNativeStateMissingForExistingWallet ||
-                (
-                    cachedTxCount >= 200 &&
-                    nativeTransferCount > 0 &&
-                    nativeTransferCount < Math.floor(cachedTxCount * 0.5)
-                )
-            );
+            cachedTxCount >= 200 &&
+            nativeTransferCount > 0 &&
+            nativeTransferCount < Math.floor(cachedTxCount * 0.5);
 
         if (severeRestoreMismatch) {
             debugWarn('[WalletContext] Severe native transaction history mismatch detected', {
@@ -4655,9 +4623,7 @@ const getDeviceMemoryBucket = (): string => {
             });
             needsFullRescanRef.current = true;
             preferredScanStartHeightRef.current = 0;
-            const repairReason = confirmedNativeStateMissingForExistingWallet
-                ? 'Native wallet state is empty for an existing wallet'
-                : 'Native transaction history requires full repair';
+            const repairReason = 'Native transaction history requires full repair';
             markFullRescanRequired(
                 repairReason,
                 finalRestoreHeight,
@@ -4667,7 +4633,7 @@ const getDeviceMemoryBucket = (): string => {
                 trusted: false,
                 reason: repairReason,
             });
-            reportClientEvent('wallet.native_state_missing_requires_rescan', {
+            reportClientEvent('wallet.native_history_mismatch_requires_rescan', {
                 level: 'warn',
                 message: repairReason,
                 context: {
@@ -4709,7 +4675,12 @@ const getDeviceMemoryBucket = (): string => {
             unlockSnapshot,
             unlockNativeBalance
         );
-        const effectiveUnlockBalanceTrust = outputOwnershipRevalidationFailure
+        const effectiveUnlockBalanceTrust = confirmedNativeStateMissingForExistingWallet
+            ? {
+                trusted: false,
+                reason: 'Native wallet state is still settling; durable cached state was retained',
+            }
+            : outputOwnershipRevalidationFailure
             ? {
                 trusted: false,
                 reason: outputOwnershipRevalidationFailure,
@@ -4787,12 +4758,9 @@ const getDeviceMemoryBucket = (): string => {
         needsGapCheckRef.current = !(forceCleanRestoreScan || cacheMissingRequiresFullScan);
 
         if (needsFullRescanRef.current && !forceCleanRestoreScan) {
-            const isNativeAutoRescan =
-                typeof window !== 'undefined' &&
-                !!(window as any)?.Capacitor?.isNativePlatform?.();
-            const canStartRequiredRescanNow =
-                cacheMissingRequiresFullScan ||
-                isNativeAutoRescan;
+            const canStartRequiredRescanNow = shouldAutoStartRequiredFullRescan({
+                cacheMissingRequiresFullScan,
+            });
             if (!canStartRequiredRescanNow) {
                 reportClientEvent('wallet.full_rescan_waiting_for_user', {
                     level: 'warn',
@@ -4818,7 +4786,6 @@ const getDeviceMemoryBucket = (): string => {
                     message: scanHealthRef.current.reason || 'Full rescan required',
                     context: {
                         cacheMissingRequiresFullScan,
-                        isNativeAutoRescan,
                         finalRestoreHeight,
                         actualNetworkHeight,
                         cachePresent: !cacheMissing,
@@ -7362,18 +7329,14 @@ const getDeviceMemoryBucket = (): string => {
                 }
 
                 if (needsFullRescanRef.current) {
-                    needsFullRescanRef.current = false;
-                    setTimeout(() => {
-                        if (autoIntegrityRecoveryInFlightRef.current || !rescanWalletRef.current) {
-                            return;
-                        }
-                        invalidateInFlightScanState();
-                        window.dispatchEvent(new CustomEvent('salvium:auto-rescan'));
-                        autoIntegrityRecoveryInFlightRef.current = true;
-                        void rescanWalletRef.current().finally(() => {
-                            autoIntegrityRecoveryInFlightRef.current = false;
-                        });
-                    }, 500);
+                    reportClientEvent('wallet.full_rescan_waiting_for_user', {
+                        level: 'warn',
+                        message: scanHealthRef.current.reason || 'Full rescan requires an explicit user decision',
+                        context: {
+                            source: 'scan-finalizer',
+                            cachePresent: !!address,
+                        },
+                    });
                 }
             } else {
                 if (
@@ -8744,7 +8707,7 @@ const getDeviceMemoryBucket = (): string => {
                             actualNetworkHeight,
                         },
                     });
-                    const sessionNativeStateMissing = shouldRepairMissingNativeWalletState({
+                    const sessionNativeStateMissing = shouldReportMissingNativeWalletState({
                         hadCachedWalletData: hadDataForInit,
                         cachedSpentKeyImageCount: cachedSpentKeyImageCountForInit,
                         nativeTransferCount: sessionNativeTransferCount,
@@ -8752,30 +8715,9 @@ const getDeviceMemoryBucket = (): string => {
                         walletHeight: restoreHeight,
                     });
                     if (sessionNativeStateMissing) {
-                        const repairReason = 'Native wallet state is empty for an existing wallet';
-                        needsFullRescanRef.current = true;
-                        preferredScanStartHeightRef.current = 0;
-                        needsGapCheckRef.current = false;
-                        markFullRescanRequired(
-                            repairReason,
-                            restoreHeight,
-                            actualNetworkHeight || restoreHeight || 0
-                        );
-                        setNativeBalanceTrust({
-                            trusted: false,
-                            reason: repairReason,
-                        });
-                        setSyncStatus(prev => ({
-                            ...prev,
-                            walletHeight: 0,
-                            daemonHeight: actualNetworkHeight || prev.daemonHeight || restoreHeight,
-                            isSyncing: true,
-                            scanStartHeight: 0,
-                            progress: 0,
-                        }));
-                        reportClientEvent('wallet.native_state_missing_requires_rescan', {
+                        reportClientEvent('wallet.native_state_missing_observed', {
                             level: 'warn',
-                            message: repairReason,
+                            message: 'Native wallet state is empty while durable cached state is present',
                             context: {
                                 source: 'session_restore_complete',
                                 cachedTxCount: cachedTxs.length,

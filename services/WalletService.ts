@@ -7480,8 +7480,20 @@ export class WalletService {
       if (result.status === 'success') {
         const transfers = Number(result.transfers || 0);
         const accepted = transfers >= Math.max(0, minTransfers);
+        reportClientEvent('wallet.import_cache_result', {
+          level: accepted ? 'info' : 'warn',
+          context: {
+            transfers,
+            minTransfers: Math.max(0, minTransfers),
+            accepted,
+          },
+        });
         if (accepted) {
           this.resetCachedNativeReads();
+          // Do not let the unlock integrity gates race the worker's pushed delta.
+          // A synchronous mirror pull makes the imported transfer count and balance
+          // authoritative before WalletContext decides whether state is missing.
+          await this.refreshMirror();
           this.importedOutputOwnershipRevalidated =
             Number(result.output_ownership_validation_version || 0) === CURRENT_OUTPUT_OWNERSHIP_VALIDATION_VERSION;
         }
