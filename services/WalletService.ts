@@ -7954,6 +7954,91 @@ export class WalletService {
     }
   }
 
+  /**
+   * Rebuild transfer details for a wallet whose durable cache was lost or emptied,
+   * WITHOUT a chain rescan. The wallet's own transaction ids are re-fetched as sparse
+   * tx data and re-ingested through ingest_sparse_transactions -- the same ownership
+   * detection the scanner runs, so owned outputs in those transactions become transfer
+   * details again.
+   *
+   * Strictly bounded to the supplied hashes: this never widens into a block range or a
+   * height scan. It reports what it did and leaves reconciliation to the caller, which
+   * must confirm the rebuilt balance before persisting anything.
+   */
+  async rebuildTransfersFromTxids(
+    txids: string[],
+    opts?: { defaultHeight?: number }
+  ): Promise<{ requested: number; ingested: number; txsMatched: number; error?: string }> {
+    if (!this.isWalletReadySync()) {
+      return { requested: 0, ingested: 0, txsMatched: 0, error: 'wallet_uninitialized' };
+    }
+    const unique = Array.from(new Set(
+      (txids || []).filter((h): h is string => typeof h === 'string' && /^[0-9a-fA-F]{64}$/.test(h))
+    ));
+    if (unique.length === 0) {
+      return { requested: 0, ingested: 0, txsMatched: 0, error: 'no_txids' };
+    }
+
+    this.invalidateStateSnapshot();
+    const defaultHeight = Number.isFinite(Number(opts?.defaultHeight)) ? Number(opts?.defaultHeight) : 0;
+    const BATCH = 96;
+    let ingested = 0;
+    let txsMatched = 0;
+
+    try {
+      for (let i = 0; i < unique.length; i += BATCH) {
+        const batch = unique.slice(i, i + BATCH);
+        const response = await fetch('/api/wallet/get-transactions-by-hash', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hashes: batch }),
+        });
+        if (!response.ok) {
+          return { requested: unique.length, ingested, txsMatched, error: `sparse HTTP ${response.status}` };
+        }
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.length <= 8) continue;
+        const resJson = await this.engine!.op<string>(
+          'ingestSparse',
+          { startHeight: defaultHeight, allowProtocol: true, deferDerived: true, buffer: bytes },
+          { transfer: [bytes.buffer] }
+        );
+        const res = JSON.parse(resJson);
+        if (!res || res.success === false) {
+          return { requested: unique.length, ingested, txsMatched, error: res?.error || 'ingest_failed' };
+        }
+        ingested += batch.length;
+        txsMatched += Number(res.txs_matched ?? res.txsMatched ?? 0) || 0;
+      }
+
+      // Every batch deferred the O(wallet) post-passes; run them once. Unconditional
+      // (rather than tracking a dirty flag) so a rebuilt wallet can never be left with
+      // stale derived state, which would misreport the balance the caller checks.
+      if (ingested > 0) {
+        const flushJson = await this.engine?.op<string>('flushDerivedState', {});
+        let flush: any = flushJson;
+        if (typeof flushJson === 'string') {
+          try { flush = JSON.parse(flushJson); } catch { flush = null; }
+        }
+        if (flush && flush.success === false) {
+          return { requested: unique.length, ingested, txsMatched, error: `flush_failed: ${flush.error || 'unknown'}` };
+        }
+        this.resetCachedNativeReads();
+        await this.refreshMirror();
+      }
+
+      return { requested: unique.length, ingested, txsMatched };
+    } catch (error) {
+      logError('rebuildTransfersFromTxids', error);
+      return {
+        requested: unique.length,
+        ingested,
+        txsMatched,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   async restoreSpentStatusFromCache(cachedSpentKeyImages: Record<string, number>): Promise<number> {
     if (!cachedSpentKeyImages || Object.keys(cachedSpentKeyImages).length === 0) {
       return 0;

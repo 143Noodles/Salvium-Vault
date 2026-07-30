@@ -240,6 +240,8 @@ export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): Clie
     // cache was rejected was the event's log LEVEL, which made a silently zeroed
     // balance impossible to diagnose from field telemetry.
     'transfers', 'minTransfers', 'accepted', 'knownTransactionCount',
+    // Cache-loss repair accounting.
+    'ingested', 'txsMatched', 'reconciled',
     'scanMode', 'scanRangeBlocks', 'scanAttempt', 'isAndroid', 'workerCount',
     'maxWorkerCount', 'initialWorkerCount', 'enabledWorkerCount', 'batchSize',
     'chunkSize', 'useBundleMode', 'useBatchMode', 'forceSingleChunkScan',

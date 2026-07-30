@@ -4447,6 +4447,82 @@ const getDeviceMemoryBucket = (): string => {
                 }
             }
 
+            // Cache-loss repair, no rescan. A durable cache can deserialise cleanly and
+            // still carry ZERO transfers -- that is exactly what the empty-cache overwrite
+            // produced. Reaching the chain tip cannot undo it, because the wallet's funds
+            // sit in older blocks that only the cache ever carried, so the wallet syncs to
+            // the tip and still shows nothing. The node still holds those transactions, so
+            // rebuild the transfer set from the wallet's own txids. Bounded strictly to
+            // those hashes; it never widens into a block scan.
+            const cachedTxsForRepair = wallet.cachedTransactions || [];
+            const preRepairSnapshot = captureNativeSnapshot('cache_loss_repair_probe');
+            const nativeTransfersAfterImport = Number(preRepairSnapshot?.transfer_count || 0);
+            if (nativeTransfersAfterImport === 0 && cachedTxsForRepair.length > 0) {
+                const repairTxids = cachedTxsForRepair
+                    .map((tx) => String(tx?.txid || ''))
+                    .filter((txid) => /^[0-9a-fA-F]{64}$/.test(txid));
+                const repairFromHeight = cachedTxsForRepair.reduce((lowest, tx) => {
+                    const height = Number(tx?.height || 0);
+                    return height > 0 && height < lowest ? height : lowest;
+                }, Number.MAX_SAFE_INTEGER);
+                reportClientEvent('wallet.cache_loss_repair_started', {
+                    level: 'warn',
+                    message: 'wallet cache carried no transfers; rebuilding from known transaction ids',
+                    context: {
+                        knownTransactionCount: cachedTxsForRepair.length,
+                        requested: repairTxids.length,
+                    },
+                });
+                const repairStartedAt = Date.now();
+                const repair = await walletService.rebuildTransfersFromTxids(repairTxids, {
+                    defaultHeight: Number.isFinite(repairFromHeight) && repairFromHeight < Number.MAX_SAFE_INTEGER
+                        ? repairFromHeight
+                        : 0,
+                });
+                // Spent status lives in its own cache and survives the wallet-cache loss.
+                // Without replaying it every rebuilt output looks unspent and the balance
+                // reconciliation below would compare against an inflated figure.
+                if (wallet.cachedSpentKeyImages && Object.keys(wallet.cachedSpentKeyImages).length > 0) {
+                    try { await walletService.restoreSpentStatusFromCache(wallet.cachedSpentKeyImages); } catch { }
+                }
+                const rebuiltSnapshot = captureNativeSnapshot('cache_loss_repair_complete');
+                const rebuiltTransfers = Number(rebuiltSnapshot?.transfer_count || 0);
+                const rebuiltBalance = Number(getAuthoritativeNativeBalance(walletService.getBalance()).balance || 0);
+                const expectedBalance = Number(trustedCachedBalance?.balance || 0);
+                // Trust the rebuild ONLY when it reproduces the balance the wallet last
+                // durably recorded. Any other outcome means the known txid set did not
+                // cover every owned output, and persisting it would write a WRONG balance
+                // over the cache -- strictly worse than showing none. Fail closed: leave
+                // durable state untouched and report it.
+                const reconciled =
+                    rebuiltTransfers > 0 &&
+                    expectedBalance > 0 &&
+                    rebuiltBalance === expectedBalance;
+                reportClientEvent('wallet.cache_loss_repair_result', {
+                    level: reconciled ? 'warn' : 'error',
+                    message: reconciled
+                        ? 'rebuilt wallet transfers from known transactions'
+                        : 'rebuild did not reconcile against the cached balance; durable state left untouched',
+                    context: {
+                        requested: repair.requested,
+                        ingested: repair.ingested,
+                        transfers: rebuiltTransfers,
+                        knownTransactionCount: cachedTxsForRepair.length,
+                        durationMs: Date.now() - repairStartedAt,
+                        reconciled,
+                        errorName: repair.error || '',
+                    },
+                });
+                if (reconciled) {
+                    importSuccess = true;
+                    fullWalletCacheImportedRef.current = true;
+                    try {
+                        const wasmTxs = walletService.getTransactions();
+                        if (wasmTxs && wasmTxs.length > 0) setTransactions(wasmTxs);
+                    } catch { }
+                }
+            }
+
             if (importSuccess) {
                 const numSubaddresses = Math.max(
                     (wallet.cachedSubaddresses?.length || 0) + 50,
