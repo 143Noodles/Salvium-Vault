@@ -111,7 +111,7 @@ describe('validated fallback artifact integration', () => {
     expect(scanner).toContain('encodeURIComponent(CSPScanner.WORKER_VERSION)');
     expect(server).toContain("'Cache-Control', 'private, no-store, no-cache, must-revalidate, proxy-revalidate'");
     expect(serviceWorker).toContain(`const WASM_VERSION = '${WASM_CACHE_VERSION}'`);
-    expect(serviceWorker).toContain("const WASM_CACHE = 'salvium-wasm-v38'");
+    expect(serviceWorker).toContain("const WASM_CACHE = 'salvium-wasm-v39'");
   });
 
   it('routes fallback state through all three worker surfaces', () => {

@@ -2460,7 +2460,14 @@ class CSPScanService {
     // ingest floor makes that miss permanent. min() across passes never overstates.
     let coveredThroughHeight: number | null = null;
     const noteCoveredThrough = (scanResult: any) => {
-      const covered = Number(scanResult?.coveredThroughHeight);
+      // null/undefined means every chunk fully covered its nominal range, so there
+      // is nothing to clamp to. Number(null) is 0 and Number.isFinite(0) is true, so
+      // coercing before the null check turned a healthy scan into "server proved
+      // coverage through height 0" -> implausible clamp -> terminal "covered through
+      // 0" scan failure. Same trap already guarded in WalletContext's commit clamp.
+      const rawCovered = scanResult?.coveredThroughHeight;
+      if (rawCovered == null) return;
+      const covered = Number(rawCovered);
       if (!Number.isFinite(covered)) return;
       coveredThroughHeight = coveredThroughHeight === null ? covered : Math.min(coveredThroughHeight, covered);
     };

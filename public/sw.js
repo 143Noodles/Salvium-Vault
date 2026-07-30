@@ -10,7 +10,7 @@
 
 const SW_BUILD_ID = '__SW_BUILD_ID__'; // replaced at build time by the stamp-sw vite plugin
 const CACHE_VERSION = 'salvium-vault-' + SW_BUILD_ID;
-const WASM_CACHE = 'salvium-wasm-v38';
+const WASM_CACHE = 'salvium-wasm-v39';
 const STATIC_CACHE = 'salvium-static-' + SW_BUILD_ID;
 const API_CACHE = 'salvium-api-' + SW_BUILD_ID;
 const WASM_VERSION = '8.2.30-v113c';
@@ -103,7 +103,8 @@ self.addEventListener('fetch', (event) => {
   // Scanner worker and high-volume scan endpoints must stay on the raw network
   // path. During restores these requests can be multi-megabyte and latency
   // sensitive; caching/intercepting them in the SW can delay worker startup.
-  if (isWalletEngineWorkerScript(url) || isScannerWorkerScript(url) || isLiveScanRequest(url)) {
+  if (isWalletEngineWorkerScript(url) || isScannerWorkerScript(url) ||
+      isWasmEngineAsset(url) || isLiveScanRequest(url)) {
     return;
   }
 
@@ -290,6 +291,18 @@ function isScannerWorkerScript(url) {
   const path = normalizedPathname(url);
   return path.includes('/wallet/csp-scanner.worker.js') ||
          path.includes('/wallet/CSPScanner.js');
+}
+
+// The WASM glue and binary are pulled by importScripts() from INSIDE
+// wallet-host.worker.js, so they hit the same COEP:credentialless abort as the
+// worker script itself when answered through the service-worker Cache pipeline
+// (Firefox: NS_BINDING_ABORTED, Safari: "Load failed") -- the worker then never
+// reaches its init handshake and the client reports worker_init_failed. Bypassing
+// the worker script alone was not enough; its subresources need the raw network
+// path too. They are content-addressed (/api/wasm/:assetVersion/:filename) and
+// served immutable for a year, so the HTTP cache still answers repeat loads.
+function isWasmEngineAsset(url) {
+  return normalizedPathname(url).startsWith('/api/wasm/');
 }
 
 function isLiveScanRequest(url) {
