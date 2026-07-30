@@ -236,6 +236,10 @@ export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): Clie
     'missingRuntimeTxContext', 'failureCount', 'unresolvedReturnedOutputCount',
     'missingRuntimeTxContextCount', 'runtimeTxCandidates', 'runtimeTxRequested',
     'runtimeTxHydrated', 'runtimeTxError', 'restorePhase2Attempt',
+    // Wallet-cache import/export accounting. Without these the only signal that a
+    // cache was rejected was the event's log LEVEL, which made a silently zeroed
+    // balance impossible to diagnose from field telemetry.
+    'transfers', 'minTransfers', 'accepted', 'knownTransactionCount',
     'scanMode', 'scanRangeBlocks', 'scanAttempt', 'isAndroid', 'workerCount',
     'maxWorkerCount', 'initialWorkerCount', 'enabledWorkerCount', 'batchSize',
     'chunkSize', 'useBundleMode', 'useBatchMode', 'forceSingleChunkScan',

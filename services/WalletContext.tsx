@@ -432,6 +432,27 @@ function getMinimumExpectedCacheTransfers(
     return cachedAtomicBalance > 0 || (cachedTransactions?.length || 0) > 0 ? 1 : 0;
 }
 
+// A wallet with ZERO transfers still serializes to a valid ~410KB cache blob
+// (measured against the shipping WASM), so the historic `!cache_hex` check could
+// not tell an empty wallet from a populated one. Persisting that blob over a good
+// cache is what silently zeroed balances: the next unlock imported it, got
+// transfers=0 back, rejected it at minTransfers, and left the wallet with no
+// transfers and no route back except a full rescan. Only the transfer count
+// separates the two cases, so every cache write now checks it.
+export function walletCacheExportIsSafeToPersist(
+    exported: { cache_hex?: string; transfers?: number } | null | undefined,
+    knownTransactionCount: number
+): boolean {
+    if (!exported?.cache_hex) return false;
+    const transfers = Number(exported.transfers);
+    // Older WASM builds do not report the count; keep the previous behaviour
+    // rather than blocking every persist on those.
+    if (!Number.isFinite(transfers)) return true;
+    if (transfers > 0) return true;
+    // A genuinely empty wallet (fresh, never received) must still persist.
+    return !(Number.isFinite(knownTransactionCount) && knownTransactionCount > 0);
+}
+
 async function deleteFromIndexedDB(key: string): Promise<void> {
     try {
         return await runCacheDBOperation((db) => new Promise<void>((resolve, reject) => {
@@ -4109,6 +4130,9 @@ const getDeviceMemoryBucket = (): string => {
             if (!repairedExport?.cache_hex) {
                 throw new Error('Repaired wallet cache export was empty');
             }
+            if (!walletCacheExportIsSafeToPersist(repairedExport, (wallet.cachedTransactions || []).length)) {
+                throw new Error('Repaired wallet cache export had zero transfers');
+            }
             repairedCacheHex = repairedExport.cache_hex;
             const cacheAddress = restoredAddress || wallet.address;
             const subaddressMap: SubaddressMapEntry[] = wasmSubaddresses.map((sub, idx) => ({
@@ -6511,7 +6535,8 @@ const getDeviceMemoryBucket = (): string => {
                     let walletCacheHex = '';
                     if (shouldPersistScanState) {
                         const cacheExport = await walletService.exportWalletCache();
-                        if (cacheExport && cacheExport.cache_hex) {
+                        if (cacheExport && cacheExport.cache_hex
+                            && walletCacheExportIsSafeToPersist(cacheExport, transactionsRef.current.length)) {
                             walletCacheHex = cacheExport.cache_hex;
                         } else {
                             const outputsExport = await walletService.exportOutputs();
@@ -9425,7 +9450,7 @@ const getDeviceMemoryBucket = (): string => {
     // opts.light: skip the send-readiness recomputes (precompute/rebuild/validate, also O(wallet));
     // they are not needed for persistence-only callers. Persisted bytes are IDENTICAL either way.
     const refreshWalletState = useCallback(async (
-        opts?: { preExport?: { cache_hex: string } | null; light?: boolean }
+        opts?: { preExport?: { cache_hex: string; transfers?: number; bytes?: number } | null; light?: boolean }
     ): Promise<{ success: boolean; error?: string }> => {
         if (!walletService.hasWallet() || !address) {
             return { success: false, error: 'Wallet not initialized' };
@@ -9449,6 +9474,17 @@ const getDeviceMemoryBucket = (): string => {
                 : await walletService.exportWalletCache();
             if (!cacheExport || !cacheExport.cache_hex) {
                 return { success: false, error: 'Failed to export wallet cache' };
+            }
+            if (!walletCacheExportIsSafeToPersist(cacheExport, transactionsRef.current.length)) {
+                reportClientEvent('wallet.cache_persist_refused_empty', {
+                    level: 'warn',
+                    message: 'refused to persist a zero-transfer wallet cache from refreshWalletState',
+                    context: {
+                        transfers: Number(cacheExport.transfers) || 0,
+                        knownTransactionCount: transactionsRef.current.length,
+                    },
+                });
+                return { success: false, error: 'Refused to persist an empty wallet cache' };
             }
 
             const wasmSubaddresses = await walletService.getSubaddresses();
@@ -9499,10 +9535,21 @@ const getDeviceMemoryBucket = (): string => {
         if (!walletService.hasWallet() || !address) return persistBlocked('no-wallet');
         if (scanInProgressRef.current) return persistBlocked('scanInProgressRef');
         if (cspScanService.isScanningInProgress()) return persistBlocked('cspScanningInProgress');
-        let exported: { cache_hex: string } | null = null;
+        let exported: { cache_hex: string; transfers?: number; bytes?: number } | null = null;
         try {
             exported = await walletService.exportWalletCache();
             if (!exported || !exported.cache_hex) return persistBlocked('export-empty');
+            if (!walletCacheExportIsSafeToPersist(exported, transactionsRef.current.length)) {
+                reportClientEvent('wallet.cache_persist_refused_empty', {
+                    level: 'warn',
+                    message: 'refused to overwrite a populated wallet cache with a zero-transfer export',
+                    context: {
+                        transfers: Number(exported.transfers) || 0,
+                        knownTransactionCount: transactionsRef.current.length,
+                    },
+                });
+                return persistBlocked('zero-transfer-export');
+            }
             if (exported && exported.cache_hex) {
                 await saveToIndexedDB(`wallet_cache_${address}`, exported.cache_hex);
                 reportClientEvent('wallet.cache_persisted', {

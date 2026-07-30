@@ -1,0 +1,9 @@
+{
+  "note": "Captured from wallet/SalviumWallet.{js,wasm} via create_random (zero transfers). Regenerate with scripts/qa/capture-empty-cache-fixture.mjs",
+  "exportStatus": "success",
+  "transfers": 0,
+  "bytes": 410282,
+  "cacheHexLength": 820564,
+  "reimportStatus": "success",
+  "reimportTransfers": 0
+}

@@ -7417,7 +7417,7 @@ export class WalletService {
     }
   }
 
-  async exportWalletCache(): Promise<{ cache_hex: string } | null> {
+  async exportWalletCache(): Promise<{ cache_hex: string; transfers?: number; bytes?: number } | null> {
     if (!this.isWalletReadySync()) {
       return null;
     }
@@ -7430,8 +7430,16 @@ export class WalletService {
       const result = JSON.parse(resultJson);
 
       if (result.status === 'success') {
+        // A wallet with ZERO transfers still serializes to a valid ~410KB blob, so
+        // cache_hex alone cannot tell an empty wallet from a populated one. Surface
+        // the count the WASM already reports (export_wallet_cache_hex returns it)
+        // so persist sites can refuse to overwrite a good cache with an empty one.
+        const exportedTransfers = Number(result.transfers);
+        const exportedBytes = Number(result.bytes);
         return {
-          cache_hex: result.cache_hex
+          cache_hex: result.cache_hex,
+          ...(Number.isFinite(exportedTransfers) ? { transfers: exportedTransfers } : {}),
+          ...(Number.isFinite(exportedBytes) ? { bytes: exportedBytes } : {}),
         };
       } else {
         return null;
