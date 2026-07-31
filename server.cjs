@@ -652,6 +652,7 @@ function sanitizeClientTelemetryContext(context) {
         // the server drops it before logging and the field never reaches telemetry.
         'transfers', 'minTransfers', 'accepted', 'knownTransactionCount',
         'ingested', 'txsMatched', 'reconciled', 'requested', 'numImported',
+        'nativeBalanceEmpty',
         'scanMode', 'scanRangeBlocks', 'scanAttempt', 'isAndroid', 'workerCount',
         'maxWorkerCount', 'initialWorkerCount', 'enabledWorkerCount', 'batchSize',
         'chunkSize', 'useBundleMode', 'useBatchMode', 'forceSingleChunkScan',

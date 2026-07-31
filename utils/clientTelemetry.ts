@@ -242,6 +242,7 @@ export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): Clie
     'transfers', 'minTransfers', 'accepted', 'knownTransactionCount',
     // Cache-loss repair accounting.
     'ingested', 'txsMatched', 'reconciled', 'requested', 'numImported',
+    'nativeBalanceEmpty',
     'scanMode', 'scanRangeBlocks', 'scanAttempt', 'isAndroid', 'workerCount',
     'maxWorkerCount', 'initialWorkerCount', 'enabledWorkerCount', 'batchSize',
     'chunkSize', 'useBundleMode', 'useBatchMode', 'forceSingleChunkScan',

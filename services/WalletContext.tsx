@@ -4457,7 +4457,16 @@ const getDeviceMemoryBucket = (): string => {
             const cachedTxsForRepair = wallet.cachedTransactions || [];
             const preRepairSnapshot = captureNativeSnapshot('cache_loss_repair_probe');
             const nativeTransfersAfterImport = Number(preRepairSnapshot?.transfer_count || 0);
-            if (nativeTransfersAfterImport === 0 && cachedTxsForRepair.length > 0) {
+            // getStateSnapshot() can still be serving a snapshot from before the
+            // outputs-import fallback ran (importOutputs invalidates on entry, then
+            // refreshes the mirror without invalidating again), so transfer_count
+            // alone reported 0 for wallets it had just repopulated and fired this
+            // repair on healthy wallets. The live balance IS refreshed by
+            // resetCachedNativeReads()/refreshMirror(), so require both: a wallet
+            // holding funds is never a wallet whose transfers were lost.
+            const nativeBalanceEmptyNow =
+                Number(getAuthoritativeNativeBalance(walletService.getBalance()).balance || 0) <= 0;
+            if (nativeTransfersAfterImport === 0 && nativeBalanceEmptyNow && cachedTxsForRepair.length > 0) {
                 const repairTxids = cachedTxsForRepair
                     .map((tx) => String(tx?.txid || ''))
                     .filter((txid) => /^[0-9a-fA-F]{64}$/.test(txid));
@@ -4471,6 +4480,7 @@ const getDeviceMemoryBucket = (): string => {
                     context: {
                         knownTransactionCount: cachedTxsForRepair.length,
                         requested: repairTxids.length,
+                        nativeBalanceEmpty: nativeBalanceEmptyNow,
                     },
                 });
                 const repairStartedAt = Date.now();

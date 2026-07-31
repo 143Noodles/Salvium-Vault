@@ -45,8 +45,25 @@ describe('cache-loss repair is bounded to the wallet own transactions', () => {
 });
 
 describe('cache-loss repair fails closed', () => {
-  it('only triggers when native transfers are zero and the wallet has known txs', () => {
-    expect(ctx).toContain('if (nativeTransfersAfterImport === 0 && cachedTxsForRepair.length > 0) {');
+  it('only triggers when transfers are zero AND the live balance is empty', () => {
+    // transfer_count alone came from a state snapshot that can predate the
+    // outputs-import fallback, which fired the repair on healthy wallets.
+    expect(ctx).toContain(
+      'if (nativeTransfersAfterImport === 0 && nativeBalanceEmptyNow && cachedTxsForRepair.length > 0) {'
+    );
+    expect(ctx).toContain('const nativeBalanceEmptyNow =');
+    expect(ctx).toContain('getAuthoritativeNativeBalance(walletService.getBalance()).balance || 0) <= 0');
+  });
+
+  it('keeps the client and server telemetry allowlists in step', () => {
+    const client = read('utils/clientTelemetry.ts');
+    const server = read('server.cjs');
+    // A key must be in BOTH or the server strips it before the event is logged.
+    for (const key of ['transfers', 'knownTransactionCount', 'ingested', 'reconciled',
+                       'requested', 'numImported', 'nativeBalanceEmpty']) {
+      expect(client).toContain(`'${key}'`);
+      expect(server).toContain(`'${key}'`);
+    }
   });
 
   it('replays spent key images before reconciling, so the balance is not inflated', () => {
