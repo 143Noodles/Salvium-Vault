@@ -647,6 +647,11 @@ function sanitizeClientTelemetryContext(context) {
         'missingRuntimeTxContext', 'failureCount', 'unresolvedReturnedOutputCount',
         'missingRuntimeTxContextCount', 'runtimeTxCandidates', 'runtimeTxRequested',
         'runtimeTxHydrated', 'runtimeTxError', 'restorePhase2Attempt',
+        // Wallet-cache import/export + cache-loss repair accounting. Mirrors the
+        // same block in utils/clientTelemetry.ts: BOTH lists must contain a key or
+        // the server drops it before logging and the field never reaches telemetry.
+        'transfers', 'minTransfers', 'accepted', 'knownTransactionCount',
+        'ingested', 'txsMatched', 'reconciled', 'requested', 'numImported',
         'scanMode', 'scanRangeBlocks', 'scanAttempt', 'isAndroid', 'workerCount',
         'maxWorkerCount', 'initialWorkerCount', 'enabledWorkerCount', 'batchSize',
         'chunkSize', 'useBundleMode', 'useBatchMode', 'forceSingleChunkScan',

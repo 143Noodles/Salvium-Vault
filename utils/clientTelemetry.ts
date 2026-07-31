@@ -241,7 +241,7 @@ export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): Clie
     // balance impossible to diagnose from field telemetry.
     'transfers', 'minTransfers', 'accepted', 'knownTransactionCount',
     // Cache-loss repair accounting.
-    'ingested', 'txsMatched', 'reconciled',
+    'ingested', 'txsMatched', 'reconciled', 'requested', 'numImported',
     'scanMode', 'scanRangeBlocks', 'scanAttempt', 'isAndroid', 'workerCount',
     'maxWorkerCount', 'initialWorkerCount', 'enabledWorkerCount', 'batchSize',
     'chunkSize', 'useBundleMode', 'useBatchMode', 'forceSingleChunkScan',

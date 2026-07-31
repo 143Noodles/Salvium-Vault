@@ -7408,6 +7408,12 @@ export class WalletService {
         this.resetCachedNativeReads();
         // Generic call: pull fresh state into the mirror after the import.
         await this.refreshMirror();
+        const numImported = Number(result.num_imported || 0);
+        reportClientEvent('wallet.import_outputs_result', {
+          level: numImported > 0 ? 'info' : 'warn',
+          message: 'legacy outputs import completed',
+          context: { numImported },
+        });
         return result.num_imported;
       } else {
         return -1;
