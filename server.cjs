@@ -16,6 +16,7 @@ const {
 const { buildContentSecurityPolicy, uaSupportsModernCsp } = require('./utils/cspPolicy.cjs');
 const { fetchCanonicalTransactionHashes } = require('./utils/canonicalTxMembership.cjs');
 const { registerMiningRoutes } = require('./services/minerManager.cjs');
+const { createMempoolPoller } = require('./mempool-poller.cjs');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const isRender = process.env.RENDER === 'true';
 if (typeof dns.setDefaultResultOrder === 'function') {
@@ -1133,7 +1134,7 @@ async function readCspBundleMetadataFromDisk() {
 const blockTimestampCache = new Map();
 const TIMESTAMP_CACHE_FILE = path.join(CACHE_DIR, 'block-timestamps.json');
 
-const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19081';
+const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19085';
 const GLOBAL_DAEMON_BASE_URL = GLOBAL_DAEMON_URL.replace(/\/$/, '');
 const DEFAULT_WASM_BASENAME = 'SalviumWallet';
 const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c';
@@ -2337,7 +2338,7 @@ function broadcastHeartbeat() {
 
 const mempoolSseClients = new Set();
 let cachedMempoolTxs = new Map();
-let mempoolPollingInterval = null;
+let mempoolPoller = null;
 
 function broadcastMempoolEvent(eventType, txData) {
     if (mempoolSseClients.size === 0) return;
@@ -2360,81 +2361,40 @@ function broadcastMempoolEvent(eventType, txData) {
     console.log(`[Mempool-SSE] Broadcast ${eventType} to ${mempoolSseClients.size} client(s)`);
 }
 
+function getMempoolPoller() {
+    // RPC_NODES is declared below the SSE route. Resolve it lazily on the first
+    // client connection, after module initialisation has completed.
+    if (!mempoolPoller) {
+        mempoolPoller = createMempoolPoller({
+            rpcNodes: RPC_NODES,
+            hasClients: () => mempoolSseClients.size > 0,
+            cache: cachedMempoolTxs,
+            broadcast: broadcastMempoolEvent,
+            request: async ({ nodeUrl, path: rpcPath, body, timeoutMs }) => {
+                const response = await axiosInstance.post(`${nodeUrl}${rpcPath}`, body, { timeout: timeoutMs });
+                return response.data;
+            },
+            intervalMs: Number(process.env.SALVIUM_MEMPOOL_POLL_INTERVAL_MS) || 5000,
+            errorIntervalMs: Number(process.env.SALVIUM_MEMPOOL_ERROR_INTERVAL_MS) || 15000,
+            batchSize: Number(process.env.SALVIUM_MEMPOOL_FETCH_BATCH_SIZE) || 8,
+            maxPendingHashes: Number(process.env.SALVIUM_MEMPOOL_MAX_PENDING_HASHES) || 5000,
+            maxCachedTxs: Number(process.env.SALVIUM_MEMPOOL_MAX_CACHED_TXS) || 128,
+            rpcTimeoutMs: Number(process.env.SALVIUM_MEMPOOL_RPC_TIMEOUT_MS) || 5000,
+        });
+    }
+    return mempoolPoller;
+}
+
 async function checkMempoolForChanges() {
-    let response = null;
-    let usedNode = '';
-
-    for (const nodeUrl of RPC_NODES) {
-        try {
-            const res = await axiosInstance.post(`${nodeUrl}/get_transaction_pool`, {}, { timeout: 5000 });
-
-            if (res.data) {
-                response = res;
-                usedNode = nodeUrl;
-                break;
-            }
-        } catch (err) {
-        }
-    }
-
-    if (!response) {
-        console.warn('[Mempool-SSE] Failed to fetch mempool from any RPC node.');
-        return;
-    }
-
-    try {
-        const poolTxs = response.data.transactions || response.data?.result?.transactions || [];
-
-        const currentTxHashes = new Set(poolTxs.map(tx => tx.id_hash));
-
-        for (const tx of poolTxs) {
-            if (!cachedMempoolTxs.has(tx.id_hash)) {
-                console.log(`[Mempool-SSE] Found NEW tx: ${tx.id_hash} (blob size: ${tx.tx_blob ? tx.tx_blob.length : 0})`);
-
-                const txData = {
-                    tx_hash: tx.id_hash,
-                    tx_blob: tx.tx_blob,
-                    fee: tx.fee,
-                    receive_time: tx.receive_time
-                };
-
-                cachedMempoolTxs.set(tx.id_hash, txData);
-
-                broadcastMempoolEvent('mempool_add', txData);
-            }
-        }
-
-        for (const hash of cachedMempoolTxs.keys()) {
-            if (!currentTxHashes.has(hash)) {
-                console.log(`[Mempool-SSE] TX removed from pool: ${hash}`);
-                cachedMempoolTxs.delete(hash);
-                broadcastMempoolEvent('mempool_remove', {
-                    tx_hash: hash
-                });
-            }
-        }
-
-
-    } catch (err) {
-        console.warn('[Mempool-SSE] Failed to process mempool data:', err.message);
-    }
+    return getMempoolPoller().pollOnce();
 }
 
 function startMempoolPolling() {
-    if (mempoolPollingInterval) return;
-
-    console.log('[Mempool-SSE] Starting mempool polling (3s interval)...');
-    mempoolPollingInterval = setInterval(checkMempoolForChanges, 3000);
-
-    checkMempoolForChanges();
+    getMempoolPoller().start();
 }
 
 function stopMempoolPolling() {
-    if (mempoolPollingInterval) {
-        clearInterval(mempoolPollingInterval);
-        mempoolPollingInterval = null;
-        console.log('[Mempool-SSE] Stopped mempool polling');
-    }
+    if (mempoolPoller) mempoolPoller.stop();
 }
 
 async function startRealtimeBlockWatcher() {
@@ -5604,7 +5564,7 @@ function __isLocalRpcUrl(u) {
             || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
     } catch (e) { return false; }
 }
-const __configuredPrimary = (process.env.SALVIUM_RPC_URL || 'http://salvium:19081').replace(/\/$/, '');
+const __configuredPrimary = (process.env.SALVIUM_RPC_URL || 'http://salvium:19085').replace(/\/$/, '');
 const RPC_NODES = (process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1')
     ? [...new Set([
         ...(__isLocalRpcUrl(__configuredPrimary) ? [__configuredPrimary] : []),
@@ -5671,6 +5631,7 @@ const DAEMON_RPC_DENY_METHODS = new Set([
     'get_mining_status', 'save_bc', 'update', 'pop_blocks', 'prune_blockchain',
     'set_bans', 'get_bans', 'banned', 'relay_tx', 'generateblocks',
     'submit_block', 'getblocktemplate', 'get_block_template',
+    'get_transaction_pool', 'gettransactionpool', 'get_mempool',
     'sendrawtransaction', 'send_raw_transaction', 'submit_transfer',
 ]);
 // Known-good read/needed methods the wallet/server legitimately uses (allowed silently).
@@ -5679,7 +5640,7 @@ const DAEMON_RPC_ALLOW_METHODS = new Set([
     'get_blocks', 'getblocks', 'get_blocks.bin', 'getblocks.bin', 'get_blocks_by_height.bin',
     'get_block_count', 'getblockcount', 'on_get_block_hash', 'on_getblockhash',
     'get_block_header_by_height', 'get_block_header_by_hash', 'get_block_headers_range',
-    'get_last_block_header', 'get_transactions', 'gettransactions', 'get_transaction_pool',
+    'get_last_block_header', 'get_transactions', 'gettransactions',
     'get_transaction_pool_hashes', 'get_transaction_pool_hashes.bin', 'get_transaction_pool_stats',
     'get_txpool_backlog', 'get_outs', 'get_outs.bin', 'get_output_distribution',
     'get_output_distribution.bin', 'get_output_histogram', 'get_fee_estimate', 'get_version',
@@ -5759,7 +5720,7 @@ const dnsp = require('node:dns').promises;
 const netmod = require('node:net');
 const nodeContext = new AsyncLocalStorage();
 const VAULT_NODE_COOKIE = 'salvium_node';
-const HOSTED_DAEMON_URL = (process.env.SALVIUM_RPC_URL || 'http://salvium:19081').replace(/\/$/, '');
+const HOSTED_DAEMON_URL = (process.env.SALVIUM_RPC_URL || 'http://salvium:19085').replace(/\/$/, '');
 const ALLOW_OFFICIAL_SEED_PRESETS =
     process.env.SALVIUM_ALLOW_SEED_PRESETS === '1' ||
     process.env.SALVIUM_ALLOW_SEED_FALLBACK === '1' ||

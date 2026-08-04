@@ -15,7 +15,7 @@
     "preview": "vite preview",
     "start": "node server.cjs",
     "start:dev": "node --watch server.cjs",
-    "test": "vitest run",
+    "test": "vitest run && node --test mempool-poller.test.cjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "build:extension:chrome": "node scripts/build-extension.mjs chrome",

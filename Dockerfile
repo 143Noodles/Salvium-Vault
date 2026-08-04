@@ -35,7 +35,7 @@ ENV SALVIUM_DATA_DIR=/app/data \
     SALVIUM_NETWORK=mainnet \
     SALVIUM_DEFAULT_BROWSER_NETWORK=mainnet \
     SALVIUM_WASM_BASENAME=SalviumWallet \
-    SALVIUM_RPC_URL=http://salvium:19081 \
+    SALVIUM_RPC_URL=http://salvium:19085 \
     SALVIUM_MAINNET_VAULT_URL=http://salvium-vault:3000
 
 # Production deps only in runtime image
@@ -44,6 +44,7 @@ RUN npm ci --omit=dev --ignore-scripts
 
 # Copy server and artifacts from builder
 COPY server.cjs ./
+COPY mempool-poller.cjs ./
 COPY server-csp-worker.cjs ./
 COPY --from=build /app/wallet-runtime/ ./wallet/
 RUN printf '{"type":"commonjs"}\n' > ./wallet/package.json \
