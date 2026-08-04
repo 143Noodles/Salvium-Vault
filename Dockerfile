@@ -35,7 +35,7 @@ ENV SALVIUM_DATA_DIR=/app/data \
     SALVIUM_NETWORK=mainnet \
     SALVIUM_DEFAULT_BROWSER_NETWORK=mainnet \
     SALVIUM_WASM_BASENAME=SalviumWallet \
-    SALVIUM_RPC_URL=http://salvium:19085 \
+    SALVIUM_RPC_URL=http://salvium:19081 \
     SALVIUM_MAINNET_VAULT_URL=http://salvium-vault:3000
 
 # Production deps only in runtime image

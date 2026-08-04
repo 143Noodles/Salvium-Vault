@@ -1134,7 +1134,7 @@ async function readCspBundleMetadataFromDisk() {
 const blockTimestampCache = new Map();
 const TIMESTAMP_CACHE_FILE = path.join(CACHE_DIR, 'block-timestamps.json');
 
-const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19085';
+const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19081';
 const GLOBAL_DAEMON_BASE_URL = GLOBAL_DAEMON_URL.replace(/\/$/, '');
 const DEFAULT_WASM_BASENAME = 'SalviumWallet';
 const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c';
@@ -5564,7 +5564,7 @@ function __isLocalRpcUrl(u) {
             || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
     } catch (e) { return false; }
 }
-const __configuredPrimary = (process.env.SALVIUM_RPC_URL || 'http://salvium:19085').replace(/\/$/, '');
+const __configuredPrimary = (process.env.SALVIUM_RPC_URL || 'http://salvium:19081').replace(/\/$/, '');
 const RPC_NODES = (process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1')
     ? [...new Set([
         ...(__isLocalRpcUrl(__configuredPrimary) ? [__configuredPrimary] : []),
@@ -5720,7 +5720,7 @@ const dnsp = require('node:dns').promises;
 const netmod = require('node:net');
 const nodeContext = new AsyncLocalStorage();
 const VAULT_NODE_COOKIE = 'salvium_node';
-const HOSTED_DAEMON_URL = (process.env.SALVIUM_RPC_URL || 'http://salvium:19085').replace(/\/$/, '');
+const HOSTED_DAEMON_URL = (process.env.SALVIUM_RPC_URL || 'http://salvium:19081').replace(/\/$/, '');
 const ALLOW_OFFICIAL_SEED_PRESETS =
     process.env.SALVIUM_ALLOW_SEED_PRESETS === '1' ||
     process.env.SALVIUM_ALLOW_SEED_FALLBACK === '1' ||

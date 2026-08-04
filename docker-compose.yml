@@ -13,7 +13,7 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     environment:
-      SALVIUM_RPC_URL: http://salvium:19085
+      SALVIUM_RPC_URL: http://salvium:19081
       SALPAY_AGENT_URL: http://salvium-salpay-agent:3021
       SALPAY_AGENT_PUBLIC_BASE_URL: https://vault.salvium.tools/api/salpay/orders
       SALVIUM_TXI_BUNDLE_AUTOBUILD: "1"
