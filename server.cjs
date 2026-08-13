@@ -4818,7 +4818,12 @@ async function fetchTxOutputAndAssetIndices(txHashesHex, options = {}) {
     for (let i = 0; i < unique.length; i += batchSize) {
         const batch = unique.slice(i, i + batchSize);
 
-        const res1 = await getTransactionsWithRetry(batch, false, false);
+        // SPR7's recovery path deliberately parses a pruned/base transaction
+        // and recomputes its canonical id with the separately supplied
+        // prunable hash.  Asking the daemon for a full legacy blob defeats that
+        // path when its obsolete proof encoding is exactly what the current
+        // full parser cannot consume.
+        const res1 = await getTransactionsWithRetry(batch, false, includePrunableHash);
         const txs1 = res1?.data?.txs || [];
 
         const missing = new Set(batch.map(h => h.toLowerCase()));
@@ -4860,7 +4865,7 @@ async function fetchTxOutputAndAssetIndices(txHashesHex, options = {}) {
 
         const retry = Array.from(new Set(stillNeeding)).filter(Boolean);
         if (retry.length > 0) {
-            const res2 = await getTransactionsWithRetry(retry, true, false);
+            const res2 = await getTransactionsWithRetry(retry, true, includePrunableHash);
             const txs2 = res2?.data?.txs || [];
             for (const tx of txs2) {
                 const parsed = tryGetFields(tx, { includeHex: false });

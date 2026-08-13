@@ -9240,6 +9240,17 @@ export class WalletService {
                 .map((hash) => hash.slice(0, 8));
               batchUnresolvedPrefixes.forEach((prefix) => unresolvedPrefixSet.add(prefix));
               const reportedStored = Number(result?.stored);
+              const reportedBaseFallbacks = Number(result?.base_fallbacks);
+              if (Number.isSafeInteger(reportedBaseFallbacks) && reportedBaseFallbacks > 0) {
+                reportClientEvent('wallet.runtime_tx_base_fallback_used', {
+                  message: 'Canonical pruned transaction restored legacy wallet context',
+                  context: {
+                    requested: batch.length,
+                    baseFallbacks: reportedBaseFallbacks,
+                    confirmed: confirmedHashes.length,
+                  },
+                });
+              }
               if (Number.isSafeInteger(reportedStored) && reportedStored >= 0 &&
                   reportedStored !== confirmedHashes.length) {
                 reportClientEvent('wallet.runtime_tx_hydration_count_mismatch', {

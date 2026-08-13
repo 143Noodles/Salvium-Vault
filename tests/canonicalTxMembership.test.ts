@@ -77,8 +77,11 @@ describe('canonical transaction membership', () => {
 
     expect(server).toContain('includePrunableHash && !requireCanonical');
     expect(server).toContain("includePrunableHash ? 'SPR7' : 'SPR5'");
+    expect(server).toContain('getTransactionsWithRetry(batch, false, includePrunableHash)');
+    expect(server).toContain('getTransactionsWithRetry(retry, true, includePrunableHash)');
     expect(server).toContain("Buffer.from(info.prunable_hash || '0'.repeat(64), 'hex')");
     expect(walletService).toContain('include_prunable_hash: true');
+    expect(walletService).toContain("'wallet.runtime_tx_base_fallback_used'");
     expect(scanner).toContain('include_prunable_hash: true');
     expect(walletService).toContain("response.headers.get('X-Canonical-Verified') !== 'true'");
     expect(scanner).toContain("r.headers.get('X-Canonical-Verified') !== 'true'");
