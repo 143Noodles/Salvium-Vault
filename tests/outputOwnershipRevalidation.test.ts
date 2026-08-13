@@ -101,6 +101,7 @@ describe('imported output ownership revalidation', () => {
     expect(JSON.parse(String(request.body))).toEqual({
       hashes: [txHash],
       require_canonical: true,
+      include_prunable_hash: true,
     });
   });
 

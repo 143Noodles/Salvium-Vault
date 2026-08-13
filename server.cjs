@@ -4739,6 +4739,7 @@ async function extractSparseTxsFast(startHeight, endHeight, txIndices, preloaded
 }
 async function fetchTxOutputAndAssetIndices(txHashesHex, options = {}) {
     const bestEffort = options && options.bestEffort === true;
+    const includePrunableHash = options && options.includePrunableHash === true;
     const unique = Array.from(new Set((txHashesHex || []).filter(Boolean)));
     const out = new Map();
     if (unique.length === 0) return out;
@@ -4835,12 +4836,16 @@ async function fetchTxOutputAndAssetIndices(txHashesHex, options = {}) {
 
             const txHex = extractTxHex(tx);
             const txBlob = txHex ? Buffer.from(txHex, 'hex') : null;
+            const prunableHash = typeof tx?.prunable_hash === 'string' && /^[0-9a-fA-F]{64}$/.test(tx.prunable_hash)
+                ? tx.prunable_hash.toLowerCase()
+                : null;
 
             const prev = out.get(txHash) || {};
             out.set(txHash, {
                 output_indices: outputIndices || prev.output_indices,
                 asset_type_output_indices: assetIndices || prev.asset_type_output_indices,
                 tx_blob: txBlob || prev.tx_blob,
+                prunable_hash: prunableHash || prev.prunable_hash,
                 block_height: tx.block_height || prev.block_height || 0,
             });
         }
@@ -4870,6 +4875,9 @@ async function fetchTxOutputAndAssetIndices(txHashesHex, options = {}) {
                         const txHex = extractTxHex(tx);
                         return txHex ? Buffer.from(txHex, 'hex') : prev?.tx_blob;
                     })(),
+                    prunable_hash: (typeof tx?.prunable_hash === 'string' && /^[0-9a-fA-F]{64}$/.test(tx.prunable_hash))
+                        ? tx.prunable_hash.toLowerCase()
+                        : prev?.prunable_hash,
                     block_height: tx.block_height || prev?.block_height || 0,
                 });
             }
@@ -4879,7 +4887,8 @@ async function fetchTxOutputAndAssetIndices(txHashesHex, options = {}) {
             .map(h => h.toLowerCase())
             .filter(h => {
                 const e = out.get(h);
-                return !e || !Array.isArray(e.output_indices) || !Array.isArray(e.asset_type_output_indices) || !Buffer.isBuffer(e.tx_blob) || e.tx_blob.length === 0;
+                return !e || !Array.isArray(e.output_indices) || !Array.isArray(e.asset_type_output_indices) ||
+                    !Buffer.isBuffer(e.tx_blob) || e.tx_blob.length === 0;
             });
         if (unresolved.length > 0) {
             if (bestEffort) {
@@ -13142,6 +13151,11 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
     try {
         const rawHashes = req.body?.hashes;
         const requireCanonical = req.body?.require_canonical === true;
+        const includePrunableHash = req.body?.include_prunable_hash === true;
+
+        if (includePrunableHash && !requireCanonical) {
+            return res.status(400).json({ error: 'Prunable-hash sparse records require canonical verification' });
+        }
 
         if (!Array.isArray(rawHashes) || rawHashes.length === 0) {
             return res.status(400).json({ error: 'Invalid request: need hashes array' });
@@ -13156,12 +13170,15 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
         const hashes = Array.from(new Set(rawHashes.map((hash) => hash.toLowerCase())));
         console.log(`[Sparse By Hash] Fetching ${hashes.length} transactions from daemon`);
 
-        const indicesByHash = await fetchTxOutputAndAssetIndices(hashes, { bestEffort: true });
+        const indicesByHash = await fetchTxOutputAndAssetIndices(hashes, {
+            bestEffort: true,
+            includePrunableHash,
+        });
 
         if (indicesByHash.size === 0) {
             console.warn(`[Sparse By Hash] No transactions found for hashes`);
             const emptyOutput = Buffer.alloc(8);
-            emptyOutput.write('SPR5', 0, 4, 'ascii');
+            emptyOutput.write(includePrunableHash ? 'SPR7' : 'SPR5', 0, 4, 'ascii');
             emptyOutput.writeUInt32LE(0, 4);
             res.set({
                 'Content-Type': 'application/octet-stream',
@@ -13215,10 +13232,16 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
             const blockHeight = info.block_height || 0;
             const blockTimestamp = timestamps.get(blockHeight) || Math.floor(Date.now() / 1000);
             const txHashBuf = Buffer.from(normalizedHash, 'hex');
+            const prunableHashBuf = includePrunableHash
+                // v1/non-RCT records legitimately have no prunable hash.  A
+                // zero placeholder is harmless: the WASM fallback is v2+ only
+                // and verifies the reconstructed id before storing anything.
+                ? Buffer.from(info.prunable_hash || '0'.repeat(64), 'hex')
+                : null;
 
             const hashSize = 32;
             const headerSize =
-                4 + 4 + 8 + hashSize +
+                4 + 4 + 8 + hashSize + (includePrunableHash ? hashSize : 0) +
                 2 + (outputIndices.length * 4) +
                 2 + (assetIndices.length * 4) +
                 4;
@@ -13240,6 +13263,11 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
                 record.fill(0, offset, offset + 32);
             }
             offset += 32;
+
+            if (prunableHashBuf) {
+                prunableHashBuf.copy(record, offset);
+                offset += 32;
+            }
 
             record.writeUInt16LE(outputIndices.length, offset);
             offset += 2;
@@ -13265,7 +13293,7 @@ app.post(['/api/wallet/get-transactions-by-hash', '/vault/api/wallet/get-transac
         }
 
         const header = Buffer.alloc(8);
-        header.write('SPR5', 0, 4, 'ascii');
+        header.write(includePrunableHash ? 'SPR7' : 'SPR5', 0, 4, 'ascii');
         header.writeUInt32LE(foundCount, 4);
 
         const output = Buffer.concat([header, ...txBuffers]);

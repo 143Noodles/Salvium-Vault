@@ -74,7 +74,7 @@ export const SUBADDRESS_OWNERSHIP_CACHE_VERSION = '8.2.22-v113c-dual-wasm-202607
 // CSPScanner.js changes independently of the WASM asset. Pin the script URL to
 // its exact bytes so a long-lived wallet cannot reuse an immutable pre-hardening
 // scanner from a prior deploy and silently fall back to blob workers.
-export const CSP_SCANNER_SCRIPT_SHA256 = '157890015f785c83a05cfd6a1abf36411dd34e8937a7f3c31337bc5d85f911ee';
+export const CSP_SCANNER_SCRIPT_SHA256 = '92aae7e2a60909d700c9aa2d54354837f0ca7312c3103955361f93d2abc815c4';
 
 interface CachedSubaddressOwnership {
   walletKey: string;
@@ -3461,7 +3461,11 @@ class CSPScanService {
 	                r = await fetchWithTimeout('/api/wallet/get-transactions-by-hash', {
 	                  method: 'POST',
 	                  headers: { 'Content-Type': 'application/json' },
-	                  body: JSON.stringify({ hashes: batch }),
+	                  body: JSON.stringify({
+	                    hashes: batch,
+	                    require_canonical: true,
+	                    include_prunable_hash: true,
+	                  }),
 	                });
 	                if (r.ok) break;
 	                if (r.status === 429 || r.status >= 500) { await new Promise(res => setTimeout(res, 250 * (attempt + 1))); continue; }
@@ -3471,6 +3475,10 @@ class CSPScanService {
 	                // Reconciliation must not run against a partially hydrated set.
 	                outgoingHydrationComplete = false;
 	                continue;
+	              }
+	              if (r.headers.get('X-Canonical-Verified') !== 'true') {
+	                outgoingHydrationComplete = false;
+	                throw new Error('outgoing hydration response did not prove canonical membership');
 	              }
 	              const bytes = new Uint8Array(await r.arrayBuffer());
 	              if (bytes.length <= 8) {

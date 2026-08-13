@@ -47,10 +47,19 @@ function normalizeHash(hash) {
 function extractPoolHashes(data) {
     const body = assertRpcResponse(data, 'get_transaction_pool_hashes');
     if (!Object.prototype.hasOwnProperty.call(body, 'tx_hashes')) {
-        throw new Error('get_transaction_pool_hashes returned no tx_hashes field');
+        return null;
     }
     const hashes = Array.isArray(body.tx_hashes) ? body.tx_hashes : [];
     return hashes.map(normalizeHash).filter(Boolean);
+}
+
+function extractPoolCount(data) {
+    const body = assertRpcResponse(data, 'get_transaction_pool_stats');
+    const count = Number(body?.pool_stats?.txs_total);
+    if (!Number.isSafeInteger(count) || count < 0) {
+        throw new Error('get_transaction_pool_stats returned no valid txs_total field');
+    }
+    return count;
 }
 
 function extractTransactions(data) {
@@ -215,7 +224,25 @@ function createMempoolPoller(options) {
                 {},
             );
             usedNode = hashResponse.nodeUrl;
-            const hashes = extractPoolHashes(hashResponse.data);
+            let hashes = extractPoolHashes(hashResponse.data);
+            if (hashes === null) {
+                // Salvium 1.1.3c omits tx_hashes (rather than returning []) for
+                // an empty pool.  Never interpret a merely malformed response
+                // as empty: corroborate with the lightweight stats endpoint so
+                // stale SSE entries are cleared only on explicit chain truth.
+                const statsResponse = await requestFromNodes(
+                    '/get_transaction_pool_stats',
+                    {},
+                    usedNode,
+                );
+                const txCount = extractPoolCount(statsResponse.data);
+                if (txCount !== 0) {
+                    throw new Error(
+                        `get_transaction_pool_hashes omitted tx_hashes for non-empty pool (txs_total=${txCount})`,
+                    );
+                }
+                hashes = [];
+            }
             const currentHashes = new Set(hashes);
 
             logPressure(currentHashes.size);

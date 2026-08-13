@@ -134,8 +134,61 @@ test('does not interpret a malformed response as an empty pool', async () => {
     await poller.pollOnce();
     assert.equal(cache.size, 1);
     malformed = true;
-    await assert.rejects(() => poller.pollOnce(), /no tx_hashes field/);
+    await assert.rejects(() => poller.pollOnce(), /no valid txs_total field/);
     assert.equal(cache.size, 1);
+});
+
+test('accepts an omitted hash array only when pool stats prove the pool is empty', async () => {
+    const hash = 'a'.repeat(64);
+    const cache = new Map();
+    const events = [];
+    let empty = false;
+    const poller = createMempoolPoller({
+        rpcNodes: ['http://local:19085'],
+        hasClients: () => true,
+        cache,
+        broadcast: (type, data) => events.push({ type, data }),
+        request: async ({ path, body }) => {
+            if (path === '/get_transaction_pool_hashes') {
+                return empty ? { status: 'OK' } : { status: 'OK', tx_hashes: [hash] };
+            }
+            if (path === '/get_transaction_pool_stats') {
+                return { status: 'OK', pool_stats: { txs_total: 0 } };
+            }
+            if (path === '/get_transactions') {
+                return { status: 'OK', txs: body.txs_hashes.map((h) => tx(h)) };
+            }
+            throw new Error(`unexpected path ${path}`);
+        },
+        logger: { log() {}, warn() {} },
+    });
+
+    await poller.pollOnce();
+    assert.equal(cache.size, 1);
+    empty = true;
+    const result = await poller.pollOnce();
+
+    assert.equal(result.hashCount, 0);
+    assert.equal(cache.size, 0);
+    assert.deepEqual(events.filter((event) => event.type === 'mempool_remove').map((event) => event.data.tx_hash), [hash]);
+});
+
+test('rejects an omitted hash array when pool stats say transactions remain', async () => {
+    const poller = createMempoolPoller({
+        rpcNodes: ['http://local:19085'],
+        hasClients: () => true,
+        cache: new Map(),
+        broadcast() {},
+        request: async ({ path }) => path === '/get_transaction_pool_hashes'
+            ? { status: 'OK' }
+            : { status: 'OK', pool_stats: { txs_total: 3 } },
+        logger: { log() {}, warn() {} },
+    });
+
+    await assert.rejects(
+        () => poller.pollOnce(),
+        /omitted tx_hashes for non-empty pool/,
+    );
 });
 
 test('prioritizes hashes that appeared after an existing backlog', async () => {

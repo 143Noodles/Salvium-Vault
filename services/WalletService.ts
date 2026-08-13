@@ -9111,12 +9111,20 @@ export class WalletService {
               const response = await fetch('/api/wallet/get-transactions-by-hash', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ hashes: batch })
+                body: JSON.stringify({
+                  hashes: batch,
+                  require_canonical: true,
+                  include_prunable_hash: true,
+                })
               });
               if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
               if (!response.ok) {
                 batchFailureReason = `sparse HTTP ${response.status}`;
                 if (attempt < MAX_BATCH_ATTEMPTS - 1) { await batchDelay(attempt); continue; }
+                break;
+              }
+              if (response.headers.get('X-Canonical-Verified') !== 'true') {
+                batchFailureReason = 'runtime hydration response did not prove canonical membership';
                 break;
               }
 
@@ -9480,7 +9488,11 @@ export class WalletService {
         const response = await fetchWithTimeout('/api/wallet/get-transactions-by-hash', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hashes: batch, require_canonical: true }),
+          body: JSON.stringify({
+            hashes: batch,
+            require_canonical: true,
+            include_prunable_hash: true,
+          }),
         }, 60000);
         if (!response.ok) {
           throw new Error(`Output revalidation fetch failed (HTTP ${response.status})`);

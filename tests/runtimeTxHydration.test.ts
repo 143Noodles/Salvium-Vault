@@ -25,6 +25,14 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
     };
   }
 
+  function canonicalSparseResponse(bytes: number[] = [1, 2, 3]) {
+    return {
+      ok: true,
+      headers: new Headers({ 'X-Canonical-Verified': 'true' }),
+      arrayBuffer: async () => new Uint8Array(bytes).buffer,
+    };
+  }
+
   it('loops until every candidate source tx is cached (closes the gap)', async () => {
     let pass = 0;
     const candidatesByPass = [
@@ -42,10 +50,7 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
       },
     };
     mockWasmModule();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(canonicalSparseResponse()));
 
     const res = await walletService.hydrateRuntimeFullTxContext();
     expect(pass).toBeGreaterThanOrEqual(2); // re-queried candidates -> looped
@@ -70,7 +75,7 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
       fetchN++;
       if (fetchN === 1) return { ok: false, status: 503 }; // transient failure
-      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer };
+      return canonicalSparseResponse([1]);
     }));
 
     await walletService.hydrateRuntimeFullTxContext();
@@ -110,10 +115,7 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
       },
     };
     mockWasmModule();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(canonicalSparseResponse()));
 
     const res = await walletService.hydrateRuntimeFullTxContext();
 
@@ -155,10 +157,7 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
       },
     };
     mockWasmModule();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(canonicalSparseResponse()));
 
     const res = await walletService.hydrateRuntimeFullTxContext();
 
@@ -192,10 +191,7 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
       },
     };
     mockWasmModule();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(canonicalSparseResponse()));
 
     const res = await walletService.hydrateRuntimeFullTxContext();
 
@@ -225,10 +221,7 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
       },
     };
     mockWasmModule();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(canonicalSparseResponse()));
 
     const res = await walletService.hydrateRuntimeFullTxContext();
 
@@ -260,10 +253,7 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
       },
       flush_derived_state: oldFlush,
     };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(canonicalSparseResponse()));
 
     const hydration = walletService.hydrateRuntimeFullTxContext();
     await opStarted;
@@ -301,10 +291,7 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
       },
     };
     mockWasmModule();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(canonicalSparseResponse()));
 
     const res = await walletService.hydrateRuntimeFullTxContext();
 
@@ -322,10 +309,7 @@ describe('runtime full-tx hydration (returned-transfer reconstruction)', () => {
       cache_runtime_full_txs_from_sparse: () => JSON.stringify({ success: true }),
     };
     mockWasmModule();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([1]).buffer,
-    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(canonicalSparseResponse([1])));
 
     await walletService.hydrateRuntimeFullTxContext();
     expect((walletService as any).lastRuntimeFullTxHydration.error).toMatch(/remain unresolved after sparse validation/);

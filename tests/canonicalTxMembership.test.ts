@@ -69,4 +69,18 @@ describe('canonical transaction membership', () => {
     expect(server).toContain("'Access-Control-Expose-Headers': 'X-Tx-Count, X-Canonical-Verified'");
     expect(server).toContain("'X-Canonical-Verified': requireCanonical ? 'true' : 'false'");
   });
+
+  it('emits prunable-hash records only after canonical membership verification', () => {
+    const server = readFileSync(path.resolve(process.cwd(), 'server.cjs'), 'utf8');
+    const walletService = readFileSync(path.resolve(process.cwd(), 'services/WalletService.ts'), 'utf8');
+    const scanner = readFileSync(path.resolve(process.cwd(), 'services/CSPScanService.ts'), 'utf8');
+
+    expect(server).toContain('includePrunableHash && !requireCanonical');
+    expect(server).toContain("includePrunableHash ? 'SPR7' : 'SPR5'");
+    expect(server).toContain("Buffer.from(info.prunable_hash || '0'.repeat(64), 'hex')");
+    expect(walletService).toContain('include_prunable_hash: true');
+    expect(scanner).toContain('include_prunable_hash: true');
+    expect(walletService).toContain("response.headers.get('X-Canonical-Verified') !== 'true'");
+    expect(scanner).toContain("r.headers.get('X-Canonical-Verified') !== 'true'");
+  });
 });
