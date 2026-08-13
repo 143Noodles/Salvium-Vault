@@ -23,7 +23,7 @@ describe('service worker leaves the wallet engine WASM on the network path', () 
   )() as (url: URL) => boolean;
 
   const assetVersion = encodeURIComponent(
-    'js:SalviumWallet.js:sha256:d66490840508346846afecb51e89e35c63a2bf69859bac68b96b478affaf0e39'
+    'js:SalviumWallet.js:sha256:66999f402264f2774f0dd01802b72097cb494f6402528ad3ee9ae369fc04e95c'
   );
 
   it('matches the versioned glue and binary the wallet worker importScripts()', () => {

@@ -74,7 +74,7 @@ export const SUBADDRESS_OWNERSHIP_CACHE_VERSION = '8.2.22-v113c-dual-wasm-202607
 // CSPScanner.js changes independently of the WASM asset. Pin the script URL to
 // its exact bytes so a long-lived wallet cannot reuse an immutable pre-hardening
 // scanner from a prior deploy and silently fall back to blob workers.
-export const CSP_SCANNER_SCRIPT_SHA256 = 'ef50799167853f004dcc033e179288fa0212345ac07b43b1f4211e696f2764b8';
+export const CSP_SCANNER_SCRIPT_SHA256 = '157890015f785c83a05cfd6a1abf36411dd34e8937a7f3c31337bc5d85f911ee';
 
 interface CachedSubaddressOwnership {
   walletKey: string;
@@ -247,8 +247,43 @@ export function deferredSparseIngestChangedDerivedState(result: any): boolean {
   // Legacy WASM builds may not provide a precise deferred_state_changed boolean.
   // If they still report the usual counters, all-zero counters mean no wallet-state
   // work was deferred. If no recognizable counters exist, keep the conservative
-  // old behavior and flush.
-  return result.deferred === true && !sawKnownCounter;
+  // behavior and flush; an omitted `deferred` marker is not proof of a no-op.
+  if (result.deferred === false) return false;
+  return !sawKnownCounter;
+}
+
+// A deferred cache call can mutate native state before returning an error or an
+// unusable response.  Only an explicit, successful zero result proves that no
+// derived-state flush is needed.
+function runtimeCacheResultMayHaveStored(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return true;
+  const record = result as Record<string, unknown>;
+  const rawStored = record.stored;
+  const stored = Number(rawStored);
+  const storedKnown = rawStored !== undefined && rawStored !== null &&
+    Number.isSafeInteger(stored) && stored >= 0;
+  const storedHashes = Array.isArray(record.stored_hashes) ? record.stored_hashes : null;
+  if (storedKnown) {
+    return stored > 0 || (stored === 0 && storedHashes !== null && storedHashes.length > 0);
+  }
+  if (storedHashes !== null) return storedHashes.length > 0;
+  return true;
+}
+
+function parseRuntimeCandidateHashes(value: unknown): string[] | null {
+  let parsed: any = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || !Array.isArray(parsed.hashes)) return null;
+  return parsed.hashes
+    .filter((hash: unknown): hash is string =>
+      typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash))
+    .map((hash: string) => hash.toLowerCase());
 }
 
 function countSubaddressOwnershipEntries(csv: string): number {
@@ -3403,12 +3438,22 @@ class CSPScanService {
 	    // balance is unaffected (balance lives in m_transfers — this only fixes out history).
 	    if (wallet) {
 	      const txidList = Array.from(this.outgoingSpendingTxids);
+	      let flushOutgoingHydration: () => Promise<void> = async () => {};
 	      try {
 	        let outgoingHydrationDirty = false;
-	        if (txidList.length > 0) {
-	          for (let i = 0; i < txidList.length; i += 100) {
-	            const batch = txidList.slice(i, i + 100);
-	            try {
+	        let outgoingHydrationComplete = true;
+	        let outgoingFlushAttempted = false;
+	        flushOutgoingHydration = async (): Promise<void> => {
+	          if (!outgoingHydrationDirty || outgoingFlushAttempted) return;
+	          // Set the guard before awaiting native code so an error/cancellation
+	          // path cannot schedule a second flush for the same deferred batch.
+	          outgoingFlushAttempted = true;
+	          await flushDerivedStateOrThrow(wallet, 'outgoing reconciliation hydration');
+	        };
+        if (txidList.length > 0) {
+          for (let i = 0; i < txidList.length; i += 100) {
+            const batch = txidList.slice(i, i + 100);
+            try {
 	              // Transient throttle/server errors (429/5xx) must NOT silently drop a batch
 	              // (that leaves outgoing reconciliation incomplete) — back off and retry.
 	              let r: any = null;
@@ -3422,40 +3467,103 @@ class CSPScanService {
 	                if (r.status === 429 || r.status >= 500) { await new Promise(res => setTimeout(res, 250 * (attempt + 1))); continue; }
 	                break; // non-transient non-OK -> don't spin
 	              }
-	              if (!r || !r.ok) continue;
-	              const bytes = new Uint8Array(await r.arrayBuffer());
-	              if (bytes.length <= 8) continue;
-	              // Worker op: stages the buffer on the WASM heap and runs
-	              // cache_runtime_full_txs_from_sparse (former Module.allocate/HEAPU8/free block).
-	              const cacheResultJson = await wallet.op(
-	                'cacheRuntimeFullTxsFromSparse',
-	                { buffer: bytes, deferDerived: true },
-	                { transfer: [bytes.buffer] }
-	              );
-	              let cacheResult: any = null;
-	              try {
-	                cacheResult = JSON.parse(cacheResultJson as string);
-	              } catch {
-	                // If WASM accepted the sparse frame but returned malformed JSON, flush
-	                // before reconciliation rather than risking a stale derived-state read.
-	                outgoingHydrationDirty = true;
-	                throw new Error('cacheRuntimeFullTxsFromSparse returned invalid JSON');
+	              if (!r || !r.ok) {
+	                // Reconciliation must not run against a partially hydrated set.
+	                outgoingHydrationComplete = false;
+	                continue;
 	              }
-	              outgoingHydrationDirty = outgoingHydrationDirty ||
-	                Number(cacheResult?.stored || 0) > 0;
-	            } catch { }
-	          }
-	        }
-	        if (outgoingHydrationDirty) {
-	          await flushDerivedStateOrThrow(wallet, 'outgoing reconciliation hydration');
-	        }
-	        const reconResult = (await wallet.call('reconcile_outgoing_payments')) as string;
-	        const reconParsed = JSON.parse(reconResult);
-	        debugLog('[CSPScanService] Outgoing reconciliation', { ...reconParsed, spendingTxids: txidList.length });
-	      } catch (reconErr: any) {
-	        // Unknown-method = old WASM without reconcile support (the former typeof guard).
-	        debugLog('[CSPScanService] Outgoing reconciliation failed', { error: reconErr?.message || String(reconErr) });
-	      }
+	              const bytes = new Uint8Array(await r.arrayBuffer());
+	              if (bytes.length <= 8) {
+	                outgoingHydrationComplete = false;
+	                continue;
+	              }
+              // Worker op: stages the buffer on the WASM heap and runs
+              // cache_runtime_full_txs_from_sparse (former Module.allocate/HEAPU8/free block).
+	              const dirtyBeforeCall = outgoingHydrationDirty;
+	              outgoingHydrationDirty = true;
+              const cacheResultJson = await wallet.op(
+                'cacheRuntimeFullTxsFromSparse',
+                { buffer: bytes, deferDerived: true },
+                { transfer: [bytes.buffer] }
+              );
+              let cacheResult: any = null;
+              try {
+                cacheResult = JSON.parse(cacheResultJson as string);
+              } catch {
+                // If WASM accepted the sparse frame but returned malformed JSON, flush
+                // before reconciliation rather than risking a stale derived-state read.
+                outgoingHydrationDirty = true;
+                throw new Error('cacheRuntimeFullTxsFromSparse returned invalid JSON');
+              }
+              const callMayHaveStored = runtimeCacheResultMayHaveStored(cacheResult);
+              if (!callMayHaveStored && !dirtyBeforeCall) outgoingHydrationDirty = false;
+              else outgoingHydrationDirty = true;
+              if (!cacheResult || cacheResult.success !== true) {
+                throw new Error(cacheResult?.error || 'cacheRuntimeFullTxsFromSparse rejected batch');
+              }
+
+              // Newer native builds return the exact stored hashes.  Older builds
+              // return only an aggregate count, so confirm by re-reading the
+              // candidate set and proving every requested hash disappeared.  A
+              // missing/malformed confirmation is fail-closed: do not reconcile
+              // outgoing legs from a partially hydrated wallet.
+              let confirmedHashes: string[] | null = null;
+              if (Array.isArray(cacheResult.stored_hashes)) {
+                const requested = new Set(batch.map((hash: string) => hash.toLowerCase()));
+                confirmedHashes = Array.from(new Set(
+                  cacheResult.stored_hashes
+                    .filter((hash: unknown): hash is string =>
+                      typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash))
+                    .map((hash: string) => hash.toLowerCase())
+                    .filter((hash: string) => requested.has(hash))
+                ));
+              } else {
+                const remaining = parseRuntimeCandidateHashes(
+                  await wallet.call('get_runtime_full_tx_candidate_hashes')
+                );
+                if (remaining === null) {
+                  throw new Error('runtime candidate confirmation unavailable after outgoing hydration');
+                }
+                const remainingSet = new Set(remaining);
+                confirmedHashes = batch
+                  .map((hash: string) => hash.toLowerCase())
+                  .filter((hash: string) => !remainingSet.has(hash));
+              }
+              if (confirmedHashes.length !== batch.length) {
+                outgoingHydrationComplete = false;
+                throw new Error(
+                  `outgoing hydration confirmed ${confirmedHashes.length}/${batch.length} requested transaction(s)`
+                );
+              }
+            } catch {
+              outgoingHydrationComplete = false;
+            }
+          }
+        }
+        await flushOutgoingHydration();
+        if (outgoingHydrationComplete) {
+          const reconResult = (await wallet.call('reconcile_outgoing_payments')) as string;
+          const reconParsed = JSON.parse(reconResult);
+          debugLog('[CSPScanService] Outgoing reconciliation', { ...reconParsed, spendingTxids: txidList.length });
+        } else {
+          debugLog('[CSPScanService] Outgoing reconciliation skipped after incomplete hydration', {
+            spendingTxids: txidList.length,
+          });
+        }
+      } catch (reconErr: any) {
+        // Unknown-method = old WASM without reconcile support (the former typeof guard).
+        debugLog('[CSPScanService] Outgoing reconciliation failed', { error: reconErr?.message || String(reconErr) });
+      } finally {
+        // Covers native throws, malformed responses, and cancellation while a
+        // batch is in flight.  The identity guard above makes this one attempt.
+        try {
+          await flushOutgoingHydration();
+        } catch (flushErr: any) {
+          debugLog('[CSPScanService] Outgoing hydration flush failed', {
+            error: flushErr?.message || String(flushErr),
+          });
+        }
+      }
 	    }
 
 
@@ -4463,16 +4571,26 @@ class CSPScanService {
   ): Promise<{ outputsFound: number; protocolTokenTxCount: number; rangeCapped: boolean; flushedDeferred: boolean }> {
     const journalScanId = ownerScanId ?? this.currentScanId;
     const journalWriteAllowed = () => ownerEpoch === null || this.scanEpoch === ownerEpoch;
+    let deferredProtocolMaybeDirty = false;
+    let deferredProtocolFlushAttempted = false;
     // Guarantees a carried phase-2 dirty state flushes exactly once. Used by every
     // early-return / error path so deferred phase-2 derived state is never dropped.
     const flushCarriedPhase2IfNeeded = async (extraFields: string[] = []): Promise<boolean> => {
       // Guard wallet too: on the wallet_not_ready path wallet may be null after
       // getCurrentValidWallet; flushing null would throw OUTSIDE the inner catch and
       // escape the parent backstop, leaving phase-2 derived state un-flushed.
-      if (!phase2Dirty || !wallet) return false;
-      const fields = [...new Set([...phase2Fields, ...extraFields])];
-      await flushDerivedStateOrThrow(wallet, 'coalesced phase 2 + protocol token recovery', fields);
-      return true;
+      if ((!phase2Dirty && !deferredProtocolMaybeDirty) || !wallet || deferredProtocolFlushAttempted) return false;
+      const fields = [...new Set([
+        ...(phase2Dirty ? phase2Fields : []),
+        ...(deferredProtocolMaybeDirty ? extraFields : []),
+      ])];
+      deferredProtocolFlushAttempted = true;
+      await flushDerivedStateOrThrow(
+        wallet,
+        phase2Dirty ? 'coalesced phase 2 + protocol token recovery' : 'protocol token recovery',
+        fields
+      );
+      return phase2Dirty;
     };
     const scanRangeBlocks = Math.max(0, endHeight - startHeight + 1);
     if (scanRangeBlocks <= 0) {
@@ -4576,6 +4694,19 @@ class CSPScanService {
         deferredProtocolDerivedState = deferredProtocolDerivedState || deferredSparseIngestChangedDerivedState(res);
       };
 
+      const recordProtocolDeferredCall = (res: any, dirtyBeforeCall: boolean): void => {
+        // The native call is marked dirty before it starts.  Clear only when a
+        // successful response explicitly proves a no-op and no earlier call was
+        // dirty; throws and malformed responses stay dirty for the final flush.
+        const callMayHaveChanged = deferredSparseIngestChangedDerivedState(res);
+        if (!callMayHaveChanged && !dirtyBeforeCall && res?.success === true) {
+          deferredProtocolMaybeDirty = false;
+        } else {
+          deferredProtocolMaybeDirty = true;
+        }
+        recordProtocolIngestResult(res);
+      };
+
       if (orderedContextHashes.length > 0) {
         const batchSize = 100;
         for (let i = 0; i < orderedContextHashes.length; i += batchSize) {
@@ -4593,6 +4724,8 @@ class CSPScanService {
           if (contextSparseBytes.length > 8) {
             // Worker op: stages the buffer on the WASM heap and runs ingest_sparse_transactions
             // (former Module.allocate/HEAPU8/free block).
+            const dirtyBeforeCall = deferredProtocolMaybeDirty;
+            deferredProtocolMaybeDirty = true;
             const resJson = await wallet.op(
               'ingestSparse',
               { startHeight: sweepStartHeight, allowProtocol: true, deferDerived: true, buffer: contextSparseBytes },
@@ -4603,7 +4736,7 @@ class CSPScanService {
             if (!res || res.success === false) {
               throw new Error(res?.error || 'protocol ordered context sparse ingest failed');
             }
-            recordProtocolIngestResult(res);
+            recordProtocolDeferredCall(res, dirtyBeforeCall);
             mintBlockOutputsFound += Number(res.txs_matched ?? res.txsMatched ?? 0) || 0;
             duplicateTransferRepairs += Number(res.duplicate_transfer_repairs ?? 0) || 0;
           }
@@ -4636,6 +4769,8 @@ class CSPScanService {
           // transferring a subarray view would detach the whole multi-chunk buffer.
           const sparseChunk = sparseBytes.slice(offset, offset + dataSize);
           offset += dataSize;
+          const dirtyBeforeCall = deferredProtocolMaybeDirty;
+          deferredProtocolMaybeDirty = true;
           const resJson = await wallet.op(
             'ingestSparse',
             { startHeight: chunkStartHeight, allowProtocol: true, deferDerived: true, buffer: sparseChunk },
@@ -4646,7 +4781,7 @@ class CSPScanService {
           if (!res || res.success === false) {
             throw new Error(res?.error || 'protocol token mint-block sparse ingest failed');
           }
-          recordProtocolIngestResult(res);
+          recordProtocolDeferredCall(res, dirtyBeforeCall);
           mintBlockOutputsFound += Number(res.txs_matched ?? res.txsMatched ?? 0) || 0;
           duplicateTransferRepairs += Number(res.duplicate_transfer_repairs ?? 0) || 0;
         }
@@ -4667,6 +4802,8 @@ class CSPScanService {
         const protocolSparseBytes = new Uint8Array(await protocolSparseResponse.arrayBuffer());
         sparseBytesTotal += protocolSparseBytes.length;
         if (protocolSparseBytes.length > 8) {
+          const dirtyBeforeCall = deferredProtocolMaybeDirty;
+          deferredProtocolMaybeDirty = true;
           const resJson = await wallet.op(
             'ingestSparse',
             { startHeight: sweepStartHeight, allowProtocol: true, deferDerived: true, buffer: protocolSparseBytes },
@@ -4677,7 +4814,7 @@ class CSPScanService {
           if (!res || res.success === false) {
             throw new Error(res?.error || 'protocol token replay sparse ingest failed');
           }
-          recordProtocolIngestResult(res);
+          recordProtocolDeferredCall(res, dirtyBeforeCall);
           protocolReplayOutputsFound = Number(res.txs_matched ?? res.txsMatched ?? 0) || 0;
           duplicateTransferRepairs += Number(res.duplicate_transfer_repairs ?? 0) || 0;
           outputsFound += protocolReplayOutputsFound;
@@ -4690,13 +4827,14 @@ class CSPScanService {
         ? ['snapshot', 'syncStatus', 'transactions', 'flags']
         : ['snapshot', 'syncStatus', 'flags'];
       let flushedDeferred = false;
-      if (deferredProtocolDerivedState || phase2Dirty) {
+      if (deferredProtocolDerivedState || deferredProtocolMaybeDirty || phase2Dirty) {
         // Single coalesced flush: union of protocol-recovery fields (if it dirtied
         // state) and the carried phase-2 fields (if deferred upstream).
         const coalescedFields = [...new Set([
-          ...(deferredProtocolDerivedState ? protocolFields : []),
+          ...((deferredProtocolDerivedState || deferredProtocolMaybeDirty) ? protocolFields : []),
           ...(phase2Dirty ? phase2Fields : []),
         ])];
+        deferredProtocolFlushAttempted = true;
         await flushDerivedStateOrThrow(
           wallet,
           phase2Dirty ? 'coalesced phase 2 + protocol token recovery' : 'protocol token recovery',
@@ -4735,7 +4873,9 @@ class CSPScanService {
       }, 'warn', message);
       // Correctness floor: even if protocol recovery throws, a carried phase-2 dirty
       // state must still flush once so the wallet is never left un-flushed.
-      const flushedDeferred = await flushCarriedPhase2IfNeeded();
+      const flushedDeferred = await flushCarriedPhase2IfNeeded([
+        'snapshot', 'syncStatus', 'transactions', 'flags',
+      ]);
       return { outputsFound: 0, protocolTokenTxCount: 0, rangeCapped: false, flushedDeferred };
     }
   }
@@ -5206,6 +5346,16 @@ class CSPScanService {
     const startTime = performance.now();
     let lastPhase2ActivityProgressAt = 0;
     let deferredSparseIngestUsed = false;
+    // Deferred native ingest is considered dirty before each op starts.  A
+    // throw/cancel can occur after native mutation, so only an explicit no-op
+    // response is allowed to clear this bit.
+    let deferredNativeMaybeDirty = false;
+    let deferredNativeFlushAttempted = false;
+    const flushDeferredNativeNow = async (reason: string = 'phase 2 sparse ingest'): Promise<void> => {
+      if (!deferredNativeMaybeDirty || deferredNativeFlushAttempted) return;
+      deferredNativeFlushAttempted = true;
+      await flushDerivedStateOrThrow(wallet, reason, ['snapshot', 'syncStatus', 'flags']);
+    };
 
     const expectedBatchStarts: number[] = [];
     for (let i = 0; i < sortedChunks.length; i += CLIENT_BATCH_SIZE) {
@@ -5244,6 +5394,7 @@ class CSPScanService {
       });
     };
 
+    try {
     while (isFetching || ingestQueue.length > 0 || pendingTasks.size > 0) {
       if (!this.shouldContinueScan(wallet)) {
         break;
@@ -5409,6 +5560,8 @@ class CSPScanService {
 
               {
                 const ingestStartedAt = performance.now();
+                const dirtyBeforeCall = deferredNativeMaybeDirty;
+                deferredNativeMaybeDirty = true;
                 // Worker op: stages the buffer on the WASM heap and runs
                 // ingest_sparse_transactions (former Module.allocate/HEAPU8/free block).
                 const resJson = await wallet.op(
@@ -5421,6 +5574,11 @@ class CSPScanService {
                 const res = JSON.parse(resJson);
                 await applySparseIngestResult(res, chunks, firstHeight);
                 const dirtyDerivedState = deferredSparseIngestChangedDerivedState(res);
+                if (!dirtyDerivedState && !dirtyBeforeCall && res?.success === true) {
+                  deferredNativeMaybeDirty = false;
+                } else {
+                  deferredNativeMaybeDirty = true;
+                }
                 sparseResultSummary = {
                   ...summarizeSparseIngestResult(res),
                   dirtyDerivedState,
@@ -5579,7 +5737,33 @@ class CSPScanService {
     }
 
     await producerPromise;
+    if (!this.shouldContinueScan(wallet)) {
+      // Cancellation is a terminal path for this phase.  Flush locally even
+      // when the caller requested coalescing; there may be no parent recovery
+      // pass after a cancelled restore.
+      try {
+        await flushDeferredNativeNow('phase 2 sparse ingest cancellation');
+      } catch (flushError) {
+        phase3Issues.push(`Deferred phase 2 flush failed after cancellation: ${(flushError as Error)?.message || String(flushError)}`);
+      }
+      return {
+        outputsFound: totalOutputsFound,
+        successfullyProcessedChunks: [...new Set([...successfullyIngestedChunks, ...verifiedNoOpChunks])],
+        minConfirmedHeight: minConfirmedHeight === Number.MAX_SAFE_INTEGER ? 0 : minConfirmedHeight,
+        phase3Degraded: true,
+        phase3Issues: [...phase3Issues, 'Scan cancelled during sparse ingest'],
+        returnAddressSourceChunks: [...returnAddressSourceChunks].sort((a, b) => a - b),
+        returnAddressesCsv: latestReturnAddressesCsv,
+        derivedDirty: false,
+        derivedFields: ['snapshot', 'syncStatus', 'flags'],
+      };
+    }
     if (producerError) {
+      try {
+        await flushDeferredNativeNow('phase 2 sparse ingest error');
+      } catch (flushError) {
+        phase3Issues.push(`Deferred phase 2 flush failed after producer error: ${(flushError as Error)?.message || String(flushError)}`);
+      }
       throw producerError;
     }
 
@@ -5591,12 +5775,29 @@ class CSPScanService {
       const detail = phase3Issues.length > 0
         ? ` | recorded issues: ${phase3Issues.slice(-3).join(' ;; ').slice(0, 300)}`
         : ' | no consumer errors recorded (chunk never reached ingest)';
+      try {
+        await flushDeferredNativeNow('phase 2 sparse ingest incomplete');
+      } catch (flushError) {
+        phase3Issues.push(`Deferred phase 2 flush failed after incomplete ingest: ${(flushError as Error)?.message || String(flushError)}`);
+      }
       throw new Error(`Sparse ingest did not complete ${missingIngestedChunks.length} requested chunk(s): ${missingIngestedChunks.slice(0, 10).join(',')}${detail}`);
     }
+    } catch (targetedRescanError) {
+      // Covers stall detection, fetch/ingest exceptions, and any future error
+      // added inside the producer/consumer loop.
+      try {
+        await flushDeferredNativeNow('phase 2 sparse ingest error');
+      } catch (flushError) {
+        debugWarn('[CSPScanService] Deferred phase-2 flush failed on error path', {
+          error: (flushError as Error)?.message || String(flushError),
+        });
+      }
+      throw targetedRescanError;
+    }
     const phase2DerivedFields = ['snapshot', 'syncStatus', 'flags'];
-    if (deferredSparseIngestUsed && !deferFinalFlush) {
-      await flushDerivedStateOrThrow(wallet, 'phase 2 sparse ingest', phase2DerivedFields);
-    } else if (!deferredSparseIngestUsed) {
+    if (deferredNativeMaybeDirty && !deferFinalFlush) {
+      await flushDeferredNativeNow('phase 2 sparse ingest');
+    } else if (!deferredNativeMaybeDirty) {
       reportClientEvent('scan.flush_derived_skipped', {
         level: 'info',
         message: 'Deferred derived-state flush skipped',
@@ -5719,7 +5920,7 @@ class CSPScanService {
       // Only true when the caller opted into deferral (deferFinalFlush) AND phase-2
       // dirtied derived state; otherwise the inline flush already ran and the parent
       // must NOT double-flush.
-      derivedDirty: deferredSparseIngestUsed && deferFinalFlush,
+      derivedDirty: deferredNativeMaybeDirty && deferFinalFlush,
       derivedFields: phase2DerivedFields
     };
   }
@@ -6012,6 +6213,7 @@ class CSPScanService {
     let txsMatched = 0;
     let txsProcessedTotal = 0;
     let derivedDirty = false;
+    let deferredMaybeDirty = false;
 
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     const chunkCount = view.getUint32(0, true);
@@ -6129,6 +6331,8 @@ class CSPScanService {
       try {
         // Worker op: stages the buffer on the WASM heap and runs
         // ingest_sparse_transactions (former Module.allocate/HEAPU8/free block).
+        const dirtyBeforeCall = deferredMaybeDirty;
+        if (deferDerived === true) deferredMaybeDirty = true;
         const resJson = await wallet.op(
           'ingestSparse',
           // deferDerived: skip the O(wallet) post-passes per call; callers flush at loop end.
@@ -6140,9 +6344,12 @@ class CSPScanService {
         if (res && res.success) {
           txsMatched += res.txs_matched || 0;
           txsProcessedTotal += res.txs_processed || 0;
-          derivedDirty = derivedDirty || (
-            deferDerived === true && deferredSparseIngestChangedDerivedState(res)
-          );
+          const callMayHaveChanged = deferDerived === true && deferredSparseIngestChangedDerivedState(res);
+          if (deferDerived === true) {
+            if (!callMayHaveChanged && !dirtyBeforeCall) deferredMaybeDirty = false;
+            else deferredMaybeDirty = true;
+          }
+          derivedDirty = derivedDirty || callMayHaveChanged;
           consecutiveFailures = 0;
           await yieldIfNeeded();
           return;
@@ -6239,7 +6446,7 @@ class CSPScanService {
 
     await flushPendingBatch();
 
-    return { txsMatched, txsProcessed: txsProcessedTotal, derivedDirty };
+    return { txsMatched, txsProcessed: txsProcessedTotal, derivedDirty: derivedDirty || deferredMaybeDirty };
   }
 
   private async fetchStakeReturnsSparse(
@@ -6267,6 +6474,14 @@ class CSPScanService {
     }
 
     const failedHeights: number[] = [];
+    let txsMatched = 0;
+    let derivedDirty = false;
+    let deferredFlushAttempted = false;
+    const flushDeferred = async (reason: string): Promise<void> => {
+      if (!derivedDirty || deferredFlushAttempted) return;
+      deferredFlushAttempted = true;
+      await flushDerivedStateOrThrow(wallet, reason, ['snapshot', 'syncStatus', 'transactions', 'flags']);
+    };
 
     try {
       const startTime = Date.now();
@@ -6274,14 +6489,19 @@ class CSPScanService {
       // Server enforces a 2000-height cap; one request covers a heavy wallet's full return
       // set instead of serial 128-height round-trips (~0.5-1s dead time each).
       const MAX_HEIGHTS_PER_REQUEST = 2000;
-      let txsMatched = 0;
       let txsProcessedTotal = 0;
-      let derivedDirty = false;
 
       for (let batchStart = 0; batchStart < returnHeights.length; batchStart += MAX_HEIGHTS_PER_REQUEST) {
         if (!this.shouldContinueScan(wallet)) {
           const remainingHeights = returnHeights.slice(batchStart);
           failedHeights.push(...remainingHeights);
+          try {
+            await flushDeferred('stake return sparse ingest cancellation');
+          } catch (flushError) {
+            debugWarn('[CSPScanService] Stake return deferred flush failed after cancellation', {
+              error: (flushError as Error)?.message || String(flushError),
+            });
+          }
           return { txsMatched, failedHeights };
         }
 
@@ -6358,14 +6578,26 @@ class CSPScanService {
       // Deferred-derived flush: the batched ingests above skipped the O(wallet) post-passes;
       // run them once now (also publishes a fresh state delta to the mirror). Byte-equivalence
       // of defer+flush vs per-call passes is rig-verified (38/38, incl. spend processing).
-      if (derivedDirty) {
-        await flushDerivedStateOrThrow(wallet, 'stake return sparse ingest');
-      }
+      await flushDeferred('stake return sparse ingest');
       return { txsMatched, failedHeights };
 
     } catch (e) {
       if (e instanceof Error && e.message.includes('WASM allocation failed')) {
+        try {
+          await flushDeferred('stake return sparse ingest allocation error');
+        } catch (flushError) {
+          debugWarn('[CSPScanService] Stake return deferred flush failed after allocation error', {
+            error: (flushError as Error)?.message || String(flushError),
+          });
+        }
         throw e;
+      }
+      try {
+        await flushDeferred('stake return sparse ingest error');
+      } catch (flushError) {
+        debugWarn('[CSPScanService] Stake return deferred flush failed on error', {
+          error: (flushError as Error)?.message || String(flushError),
+        });
       }
       return { txsMatched: 0, failedHeights: returnHeights };
     }
@@ -6394,19 +6626,32 @@ class CSPScanService {
     }
 
     const failedHeights: number[] = [];
+    let txsMatched = 0;
+    let derivedDirty = false;
+    let deferredFlushAttempted = false;
+    const flushDeferred = async (reason: string): Promise<void> => {
+      if (!derivedDirty || deferredFlushAttempted) return;
+      deferredFlushAttempted = true;
+      await flushDerivedStateOrThrow(wallet, reason, ['snapshot', 'syncStatus', 'transactions', 'flags']);
+    };
 
     try {
       const startTime = Date.now();
 
       const MAX_HEIGHTS_PER_REQUEST = 2000;
-      let txsMatched = 0;
       let txsProcessedTotal = 0;
-      let derivedDirty = false;
 
       for (let batchStart = 0; batchStart < returnHeights.length; batchStart += MAX_HEIGHTS_PER_REQUEST) {
         if (!this.shouldContinueScan(wallet)) {
           const remainingHeights = returnHeights.slice(batchStart);
           failedHeights.push(...remainingHeights);
+          try {
+            await flushDeferred('audit return sparse ingest cancellation');
+          } catch (flushError) {
+            debugWarn('[CSPScanService] Audit return deferred flush failed after cancellation', {
+              error: (flushError as Error)?.message || String(flushError),
+            });
+          }
           return { txsMatched, failedHeights };
         }
 
@@ -6436,14 +6681,26 @@ class CSPScanService {
       // Deferred-derived flush: the batched ingests above skipped the O(wallet) post-passes;
       // run them once now (also publishes a fresh state delta to the mirror). Byte-equivalence
       // of defer+flush vs per-call passes is rig-verified (38/38, incl. spend processing).
-      if (derivedDirty) {
-        await flushDerivedStateOrThrow(wallet, 'audit return sparse ingest');
-      }
+      await flushDeferred('audit return sparse ingest');
       return { txsMatched, failedHeights };
 
     } catch (e) {
       if (e instanceof Error && e.message.includes('WASM allocation failed')) {
+        try {
+          await flushDeferred('audit return sparse ingest allocation error');
+        } catch (flushError) {
+          debugWarn('[CSPScanService] Audit return deferred flush failed after allocation error', {
+            error: (flushError as Error)?.message || String(flushError),
+          });
+        }
         throw e;
+      }
+      try {
+        await flushDeferred('audit return sparse ingest error');
+      } catch (flushError) {
+        debugWarn('[CSPScanService] Audit return deferred flush failed on error', {
+          error: (flushError as Error)?.message || String(flushError),
+        });
       }
       return { txsMatched: 0, failedHeights: returnHeights };
     }

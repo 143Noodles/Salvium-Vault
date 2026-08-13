@@ -235,7 +235,9 @@ export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): Clie
     'validationValid', 'needsRefresh', 'unresolvedReturnedOutputs',
     'missingRuntimeTxContext', 'failureCount', 'unresolvedReturnedOutputCount',
     'missingRuntimeTxContextCount', 'runtimeTxCandidates', 'runtimeTxRequested',
-    'runtimeTxHydrated', 'runtimeTxError', 'restorePhase2Attempt',
+    'runtimeTxHydrated', 'runtimeTxUnresolved', 'runtimeTxRejected', 'runtimeTxError',
+    'nativeStored', 'confirmed', 'unresolved', 'rejected', 'nativeRejected',
+    'unresolvedPrefixes', 'candidateCount', 'restorePhase2Attempt',
     // Wallet-cache import/export accounting. Without these the only signal that a
     // cache was rejected was the event's log LEVEL, which made a silently zeroed
     // balance impossible to diagnose from field telemetry.

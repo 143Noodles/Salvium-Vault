@@ -441,7 +441,7 @@ class CSPScanner {
         }
     }
 
-    static WASM_VERSION = '8.2.30-v113c';
+    static WASM_VERSION = '8.2.31-v113c';
     static WORKER_VERSION = 'f0db257acb077613482ccf578b7f69607670e6c990744a42ffb4d01b40232f64';
 
     // fetch() with a hard timeout so a stuck/half-open connection can't hang init/scan forever.

@@ -35,7 +35,12 @@ describe('cache-loss repair is bounded to the wallet own transactions', () => {
       svc.indexOf('async restoreSpentStatusFromCache(')
     );
     const flushAt = body.indexOf("op<string>('flushDerivedState'");
-    const refreshAt = body.indexOf('await this.refreshMirror()');
+    // Rebuild captures its engine across wallet switches, so the safe form may
+    // pass the captured engine explicitly rather than using the current one.
+    const refreshAt = Math.max(
+      body.indexOf('await this.refreshMirror()'),
+      body.indexOf('await this.refreshMirror(undefined, runEngine)'),
+    );
     expect(flushAt).toBeGreaterThan(-1);
     expect(refreshAt).toBeGreaterThan(-1);
     // The worker contract: callers that defer MUST flush before reading state.
@@ -60,7 +65,10 @@ describe('cache-loss repair fails closed', () => {
     const server = read('server.cjs');
     // A key must be in BOTH or the server strips it before the event is logged.
     for (const key of ['transfers', 'knownTransactionCount', 'ingested', 'reconciled',
-                       'requested', 'numImported', 'nativeBalanceEmpty']) {
+                       'requested', 'numImported', 'nativeBalanceEmpty',
+                       'runtimeTxUnresolved', 'runtimeTxRejected', 'nativeStored',
+                       'confirmed', 'unresolved', 'rejected', 'nativeRejected',
+                       'unresolvedPrefixes', 'candidateCount']) {
       expect(client).toContain(`'${key}'`);
       expect(server).toContain(`'${key}'`);
     }

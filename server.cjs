@@ -647,7 +647,9 @@ function sanitizeClientTelemetryContext(context) {
         'validationValid', 'needsRefresh', 'unresolvedReturnedOutputs',
         'missingRuntimeTxContext', 'failureCount', 'unresolvedReturnedOutputCount',
         'missingRuntimeTxContextCount', 'runtimeTxCandidates', 'runtimeTxRequested',
-        'runtimeTxHydrated', 'runtimeTxError', 'restorePhase2Attempt',
+        'runtimeTxHydrated', 'runtimeTxUnresolved', 'runtimeTxRejected', 'runtimeTxError',
+        'nativeStored', 'confirmed', 'unresolved', 'rejected', 'nativeRejected',
+        'unresolvedPrefixes', 'candidateCount', 'restorePhase2Attempt',
         // Wallet-cache import/export + cache-loss repair accounting. Mirrors the
         // same block in utils/clientTelemetry.ts: BOTH lists must contain a key or
         // the server drops it before logging and the field never reaches telemetry.

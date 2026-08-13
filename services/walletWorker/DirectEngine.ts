@@ -97,7 +97,7 @@ export class DirectEngine implements WalletEngine {
 
         case 'cacheRuntimeFullTxsFromSparse':
           value = this.withBinaryBuffer(payload.buffer, (ptr, len) =>
-            this.wallet.cache_runtime_full_txs_from_sparse(ptr, len));
+            this.wallet.cache_runtime_full_txs_from_sparse(ptr, len, payload.deferDerived === true));
           break;
 
         case 'expandSubaddressTable':

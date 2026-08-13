@@ -19,7 +19,7 @@ describe('desktop package security policy', () => {
       axios: '1.18.1',
       cors: '2.8.5',
       express: '4.22.2',
-      tar: '7.5.20',
+      tar: '7.5.22',
     });
   });
 

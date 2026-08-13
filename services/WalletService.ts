@@ -70,6 +70,67 @@ function safeJsonParse<T>(jsonString: string, defaultValue: T, context: string =
   }
 }
 
+// Deferred sparse-ingest responses from current WASM builds carry an explicit dirty
+// bit.  Older builds only expose counters, so keep the fallback conservative: an
+// unrecognizable response may have mutated derived state, while an explicit zero result
+// (or a rejection carrying explicit zero counters) is safe to leave unflushed.
+const DEFERRED_SPARSE_MUTATION_COUNTERS = [
+  'txs_matched',
+  'txsMatched',
+  'outputs_marked_spent',
+  'outputsMarkedSpent',
+  'txs_reprocessed',
+  'txsReprocessed',
+  'duplicate_transfer_repairs',
+  'duplicateTransferRepairs',
+  'audit_spend_key_additions',
+  'auditSpendKeyAdditions',
+  'audit_return_address_additions',
+  'auditReturnAddressAdditions',
+  'stake_return_address_additions',
+  'stakeReturnAddressAdditions',
+];
+
+function deferredSparseResultMayHaveMutated(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return true;
+  const record = result as Record<string, unknown>;
+  if (record.deferred_state_changed === true) return true;
+
+  let sawKnownCounter = false;
+  for (const key of DEFERRED_SPARSE_MUTATION_COUNTERS) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    sawKnownCounter = true;
+    const count = Number(record[key]);
+    if (!Number.isFinite(count)) return true;
+    if (count > 0) return true;
+  }
+
+  if (record.deferred_state_changed === false) return false;
+  return !sawKnownCounter;
+}
+
+// Runtime full-tx cache responses evolved from aggregate counts to stored_hashes.  A
+// positive/unknown response can have deferred writes; only an explicit zero result proves
+// that the one-shot derived-state flush is unnecessary.
+function cacheRuntimeResultMayHaveStored(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return true;
+  const record = result as Record<string, unknown>;
+  const rawStored = record.stored;
+  const stored = Number(rawStored);
+  const storedKnown = rawStored !== undefined && rawStored !== null &&
+    Number.isSafeInteger(stored) && stored >= 0;
+  const storedHashes = Array.isArray(record.stored_hashes) ? record.stored_hashes : null;
+
+  if (storedKnown) {
+    return stored > 0 || (stored === 0 && storedHashes !== null && storedHashes.length > 0);
+  }
+  if (storedHashes !== null) return storedHashes.length > 0;
+  // Without an explicit count/list, even a reported rejection may have happened
+  // after a partial native insertion.  Flush conservatively rather than treating
+  // the status alone as proof of a no-op.
+  return true;
+}
+
 function reportAssetDiagnostic(
   type: string,
   context: Record<string, string | number | boolean | null | undefined> = {},
@@ -1010,7 +1071,13 @@ interface WasmWalletInstance {
   fast_forward_blocks(blocks_json: string): string;
   fast_forward_blocks_from_uint8array(data: Uint8Array): string;
   scan_blocks_fast(ptr: number, size: number): string;
-  ingest_sparse_transactions(ptr: number, size: number, start_height?: number, allow_protocol?: boolean): string;
+  ingest_sparse_transactions(
+    ptr: number,
+    size: number,
+    start_height?: number,
+    allow_protocol?: boolean,
+    defer_derived_rebuild?: boolean,
+  ): string;
 
   get_last_scan_result(): string;
   get_last_scan_block_hash(): string;
@@ -1046,7 +1113,7 @@ interface WasmWalletInstance {
 
   scan_tx(tx_blob_hex: string): boolean;
   get_runtime_full_tx_candidate_hashes?(): string;
-  cache_runtime_full_txs_from_sparse?(ptr: number, size: number): string;
+  cache_runtime_full_txs_from_sparse?(ptr: number, size: number, defer_derived_rebuild?: boolean): string;
   get_mempool_tx_info(tx_blob_hex: string): string;
 
   get_transfers_as_json(min_height: number, max_height: number, include_in: boolean, include_out: boolean, include_pending: boolean): string;
@@ -1370,6 +1437,11 @@ export class WalletService {
   /** Runtime WASM version string captured once at engine init (kept for the sync getter). */
   private wasmRuntimeVersion: string = 'unknown';
   private initPromise: Promise<void> | null = null;
+  // Monotonically identifies the wallet/engine incarnation. Any async repair or
+  // hydration started under an older incarnation must stop before touching state
+  // after a wallet switch. This is deliberately independent of the address: an
+  // address can be re-opened while its worker is a different object.
+  private walletGeneration = 0;
   private daemonAddress: string = DEFAULT_DAEMON;
   private network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet';
   private wasmAssetVersion: string = WASM_CACHE_VERSION;
@@ -1407,6 +1479,8 @@ export class WalletService {
     requested: 0,
     hydrated: 0,
     candidateCount: 0,
+    unresolved: 0,
+    rejected: 0,
     error: null as string | null,
   };
 
@@ -1427,6 +1501,14 @@ export class WalletService {
     this.lastOutputDistributionCounts.clear();
     this.lastKnownTransactions = [];
     this.lastTransactionsError = null;
+  }
+
+  private isCurrentWalletGeneration(generation: number, engine: WalletEngine | null): boolean {
+    return this.walletGeneration === generation && this.engine === engine;
+  }
+
+  private walletChangedError(): Error {
+    return new Error('Wallet changed during asynchronous wallet operation');
   }
 
   // ---------------------------------------------------------------------------
@@ -1502,11 +1584,13 @@ export class WalletService {
   private async engineCallOptional<T = unknown>(
     method: string,
     args: unknown[] = [],
-    opts?: { timeoutMs?: number }
+    opts?: { timeoutMs?: number },
+    engineOverride?: WalletEngine | null,
   ): Promise<T | null> {
-    if (!this.engine) return null;
+    const engine = engineOverride !== undefined ? engineOverride : this.engine;
+    if (!engine) return null;
     try {
-      return await this.engine.call<T>(method, args, opts);
+      return await engine.call<T>(method, args, opts);
     } catch (error) {
       if (WalletService.isUnknownMethodError(error, method)) {
         return null;
@@ -1542,10 +1626,11 @@ export class WalletService {
     }
   }
 
-  private async refreshMirror(fields?: string[]): Promise<void> {
-    if (!this.engine) return;
+  private async refreshMirror(fields?: string[], engineOverride?: WalletEngine | null): Promise<void> {
+    const engine = engineOverride !== undefined ? engineOverride : this.engine;
+    if (!engine) return;
     try {
-      await this.engine.op('getStateBundle', fields && fields.length > 0 ? { fields } : {});
+      await engine.op('getStateBundle', fields && fields.length > 0 ? { fields } : {});
     } catch {
     }
   }
@@ -7161,6 +7246,8 @@ export class WalletService {
     runtimeTxCandidates?: number;
     runtimeTxRequested?: number;
     runtimeTxHydrated?: number;
+    runtimeTxUnresolved?: number;
+    runtimeTxRejected?: number;
     runtimeTxError?: string;
   }> {
     if (!this.isWalletReadySync()) {
@@ -7357,6 +7444,8 @@ export class WalletService {
 	          runtimeTxCandidates: this.lastRuntimeFullTxHydration.candidateCount,
 	          runtimeTxRequested: this.lastRuntimeFullTxHydration.requested,
 	          runtimeTxHydrated: this.lastRuntimeFullTxHydration.hydrated,
+	          runtimeTxUnresolved: this.lastRuntimeFullTxHydration.unresolved,
+	          runtimeTxRejected: this.lastRuntimeFullTxHydration.rejected,
 	          runtimeTxError: this.lastRuntimeFullTxHydration.error || '',
 	        };
       }
@@ -7536,9 +7625,16 @@ export class WalletService {
     // was retried under force, must get reconciled on the next open). The old
     // permanent memo cached the first result forever and never re-healed.
     if (!this.healOutgoingHistoryPromise) {
-      this.healOutgoingHistoryPromise = this._healOutgoingHistoryInner()
+      const generation = this.walletGeneration;
+      const runEngine = this.engine;
+      let tracked!: Promise<number>;
+      tracked = this._healOutgoingHistoryInner(generation, runEngine)
         .catch(() => 0)
-        .finally(() => { this.healOutgoingHistoryPromise = null; }) as Promise<number>;
+        .finally(() => {
+          // A stale completion must not clear a newer wallet's in-flight heal.
+          if (this.healOutgoingHistoryPromise === tracked) this.healOutgoingHistoryPromise = null;
+        }) as Promise<number>;
+      this.healOutgoingHistoryPromise = tracked;
     }
     return this.healOutgoingHistoryPromise;
   }
@@ -7546,19 +7642,56 @@ export class WalletService {
   // New wallet in the same SPA lifetime: drop the previous wallet's heal memo and
   // hydration cooldown/attempt state so the next open hydrates and heals fresh.
   private resetPerWalletHealState(): void {
+    this.walletGeneration++;
     this.healOutgoingHistoryPromise = null;
     this._lastHydrationAt = 0;
+    this._lastHydrationResult = { requested: 0, hydrated: 0 };
+    this._hydrationInFlight = null;
+    this._outputOwnershipRevalidationInFlight = null;
+    this.hydratedRuntimeFullTxHashes.clear();
     this.attemptedRuntimeFullTxHashes.clear();
     this.importedOutputOwnershipRevalidated = false;
+    this.lastRuntimeFullTxHydration = {
+      attempted: false,
+      requested: 0,
+      hydrated: 0,
+      candidateCount: 0,
+      unresolved: 0,
+      rejected: 0,
+      error: null,
+    };
   }
 
-  private async _healOutgoingHistoryInner(): Promise<number> {
+  private async _healOutgoingHistoryInner(
+    generation: number = this.walletGeneration,
+    runEngine: WalletEngine | null = this.engine,
+  ): Promise<number> {
+    // The open flow may invoke this before the worker is assigned. Adopt the
+    // first engine that appears for this generation, but never follow a switch
+    // after an engine has been captured.
+    let activeEngine = runEngine;
+    let engineCaptured = activeEngine !== null;
+    const stillCurrent = () => {
+      if (!engineCaptured) {
+        if (this.walletGeneration !== generation) return false;
+        if (!this.engine) return false;
+        activeEngine = this.engine;
+        engineCaptured = true;
+      }
+      return !!activeEngine && this.isCurrentWalletGeneration(generation, activeEngine);
+    };
     // The open flow is still finishing when the cache import resolves; wait for
     // readiness (bounded) so hydration doesn't bail with wallet_uninitialized.
-    for (let i = 0; i < 60 && !this.isWalletReadySync(); i++) {
+    for (let i = 0; i < 60; i++) {
+      if (!stillCurrent()) {
+        if (engineCaptured) return 0;
+        await new Promise<void>((r) => setTimeout(r, 1000));
+        continue;
+      }
+      if (this.isWalletReadySync()) break;
       await new Promise<void>((r) => setTimeout(r, 1000));
     }
-    if (!this.isWalletReadySync()) return 0;
+    if (!stillCurrent() || !this.isWalletReadySync() || !activeEngine) return 0;
     // FORCE hydration (not the throttled/governed call): a freshly-sent spending
     // tx must be in m_runtime_full_txs for reconcile to reconstruct its out-leg
     // (set m_dests = spent - change - fee, the stable value the reader prefers).
@@ -7566,21 +7699,24 @@ export class WalletService {
     // so a send made minutes ago could be missed -> the reader stays on the
     // fragile amount_in - change fallback (CryptoSyphon class).
     await this.hydrateRuntimeFullTxContext({ force: true });
-    const resultJson = await this.engineCallOptional<string>('reconcile_outgoing_payments');
+    if (!stillCurrent()) return 0;
+    const resultJson = await this.engineCallOptional<string>('reconcile_outgoing_payments', [], undefined, activeEngine);
     if (resultJson === null) return 0;
     const result = safeJsonParse<{ success?: boolean; reconciled?: number }>(resultJson, {}, 'healOutgoingHistoryAfterOpen');
     const reconciled = result?.success ? Number(result.reconciled || 0) : 0;
     if (reconciled > 0) {
+      if (!stillCurrent()) return 0;
       this.resetCachedNativeReads();
       // reconcile_outgoing_payments is a generic call (no worker-side delta);
       // re-pull the mirror or this session keeps showing the stale rows.
-      await this.refreshMirror();
+      await this.refreshMirror(undefined, activeEngine);
+      if (!stillCurrent()) return 0;
       // Persist the healed cache (worker exports + writes wallet_cache_<addr>);
       // without this the heal re-runs from scratch on every reload. DirectEngine
       // has no IDB persist — the per-open re-heal covers that mode.
       try {
         const addr = this.getAddress();
-        if (addr) await this.engine!.op('persistToIdb', { addr }, { timeoutMs: 120000 });
+        if (addr && stillCurrent()) await activeEngine.op('persistToIdb', { addr }, { timeoutMs: 120000 });
       } catch { /* persistence is an optimization; the open-time heal recurs */ }
       reportAssetDiagnostic('wallet.outgoing_history_healed', { reconciled });
     }
@@ -7986,10 +8122,48 @@ export class WalletService {
     }
 
     this.invalidateStateSnapshot();
+    const generation = this.walletGeneration;
+    const runEngine = this.engine;
+    if (!runEngine || !this.isCurrentWalletGeneration(generation, runEngine)) {
+      return { requested: unique.length, ingested: 0, txsMatched: 0, error: 'wallet_changed' };
+    }
     const defaultHeight = Number.isFinite(Number(opts?.defaultHeight)) ? Number(opts?.defaultHeight) : 0;
     const BATCH = 96;
     let ingested = 0;
     let txsMatched = 0;
+    let deferredDerivedDirty = false;
+    let deferredFlushAttempted = false;
+
+    type RebuildResult = { requested: number; ingested: number; txsMatched: number; error?: string };
+    const flushDeferredDerivedState = async (): Promise<string | null> => {
+      if (!deferredDerivedDirty || deferredFlushAttempted) return null;
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) return 'wallet_changed';
+      deferredFlushAttempted = true;
+      try {
+        const flushJson = await runEngine.op<string>('flushDerivedState', {});
+        if (!this.isCurrentWalletGeneration(generation, runEngine)) return 'wallet_changed';
+        let flush: any = flushJson;
+        if (typeof flushJson === 'string') {
+          try { flush = JSON.parse(flushJson); } catch { flush = null; }
+        }
+        if (flush && flush.success === false) {
+          return `flush_failed: ${flush.error || 'unknown'}`;
+        }
+        this.resetCachedNativeReads();
+        await this.refreshMirror(undefined, runEngine);
+        return null;
+      } catch (flushError) {
+        return `flush_failed: ${flushError instanceof Error ? flushError.message : String(flushError)}`;
+      }
+    };
+    const finish = async (base: RebuildResult): Promise<RebuildResult> => {
+      const flushError = await flushDeferredDerivedState();
+      if (!flushError) return base;
+      return {
+        ...base,
+        error: base.error ? `${base.error}; ${flushError}` : flushError,
+      };
+    };
 
     try {
       for (let i = 0; i < unique.length; i += BATCH) {
@@ -7999,49 +8173,59 @@ export class WalletService {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ hashes: batch }),
         });
+        if (!this.isCurrentWalletGeneration(generation, runEngine)) {
+          throw this.walletChangedError();
+        }
         if (!response.ok) {
-          return { requested: unique.length, ingested, txsMatched, error: `sparse HTTP ${response.status}` };
+          return finish({ requested: unique.length, ingested, txsMatched, error: `sparse HTTP ${response.status}` });
         }
         const bytes = new Uint8Array(await response.arrayBuffer());
+        if (!this.isCurrentWalletGeneration(generation, runEngine)) {
+          throw this.walletChangedError();
+        }
         if (bytes.length <= 8) continue;
-        const resJson = await this.engine!.op<string>(
+        const dirtyBeforeCall = deferredDerivedDirty;
+        deferredDerivedDirty = true;
+        const resJson = await runEngine.op<string>(
           'ingestSparse',
           { startHeight: defaultHeight, allowProtocol: true, deferDerived: true, buffer: bytes },
           { transfer: [bytes.buffer] }
         );
-        const res = JSON.parse(resJson);
+        if (!this.isCurrentWalletGeneration(generation, runEngine)) {
+          throw this.walletChangedError();
+        }
+        let res: any;
+        try {
+          res = JSON.parse(resJson);
+        } catch {
+          // The native call returned but its result is unusable.  It may have
+          // mutated deferred state before formatting the response; flush once
+          // while leaving this batch uncounted.
+          deferredDerivedDirty = true;
+          throw new Error('invalid sparse ingest response');
+        }
+        const callMayHaveMutated = deferredSparseResultMayHaveMutated(res);
+        if (!callMayHaveMutated && !dirtyBeforeCall) deferredDerivedDirty = false;
+        else deferredDerivedDirty = true;
         if (!res || res.success === false) {
-          return { requested: unique.length, ingested, txsMatched, error: res?.error || 'ingest_failed' };
+          return finish({ requested: unique.length, ingested, txsMatched, error: res?.error || 'ingest_failed' });
         }
         ingested += batch.length;
         txsMatched += Number(res.txs_matched ?? res.txsMatched ?? 0) || 0;
       }
 
-      // Every batch deferred the O(wallet) post-passes; run them once. Unconditional
-      // (rather than tracking a dirty flag) so a rebuilt wallet can never be left with
-      // stale derived state, which would misreport the balance the caller checks.
-      if (ingested > 0) {
-        const flushJson = await this.engine?.op<string>('flushDerivedState', {});
-        let flush: any = flushJson;
-        if (typeof flushJson === 'string') {
-          try { flush = JSON.parse(flushJson); } catch { flush = null; }
-        }
-        if (flush && flush.success === false) {
-          return { requested: unique.length, ingested, txsMatched, error: `flush_failed: ${flush.error || 'unknown'}` };
-        }
-        this.resetCachedNativeReads();
-        await this.refreshMirror();
-      }
-
-      return { requested: unique.length, ingested, txsMatched };
+      return finish({ requested: unique.length, ingested, txsMatched });
     } catch (error) {
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) {
+        return { requested: unique.length, ingested: 0, txsMatched: 0, error: 'wallet_changed' };
+      }
       logError('rebuildTransfersFromTxids', error);
-      return {
+      return finish({
         requested: unique.length,
         ingested,
         txsMatched,
         error: error instanceof Error ? error.message : String(error),
-      };
+      });
     }
   }
 
@@ -8445,6 +8629,10 @@ export class WalletService {
   }
 
   clearWallet(): void {
+    // Invalidate all async work before tearing down the old worker. The promise
+    // finalizers are identity-guarded, so an old completion cannot clear a new
+    // wallet's in-flight slot or flush into its engine.
+    this.resetPerWalletHealState();
     if (this.walletInstanceRaw) {
       try {
         if (typeof (this.walletInstanceRaw as any).delete === 'function') {
@@ -8463,7 +8651,6 @@ export class WalletService {
       this.engine = null;
       this.initPromise = null;
       this.resetCachedNativeReads();
-      this.resetPerWalletHealState();
     }
     this.walletInstanceRaw = null;
   }
@@ -8776,22 +8963,37 @@ export class WalletService {
     if (Date.now() - this._lastHydrationAt < 60000) {
       return this._lastHydrationResult;
     }
+    const generation = this.walletGeneration;
     this._lastHydrationAt = Date.now();
-    this._hydrationInFlight = this._hydrateRuntimeFullTxContextInner(opts).then((r) => {
-      this._lastHydrationResult = r;
+    let tracked!: Promise<{ requested: number; hydrated: number }>;
+    tracked = this._hydrateRuntimeFullTxContextInner(opts, generation).then((r) => {
+      if (this.walletGeneration === generation) this._lastHydrationResult = r;
       return r;
-    }).finally(() => { this._hydrationInFlight = null; });
-    return this._hydrationInFlight;
+    }).finally(() => {
+      // A stale completion must never clear a newer wallet's in-flight promise.
+      if (this._hydrationInFlight === tracked) this._hydrationInFlight = null;
+    });
+    this._hydrationInFlight = tracked;
+    return tracked;
   }
 
-  private async _hydrateRuntimeFullTxContextInner(opts?: { force?: boolean }): Promise<{ requested: number; hydrated: number }> {
+  private async _hydrateRuntimeFullTxContextInner(
+    opts?: { force?: boolean },
+    generation: number = this.walletGeneration,
+  ): Promise<{ requested: number; hydrated: number }> {
+    const runEngine = this.engine;
+    if (!runEngine || !this.isCurrentWalletGeneration(generation, runEngine)) {
+      throw this.walletChangedError();
+    }
     if (opts?.force) this.attemptedRuntimeFullTxHashes.clear();
-    if (!this.isWalletReadySync()) {
+    if (!runEngine.mirror.getFlags().hasWallet) {
       this.lastRuntimeFullTxHydration = {
         attempted: true,
         requested: 0,
         hydrated: 0,
         candidateCount: 0,
+        unresolved: 0,
+        rejected: 0,
         error: 'wallet_uninitialized',
       };
       return { requested: 0, hydrated: 0 };
@@ -8799,6 +9001,9 @@ export class WalletService {
 
     let requested = 0;
     let hydrated = 0;
+    let unresolved = 0;
+    let rejected = 0;
+    const unresolvedPrefixSet = new Set<string>();
     let hydrationDirty = false;
 
     try {
@@ -8808,23 +9013,31 @@ export class WalletService {
       let previousCandidateCount = Number.POSITIVE_INFINITY;
 
       for (let pass = 0; pass < MAX_HYDRATION_PASSES; pass++) {
+        if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
         if (pass > 0) await new Promise<void>((r) => setTimeout(r, 50));
+        if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
         // Former capability checks (candidate hashes / sparse cache / binary buffer API):
         // a missing method now surfaces as null on the first call.
         const candidatesJson = await this.engineCallOptional<string>(
           'get_runtime_full_tx_candidate_hashes',
           [],
-          { timeoutMs: 120000 }
+          { timeoutMs: 120000 },
+          runEngine,
         );
+        if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
         if (candidatesJson === null) {
           this.lastRuntimeFullTxHydration = {
             attempted: true,
-            requested: 0,
-            hydrated: 0,
+            requested,
+            hydrated,
             candidateCount: 0,
+            unresolved,
+            rejected,
             error: 'runtime_hydration_unavailable',
           };
-          return { requested: 0, hydrated: 0 };
+          // Do not return here: a prior cache batch may have deferred native writes,
+          // and the one-shot flush below must still run before hydration exits.
+          break;
         }
         const candidates = JSON.parse(candidatesJson);
         if (candidates?.timings || typeof candidates?.derived_rebuilt === 'boolean') {
@@ -8843,7 +9056,10 @@ export class WalletService {
           } catch {}
         }
         const allCandidateHashes = Array.isArray(candidates?.hashes)
-          ? candidates.hashes.filter((hash: unknown): hash is string => typeof hash === 'string' && hash.length === 64)
+          ? candidates.hashes
+            .filter((hash: unknown): hash is string =>
+              typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash))
+            .map((hash: string) => hash.toLowerCase())
           : [];
         // Skip hashes already attempted this session: candidates the node can't return would
         // otherwise be refetched on every pass and every later hydrate call, forever.
@@ -8854,13 +9070,15 @@ export class WalletService {
           requested,
           hydrated,
           candidateCount: hashes.length,
+          unresolved,
+          rejected,
           error: null,
         };
 
         if (hashes.length === 0) {
           if (allCandidateHashes.length > 0) {
             this.lastRuntimeFullTxHydration.error =
-              `runtime tx hydration could not obtain ${allCandidateHashes.length} source tx(s) from the node`;
+              `runtime tx hydration ${allCandidateHashes.length} source tx(s) remain unresolved after sparse validation`;
           }
           break;
         }
@@ -8884,7 +9102,10 @@ export class WalletService {
         });
         for (let i = 0; i < hashes.length; i += HYDRATION_BATCH_SIZE) {
           if (i > 0) await yieldToUi();
+          if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
           const batch = hashes.slice(i, i + HYDRATION_BATCH_SIZE);
+          let batchCompleted = false;
+          let batchFailureReason = 'sparse cache batch was not accepted';
           for (let attempt = 0; attempt < MAX_BATCH_ATTEMPTS; attempt++) {
             try {
               const response = await fetch('/api/wallet/get-transactions-by-hash', {
@@ -8892,33 +9113,191 @@ export class WalletService {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ hashes: batch })
               });
+              if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
               if (!response.ok) {
+                batchFailureReason = `sparse HTTP ${response.status}`;
                 if (attempt < MAX_BATCH_ATTEMPTS - 1) { await batchDelay(attempt); continue; }
                 break;
               }
 
               const sparseData = new Uint8Array(await response.arrayBuffer());
+              if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
               // Composite op: the worker stages the buffer on the WASM heap
               // (allocate_binary_buffer/HEAPU8.set/free) and runs
               // cache_runtime_full_txs_from_sparse — same JSON result string.
-              const resultJson = await this.engine!.op<string>(
+              // A deferred native call may mutate before throwing. Keep the dirty
+              // bit set until an explicit no-op response proves otherwise.
+              const dirtyBeforeCall = hydrationDirty;
+              hydrationDirty = true;
+              const resultJson = await runEngine.op<string>(
                 'cacheRuntimeFullTxsFromSparse',
                 // deferDerived: batches skip the O(wallet) post-passes; one flush at the end.
                 { buffer: sparseData, deferDerived: true },
                 { transfer: [sparseData.buffer] }
               );
-              const result = JSON.parse(resultJson);
-              if (result?.success === true) {
-                batch.forEach(hash => this.hydratedRuntimeFullTxHashes.add(hash));
-                hydrated += batch.length;
-                this.lastRuntimeFullTxHydration.hydrated = hydrated;
-                hydrationDirty = hydrationDirty || Number(result?.stored || 0) > 0;
+              if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
+              let result: any;
+              try {
+                result = JSON.parse(resultJson);
+              } catch {
+                // The native call returned, but its response is unusable.  It may have
+                // accepted writes before formatting the result, so flush conservatively;
+                // the batch remains unresolved and is never counted as hydrated.
+                hydrationDirty = true;
+                batchFailureReason = 'invalid sparse cache response';
+                break;
               }
+              const callMayHaveStored = cacheRuntimeResultMayHaveStored(result);
+              if (!callMayHaveStored && !dirtyBeforeCall) hydrationDirty = false;
+              else hydrationDirty = true;
+              if (result?.success !== true) {
+                batchFailureReason = 'native sparse cache rejected batch';
+                break;
+              }
+
+              // Older WASM builds report only aggregate counts.  A successful call
+              // therefore does not prove that every requested hash was persisted:
+              // re-read the candidate set and mark only hashes that disappeared.
+              // Newer builds may provide stored_hashes directly; still intersect it
+              // with this batch so a malformed native response cannot over-count.
+              let confirmedHashes: string[];
+              if (Array.isArray(result?.stored_hashes)) {
+                const batchHashes = new Set(batch);
+                confirmedHashes = result.stored_hashes
+                  .filter((hash: unknown): hash is string =>
+                    typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash))
+                  .map((hash: string) => hash.toLowerCase())
+                  .filter((hash: string) => batchHashes.has(hash));
+                confirmedHashes = Array.from(new Set(confirmedHashes));
+              } else {
+                // A post-cache candidate read is a confirmation step, not a
+                // transient batch failure. Do not re-submit the native batch if
+                // this read itself fails.
+                batchFailureReason = 'runtime candidate scan failed after sparse cache';
+                const remainingJson = await this.engineCallOptional<string>(
+                  'get_runtime_full_tx_candidate_hashes',
+                  [],
+                  { timeoutMs: 120000 },
+                  runEngine,
+                );
+                if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
+                if (remainingJson === null) {
+                  batchFailureReason = 'runtime candidate scan unavailable after sparse cache';
+                  break;
+                }
+                let remaining: any;
+                try {
+                  remaining = JSON.parse(remainingJson);
+                } catch {
+                  batchFailureReason = 'invalid runtime candidate response after sparse cache';
+                  break;
+                }
+                if (!Array.isArray(remaining?.hashes)) {
+                  batchFailureReason = 'runtime candidate response omitted hashes after sparse cache';
+                  break;
+                }
+                const remainingHashes = new Set(
+                  remaining.hashes
+                    .filter((hash: unknown): hash is string =>
+                      typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash))
+                    .map((hash: string) => hash.toLowerCase())
+                );
+                confirmedHashes = batch.filter((hash) => !remainingHashes.has(hash));
+              }
+
+              const confirmed = new Set(confirmedHashes);
+              const unresolvedBatchCount = batch.reduce(
+                (count, hash) => count + (confirmed.has(hash) ? 0 : 1),
+                0
+              );
+              const rejectedSummaries = Array.isArray(result?.rejected)
+                ? result.rejected
+                  .filter((entry: any) => entry && typeof entry.hash === 'string')
+                  .slice(0, 20)
+                  .map((entry: any) => {
+                    const reason = String(entry.reason || 'rejected')
+                      .replace(/[^a-z0-9_.-]/gi, '_')
+                      .slice(0, 40);
+                    return `${String(entry.hash).slice(0, 8)}:${reason}`;
+                  })
+                : [];
+              const reportedRejected = Number(result?.rejected_count);
+              if (Number.isSafeInteger(reportedRejected) && reportedRejected >= 0) {
+                rejected += reportedRejected;
+                this.lastRuntimeFullTxHydration.rejected = rejected;
+              }
+              const batchUnresolvedPrefixes = batch
+                .filter((hash) => !confirmed.has(hash))
+                .slice(0, 20)
+                .map((hash) => hash.slice(0, 8));
+              batchUnresolvedPrefixes.forEach((prefix) => unresolvedPrefixSet.add(prefix));
+              const reportedStored = Number(result?.stored);
+              if (Number.isSafeInteger(reportedStored) && reportedStored >= 0 &&
+                  reportedStored !== confirmedHashes.length) {
+                reportClientEvent('wallet.runtime_tx_hydration_count_mismatch', {
+                  level: 'warn',
+                  message: 'Native sparse cache count disagreed with candidate disappearance',
+                  context: {
+                    requested: batch.length,
+                    nativeStored: reportedStored,
+                    confirmed: confirmedHashes.length,
+                    unresolved: unresolvedBatchCount,
+                    rejected: rejectedSummaries.join(','),
+                    nativeRejected: Number.isSafeInteger(reportedRejected) && reportedRejected >= 0
+                      ? reportedRejected
+                      : undefined,
+                  },
+                });
+              }
+              confirmedHashes.forEach((hash) => this.hydratedRuntimeFullTxHashes.add(hash));
+              hydrated += confirmedHashes.length;
+              unresolved += unresolvedBatchCount;
+              this.lastRuntimeFullTxHydration.hydrated = hydrated;
+              this.lastRuntimeFullTxHydration.unresolved = unresolved;
+              hydrationDirty = hydrationDirty || confirmedHashes.length > 0;
+              if (unresolvedBatchCount > 0) {
+                batchFailureReason = 'native sparse cache left candidate transactions unresolved';
+                reportClientEvent('wallet.runtime_tx_hydration_residual', {
+                  level: 'warn',
+                  message: 'Native sparse cache left candidate transactions unresolved',
+                  context: {
+                    requested: batch.length,
+                    hydrated: confirmedHashes.length,
+                    unresolved: unresolvedBatchCount,
+                    unresolvedPrefixes: batchUnresolvedPrefixes.join(','),
+                    rejected: rejectedSummaries.join(','),
+                    reason: batchFailureReason,
+                  },
+                });
+              }
+              batchCompleted = true;
               break;
             } catch (batchError) {
+              const confirmationReadFailed =
+                batchFailureReason === 'runtime candidate scan failed after sparse cache';
+              batchFailureReason = 'runtime sparse cache batch failed';
               logError('hydrateRuntimeFullTxContext.batch', batchError);
+              if (confirmationReadFailed) {
+                break;
+              }
+              if (batchError instanceof Error && batchError.message === 'Wallet changed during asynchronous wallet operation') throw batchError;
               if (attempt < MAX_BATCH_ATTEMPTS - 1) { await batchDelay(attempt); }
             }
+          }
+          if (!batchCompleted) {
+            unresolved += batch.length;
+            batch.slice(0, 20).forEach((hash) => unresolvedPrefixSet.add(hash.slice(0, 8)));
+            this.lastRuntimeFullTxHydration.unresolved = unresolved;
+            reportClientEvent('wallet.runtime_tx_hydration_residual', {
+              level: 'warn',
+              message: 'Runtime transaction hydration left a sparse batch unresolved',
+              context: {
+                requested: batch.length,
+                unresolved: batch.length,
+                unresolvedPrefixes: batch.slice(0, 20).map((hash) => hash.slice(0, 8)).join(','),
+                reason: batchFailureReason,
+              },
+            });
           }
         }
         // Mark AFTER the pass's batches conclude (in-call transient retries above still work);
@@ -8926,15 +9305,39 @@ export class WalletService {
         hashes.forEach((hash: string) => this.attemptedRuntimeFullTxHashes.add(hash));
       }
     } catch (error) {
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
       this.lastRuntimeFullTxHydration.error =
         error instanceof Error ? error.message : String(error);
       logError('hydrateRuntimeFullTxContext', error);
     }
 
+    this.lastRuntimeFullTxHydration.unresolved = unresolved;
+    this.lastRuntimeFullTxHydration.rejected = rejected;
+    if (unresolved > 0) {
+      const residualMessage =
+        `runtime tx hydration left ${unresolved} source tx(s) unresolved`;
+      this.lastRuntimeFullTxHydration.error = this.lastRuntimeFullTxHydration.error
+        ? `${this.lastRuntimeFullTxHydration.error}; ${residualMessage}`
+        : residualMessage;
+      reportClientEvent('wallet.runtime_tx_hydration_residual', {
+        level: 'warn',
+        message: 'Runtime transaction hydration completed with unresolved source transactions',
+        context: {
+          requested,
+          hydrated,
+          unresolved,
+          unresolvedPrefixes: Array.from(unresolvedPrefixSet).slice(0, 20).join(','),
+          candidateCount: this.lastRuntimeFullTxHydration.candidateCount,
+        },
+      });
+    }
+
     // Deferred-derived flush: hydration batches above skipped the O(wallet) post-passes;
     // run them once and publish fresh state (rig-verified byte-equivalent).
     if (hydrationDirty) {
-      const flushResultJson = await this.engine?.op<string>('flushDerivedState', {});
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
+      const flushResultJson = await runEngine.op<string>('flushDerivedState', {});
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
       let flushResult: any = flushResultJson;
       if (typeof flushResultJson === 'string') {
         try {
@@ -8946,6 +9349,8 @@ export class WalletService {
       if (flushResult && flushResult.success === false) {
         throw new Error(`flushDerivedState failed after runtime hydration: ${flushResult.error || 'unknown error'}`);
       }
+      this.resetCachedNativeReads();
+      await this.refreshMirror(undefined, runEngine);
     }
 
     return { requested, hydrated };
@@ -8964,11 +9369,17 @@ export class WalletService {
       return this._outputOwnershipRevalidationInFlight;
     }
 
+    let tracked!: Promise<OutputOwnershipRevalidationResult>;
     const run = this._revalidateImportedOutputOwnershipInner();
-    this._outputOwnershipRevalidationInFlight = run.finally(() => {
-      this._outputOwnershipRevalidationInFlight = null;
+    tracked = run.finally(() => {
+      // Do not clear a newer wallet's revalidation promise when an old worker
+      // completes after clearWallet()/restore.
+      if (this._outputOwnershipRevalidationInFlight === tracked) {
+        this._outputOwnershipRevalidationInFlight = null;
+      }
     });
-    return this._outputOwnershipRevalidationInFlight;
+    this._outputOwnershipRevalidationInFlight = tracked;
+    return tracked;
   }
 
   private async _revalidateImportedOutputOwnershipInner(): Promise<OutputOwnershipRevalidationResult> {
@@ -8992,23 +9403,51 @@ export class WalletService {
       ...overrides,
     });
 
-    if (!this.isWalletReadySync()) {
+    const generation = this.walletGeneration;
+    const runEngine = this.engine;
+    if (!runEngine || !this.isCurrentWalletGeneration(generation, runEngine) || !runEngine.mirror.getFlags().hasWallet) {
       return emptyResult({ error: 'Wallet not initialized' });
     }
 
     if (this._hydrationInFlight) {
       await this._hydrationInFlight.catch(() => undefined);
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) {
+        return emptyResult({ error: 'Wallet changed during output ownership revalidation' });
+      }
     }
 
     const walletAddress = this.getAddress();
     let revalidationStarted = false;
+    let deferredCacheDirty = false;
+    let deferredCacheFlushAttempted = false;
     const startedAt = Date.now();
+    const flushDeferredCacheState = async (): Promise<void> => {
+      if (!deferredCacheDirty || deferredCacheFlushAttempted) return;
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
+      deferredCacheFlushAttempted = true;
+      const flushJson = await runEngine.op<string>(
+        'flushDerivedState',
+        {},
+        { timeoutMs: 120000 }
+      );
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
+      const flush = typeof flushJson === 'string'
+        ? safeJsonParse<any>(flushJson, null, 'output ownership flush')
+        : flushJson;
+      if (flush?.success === false) {
+        throw new Error(`Output ownership flush failed: ${flush.error || 'unknown error'}`);
+      }
+      this.resetCachedNativeReads();
+      await this.refreshMirror(undefined, runEngine);
+    };
     try {
       const beginJson = await this.engineCallOptional<string>(
         'begin_output_ownership_revalidation',
         [],
-        { timeoutMs: 120000 }
+        { timeoutMs: 120000 },
+        runEngine,
       );
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
       if (beginJson === null) {
         return emptyResult({
           supported: false,
@@ -9034,10 +9473,10 @@ export class WalletService {
       let stored = 0;
       const BATCH_SIZE = 100;
       for (let offset = 0; offset < hashes.length; offset += BATCH_SIZE) {
-        if (!this.isWalletReadySync() || this.getAddress() !== walletAddress) {
+        if (!this.isCurrentWalletGeneration(generation, runEngine) || !runEngine.mirror.getFlags().hasWallet || this.getAddress() !== walletAddress) {
           throw new Error('Wallet changed during output ownership revalidation');
         }
-        const batch = hashes.slice(offset, offset + BATCH_SIZE);
+        const batch = hashes.slice(offset, offset + BATCH_SIZE) as string[];
         const response = await fetchWithTimeout('/api/wallet/get-transactions-by-hash', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -9051,29 +9490,94 @@ export class WalletService {
         }
 
         const sparseData = new Uint8Array(await response.arrayBuffer());
-        const cacheJson = await this.engine!.op<string>(
+        if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
+        // A deferred cache operation can mutate before throwing. Keep the dirty
+        // bit set unless an explicit no-op response proves otherwise.
+        const dirtyBeforeCall = deferredCacheDirty;
+        deferredCacheDirty = true;
+        const cacheJson = await runEngine.op<string>(
           'cacheRuntimeFullTxsFromSparse',
           { buffer: sparseData, deferDerived: true },
           { transfer: [sparseData.buffer], timeoutMs: 120000 }
         );
-        const cached = safeJsonParse<any>(cacheJson, null, 'output ownership sparse cache');
+        if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
+        let cached: any = null;
+        let cacheParsed = false;
+        try {
+          cached = JSON.parse(cacheJson);
+          cacheParsed = true;
+        } catch (error) {
+          // The native cache call returned, but its response is unusable.  It may
+          // have stored transactions before formatting the result; keep the batch
+          // uncounted and force the one-shot flush in finally.
+          deferredCacheDirty = true;
+          logError('output ownership sparse cache', error);
+        }
+        const callMayHaveStored = cacheParsed ? cacheRuntimeResultMayHaveStored(cached) : true;
+        if (!callMayHaveStored && !dirtyBeforeCall) deferredCacheDirty = false;
+        else deferredCacheDirty = true;
+        const hasStoredHashes = Array.isArray(cached?.stored_hashes);
         const batchStored = Number(cached?.stored || 0);
-        if (cached?.success !== true || batchStored !== batch.length) {
+        if (cached?.success !== true || (!hasStoredHashes && batchStored !== batch.length)) {
           throw new Error(
             `Output revalidation received ${batchStored}/${batch.length} canonical transaction(s)`
           );
         }
-        stored += batchStored;
+        let confirmedHashes: string[] = [];
+        if (Array.isArray(cached?.stored_hashes)) {
+          const requested = new Set(batch.map((hash) => hash.toLowerCase()));
+          confirmedHashes = Array.from(new Set(
+            cached.stored_hashes
+              .filter((hash: unknown): hash is string =>
+                typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash))
+              .map((hash: string) => hash.toLowerCase())
+              .filter((hash: string) => requested.has(hash))
+          ));
+        } else {
+          // Legacy native builds report only an aggregate stored count. Confirm
+          // exact membership by re-reading the candidate set; if that capability
+          // is absent we fail closed instead of treating a count as proof.
+          const remainingJson = await this.engineCallOptional<string>(
+            'get_runtime_full_tx_candidate_hashes',
+            [],
+            { timeoutMs: 120000 },
+            runEngine,
+          );
+          if (remainingJson === null) {
+            throw new Error('Output revalidation could not confirm exact cached transaction hashes');
+          }
+          let remaining: any;
+          try { remaining = JSON.parse(remainingJson); } catch {
+            throw new Error('Output revalidation received invalid runtime candidate confirmation');
+          }
+          if (!Array.isArray(remaining?.hashes)) {
+            throw new Error('Output revalidation candidate confirmation omitted hashes');
+          }
+          const remainingHashes: string[] = remaining.hashes
+            .filter((hash: unknown): hash is string =>
+              typeof hash === 'string' && /^[0-9a-f]{64}$/i.test(hash))
+            .map((hash: string) => hash.toLowerCase());
+          const remainingSet = new Set<string>(remainingHashes);
+          confirmedHashes = batch.filter((hash) => !remainingSet.has(hash.toLowerCase()));
+        }
+        if (confirmedHashes.length !== batch.length) {
+          throw new Error(
+            `Output revalidation received ${confirmedHashes.length}/${batch.length} canonical transaction(s)`
+          );
+        }
+        stored += confirmedHashes.length;
       }
 
-      if (!this.isWalletReadySync() || this.getAddress() !== walletAddress) {
+      if (!this.isCurrentWalletGeneration(generation, runEngine) || !runEngine.mirror.getFlags().hasWallet || this.getAddress() !== walletAddress) {
         throw new Error('Wallet changed during output ownership revalidation');
       }
       const repairJson = await this.engineCallOptional<string>(
         'repair_stale_output_ownership',
         [],
-        { timeoutMs: 120000 }
+        { timeoutMs: 120000 },
+        runEngine,
       );
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
       if (repairJson === null) {
         throw new Error('Output ownership repair unavailable in this WASM build');
       }
@@ -9142,19 +9646,8 @@ export class WalletService {
         };
       }
 
-      const flushJson = await this.engine!.op<string>(
-        'flushDerivedState',
-        {},
-        { timeoutMs: 120000 }
-      );
-      const flush = typeof flushJson === 'string'
-        ? safeJsonParse<any>(flushJson, null, 'output ownership flush')
-        : flushJson;
-      if (flush?.success === false) {
-        throw new Error(`Output ownership flush failed: ${flush.error || 'unknown error'}`);
-      }
-      this.resetCachedNativeReads();
-      await this.refreshMirror();
+      await flushDeferredCacheState();
+      if (!this.isCurrentWalletGeneration(generation, runEngine)) throw this.walletChangedError();
       this.importedOutputOwnershipRevalidated = true;
 
       reportClientEvent('wallet.output_ownership_revalidated', {
@@ -9186,10 +9679,25 @@ export class WalletService {
       });
       return emptyResult({ error: message });
     } finally {
-      if (revalidationStarted) {
+      if (revalidationStarted && this.isCurrentWalletGeneration(generation, runEngine)) {
         try {
-          await this.engineCallOptional('cancel_output_ownership_revalidation', []);
+          await this.engineCallOptional(
+            'cancel_output_ownership_revalidation',
+            [],
+            undefined,
+            runEngine,
+          );
         } catch {}
+      }
+      if (deferredCacheDirty && !deferredCacheFlushAttempted && this.isCurrentWalletGeneration(generation, runEngine)) {
+        try {
+          // A cache batch may have dirtied native state even when repair/validation
+          // fails.  Cancel first to preserve the armed-session contract, then flush
+          // exactly once without replacing the original fail-closed result.
+          await flushDeferredCacheState();
+        } catch (flushError) {
+          logError('output ownership deferred flush', flushError);
+        }
       }
     }
   }
@@ -9451,6 +9959,8 @@ export class WalletService {
       runtimeTxCandidates: this.lastRuntimeFullTxHydration.candidateCount,
       runtimeTxRequested: this.lastRuntimeFullTxHydration.requested,
       runtimeTxHydrated: this.lastRuntimeFullTxHydration.hydrated,
+      runtimeTxUnresolved: this.lastRuntimeFullTxHydration.unresolved,
+      runtimeTxRejected: this.lastRuntimeFullTxHydration.rejected,
     } as unknown as T;
   }
 

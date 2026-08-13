@@ -82,6 +82,37 @@ describe('client telemetry privacy sanitizer', () => {
     });
   });
 
+  it('keeps runtime hydration counts while redacting hash-like telemetry', () => {
+    const fullHash = 'a'.repeat(64);
+    const context = sanitizeTelemetryContext({
+      runtimeTxUnresolved: 1,
+      runtimeTxRejected: 1,
+      nativeStored: 1,
+      confirmed: 1,
+      unresolved: 1,
+      rejected: `${fullHash}:parse_failed`,
+      nativeRejected: 1,
+      unresolvedPrefixes: `abcdef12,${fullHash}`,
+      candidateCount: 2,
+      rawHash: fullHash,
+    } as any);
+
+    expect(context).toMatchObject({
+      runtimeTxUnresolved: 1,
+      runtimeTxRejected: 1,
+      nativeStored: 1,
+      confirmed: 1,
+      unresolved: 1,
+      rejected: '[redacted-hex]:parse_failed',
+      nativeRejected: 1,
+      unresolvedPrefixes: 'abcdef12,[redacted-hex]',
+      candidateCount: 2,
+    });
+    expect(JSON.stringify(context)).not.toContain(fullHash);
+    expect(JSON.stringify(context)).not.toMatch(/[0-9a-f]{32,}/i);
+    expect(context.unresolvedPrefixes).toContain('abcdef12');
+  });
+
   it('drops exact monetary values even when their diagnostic keys are allowlisted', () => {
     const context = sanitizeTelemetryContext({
       task: 'wallet.spendability',

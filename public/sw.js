@@ -10,10 +10,10 @@
 
 const SW_BUILD_ID = '__SW_BUILD_ID__'; // replaced at build time by the stamp-sw vite plugin
 const CACHE_VERSION = 'salvium-vault-' + SW_BUILD_ID;
-const WASM_CACHE = 'salvium-wasm-v39';
+const WASM_CACHE = 'salvium-wasm-v40';
 const STATIC_CACHE = 'salvium-static-' + SW_BUILD_ID;
 const API_CACHE = 'salvium-api-' + SW_BUILD_ID;
-const WASM_VERSION = '8.2.30-v113c';
+const WASM_VERSION = '8.2.31-v113c';
 
 // Critical assets that must be cached for offline use
 const PRECACHE_ASSETS = [

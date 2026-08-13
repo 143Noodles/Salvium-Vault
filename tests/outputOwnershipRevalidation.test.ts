@@ -7,6 +7,7 @@ const txHash = 'a'.repeat(64);
 
 function installWallet(overrides: Record<string, unknown> = {}) {
   const cancel = vi.fn(() => JSON.stringify({ success: true }));
+  const flush = vi.fn(() => JSON.stringify({ success: true }));
   const repair = vi.fn(() => JSON.stringify({
     success: true,
     evaluated: 1,
@@ -46,7 +47,10 @@ function installWallet(overrides: Record<string, unknown> = {}) {
     cancel_output_ownership_revalidation: cancel,
     repair_stale_output_ownership: repair,
     cache_runtime_full_txs_from_sparse: () => JSON.stringify({ success: true, stored: 1 }),
-    flush_derived_state: () => JSON.stringify({ success: true }),
+    // Legacy aggregate-only cache responses are confirmed by the post-cache
+    // candidate read; this fake proves the requested hash disappeared.
+    get_runtime_full_tx_candidate_hashes: () => JSON.stringify({ success: true, hashes: [] }),
+    flush_derived_state: flush,
     ...overrides,
   };
   (walletService as any).walletInstance = wallet;
@@ -55,7 +59,7 @@ function installWallet(overrides: Record<string, unknown> = {}) {
     free_binary_buffer: () => {},
     HEAPU8: new Uint8Array(1024),
   };
-  return { wallet, cancel, repair };
+  return { wallet, cancel, repair, flush };
 }
 
 describe('imported output ownership revalidation', () => {
@@ -70,7 +74,7 @@ describe('imported output ownership revalidation', () => {
   });
 
   it('requires canonical sparse transactions and marks success only after repair and flush', async () => {
-    const { cancel, repair } = installWallet();
+    const { cancel, repair, flush } = installWallet();
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -91,6 +95,7 @@ describe('imported output ownership revalidation', () => {
     });
     expect(walletService.hasRevalidatedImportedOutputOwnership()).toBe(true);
     expect(repair).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
     expect(cancel).not.toHaveBeenCalled();
     const request = fetchMock.mock.calls[0][1];
     expect(JSON.parse(String(request.body))).toEqual({
@@ -100,7 +105,7 @@ describe('imported output ownership revalidation', () => {
   });
 
   it('cancels without calling repair when the canonical response is incomplete', async () => {
-    const { cancel, repair } = installWallet({
+    const { cancel, repair, flush } = installWallet({
       cache_runtime_full_txs_from_sparse: () => JSON.stringify({ success: true, stored: 0 }),
     });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -116,7 +121,76 @@ describe('imported output ownership revalidation', () => {
     expect(result.error).toMatch(/received 0\/1 canonical transaction/);
     expect(repair).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledTimes(1);
+    expect(flush).not.toHaveBeenCalled();
     expect(walletService.hasRevalidatedImportedOutputOwnership()).toBe(false);
+  });
+
+  it('flushes once after a malformed cache response that may have stored native state', async () => {
+    const { cancel, repair, flush } = installWallet({
+      cache_runtime_full_txs_from_sparse: () => '{not-json',
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'X-Canonical-Verified': 'true' }),
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    }));
+
+    const result = await walletService.revalidateImportedOutputOwnership();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/received 0\/1 canonical transaction/);
+    expect(repair).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when stored_hashes does not confirm every requested transaction', async () => {
+    const otherHash = 'f'.repeat(64);
+    const { cancel, repair, flush } = installWallet({
+      cache_runtime_full_txs_from_sparse: () => JSON.stringify({
+        success: true,
+        // Aggregate counts alone must not over-count a mismatched hash list.
+        stored: 1,
+        stored_hashes: [otherHash],
+      }),
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'X-Canonical-Verified': 'true' }),
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    }));
+
+    const result = await walletService.revalidateImportedOutputOwnership();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/received 0\/1 canonical transaction/);
+    expect(repair).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('flushes once when repair returns malformed data after a stored cache batch', async () => {
+    const repairMalformed = vi.fn(() => '{not-json');
+    const { cancel, flush } = installWallet({
+      repair_stale_output_ownership: repairMalformed,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'X-Canonical-Verified': 'true' }),
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    }));
+
+    const result = await walletService.revalidateImportedOutputOwnership();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Invalid output ownership repair result/);
+    expect(repairMalformed).toHaveBeenCalledTimes(1);
+    // The repair call consumes the native session before its response is parsed.
+    expect(cancel).not.toHaveBeenCalled();
+    expect(flush).toHaveBeenCalledTimes(1);
   });
 
   it('cancels an armed native session when begin returns malformed metadata', async () => {
