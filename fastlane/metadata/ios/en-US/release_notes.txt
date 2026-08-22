@@ -1,0 +1,6 @@
+First iOS release of Salvium Vault.
+
+- Create or restore a Salvium wallet
+- Send and receive SAL with QR scanning
+- Transaction history, staking, and protocol assets
+- Face ID / Touch ID unlock

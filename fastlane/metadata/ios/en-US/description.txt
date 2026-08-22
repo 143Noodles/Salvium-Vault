@@ -1,0 +1,23 @@
+Salvium Vault is a non-custodial wallet for the Salvium network.
+
+Create a new wallet or restore an existing one from your seed phrase, send and receive SAL, review your full transaction history, stake, and manage supported Salvium protocol assets.
+
+NON-CUSTODIAL BY DESIGN
+Your wallet keys and seed phrase are generated on your device and stay there. Salvium Vault never holds your funds, and there is no account to sign up for.
+
+ON-DEVICE SECURITY
+Wallet data is encrypted at rest on your device. Face ID or Touch ID can be used to unlock the app, and your biometric data is handled by iOS and never seen by the app.
+
+OPEN SOURCE
+Salvium Vault is MIT licensed and developed in the open. The full source is available at github.com/143Noodles/Salvium-Vault so anyone can review exactly what the app does.
+
+FEATURES
+- Create or restore a Salvium wallet from a seed phrase
+- Send and receive SAL, with QR code scanning for addresses
+- Full transaction history
+- Staking
+- Support for Salvium protocol assets
+- Face ID / Touch ID unlock
+- Encrypted local backups
+
+Salvium Vault is a wallet, not an exchange. It does not buy, sell, or convert cryptocurrency, and it does not provide financial advice.
