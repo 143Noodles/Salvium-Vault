@@ -1,0 +1,77 @@
+# Salvium Vault - iOS release automation.
+#
+# Auth is via an App Store Connect API key (no Apple ID password / 2FA in CI):
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8 (base64 of the .p8 file)
+#
+# Code signing has two supported modes:
+#   1. match  - set MATCH_GIT_URL + MATCH_PASSWORD (recommended; certs are
+#               stored encrypted in a PRIVATE git repo and reused across runs)
+#   2. direct - no MATCH_GIT_URL: fastlane creates/downloads the distribution
+#               cert and profile via the API key. Apple caps distribution
+#               certificates per account, so prefer match for anything regular.
+
+default_platform(:ios)
+
+APP_IDENTIFIER = ENV["IOS_APP_IDENTIFIER"] || "tools.salvium"
+XCODEPROJ = "../ios/App/App.xcodeproj"
+
+platform :ios do
+  desc "Build the bundled web assets (shell + WASM) and sync into the Xcode project"
+  lane :assets do
+    # Guideline 4.2: iOS always ships bundled, never a remote-URL shell.
+    # The script asserts that and fails the build if the config drifts.
+    sh("bash", "../scripts/build-ios-bundled.sh")
+  end
+
+  desc "Build a signed release and upload it to TestFlight"
+  lane :beta do
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_content: ENV.fetch("ASC_KEY_P8"),
+      is_key_content_base64: true
+    )
+
+    setup_ci if ENV["CI"]
+    assets
+
+    # Build numbers must strictly increase per uploaded build. GitHub run
+    # numbers do; a UTC timestamp is the local-run fallback.
+    increment_build_number(
+      xcodeproj: XCODEPROJ,
+      build_number: ENV["GITHUB_RUN_NUMBER"] || Time.now.utc.strftime("%Y%m%d%H%M")
+    )
+
+    if ENV["MATCH_GIT_URL"]
+      match(
+        type: "appstore",
+        app_identifier: APP_IDENTIFIER,
+        git_url: ENV.fetch("MATCH_GIT_URL"),
+        api_key: api_key,
+        readonly: false
+      )
+    else
+      UI.important("MATCH_GIT_URL unset - creating signing assets directly via the API key.")
+      cert(api_key: api_key)
+      sigh(api_key: api_key, app_identifier: APP_IDENTIFIER, force: true)
+    end
+
+    build_app(
+      project: XCODEPROJ,
+      scheme: "App",
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: "../ios/build",
+      output_name: "SalviumVault.ipa",
+      clean: true
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true,
+      # Internal testers only. External TestFlight goes through Beta App
+      # Review, which applies Guideline 3.1.5(b)(i) - see docs/ios-release.md.
+      distribute_external: false
+    )
+  end
+end

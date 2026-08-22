@@ -5,9 +5,12 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig(() => {
-  // Bundled Android build: local webDir + remote API (scripts/build-android-bundled.sh).
+  // Bundled native build: local webDir + remote API
+  // (scripts/build-android-bundled.sh, scripts/build-ios-bundled.sh).
   const isBundled = process.env.SALVIUM_BUNDLED === '1';
-  const outDir = isBundled ? 'dist-android' : 'dist';
+  const bundledOutDir = process.env.SALVIUM_BUNDLED_OUTDIR
+    || (process.env.SALVIUM_NATIVE_TARGET === 'ios' ? 'dist-ios' : 'dist-android');
+  const outDir = isBundled ? bundledOutDir : 'dist';
   return {
     // Base path - root since vault is on its own subdomain
     base: '/',

@@ -1,0 +1,104 @@
+name: iOS (bundle verify + TestFlight)
+
+# Two stages on purpose:
+#   verify-bundle  runs on Linux and proves the bundled iOS web payload is
+#                  correct (WASM packaged, strict CSP, no remote-URL shell, no
+#                  secure-context-breaking server config). Cheap, always runs.
+#   testflight     runs on macOS, signs and uploads. Only on demand / on tag,
+#                  and only when the signing secrets are present.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ ios-app-store ]
+    tags: [ ios-v* ]
+
+jobs:
+  verify-bundle:
+    name: Verify bundled iOS payload (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check gate
+        run: npm run typecheck
+
+      # Capacitor 8 uses SPM, so the iOS project + web payload generate fine on
+      # Linux. Only archiving/signing needs a Mac.
+      - name: Build bundled iOS payload and run assertions
+        run: npm run build:ios
+
+      - name: Show generated iOS Capacitor config
+        run: cat ios/App/App/capacitor.config.json
+
+  testflight:
+    name: Build, sign, upload to TestFlight (macOS)
+    needs: verify-bundle
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/ios-v')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Install fastlane
+        run: bundle install
+
+      - name: Fail early if signing secrets are missing
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          missing=""
+          [ -n "$ASC_KEY_ID" ]    || missing="$missing ASC_KEY_ID"
+          [ -n "$ASC_ISSUER_ID" ] || missing="$missing ASC_ISSUER_ID"
+          [ -n "$ASC_KEY_P8" ]    || missing="$missing ASC_KEY_P8"
+          if [ -n "$missing" ]; then
+            echo "Missing required repo secrets:$missing"
+            echo "See docs/ios-release.md for how to mint the App Store Connect API key."
+            exit 1
+          fi
+
+      - name: Build and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          IOS_APP_IDENTIFIER: ${{ vars.IOS_APP_IDENTIFIER || 'tools.salvium' }}
+          FASTLANE_TEAM_ID: ${{ secrets.FASTLANE_TEAM_ID }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: '120'
+        run: bundle exec fastlane ios beta
+
+      - name: Upload ipa artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: salvium-vault-ios
+          path: ios/build/*.ipa
+          if-no-files-found: warn
+          retention-days: 14

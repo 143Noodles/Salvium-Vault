@@ -149,7 +149,12 @@ wallet-legacy/backup-*/
 INVESTIGATION_BRIEF.md
 stakeable-balance-deploy-ts.txt
 
-# Bundled Android build output
+# Bundled native build output + iOS release tooling
 dist-android/
+dist-ios/
+ios/build/
+fastlane/report.xml
+fastlane/Preview.html
+vendor/bundle/
 docker-compose.yml.assetrefs-*
 salvium-tools-logo.png

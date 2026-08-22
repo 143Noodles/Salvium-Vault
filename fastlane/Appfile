@@ -1,0 +1,6 @@
+# Salvium Vault - iOS. Values come from CI secrets / local env so no Apple
+# account identifiers are committed to this public repo.
+app_identifier(ENV["IOS_APP_IDENTIFIER"] || "tools.salvium")
+apple_id(ENV["FASTLANE_APPLE_ID"])
+team_id(ENV["FASTLANE_TEAM_ID"])
+itc_team_id(ENV["FASTLANE_ITC_TEAM_ID"])
