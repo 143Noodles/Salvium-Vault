@@ -153,3 +153,6 @@ stakeable-balance-deploy-ts.txt
 dist-android/
 docker-compose.yml.assetrefs-*
 salvium-tools-logo.png
+
+# Generated, signed Android/desktop content release bundles
+/content-release-dist/
