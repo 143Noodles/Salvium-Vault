@@ -584,9 +584,13 @@ function opImportWalletCache(payload) {
     }
     // Returns the raw JSON string ({status, transfers, ...}); the TS side parses it
     // exactly where WalletService.importWalletCache parses today.
-    const resultJson = wallet.import_wallet_cache_hex(cacheHex);
-    pushDelta(ALL_DELTA_FIELDS);
-    return resultJson;
+    const started = performance.now();
+    const result = JSON.parse(wallet.import_wallet_cache_hex(cacheHex));
+    const timings = { nativeImportMs: Math.round(performance.now() - started) };
+    const delta = computeDelta(ALL_DELTA_FIELDS, timings);
+    postToClient({ kind: 'delta', delta: delta });
+    result.timings = { ...(result.timings || {}), ...timings };
+    return JSON.stringify(result);
 }
 
 async function opPersistToIdb(payload) {
@@ -683,7 +687,7 @@ function pushDelta(fields) {
     return delta;
 }
 
-function computeDelta(fields) {
+function computeDelta(fields, timings) {
     const requested = Array.isArray(fields) ? fields : ALL_DELTA_FIELDS;
     const changed = [];
     const delta = {
@@ -694,6 +698,7 @@ function computeDelta(fields) {
 
     for (let i = 0; i < requested.length; i++) {
         const field = requested[i];
+        const started = timings ? performance.now() : 0;
         switch (field) {
             case 'snapshot':
                 delta.snapshot = computeSnapshot();
@@ -717,6 +722,7 @@ function computeDelta(fields) {
                 break;
             // 'balance' deliberately not handled — derived from snapshot on the TS side.
         }
+        if (timings) timings[field + 'Ms'] = Math.round(performance.now() - started);
     }
 
     return delta;

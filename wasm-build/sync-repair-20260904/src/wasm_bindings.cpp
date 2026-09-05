@@ -1,3 +1,4 @@
+#include <chrono>
 
 #include <cstdio>
 #include <cstdarg>
@@ -284,7 +285,7 @@ int donna64_ge_scalarmult(unsigned char *r, const unsigned char *p,
 using namespace emscripten;
 
 static const char *WASM_VERSION =
-  "5.54.13-hf14-v113c";
+  "5.54.14-hf14-v113c";
 
 #define WASM_DEBUG_LOGGING 0
 #if WASM_DEBUG_LOGGING
@@ -10863,6 +10864,13 @@ public:
       return R"({"status":"error","error":"Wallet not initialized"})";
     }
 
+    std::ostringstream profile;
+    auto previous = std::chrono::steady_clock::now();
+    auto stage = [&](const char *name) {
+      const auto now = std::chrono::steady_clock::now();
+      profile << "\"" << name << "\":" << std::chrono::duration<double, std::milli>(now - previous).count() << ",";
+      previous = now;
+    };
     try {
       if (cache_hex.empty()) {
         return R"({"status":"error","error":"Empty wallet cache","transfers":0})";
@@ -10875,6 +10883,7 @@ public:
         return R"({"status":"error","error":"Invalid hex string"})";
       }
 
+      stage("hex");
       tools::wallet2::cache_file_data cache_data;
       binary_archive<false> ar_parse{epee::strspan<std::uint8_t>(binary_data)};
       bool parse_ok = ::serialization::serialize(ar_parse, cache_data);
@@ -10882,6 +10891,7 @@ public:
         return R"({"status":"error","error":"Failed to parse cache data structure"})";
       }
 
+      stage("envelope");
       std::string decrypted;
       decrypted.resize(cache_data.cache_data.size());
       crypto::chacha_key cache_key = m_wallet->get_cache_key();
@@ -10889,6 +10899,7 @@ public:
                        cache_data.cache_data.size(), cache_key, cache_data.iv,
                        &decrypted[0]);
 
+      stage("decrypt");
       binary_archive<false> ar{epee::strspan<std::uint8_t>(decrypted)};
       bool loaded = ::serialization::serialize(ar, *m_wallet);
       if (!loaded || !::serialization::check_stream_state(ar)) {
@@ -10900,13 +10911,16 @@ public:
         }
       }
 
+      stage("deserialize");
       size_t num_transfers = m_wallet->get_num_transfer_details();
 
       const size_t repaired_transfer_asset_types =
           repair_transfer_asset_types_from_outputs();
 
+      stage("asset_repair");
       restore_account_cached_maps();
 
+      stage("restore_maps");
       size_t imported_subaddress_map_size = 0;
       size_t imported_ext_subaddress_map_size = 0;
       size_t imported_cn_subaddress_map_size = 0;
@@ -10948,11 +10962,15 @@ public:
 
       rebuild_wallet_derived_state();
 
+      stage("rebuild");
       upgrade_return_metadata_maps_if_needed();
 
+      stage("upgrade");
       repair_return_output_metadata_from_transfers();
+      stage("return_repair");
       normalize_effective_key_images();
 
+      stage("normalize");
       std::set<uint32_t> subaddress_indices_needed;
       for (size_t i = 0; i < num_transfers; ++i) {
         const auto &td = m_wallet->get_transfer_details(i);
@@ -10972,8 +10990,10 @@ public:
         }
       }
 
+      stage("subaddresses");
       const size_t repaired_stake_change_key_images =
           repair_cached_carrot_stake_change_key_images();
+      stage("stake_repair");
       mark_derived_state_clean();
 
       std::string output_ownership_validation_version;
@@ -11002,14 +11022,14 @@ public:
            << R"("output_ownership_validation_version":)"
            << (output_ownership_validated ? 2 : 0)
            << "}";
-      return json.str();
+      auto result = json.str(); result.pop_back(); return result + ",\"timings\":{" + profile.str() + "\"done\":true}}";
 
     } catch (const std::exception &e) {
       m_last_error = e.what();
       wasm_log("[WASM] import_wallet_cache_hex failed: %s\n", e.what());
       std::ostringstream err;
       err << R"({"status":"error","error":")" << e.what() << R"("})";
-      return err.str();
+      auto result = err.str(); result.pop_back(); return result + ",\"timings\":{" + profile.str() + "\"done\":false}}";
     }
   }
 

@@ -1,6 +1,6 @@
 import '../wallet/wasm-feature-detect.js';
 
-export const WASM_CACHE_VERSION = '8.2.34-v113c';
+export const WASM_CACHE_VERSION = '8.2.35-v113c';
 
 export type WasmVariant = 'simd' | 'baseline';
 
