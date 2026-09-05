@@ -43,3 +43,29 @@ The final 5.54.13 runtime also tests an injected index-allocation failure. It
 propagates rather than publishing a partial index. `lookup-equivalence-test.patch`
 adds this failure injection and the differential method to a test-only build;
 do not apply it to release artifacts.
+
+## Return-origin repair, 5.54.15
+
+Cold cache loading also performs repeated historical return-origin searches.
+`return-origin-index.patch` adds indexes scoped to one metadata repair pass:
+confirmed-output return candidates, TRANSFER recovered spend keys, and transaction
+public keys used by origin hints. Live ROI/metadata remains the first lookup;
+original candidate ordering and all derivation/opening checks are retained.
+The repair loop only mutates PROTOCOL/RETURN metadata and key images. It does not
+mutate the transaction/output view, TRANSFER recovered spend keys, or public-key
+transfer index consumed by these indexes. No index survives that pass.
+
+`origin-equivalence-test.patch` adds the exact previous candidate implementation
+and test-only bindings. It passed 1,152 comparisons with up to 5,360 transfer
+entries, including duplicate candidates and both indexed/default transaction
+public keys, with the wallet snapshot unchanged. A separate synthetic history
+benchmark copied the canonical fixture's confirmed transactions to 2,960 entries;
+32 identical lookup queries took 11,638.8 ms with the original search and 346.219 ms
+with the indexed search, including index construction. This is an isolated
+server benchmark, not a phone startup measurement. No synthetic entry is used
+as evidence of balance correctness.
+
+Both production runtime variants exactly match 5.54.13 state/history/reconcile/
+flush JSON on the original 67-output, 57-canonical-transaction fixture. Stage
+measurements added in 5.54.14 remain so actual phone startup can be profiled.
+Do not apply the test patch to release artifacts.

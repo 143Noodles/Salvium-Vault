@@ -285,7 +285,7 @@ int donna64_ge_scalarmult(unsigned char *r, const unsigned char *p,
 using namespace emscripten;
 
 static const char *WASM_VERSION =
-  "5.54.14-hf14-v113c";
+  "5.54.15-hf14-v113c";
 
 #define WASM_DEBUG_LOGGING 0
 #if WASM_DEBUG_LOGGING
@@ -1818,10 +1818,46 @@ private:
     m_wallet->invalidate_effective_ki_cache();
   }
 
+  using ReturnOriginCandidate = std::tuple<crypto::public_key, size_t, int>;
+  struct ReturnOriginLookup {
+    bool confirmed_ready = false;
+    bool hints_ready = false;
+    bool spend_ready = false;
+    std::unordered_map<crypto::public_key, std::vector<size_t>> spend;
+    std::unordered_map<crypto::public_key, std::vector<size_t>> hints;
+    std::unordered_map<crypto::public_key, ReturnOriginCandidate> confirmed;
+  };
+
   const tools::wallet2::transfer_details *find_origin_transfer_from_scan_hint(
-      const carrot::return_scan_hint_t &scan_hint) const {
+      const carrot::return_scan_hint_t &scan_hint,
+      ReturnOriginLookup *lookup = nullptr) const {
     if (!m_wallet ||
         scan_hint.origin_tx_type == cryptonote::transaction_type::UNSET) {
+      return nullptr;
+    }
+
+    if (lookup) {
+      if (!lookup->hints_ready) {
+        for (size_t index = 0; index < m_wallet->m_transfers.size(); ++index) {
+          const auto &td = m_wallet->m_transfers[index];
+          const auto *tx = tools::wallet::get_effective_transfer_tx(td, *m_wallet);
+          if (!tx || td.m_internal_output_index >= tx->vout.size()) continue;
+          const auto indexed_key = cryptonote::get_tx_pub_key_from_extra(*tx, td.m_pk_index);
+          const auto default_key = cryptonote::get_tx_pub_key_from_extra(*tx);
+          lookup->hints[indexed_key].push_back(index);
+          if (default_key != indexed_key) lookup->hints[default_key].push_back(index);
+        }
+        lookup->hints_ready = true;
+      }
+      const auto candidates = lookup->hints.find(scan_hint.origin_tx_pub_key);
+      if (candidates == lookup->hints.end()) return nullptr;
+      for (const size_t index : candidates->second) {
+        const auto &td = m_wallet->m_transfers[index];
+        const auto *tx = tools::wallet::get_effective_transfer_tx(td, *m_wallet);
+        if (tx && tx->type == scan_hint.origin_tx_type &&
+            td.m_internal_output_index < tx->vout.size() &&
+            td.m_internal_output_index == scan_hint.origin_output_index) return &td;
+      }
       return nullptr;
     }
 
@@ -2547,6 +2583,9 @@ private:
       return;
     }
 
+    // This lookup lives only for the pass. The transaction/output view and
+    // public-key transfer index remain unchanged while return metadata is repaired.
+    ReturnOriginLookup return_origins;
     for (auto &td : m_wallet->m_transfers) {
       const auto *effective_td_tx = tools::wallet::get_effective_transfer_tx(
           td, *m_wallet);
@@ -2583,9 +2622,9 @@ private:
           carrot::is_return_output_placeholder_hint(roi_it->second);
 
       const auto transfer_candidate =
-          find_transfer_origin_candidate_for_return_key(output_key);
+          find_transfer_origin_candidate_for_return_key(output_key, &return_origins);
       const tools::wallet2::transfer_details *origin_td =
-          find_origin_transfer_from_scan_hint(scan_hint);
+          find_origin_transfer_from_scan_hint(scan_hint, &return_origins);
       if ((!origin_td ||
            tools::wallet::get_effective_transfer_type(*origin_td, *m_wallet) !=
                cryptonote::transaction_type::TRANSFER ||
@@ -2751,63 +2790,10 @@ private:
     m_wallet->invalidate_effective_ki_cache();
   }
 
-  std::optional<std::tuple<crypto::public_key, size_t, int>>
-  find_transfer_origin_candidate_for_return_key(
-      const crypto::public_key &return_key) const {
-    if (!m_wallet) {
-      return std::nullopt;
-    }
-
+  void visit_confirmed_return_origins(
+      const std::function<bool(const crypto::public_key &,
+                               const ReturnOriginCandidate &)> &visit) const {
     auto &account = m_wallet->get_account();
-    const auto &return_output_info = account.get_return_output_map_ref();
-    const auto roi_it = return_output_info.find(return_key);
-    if (roi_it != return_output_info.end() &&
-        roi_it->second.K_change != crypto::null_pkey) {
-      const auto change_it = m_wallet->m_pub_keys.find(roi_it->second.K_change);
-      if (change_it != m_wallet->m_pub_keys.end() &&
-          change_it->second < m_wallet->m_transfers.size()) {
-        const auto &origin_td = m_wallet->m_transfers[change_it->second];
-        const auto *origin_tx = tools::wallet::get_effective_transfer_tx(
-            origin_td, *m_wallet);
-        if (origin_tx->type == cryptonote::transaction_type::TRANSFER) {
-          return std::make_tuple(roi_it->second.K_change, change_it->second,
-                                 static_cast<int>(origin_tx->type));
-        }
-      }
-    }
-
-    const auto &return_spend_metadata =
-        account.get_return_spend_metadata_map_ref();
-    const auto metadata_it = return_spend_metadata.find(return_key);
-    const crypto::public_key canonical_spend_pubkey =
-        metadata_it != return_spend_metadata.end()
-            ? metadata_it->second.K_spend_pubkey
-            : (roi_it != return_output_info.end()
-                   ? roi_it->second.K_spend_pubkey
-                   : crypto::null_pkey);
-    if (canonical_spend_pubkey != crypto::null_pkey) {
-      for (size_t candidate_idx = 0; candidate_idx < m_wallet->m_transfers.size();
-           ++candidate_idx) {
-        const auto &origin_td = m_wallet->m_transfers[candidate_idx];
-        const auto *origin_tx = tools::wallet::get_effective_transfer_tx(
-            origin_td, *m_wallet);
-        if (origin_tx->type != cryptonote::transaction_type::TRANSFER) {
-          continue;
-        }
-        if (origin_td.m_recovered_spend_pubkey != canonical_spend_pubkey) {
-          continue;
-        }
-        if (origin_tx->type == cryptonote::transaction_type::TRANSFER) {
-          crypto::public_key origin_pk;
-          if (!safe_output_pubkey(origin_td, *m_wallet, origin_pk))
-            continue;
-          return std::make_tuple(origin_pk,
-                                 candidate_idx,
-                                 static_cast<int>(origin_tx->type));
-        }
-      }
-    }
-
     for (const auto &confirmed_entry : m_wallet->m_confirmed_txs) {
       const auto &ctd = confirmed_entry.second;
       const cryptonote::transaction_prefix *effective_confirmed_tx =
@@ -2924,14 +2910,115 @@ private:
         }
         const crypto::public_key candidate_K_r = rct::rct2pk(
             rct::addKeys(rct::pk2rct(K_return), rct::pk2rct(K_o)));
-        if (candidate_K_r == return_key) {
-          return std::make_tuple(K_o, change_it->second,
-                                 static_cast<int>(change_tx->type));
+        if (visit(candidate_K_r, std::make_tuple(
+                K_o, change_it->second, static_cast<int>(change_tx->type)))) {
+          return;
         }
       }
     }
 
-    return std::nullopt;
+  }
+
+  std::optional<std::tuple<crypto::public_key, size_t, int>>
+  find_transfer_origin_candidate_for_return_key(
+      const crypto::public_key &return_key,
+      ReturnOriginLookup *lookup = nullptr) const {
+    if (!m_wallet) {
+      return std::nullopt;
+    }
+
+    auto &account = m_wallet->get_account();
+    const auto &return_output_info = account.get_return_output_map_ref();
+    const auto roi_it = return_output_info.find(return_key);
+    if (roi_it != return_output_info.end() &&
+        roi_it->second.K_change != crypto::null_pkey) {
+      const auto change_it = m_wallet->m_pub_keys.find(roi_it->second.K_change);
+      if (change_it != m_wallet->m_pub_keys.end() &&
+          change_it->second < m_wallet->m_transfers.size()) {
+        const auto &origin_td = m_wallet->m_transfers[change_it->second];
+        const auto *origin_tx = tools::wallet::get_effective_transfer_tx(
+            origin_td, *m_wallet);
+        if (origin_tx->type == cryptonote::transaction_type::TRANSFER) {
+          return std::make_tuple(roi_it->second.K_change, change_it->second,
+                                 static_cast<int>(origin_tx->type));
+        }
+      }
+    }
+
+    const auto &return_spend_metadata =
+        account.get_return_spend_metadata_map_ref();
+    const auto metadata_it = return_spend_metadata.find(return_key);
+    const crypto::public_key canonical_spend_pubkey =
+        metadata_it != return_spend_metadata.end()
+            ? metadata_it->second.K_spend_pubkey
+            : (roi_it != return_output_info.end()
+                   ? roi_it->second.K_spend_pubkey
+                   : crypto::null_pkey);
+    if (canonical_spend_pubkey != crypto::null_pkey) {
+      const std::vector<size_t> *indexed_candidates = nullptr;
+      if (lookup) {
+        if (!lookup->spend_ready) {
+          for (size_t index = 0; index < m_wallet->m_transfers.size(); ++index) {
+            const auto &td = m_wallet->m_transfers[index];
+            const auto *tx = tools::wallet::get_effective_transfer_tx(td, *m_wallet);
+            if (tx && tx->type == cryptonote::transaction_type::TRANSFER)
+              lookup->spend[td.m_recovered_spend_pubkey].push_back(index);
+          }
+          lookup->spend_ready = true;
+        }
+        const auto found = lookup->spend.find(canonical_spend_pubkey);
+        if (found != lookup->spend.end()) indexed_candidates = &found->second;
+      }
+      const size_t candidate_count = lookup
+          ? (indexed_candidates ? indexed_candidates->size() : 0)
+          : m_wallet->m_transfers.size();
+      for (size_t position = 0; position < candidate_count; ++position) {
+        const size_t candidate_idx = lookup ? (*indexed_candidates)[position] : position;
+        const auto &origin_td = m_wallet->m_transfers[candidate_idx];
+        const auto *origin_tx = tools::wallet::get_effective_transfer_tx(
+            origin_td, *m_wallet);
+        if (origin_tx->type != cryptonote::transaction_type::TRANSFER) {
+          continue;
+        }
+        if (origin_td.m_recovered_spend_pubkey != canonical_spend_pubkey) {
+          continue;
+        }
+        if (origin_tx->type == cryptonote::transaction_type::TRANSFER) {
+          crypto::public_key origin_pk;
+          if (!safe_output_pubkey(origin_td, *m_wallet, origin_pk))
+            continue;
+          return std::make_tuple(origin_pk,
+                                 candidate_idx,
+                                 static_cast<int>(origin_tx->type));
+        }
+      }
+    }
+
+    if (lookup) {
+      if (!lookup->confirmed_ready) {
+        // Populate once for this repair pass. emplace retains the first match
+        // in the original confirmed-transaction/output iteration order. All
+        // original candidate derivations and checks run in the shared visitor.
+        visit_confirmed_return_origins(
+            [&](const crypto::public_key &key, const ReturnOriginCandidate &candidate) {
+              lookup->confirmed.emplace(key, candidate);
+              return false;
+            });
+        lookup->confirmed_ready = true;
+      }
+      const auto found = lookup->confirmed.find(return_key);
+      if (found != lookup->confirmed.end()) return found->second;
+      return std::nullopt;
+    }
+
+    std::optional<ReturnOriginCandidate> result;
+    visit_confirmed_return_origins(
+        [&](const crypto::public_key &key, const ReturnOriginCandidate &candidate) {
+          if (key != return_key) return false;
+          result = candidate;
+          return true;
+        });
+    return result;
   }
 
 public:
