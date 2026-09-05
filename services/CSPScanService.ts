@@ -1,3 +1,4 @@
+import { createActiveClock } from '../utils/activeTime';
 import { isBundledNativeRuntime, BUNDLED_API_BASE } from '../utils/bundledRuntime';
 import { debugLog, debugWarn } from '../utils/debug';
 // Type-only; '@/' (tsconfig paths + vite alias) keeps this resolvable from every
@@ -74,7 +75,7 @@ export const SUBADDRESS_OWNERSHIP_CACHE_VERSION = '8.2.22-v113c-dual-wasm-202607
 // CSPScanner.js changes independently of the WASM asset. Pin the script URL to
 // its exact bytes so a long-lived wallet cannot reuse an immutable pre-hardening
 // scanner from a prior deploy and silently fall back to blob workers.
-export const CSP_SCANNER_SCRIPT_SHA256 = '92aae7e2a60909d700c9aa2d54354837f0ca7312c3103955361f93d2abc815c4';
+export const CSP_SCANNER_SCRIPT_SHA256 = '9f7fb0e1f8f804f943d40418f821638b75d9275ebad2c4442169666754a5b6f5';
 
 interface CachedSubaddressOwnership {
   walletKey: string;
@@ -1861,7 +1862,9 @@ class CSPScanService {
     let lastProgressTelemetryAt = 0;
     let lastProgressBucket = -1;
     let lastProgressChunkCount = -1;
-    let lastAnyProgressAt = performance.now();
+    const livenessClock = createActiveClock(true);
+    let lastAnyProgressAt = livenessClock.now();
+    let lastAuxActivityObserved = this._lastAuxActivityAt;
     let lastProgressSnapshot: Record<string, string | number | boolean | null | undefined> = {};
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     const emitScanTelemetry = (
@@ -1920,7 +1923,7 @@ class CSPScanService {
         : Math.round(overallProgress * 100);
 
       this.activePhase = progress.phase || this.activePhase || 'unknown';
-      lastAnyProgressAt = now;
+      lastAnyProgressAt = livenessClock.now();
       lastProgressSnapshot = {
         phase: this.activePhase,
         progressBucket: Math.floor(overallProgress * 20) * 5,
@@ -2264,10 +2267,14 @@ class CSPScanService {
       // continues automatically once the network/foreground returns.
       const paused = isScanPaused();
       if (paused) {
-        lastAnyProgressAt = performance.now();
+        lastAnyProgressAt = livenessClock.now();
       }
-      const lastActivityAt = Math.max(lastAnyProgressAt, this._lastAuxActivityAt);
-      const stalledMs = Math.round(performance.now() - lastActivityAt);
+      const activeNow = livenessClock.now();
+      if (this._lastAuxActivityAt !== lastAuxActivityObserved) {
+        lastAuxActivityObserved = this._lastAuxActivityAt;
+        lastAnyProgressAt = activeNow;
+      }
+      const stalledMs = Math.round(activeNow - lastAnyProgressAt);
       emitScanTelemetry('scan.heartbeat', {
         phase: this.activePhase || 'setup',
         stalledMs,
@@ -2368,7 +2375,7 @@ class CSPScanService {
         let phaseLabel = '1';
         let statusMsg = 'Scanning blockchain...';
 
-        const rawProgress = data.progress || 0;
+        const rawProgress = Math.min(1, Math.max(0, Number(data.progress) || 0));
 
         // Monotonic progress map (internal 0-1 fraction of the main scan; *0.85 when phase-2b
         // will run). Pass-1 view-tag scan = first 40% of the main scan (→ 0-34% of the bar).
@@ -3285,10 +3292,8 @@ class CSPScanService {
                 spentBandsDone += 1;
                 if (heightRange > 0) {
                   const sp = Math.min(1, spentBandsDone / spentBands.length);
-                  // Monotonic progress map: spent-index = 65-100% of the main scan (→ 55-85% of
-                  // the bar) — the widest band, since it's the longest phase on slow connections
-                  // (full public spent-set download), so the bar keeps ticking instead of frozen.
-                  const overallProgress = 0.65 + (0.35 * sp);
+                  // Reserve the final band for native reconciliation and state publication.
+                  const overallProgress = 0.65 + (0.20 * sp);
                   reportProgress({ progress: sp, phase: '3', message: `Checking spent outputs... ${Math.round(sp * 100)}%`, scannedBlocks: 0, totalBlocks: heightRange, completedChunks: 0, totalChunks: 0, viewTagMatches: 0, bytesReceived: 0, blocksPerSecond: 0, overallProgress, percentage: Math.round(overallProgress * 100), transactionsFound: outputsFound, statusMessage: 'Checking spent outputs...', phaseKey: 'checking_spent', phasePercent: Math.round(sp * 100) });
                 }
               }
@@ -3429,6 +3434,15 @@ class CSPScanService {
 	        keyImagesCsv: ''
 	      };
 	    }
+
+        const reportFinalizing = (overallProgress: number) => reportProgress({
+          progress: overallProgress, phase: 'finalizing', message: 'Finalizing...',
+          scannedBlocks: endHeight - startHeight, totalBlocks: endHeight - startHeight,
+          completedChunks: 0, totalChunks: 0, viewTagMatches: 0, bytesReceived: 0,
+          blocksPerSecond: 0, overallProgress, percentage: Math.round(overallProgress * 100),
+          transactionsFound: outputsFound, statusMessage: 'Finalizing...', phaseKey: 'finalizing',
+        });
+        reportFinalizing(0.85);
 
 	    // CLI-parity: reconstruct missing outgoing payment legs. The out-of-order sparse scan
 	    // skips a self-send's "out" leg when the spent key-image was not yet in m_key_images
@@ -3661,6 +3675,7 @@ class CSPScanService {
             clampedBlocks: endHeight - provenEndHeight,
           }, 'warn', `Wallet height clamped to server-proven coverage ${provenEndHeight} (requested ${endHeight})`);
         }
+        reportFinalizing(0.95);
         await wallet.call('set_wallet_height', [provenEndHeight]);
         // Generic call: refresh the mirrored sync status (no delta is pushed for calls).
         await wallet.op('getStateBundle', {});
@@ -3919,6 +3934,7 @@ class CSPScanService {
       }
       throw error;
     } finally {
+      livenessClock.dispose();
       if (heartbeatTimer) {
         const finishedHeartbeatTimer = heartbeatTimer;
         clearInterval(finishedHeartbeatTimer);
@@ -4145,7 +4161,7 @@ class CSPScanService {
 
       if (onProgress) {
         scanner.onProgress = (data: any) => {
-          const rawProgress = data.progress || 0;
+          const rawProgress = Math.min(1, Math.max(0, Number(data.progress) || 0));
           const phase2bProgress = 0.1 + (rawProgress * 0.4);
           reportPhase2bProgress(phase2bProgress, `Scanning for returned transfers... ${Math.round(rawProgress * 100)}%`);
         };

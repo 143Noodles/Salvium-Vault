@@ -1,0 +1,136 @@
+--- a/src/wasm_bindings.cpp
++++ b/src/wasm_bindings.cpp
+@@ -143,11 +143,34 @@
+ // a bounded transfer walk so callers remain correct during that repair window.
+ // This helper intentionally does not mutate wallet state; normalization owns all
+ // map writes and collision handling.
++// Operation-local reverse index of the same validated tracking images used by
++// the fallback walk below. Never persisted or reused across wallet mutations.
++// Preserve candidate order and validate candidates again at lookup time, so
++// partial/unknown images and collisions retain the original fail-closed rules.
++using effective_key_image_index =
++    std::unordered_map<crypto::key_image, std::vector<size_t>>;
++static effective_key_image_index build_effective_key_image_index(
++    const tools::wallet2 &wallet) {
++  effective_key_image_index index;
++  index.reserve(wallet.m_transfers.size());
++  for (size_t i = 0; i < wallet.m_transfers.size(); ++i) {
++    const auto &td = wallet.m_transfers[i];
++    try {
++      if (tools::wallet::has_transfer_key_image(td, wallet)) {
++        const auto ki = tools::wallet::get_effective_transfer_key_image(td, wallet);
++        if (ki != crypto::key_image{}) index[ki].push_back(i);
++      }
++    } catch (...) { /* Same rejected candidate as the authoritative walk. */ }
++  }
++  return index;
++}
++
+ static bool find_transfer_index_by_effective_key_image(
+     const tools::wallet2 &wallet,
+     const crypto::key_image &key_image,
+     size_t &transfer_index_out,
+-    bool require_spend_authority = false) {
++    bool require_spend_authority = false,
++    const effective_key_image_index *index = nullptr) {
+   transfer_index_out = 0;
+   if (key_image == crypto::key_image{})
+     return false;
+@@ -180,9 +203,16 @@
+   if (map_it != wallet.m_key_images.end() && accepts(map_it->second))
+     return true;
+ 
+-  for (size_t index = 0; index < wallet.m_transfers.size(); ++index) {
+-    if (accepts(index))
+-      return true;
++  if (index) {
++    const auto found = index->find(key_image);
++    if (found != index->end()) {
++      for (const auto candidate : found->second)
++        if (accepts(candidate)) return true;
++    }
++    return false;
++  }
++  for (size_t candidate = 0; candidate < wallet.m_transfers.size(); ++candidate) {
++    if (accepts(candidate)) return true;
+   }
+   return false;
+ }
+@@ -253,7 +283,7 @@
+ using namespace emscripten;
+ 
+ static const char *WASM_VERSION =
+-  "5.54.11-hf14-v113c";
++  "5.54.12-hf14-v113c";
+ 
+ #define WASM_DEBUG_LOGGING 0
+ #if WASM_DEBUG_LOGGING
+@@ -6173,6 +6203,12 @@
+       return R"({"success":false,"error":"Wallet not initialized"})";
+     }
+     try {
++      const auto effective_index = build_effective_key_image_index(*m_wallet);
++      const auto find_index = [&](const crypto::key_image &ki, size_t &out) {
++        return find_transfer_index_by_effective_key_image(
++            *m_wallet, ki, out, false, &effective_index);
++      };
++
+       size_t examined = 0, reconciled = 0, already = 0;
+       for (const auto &rt : m_wallet->m_runtime_full_txs) {
+         const crypto::hash &txid = rt.first;
+@@ -6238,7 +6274,7 @@
+             continue;
+           const auto &in_to_key = boost::get<cryptonote::txin_to_key>(in);
+           size_t transfer_index = 0;
+-          if (!find_effective_transfer_index(in_to_key.k_image,
++          if (!find_index(in_to_key.k_image,
+                                              transfer_index))
+             continue;
+           const auto &td = m_wallet->m_transfers[transfer_index];
+@@ -8342,6 +8378,12 @@
+     uint64_t max_height = static_cast<uint64_t>(max_height_d);
+ 
+     try {
++      const auto effective_index = build_effective_key_image_index(*m_wallet);
++      const auto find_index = [&](const crypto::key_image &ki, size_t &out) {
++        return find_transfer_index_by_effective_key_image(
++            *m_wallet, ki, out, false, &effective_index);
++      };
++
+ 
+       std::list<std::pair<crypto::hash, tools::wallet2::payment_details>>
+           payments;
+@@ -8464,13 +8506,13 @@
+         std::vector<crypto::hash> extra_order;
+ 
+         auto tx_spends_our_outputs =
+-            [this](const cryptonote::transaction_prefix &tx) -> bool {
++            [this, &find_index](const cryptonote::transaction_prefix &tx) -> bool {
+           for (const auto &in : tx.vin) {
+             if (in.type() != typeid(cryptonote::txin_to_key))
+               continue;
+             const auto &txin = boost::get<cryptonote::txin_to_key>(in);
+             size_t transfer_index = 0;
+-            if (find_effective_transfer_index(txin.k_image, transfer_index)) {
++            if (find_index(txin.k_image, transfer_index)) {
+               return true;
+             }
+           }
+@@ -8515,7 +8557,7 @@
+               continue;
+             const auto &txin = boost::get<cryptonote::txin_to_key>(in);
+             size_t idx = 0;
+-            if (find_effective_transfer_index(txin.k_image, idx)) {
++            if (find_index(txin.k_image, idx)) {
+               const auto &src_td = m_wallet->get_transfer_details(idx);
+               const auto *src_tx = tools::wallet::get_effective_transfer_tx(
+                   src_td, *m_wallet);
+@@ -11287,7 +11329,7 @@
+   }
+ 
+   inline static constexpr const char *SPARSE_GUARDRAILS_BUILD =
+-      "WASM_5_54_11_V113C";
++      "WASM_5_54_12_V113C";
+ 
+   std::string ingest_sparse_transactions(uintptr_t ptr, size_t size,
+                                          double height_d, bool skip_prefilter,

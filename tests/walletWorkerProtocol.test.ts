@@ -193,6 +193,34 @@ describe('WalletWorkerClient', () => {
     });
   });
 
+  it('accepts a cache export result after a frozen background interval without killing the worker', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let at = 0;
+    let visibility: DocumentVisibilityState = 'visible';
+    const time = vi.spyOn(performance, 'now').mockImplementation(() => at);
+    const visible = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+    let client: WalletWorkerClient | undefined;
+    try {
+      const spawned = await spawnWithFake(makeDispatcher({ dropMethods: new Set(['export_wallet_cache_hex']) }));
+      client = spawned.client;
+      const pending = client.call('export_wallet_cache_hex', [], { timeoutMs: 120000 });
+      const outcome = expect(pending).resolves.toBe('exported-cache');
+      await Promise.resolve();
+      at = 20000; visibility = 'hidden'; document.dispatchEvent(new Event('visibilitychange'));
+      at += 3600000; visibility = 'visible';
+      await vi.advanceTimersByTimeAsync(1000);
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(spawned.worker.terminated).toBe(false);
+      const request = spawned.worker.sent.find(msg => msg.kind === 'call');
+      if (!request || request.kind !== 'call') throw new Error('export was not dispatched');
+      spawned.worker.emit({ kind: 'result', id: request.id, ok: true, value: 'exported-cache', durationMs: 20000 });
+      await outcome;
+      expect(spawned.worker.terminated).toBe(false);
+    } finally {
+      client?.terminate(); time.mockRestore(); visible.mockRestore(); vi.useRealTimers();
+    }
+  });
+
   it('rejects calls that exceed their timeout', async () => {
     const { client } = await spawnWithFake(makeDispatcher({
       dropMethods: new Set(['get_seed']),

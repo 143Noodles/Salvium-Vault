@@ -295,6 +295,32 @@ class CSPScanner {
         };
     }
 
+    startTaskClock() {
+        this.stopTaskClock();
+        let elapsed = 0;
+        let observedAt = performance.now();
+        const isPaused = () => this.isDocumentHidden() || navigator.onLine === false;
+        let paused = isPaused();
+        this.taskClockNow = () => {
+            const at = performance.now();
+            if (!paused) elapsed += Math.max(0, at - observedAt);
+            observedAt = at;
+            paused = isPaused();
+            return elapsed;
+        };
+        document.addEventListener('visibilitychange', this.taskClockNow);
+        window.addEventListener?.('online', this.taskClockNow);
+        window.addEventListener?.('offline', this.taskClockNow);
+    }
+
+    stopTaskClock() {
+        if (!this.taskClockNow) return;
+        document.removeEventListener('visibilitychange', this.taskClockNow);
+        window.removeEventListener?.('online', this.taskClockNow);
+        window.removeEventListener?.('offline', this.taskClockNow);
+        this.taskClockNow = null;
+    }
+
     startUiLagMonitor() {
         if (this._uiLagTimer) return;
         const tick = () => {
@@ -441,7 +467,7 @@ class CSPScanner {
         }
     }
 
-    static WASM_VERSION = '8.2.32-v113c';
+    static WASM_VERSION = '8.2.33-v113c';
     static WORKER_VERSION = 'f0db257acb077613482ccf578b7f69607670e6c990744a42ffb4d01b40232f64';
 
     // fetch() with a hard timeout so a stuck/half-open connection can't hang init/scan forever.
@@ -2060,7 +2086,11 @@ class CSPScanner {
             try { this.onChunksScanned(scannedChunkStarts, matchedForBatch); } catch { }
         }
 
-        const progress = this.scannedBlocks / this.totalBlocks;
+        // Work is scheduled in whole chunks, including overlap and partial tail chunks.
+        // Divide completed work by scheduled work, not by the narrower wallet gap.
+        const progress = this.stats.totalChunks > 0
+            ? Math.min(1, Math.max(0, this.stats.completedChunks / this.stats.totalChunks))
+            : 0;
         this.onProgress({
             progress,
             scannedBlocks: this.scannedBlocks,
@@ -2178,7 +2208,11 @@ class CSPScanner {
 
         try { this.onChunksScanned([startHeight], this.matchedChunks.has(startHeight) ? [startHeight] : []); } catch { }
 
-        const progress = this.scannedBlocks / this.totalBlocks;
+        // Work is scheduled in whole chunks, including overlap and partial tail chunks.
+        // Divide completed work by scheduled work, not by the narrower wallet gap.
+        const progress = this.stats.totalChunks > 0
+            ? Math.min(1, Math.max(0, this.stats.completedChunks / this.stats.totalChunks))
+            : 0;
         this.onProgress({
             progress,
             scannedBlocks: this.scannedBlocks,
@@ -2489,6 +2523,8 @@ class CSPScanner {
         freeWorker.busy = true;
         freeWorker.currentTask = task;
         freeWorker.taskStartTime = Date.now();
+        if (!this.taskClockNow) this.startTaskClock();
+        freeWorker.taskActiveStartedAt = this.taskClockNow();
         this.pendingTasks++;
 
         if (this.DEBUG && (this.stats.completedChunks % 100 === 0)) {
@@ -2558,10 +2594,11 @@ class CSPScanner {
         if (!this._watchdogInterval) {
             this._strandedTicks = 0;
             this._watchdogInterval = setInterval(() => {
-                const now = Date.now();
+                const now = this.taskClockNow?.() ?? 0;
+                if (this.isDocumentHidden() || navigator.onLine === false) return;
                 for (const w of this.workers) {
-                    if (w.busy && w.taskStartTime && (now - w.taskStartTime) > 120000) {
-                        void this.recoverStuckWorker(w, w.currentTask, now - w.taskStartTime);
+                    if (w.busy && w.taskActiveStartedAt != null && (now - w.taskActiveStartedAt) > 120000) {
+                        void this.recoverStuckWorker(w, w.currentTask, now - w.taskActiveStartedAt);
                     }
                 }
                 // Stranded-queue detection: tasks waiting, nothing in flight, and no
@@ -2922,6 +2959,7 @@ class CSPScanner {
         this._scanFinished = true;
         this.isScanning = false;
         this.stopUiLagMonitor();
+        this.stopTaskClock();
         this.stats.elapsedMs = performance.now() - this.startTime;
 
         if (this._watchdogInterval) {
@@ -2973,6 +3011,7 @@ class CSPScanner {
         this.taskQueue = [];
 
         this.stopUiLagMonitor();
+        this.stopTaskClock();
 
         // Settle the scan promise on abort when nothing is in flight: scheduleNextTask
         // (the normal finisher) only runs from worker results, and with pendingTasks===0
@@ -2996,6 +3035,7 @@ class CSPScanner {
 
     destroy() {
         this.abort();
+        this.stopTaskClock();
         this.isScanning = false;
         if (this._watchdogInterval) {
             clearInterval(this._watchdogInterval);

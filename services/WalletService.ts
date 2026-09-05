@@ -9368,8 +9368,10 @@ export class WalletService {
       if (flushResult && flushResult.success === false) {
         throw new Error(`flushDerivedState failed after runtime hydration: ${flushResult.error || 'unknown error'}`);
       }
+      // flushDerivedState publishes the fresh snapshot/history before resolving.
+      // Hydration does not change addresses; a second full bundle repeats all
+      // balance/spendability checks and history serialization without a mutation.
       this.resetCachedNativeReads();
-      await this.refreshMirror(undefined, runEngine);
     }
 
     return { requested, hydrated };

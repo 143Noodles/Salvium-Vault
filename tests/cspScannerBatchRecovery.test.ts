@@ -43,6 +43,25 @@ afterEach(() => {
 });
 
 describe('CSPScanner batch recovery', () => {
+  it('reports scheduled chunk progress for a one-block catch-up without exceeding 100%', () => {
+    const { scanner } = loadScanner();
+    const progress: number[] = [];
+    scanner.onProgress = (event: any) => progress.push(event.progress);
+    scanner.scheduleNextTask = () => {};
+    scanner.taskQueue = [];
+    scanner.pendingTasks = 1;
+    scanner.totalBlocks = 1;
+    scanner.stats = { ...scanner.stats, completedChunks: 0, totalChunks: 1 };
+    scanner.workers = [busyWorker(0, { startHeight: 568000, chunkCount: 1, isBatch: true })];
+    scanner.handleScanBatchResult({
+      workerId: 0, startHeight: 568000, endHeight: 568999,
+      chunksProcessed: 1, scannedChunks: [568000],
+      stats: { txCount: 0, outputCount: 0 }, matches: [], spent: [],
+    });
+    expect(progress).toEqual([1]);
+    expect(scanner.scannedBlocks).toBe(1000);
+  });
+
   it('re-queues an all-missing batch when the reason is NOT beyond-tip (bounded)', () => {
     const { scanner } = loadScanner();
     scanner.scheduleNextTask = () => {};

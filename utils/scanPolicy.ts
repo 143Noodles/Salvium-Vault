@@ -366,3 +366,19 @@ export function resolveScanWorkerPolicy({
     ...(memoryGb !== undefined ? { deviceMemory: memoryGb } : {}),
   };
 }
+
+/** Explicit native-height catch-ups are incremental too; restores/recovery retain full semantics. */
+export function isIncrementalScanRequest({
+  fromHeight, walletHeight, nativeWalletHeight, sessionType, forceCleanRestoreScan,
+}: {
+  fromHeight?: number;
+  walletHeight: number;
+  nativeWalletHeight: number;
+  sessionType?: ScanTriggerSessionType;
+  forceCleanRestoreScan: boolean;
+}): boolean {
+  if (forceCleanRestoreScan || walletHeight <= 0 || sessionType === 'restore-full-rescan') return false;
+  return fromHeight === undefined || (
+    sessionType === 'background' && fromHeight > 0 && fromHeight === nativeWalletHeight
+  );
+}

@@ -61,11 +61,11 @@ describe('WASM feature routing', () => {
 
 describe('validated fallback artifact integration', () => {
   it('installs the atomic v1.1.3c SIMD and baseline pair', () => {
-    expect(WASM_CACHE_VERSION).toBe('8.2.32-v113c');
+    expect(WASM_CACHE_VERSION).toBe('8.2.33-v113c');
     expect(sha256('wallet/SalviumWallet.js')).toBe('66999f402264f2774f0dd01802b72097cb494f6402528ad3ee9ae369fc04e95c');
-    expect(sha256('wallet/SalviumWallet.wasm')).toBe('63eccc04370ed8a0ccb8bc9ed4030377db8446a4023c542912c9fd3c2ceabc91');
+    expect(sha256('wallet/SalviumWallet.wasm')).toBe('2b5d8874e0d429b31f2086084e0221f378380943b9e1f60d69b99b67629ba57b');
     expect(sha256('wallet/SalviumWalletBaseline.js')).toBe('20fb62d1de4a864c6c59ca3db9b996506877b8c71c297b03dc44549546c480aa');
-    expect(sha256('wallet/SalviumWalletBaseline.wasm')).toBe('6e938cb2528acc499d9f22a282e4a7659a15e2f82ace7590d54d9d681422e096');
+    expect(sha256('wallet/SalviumWalletBaseline.wasm')).toBe('d7a3fa7cb01a860a00fea9bac121c7ffcc013875278087d0bf9a3a61bd337ff2');
   });
 
   it('does not invalidate scanner-derived ownership data for an index-stable cache repair build', () => {
@@ -91,7 +91,7 @@ describe('validated fallback artifact integration', () => {
     expect(server).toContain("getConfiguredWasmAssetInfo('SalviumWalletBaseline.wasm')");
     expect(server).toContain("getConfiguredWasmAssetInfo('SalviumWalletBaseline.js')");
     expect(server).toContain("const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c'");
-    expect(server).toContain("const SALVIUM_WASM_RUNTIME_BUILD = '5.54.11-hf14-v113c'");
+    expect(server).toContain("const SALVIUM_WASM_RUNTIME_BUILD = '5.54.12-hf14-v113c'");
     expect(server).toContain('loadedRuntimeVersion.includes(SALVIUM_WASM_RUNTIME_BUILD)');
     expect(server).toContain('hf13-v1.1.3c-asset-index-20260709');
     expect(server).toContain('responseOuts[i].output_id = lookupOutputs[i].index');
@@ -111,7 +111,7 @@ describe('validated fallback artifact integration', () => {
     expect(scanner).toContain('encodeURIComponent(CSPScanner.WORKER_VERSION)');
     expect(server).toContain("'Cache-Control', 'private, no-store, no-cache, must-revalidate, proxy-revalidate'");
     expect(serviceWorker).toContain(`const WASM_VERSION = '${WASM_CACHE_VERSION}'`);
-    expect(serviceWorker).toContain("const WASM_CACHE = 'salvium-wasm-v41'");
+    expect(serviceWorker).toContain("const WASM_CACHE = 'salvium-wasm-v42'");
   });
 
   it('routes fallback state through all three worker surfaces', () => {

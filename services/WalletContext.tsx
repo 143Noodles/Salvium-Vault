@@ -56,6 +56,7 @@ import {
     computeIncrementalScanStartHeight,
     coalesceScanTriggerRequest,
     resolveIncrementalScanPlan,
+    isIncrementalScanRequest,
     resolveRestoreRetryResumePolicy,
     resolveScanResumeHeight,
     resolveUnlockScheduledScanFromHeight,
@@ -2566,36 +2567,9 @@ const getDeviceMemoryBucket = (): string => {
                     needsGapCheckRef.current = true;
                 }
 
-                if (
-                    hiddenDuration > SUSPENSION_THRESHOLD_MS &&
-                    serviceScanActiveAfterResume
-                ) {
-                    const scanAge = lastScanTimeRef.current ? Date.now() - lastScanTimeRef.current : hiddenDuration;
-                    if (scanAge > SUSPENSION_THRESHOLD_MS) {
-                        reportClientEvent('scan.suspended_scan_recovered', {
-                            level: 'warn',
-                            message: 'Resetting stale scanner state after page suspension; coverage will be rechecked.',
-                            context: {
-                                source: 'visibility-visible',
-                                hiddenDurationMs: hiddenDuration,
-                                scanAgeMs: scanAge,
-                                scanActive: scanInProgressRef.current,
-                                serviceScanActive: cspScanService.isScanningInProgress(),
-                                sessionType: activeRestoreSession?.type || 'background',
-                            },
-                        });
-                        scanVersionRef.current += 1;
-                        scanCoordinatorRef.current.serial += 1;
-                        scanCoordinatorRef.current.activePromise = undefined;
-                        scanCoordinatorRef.current.activeRequest = undefined;
-                        scanCoordinatorRef.current.pendingRequest = undefined;
-                        cspScanService.resetScannerState();
-                        scanInProgressRef.current = false;
-                        setIsScanning(false);
-                        setScanProgress(null);
-                        needsGapCheckRef.current = true;
-                    }
-                }
+                // Suspension alone is not a failed scan. Keep the current owner and its
+                // workers; foreground-time liveness checks detect an actual stalled worker.
+                // Resetting here discarded healthy work on every >30s app switch.
 
                 // (Removed: a dead "resume restore after visibility pause" block. Its gating ref
                 // restoreScanPausedForVisibilityRef was never set true anywhere, so the branch was
@@ -2796,7 +2770,7 @@ const getDeviceMemoryBucket = (): string => {
             unlockedBalanceSAL: 0,
         });
 
-        if (!walletService.hasWallet()) {
+        if (isLocked || !walletService.hasWallet()) {
             return { balance: emptyBalance, isReady: false };
         }
 
@@ -2845,7 +2819,7 @@ const getDeviceMemoryBucket = (): string => {
     return { effectivePrice, stats };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [stakes, syncStatus.daemonHeight, syncStatus.walletHeight, salPrice, transactions,
-        nativeBalanceTrust, balance, isWalletReady, assessNativeSnapshotHealth]);
+        nativeBalanceTrust, balance, isWalletReady, isLocked, assessNativeSnapshotHealth]);
 
     useEffect(() => {
         const reportSpendabilityDiagSkip = (reason: string, extra: Record<string, unknown> = {}) => {
@@ -3691,15 +3665,19 @@ const getDeviceMemoryBucket = (): string => {
         sessionPasswordRef.current = password;
 
         if (!isVaultRestore && isWalletReady && walletService.isReady() && walletService.hasWallet()) {
-            scanInProgressRef.current = false;
-            setIsScanning(false);
-            setScanProgress(null);
-            setSyncStatus(prev => ({ ...prev, isSyncing: false }));
+            // Authentication does not end the scanner's ownership of this session.
+            // Keep progress and the single-flight guard when a warm unlock joins it.
+            const scanActive = scanInProgressRef.current || cspScanService.isScanningInProgress();
+            if (!scanActive) {
+                setIsScanning(false);
+                setScanProgress(null);
+                setSyncStatus(prev => ({ ...prev, isSyncing: false }));
+            }
 
             sessionSeedRef.current = mnemonic;
             setIsLocked(false);
             setNeedsRecovery(false);
-            setTimeout(() => {
+            if (!scanActive) setTimeout(() => {
                 if (
                     manualFullRescanModeRef.current ||
                     needsFullRescanRef.current ||
@@ -5067,11 +5045,10 @@ const getDeviceMemoryBucket = (): string => {
         reportTaskEvent('completed', 'wallet.lock', 'lock', 'WalletContext');
         sessionSeedRef.current = null;
         sessionPasswordRef.current = null;
+        // Locking changes authorization/visibility, not the validity of the
+        // still-loaded native wallet. Retain its trust verdict (including any
+        // real integrity failure) so a warm unlock cannot strand the balance.
         setIsLocked(true);
-        setNativeBalanceTrust({
-            trusted: false,
-            reason: 'Wallet locked',
-        });
     };
 
     const executeScan = async (fromHeight?: number, request?: {
@@ -5536,7 +5513,12 @@ const getDeviceMemoryBucket = (): string => {
 
             const totalBlocksToScan = Math.max(1, networkHeight - walletHeight);
 
-            const isIncremental = fromHeight === undefined && walletHeight > 0 && !forceCleanRestoreScan;
+            const isIncremental = isIncrementalScanRequest({
+                fromHeight, walletHeight,
+                nativeWalletHeight: currentSyncStatus.walletHeight || 0,
+                sessionType: request?.sessionType,
+                forceCleanRestoreScan,
+            });
 
             const incrementalScanPlan = isIncremental
                 ? resolveIncrementalScanPlan({

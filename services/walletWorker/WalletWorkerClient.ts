@@ -1,3 +1,4 @@
+import { setActiveTimeout } from '../../utils/activeTime';
 /**
  * Main-thread client for wallet/wallet-host.worker.js.
  *
@@ -45,7 +46,7 @@ export interface WalletWorkerCallOptions {
 interface PendingEntry {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: () => void;
   label: string;
   startedAt?: number;
   timeoutMs: number;
@@ -53,7 +54,7 @@ interface PendingEntry {
   // (no cancellation) may still be running this op. We keep the slot until the
   // worker actually responds, then advance.
   timedOut?: boolean;
-  hardTimer?: ReturnType<typeof setTimeout>;
+  hardTimer?: () => void;
 }
 
 interface QueuedRequest {
@@ -126,7 +127,7 @@ export class WalletWorkerClient {
   private nextId = 1;
   private deltaSubscribers = new Set<(delta: StateDelta) => void>();
   private crashSubscribers = new Set<(error: Error) => void>();
-  private readyWaiter: { resolve: (wasmVersion: string, wasmVariant?: WasmVariant) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private readyWaiter: { resolve: (wasmVersion: string, wasmVariant?: WasmVariant) => void; reject: (e: Error) => void; timer: () => void } | null = null;
   private crashed: Error | null = null;
   private terminated = false;
 
@@ -171,21 +172,21 @@ export class WalletWorkerClient {
 
   private init(config: WorkerInitConfig): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = setActiveTimeout(() => {
         this.readyWaiter = null;
         reject(new Error(`Wallet worker did not become ready within ${INIT_TIMEOUT_MS}ms`));
       }, INIT_TIMEOUT_MS);
 
       this.readyWaiter = {
         resolve: (wasmVersion: string, wasmVariant?: WasmVariant) => {
-          clearTimeout(timer);
+          timer();
           this.readyWaiter = null;
           this.wasmVersion = wasmVersion;
           this.wasmVariant = wasmVariant || config.wasmVariant;
           resolve();
         },
         reject: (error: Error) => {
-          clearTimeout(timer);
+          timer();
           this.readyWaiter = null;
           reject(error);
         },
@@ -268,7 +269,7 @@ export class WalletWorkerClient {
     const req = this.queue.shift()!;
     this.dispatching = true;
     const startedAt = performance.now();
-    const timer = setTimeout(() => this.onSoftTimeout(req.message.id), req.timeoutMs);
+    const timer = setActiveTimeout(() => this.onSoftTimeout(req.message.id), req.timeoutMs);
 
     this.pending.set(req.message.id, {
       resolve: req.resolve,
@@ -284,8 +285,8 @@ export class WalletWorkerClient {
     } catch (error) {
       const entry = this.pending.get(req.message.id);
       if (entry) {
-        clearTimeout(entry.timer);
-        if (entry.hardTimer) clearTimeout(entry.hardTimer);
+        entry.timer();
+        if (entry.hardTimer) entry.hardTimer();
         this.pending.delete(req.message.id);
       }
       req.reject(error instanceof Error ? error : new Error(String(error)));
@@ -314,7 +315,7 @@ export class WalletWorkerClient {
       },
     });
     entry.reject(new Error(`Wallet worker ${entry.label} timed out after ${entry.timeoutMs}ms`));
-    entry.hardTimer = setTimeout(() => {
+    entry.hardTimer = setActiveTimeout(() => {
       // The worker never responded and has no cancellation — kill the wedged thread so it
       // stops burning CPU/memory, then crash the client so subscribers respawn a fresh one.
       try { this.worker.terminate(); } catch {}
@@ -347,8 +348,8 @@ export class WalletWorkerClient {
         const entry = this.pending.get(data.id);
         if (!entry) return;
         this.pending.delete(data.id);
-        clearTimeout(entry.timer);
-        if (entry.hardTimer) clearTimeout(entry.hardTimer);
+        entry.timer();
+        if (entry.hardTimer) entry.hardTimer();
         // Slow-op attribution: every worker call >2s is reported with its label so
         // field telemetry can name exactly which WASM op eats wall-clock. Skip if the
         // soft timeout already reported (and rejected) this op.
@@ -425,8 +426,8 @@ export class WalletWorkerClient {
   private rejectAllPending(error: Error): void {
     this.readyWaiter?.reject(error);
     for (const entry of this.pending.values()) {
-      clearTimeout(entry.timer);
-      if (entry.hardTimer) clearTimeout(entry.hardTimer);
+      entry.timer();
+      if (entry.hardTimer) entry.hardTimer();
       // A soft-timed-out caller was already rejected; don't double-reject.
       if (!entry.timedOut) entry.reject(error);
     }
