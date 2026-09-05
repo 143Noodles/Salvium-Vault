@@ -609,7 +609,9 @@ function summarizeGetOutsResponseOut(out, requestedIndex = null) {
     };
 }
 function sanitizeClientTelemetryContext(context) {
+    const importTimingKeys = new Set(['hex', 'envelope', 'decrypt', 'deserialize', 'asset_repair', 'restore_maps', 'rebuild', 'upgrade', 'return_repair', 'normalize', 'subaddresses', 'stake_repair', 'nativeImportMs', 'snapshotMs', 'syncStatusMs', 'addressesMs', 'transactionsMs', 'flagsMs']);
     const allowedKeys = new Set([
+      ...importTimingKeys,
         'task', 'stage', 'result', 'count', 'bucket',
         'parsedTokenShape', 'fallbackTokenShape', 'selectedAssetSource',
         'outputIndexBucket', 'outputCountBucket', 'filteredOutputCount',
@@ -736,6 +738,7 @@ function sanitizeClientTelemetryContext(context) {
     if (!context || typeof context !== 'object' || Array.isArray(context)) return safe;
     for (const [key, value] of Object.entries(context).slice(0, CLIENT_EVENT_MAX_CONTEXT_KEYS)) {
         if (!allowedKeys.has(key)) continue;
+        if (importTimingKeys.has(key) && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) continue;
         if (/(?:balance|unlocked|spendable|atomic|amount)/i.test(key) ||
             (/^diag/i.test(key) && /(?:total|largestInput|lockedStake|confirmedSkippedType)/i.test(key))) continue;
         if (typeof value === 'number') {

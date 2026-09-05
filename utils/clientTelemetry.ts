@@ -197,7 +197,9 @@ const isSensitiveMonetaryContextKey = (key: string): boolean =>
 export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): ClientTelemetryContext => {
   const safe: ClientTelemetryContext = {};
   if (!context) return safe;
+  const importTimingKeys = new Set(['hex', 'envelope', 'decrypt', 'deserialize', 'asset_repair', 'restore_maps', 'rebuild', 'upgrade', 'return_repair', 'normalize', 'subaddresses', 'stake_repair', 'nativeImportMs', 'snapshotMs', 'syncStatusMs', 'addressesMs', 'transactionsMs', 'flagsMs']);
   const allowedKeys = new Set([
+    ...importTimingKeys,
     'task', 'stage', 'result', 'count', 'bucket',
     'parsedTokenShape', 'fallbackTokenShape', 'selectedAssetSource',
     'outputIndexBucket', 'outputCountBucket', 'filteredOutputCount',
@@ -322,6 +324,7 @@ export const sanitizeTelemetryContext = (context?: ClientTelemetryContext): Clie
 
   for (const [key, rawValue] of Object.entries(context).slice(0, 40)) {
     if (!allowedKeys.has(key)) continue;
+    if (importTimingKeys.has(key) && (typeof rawValue !== 'number' || !Number.isFinite(rawValue) || rawValue < 0)) continue;
     if (isSensitiveMonetaryContextKey(key)) continue;
     if (typeof rawValue === 'number') {
       safe[key] = Number.isFinite(rawValue) ? Math.round(rawValue * 100) / 100 : null;

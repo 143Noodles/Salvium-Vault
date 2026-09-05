@@ -3,6 +3,8 @@ package tools.salvium;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.webkit.WebView;
 
 import androidx.core.graphics.Insets;
@@ -30,6 +32,7 @@ public class MainActivity extends BridgeActivity {
     private int lastSystemBarLeft = 0;
     private boolean contentHealthProbeStarted = false;
     private boolean pendingContentSelected = false;
+    private boolean webViewDisposed = false;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -54,6 +57,33 @@ public class MainActivity extends BridgeActivity {
 
         installSystemBarInsetBridge();
         ContentUpdateManager.scheduleAutomaticCheck(this);
+    }
+
+    @Override
+    public void onDestroy() {
+        WebView oldView = bridge != null ? bridge.getWebView() : null;
+        super.onDestroy();
+        // Activity.recreate() can retain the window without calling the old
+        // activity's onDetachedFromWindow. Capacitor otherwise destroys its
+        // WebView only there, leaving the old wallet worker and storage writer
+        // alive beside the new wallet. End this activity's web runtime here.
+        // Clearing bridge also prevents the later detach callback destroying
+        // or otherwise accessing the same WebView a second time.
+        bridge = null;
+        if (!webViewDisposed && oldView != null) {
+            webViewDisposed = true;
+            oldView.stopLoading();
+            ViewParent parent = oldView.getParent();
+            if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(oldView);
+            oldView.removeAllViews();
+            oldView.destroy();
+        }
+    }
+
+    @Override
+    public void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        webViewDisposed = true;
     }
 
     @Override
