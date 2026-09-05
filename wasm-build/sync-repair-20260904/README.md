@@ -38,3 +38,8 @@ Validation before release:
 - Wallet cache imports succeeded for both release variants.
 
 No wallet credentials or private fixtures belong in this directory.
+
+The final 5.54.13 runtime also tests an injected index-allocation failure. It
+propagates rather than publishing a partial index. `lookup-equivalence-test.patch`
+adds this failure injection and the differential method to a test-only build;
+do not apply it to release artifacts.

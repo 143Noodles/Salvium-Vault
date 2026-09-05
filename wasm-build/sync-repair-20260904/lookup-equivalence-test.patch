@@ -1,0 +1,102 @@
+--- a/src/wasm_bindings.cpp
++++ b/src/wasm_bindings.cpp
+@@ -147,6 +147,7 @@
+ // the fallback walk below. Never persisted or reused across wallet mutations.
+ // Preserve candidate order and validate candidates again at lookup time, so
+ // partial/unknown images and collisions retain the original fail-closed rules.
++static bool test_index_allocation_failure = false;
+ using effective_key_image_index =
+     std::unordered_map<crypto::key_image, std::vector<size_t>>;
+ static effective_key_image_index build_effective_key_image_index(
+@@ -161,7 +162,10 @@
+       ki = tools::wallet::get_effective_transfer_key_image(td, wallet);
+     } catch (...) { continue; /* Same rejected candidate as the authoritative walk. */ }
+     // Allocation failures must propagate: a partial index could omit a spend.
+-    if (ki != crypto::key_image{}) index[ki].push_back(i);
++    if (ki != crypto::key_image{}) {
++      if (test_index_allocation_failure) throw std::bad_alloc();
++      index[ki].push_back(i);
++    }
+   }
+   return index;
+ }
+@@ -6199,6 +6203,71 @@
+   // ports that pass: with m_key_images now COMPLETE (post-scan), iterate the cached full txs and
+   // for every tx that spends one of our outputs, reconstruct the outgoing confirmed-tx exactly
+   // like wallet2::process_outgoing. Order-independent and deterministic.
++
++  std::string test_sync_lookup_equivalence() {
++    if (!m_initialized || m_wallet->m_transfers.empty()) throw std::runtime_error("populated fixture required");
++    const auto saved_transfers = m_wallet->m_transfers;
++    const auto saved_images = m_wallet->m_key_images;
++    const bool saved_watch_only = m_wallet->m_watch_only;
++    const auto restore = [&]() {
++      m_wallet->m_transfers = saved_transfers;
++      m_wallet->m_key_images = saved_images;
++      m_wallet->m_watch_only = saved_watch_only;
++    };
++    bool allocation_failure_propagated = false;
++    test_index_allocation_failure = true;
++    try { (void)build_effective_key_image_index(*m_wallet); }
++    catch (const std::bad_alloc &) { allocation_failure_propagated = true; }
++    test_index_allocation_failure = false;
++    if (!allocation_failure_propagated) throw std::runtime_error("allocation failure was swallowed");
++    size_t comparisons = 0, max_transfers = 0;
++    try {
++      for (unsigned mode = 0; mode < 6; ++mode) {
++        restore();
++        if (mode >= 4) {
++          for (unsigned copy = 1; copy < 80; ++copy)
++            m_wallet->m_transfers.insert(m_wallet->m_transfers.end(), saved_transfers.begin(), saved_transfers.end());
++        }
++        if (mode == 1 || mode == 4) m_wallet->m_key_images.clear();
++        if (mode == 2) {
++          for (auto &entry : m_wallet->m_key_images) entry.second = m_wallet->m_transfers.size() + 7;
++        }
++        if (mode == 3 || mode == 5) {
++          for (size_t i = 0; i < m_wallet->m_transfers.size(); ++i) {
++            if (i % 3 == 0) m_wallet->m_transfers[i].m_key_image_partial = true;
++            if (i % 3 == 1) m_wallet->m_transfers[i].m_key_image_known = false;
++          }
++        }
++        if (mode == 5) m_wallet->m_watch_only = true;
++        max_transfers = std::max(max_transfers, m_wallet->m_transfers.size());
++        std::vector<crypto::key_image> queries;
++        for (const auto &td : saved_transfers) {
++          queries.push_back(td.m_key_image);
++          queries.push_back(tools::wallet::get_effective_transfer_key_image(td, *m_wallet));
++        }
++        for (unsigned i = 0; i < 64; ++i) {
++          crypto::key_image ki{};
++          std::memset(&ki, 0xe1, sizeof(ki));
++          reinterpret_cast<unsigned char *>(&ki)[0] = static_cast<unsigned char>(i);
++          queries.push_back(ki);
++        }
++        queries.push_back(crypto::key_image{});
++        const auto index = build_effective_key_image_index(*m_wallet);
++        for (const bool authority : {false, true}) for (const auto &ki : queries) {
++          size_t linear_out = 0, indexed_out = 0;
++          const bool linear = find_transfer_index_by_effective_key_image(*m_wallet, ki, linear_out, authority);
++          const bool indexed = find_transfer_index_by_effective_key_image(*m_wallet, ki, indexed_out, authority, &index);
++          if (linear != indexed || (linear && linear_out != indexed_out))
++            throw std::runtime_error("effective lookup result changed in mode " + std::to_string(mode));
++          ++comparisons;
++        }
++      }
++      restore();
++      return "{\"success\":true,\"comparisons\":" + std::to_string(comparisons) +
++             ",\"max_transfers\":" + std::to_string(max_transfers) + "}";
++    } catch (...) { restore(); throw; }
++  }
++
+   std::string reconcile_outgoing_payments() {
+     if (!m_initialized) {
+       return R"({"success":false,"error":"Wallet not initialized"})";
+@@ -22642,6 +22711,7 @@
+       .function("mark_spent_by_key_images",
+                 &WasmWallet::mark_spent_by_key_images)
+       .function("reconcile_outgoing_payments", &WasmWallet::reconcile_outgoing_payments)
++      .function("test_sync_lookup_equivalence", &WasmWallet::test_sync_lookup_equivalence)
+       .function("set_audit_real_txids", &WasmWallet::set_audit_real_txids)
+       .function("get_audit_heights_needing_real_txid", &WasmWallet::get_audit_heights_needing_real_txid)
+       .function("get_unresolved_return_roi_keys", &WasmWallet::get_unresolved_return_roi_keys)

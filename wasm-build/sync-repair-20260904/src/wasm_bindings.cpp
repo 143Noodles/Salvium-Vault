@@ -155,12 +155,13 @@ static effective_key_image_index build_effective_key_image_index(
   index.reserve(wallet.m_transfers.size());
   for (size_t i = 0; i < wallet.m_transfers.size(); ++i) {
     const auto &td = wallet.m_transfers[i];
+    crypto::key_image ki{};
     try {
-      if (tools::wallet::has_transfer_key_image(td, wallet)) {
-        const auto ki = tools::wallet::get_effective_transfer_key_image(td, wallet);
-        if (ki != crypto::key_image{}) index[ki].push_back(i);
-      }
-    } catch (...) { /* Same rejected candidate as the authoritative walk. */ }
+      if (!tools::wallet::has_transfer_key_image(td, wallet)) continue;
+      ki = tools::wallet::get_effective_transfer_key_image(td, wallet);
+    } catch (...) { continue; /* Same rejected candidate as the authoritative walk. */ }
+    // Allocation failures must propagate: a partial index could omit a spend.
+    if (ki != crypto::key_image{}) index[ki].push_back(i);
   }
   return index;
 }
@@ -283,7 +284,7 @@ int donna64_ge_scalarmult(unsigned char *r, const unsigned char *p,
 using namespace emscripten;
 
 static const char *WASM_VERSION =
-  "5.54.12-hf14-v113c";
+  "5.54.13-hf14-v113c";
 
 #define WASM_DEBUG_LOGGING 0
 #if WASM_DEBUG_LOGGING
@@ -11329,7 +11330,7 @@ public:
   }
 
   inline static constexpr const char *SPARSE_GUARDRAILS_BUILD =
-      "WASM_5_54_12_V113C";
+      "WASM_5_54_13_V113C";
 
   std::string ingest_sparse_transactions(uintptr_t ptr, size_t size,
                                          double height_d, bool skip_prefilter,

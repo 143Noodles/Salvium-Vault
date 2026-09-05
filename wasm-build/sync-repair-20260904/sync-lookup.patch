@@ -1,6 +1,6 @@
 --- a/src/wasm_bindings.cpp
 +++ b/src/wasm_bindings.cpp
-@@ -143,11 +143,34 @@
+@@ -143,11 +143,35 @@
  // a bounded transfer walk so callers remain correct during that repair window.
  // This helper intentionally does not mutate wallet state; normalization owns all
  // map writes and collision handling.
@@ -16,12 +16,13 @@
 +  index.reserve(wallet.m_transfers.size());
 +  for (size_t i = 0; i < wallet.m_transfers.size(); ++i) {
 +    const auto &td = wallet.m_transfers[i];
++    crypto::key_image ki{};
 +    try {
-+      if (tools::wallet::has_transfer_key_image(td, wallet)) {
-+        const auto ki = tools::wallet::get_effective_transfer_key_image(td, wallet);
-+        if (ki != crypto::key_image{}) index[ki].push_back(i);
-+      }
-+    } catch (...) { /* Same rejected candidate as the authoritative walk. */ }
++      if (!tools::wallet::has_transfer_key_image(td, wallet)) continue;
++      ki = tools::wallet::get_effective_transfer_key_image(td, wallet);
++    } catch (...) { continue; /* Same rejected candidate as the authoritative walk. */ }
++    // Allocation failures must propagate: a partial index could omit a spend.
++    if (ki != crypto::key_image{}) index[ki].push_back(i);
 +  }
 +  return index;
 +}
@@ -36,7 +37,7 @@
    transfer_index_out = 0;
    if (key_image == crypto::key_image{})
      return false;
-@@ -180,9 +203,16 @@
+@@ -180,9 +204,16 @@
    if (map_it != wallet.m_key_images.end() && accepts(map_it->second))
      return true;
  
@@ -56,16 +57,16 @@
    }
    return false;
  }
-@@ -253,7 +283,7 @@
+@@ -253,7 +284,7 @@
  using namespace emscripten;
  
  static const char *WASM_VERSION =
 -  "5.54.11-hf14-v113c";
-+  "5.54.12-hf14-v113c";
++  "5.54.13-hf14-v113c";
  
  #define WASM_DEBUG_LOGGING 0
  #if WASM_DEBUG_LOGGING
-@@ -6173,6 +6203,12 @@
+@@ -6173,6 +6204,12 @@
        return R"({"success":false,"error":"Wallet not initialized"})";
      }
      try {
@@ -78,7 +79,7 @@
        size_t examined = 0, reconciled = 0, already = 0;
        for (const auto &rt : m_wallet->m_runtime_full_txs) {
          const crypto::hash &txid = rt.first;
-@@ -6238,7 +6274,7 @@
+@@ -6238,7 +6275,7 @@
              continue;
            const auto &in_to_key = boost::get<cryptonote::txin_to_key>(in);
            size_t transfer_index = 0;
@@ -87,7 +88,7 @@
                                               transfer_index))
              continue;
            const auto &td = m_wallet->m_transfers[transfer_index];
-@@ -8342,6 +8378,12 @@
+@@ -8342,6 +8379,12 @@
      uint64_t max_height = static_cast<uint64_t>(max_height_d);
  
      try {
@@ -100,7 +101,7 @@
  
        std::list<std::pair<crypto::hash, tools::wallet2::payment_details>>
            payments;
-@@ -8464,13 +8506,13 @@
+@@ -8464,13 +8507,13 @@
          std::vector<crypto::hash> extra_order;
  
          auto tx_spends_our_outputs =
@@ -116,7 +117,7 @@
                return true;
              }
            }
-@@ -8515,7 +8557,7 @@
+@@ -8515,7 +8558,7 @@
                continue;
              const auto &txin = boost::get<cryptonote::txin_to_key>(in);
              size_t idx = 0;
@@ -125,12 +126,12 @@
                const auto &src_td = m_wallet->get_transfer_details(idx);
                const auto *src_tx = tools::wallet::get_effective_transfer_tx(
                    src_td, *m_wallet);
-@@ -11287,7 +11329,7 @@
+@@ -11287,7 +11330,7 @@
    }
  
    inline static constexpr const char *SPARSE_GUARDRAILS_BUILD =
 -      "WASM_5_54_11_V113C";
-+      "WASM_5_54_12_V113C";
++      "WASM_5_54_13_V113C";
  
    std::string ingest_sparse_transactions(uintptr_t ptr, size_t size,
                                           double height_d, bool skip_prefilter,
