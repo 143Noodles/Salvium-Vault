@@ -1,3 +1,4 @@
+import { auditReturnHeight } from '../utils/auditReturnHeight';
 import { createActiveClock } from '../utils/activeTime';
 import { isBundledNativeRuntime, BUNDLED_API_BASE } from '../utils/bundledRuntime';
 import { debugLog, debugWarn } from '../utils/debug';
@@ -3589,8 +3590,8 @@ class CSPScanService {
 	    }
 
 
-    // CLI-parity item 1 (AUDIT real txid): AUDIT tx blobs fail strict parse, so the
-    // scan keys their transfer by a synthetic cn_fast_hash(blob). Fetch the real
+    // Repair caches created by the legacy Audit parser, which sometimes keyed
+    // transfers by a synthetic cn_fast_hash(blob). Fetch the real
     // on-chain AUDIT txid for each audit height from the daemon (server endpoint),
     // then re-key the AUDIT transfers. Display-only: balance/key-images untouched.
     if (wallet) {
@@ -6637,10 +6638,11 @@ class CSPScanService {
       return { txsMatched: 0, failedHeights: [] };
     }
 
-    const AUDIT_RETURN_OFFSET = 7201;
+    const { walletService } = await import('./WalletService');
+    const network = walletService.getNetwork();
 
     const returnHeights = auditHeights
-      .map(h => h + AUDIT_RETURN_OFFSET)
+      .map(h => auditReturnHeight(network, h))
       // Only filter by chain tip when it's known; a 0/unknown networkHeight would otherwise drop every return.
       .filter(h => !(networkHeight > 0) || h <= networkHeight)
       .filter((h, i, arr) => arr.indexOf(h) === i);

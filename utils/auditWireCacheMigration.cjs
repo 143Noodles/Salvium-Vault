@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const auditPeriods = require('./auditPeriods.json');
 const VERSION = 'audit-stake-index-u64-v1';
 const MAINNET_STARTS = [...Array.from({length: 8}, (_, i) => 154000 + i * 1000), ...Array.from({length: 8}, (_, i) => 172000 + i * 1000)];
 async function exists(file) { try { await fs.access(file); return true; } catch (e) { if (e.code === 'ENOENT') return false; throw e; } }
@@ -80,8 +81,8 @@ async function migrateAuditWireCaches({cacheDir, cspDir, network, schema, bundle
 }
 function auditReturnOffset(network, height) {
   if (network !== 'mainnet') return 7201; // Preserve the existing non-mainnet policy.
-  if (height >= 154750 && height < 161900) return 7201;
-  if (height >= 172000 && height < 179200) return 10081;
+  const period = auditPeriods.find(p => height >= p.start && height < p.endExclusive);
+  if (period) return period.returnOffset;
   throw new Error('Audit transaction outside canonical mainnet Audit epochs');
 }
 module.exports = {migrateAuditWireCaches, MAINNET_STARTS, VERSION, auditReturnOffset};
