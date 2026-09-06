@@ -69,3 +69,34 @@ Both production runtime variants exactly match 5.54.13 state/history/reconcile/
 flush JSON on the original 67-output, 57-canonical-transaction fixture. Stage
 measurements added in 5.54.14 remain so actual phone startup can be profiled.
 Do not apply the test patch to release artifacts.
+
+## No-op key-image normalization, 5.54.16
+
+A measured Android 1.1.2 startup imported 5,066 transfers in 80,480 ms;
+77,717 ms were inside normalization. The pass cryptographically re-derived
+historical spend authority even when it would only rewrite identical state.
+
+After resolving the canonical effective image (including return-metadata
+validation), normalization now recognizes an already-known, identical nonzero
+image whose map entry points to this exact transfer. There is no repair in that
+case. The old validator's true and false branches produced identical wallet
+state: true wrote the same fields, false left them untouched. Neither branch
+certified the transfer for future spending. Actual spend validation is unchanged.
+
+Missing entries, unknown images, changed images, and conflicting owners retain
+the original full transaction/opening/key-image validation. Collision ordering
+and exceptions, watch-only and partial-image handling, and invalidation following
+real repairs are unchanged. No validity result is persisted or trusted anew.
+
+`normalization-equivalence-test.patch` adds a test-only copy of the previous
+normalizer and 11 cases per real fixture output: unchanged, missing map, unknown,
+partial, zero, conflicting owner, invalid output index, unknown plus missing,
+partial plus conflict, corrupted known image with matching map, and corrupted
+image with missing map. It compares repair counts, exact error messages,
+key-image maps, and all changed transfer fields, including partial mutation
+before an exception. It also times repeated complete passes over the fixture.
+Apply the patch only to a copy of src/wasm_bindings.cpp; run rebuild.sh against
+that copy, then run run-normalization-equivalence.cjs with isolated QA seed,
+cache, and canonical SPR7 fixture paths. Never include those fixtures or the
+extra bindings in production. Both production variants also require exact
+snapshot/history/reconciliation/flush parity against 5.54.15.

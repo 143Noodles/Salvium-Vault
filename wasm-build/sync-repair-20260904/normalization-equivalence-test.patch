@@ -1,0 +1,182 @@
+--- a/src/wasm_bindings.cpp
++++ b/src/wasm_bindings.cpp
+@@ -547,6 +547,75 @@
+         if (td.m_key_image_known && td.m_key_image == effective_key_image &&
+             current != m_wallet->m_key_images.end() &&
+             current->second == index)
++          continue;
++
++        // Structural authority is not enough for a repaired return image:
++        // validate the effective transaction/output/opening (or legacy
++        // derivation) before persisting it into the wallet's authoritative map.
++        if (!tools::wallet::validate_transfer_spend_authority(td, *m_wallet))
++          continue;
++      } catch (...) {
++        continue;
++      }
++
++      const auto existing = m_wallet->m_key_images.find(effective_key_image);
++      if (existing != m_wallet->m_key_images.end() &&
++          existing->second != index) {
++        // Never retarget an existing key image.  A collision is an unresolved
++        // authority ambiguity; fail the derived-state pass instead of marking
++        // the wallet clean while selectors could still spend either output.
++        throw std::runtime_error(
++            "effective key-image collision between transfer " +
++            std::to_string(existing->second) + " and " +
++            std::to_string(index));
++      }
++
++      const crypto::key_image prior_key_image = td.m_key_image;
++      if (prior_key_image != crypto::key_image{} &&
++          prior_key_image != effective_key_image) {
++        const auto prior = m_wallet->m_key_images.find(prior_key_image);
++        // Remove a stale entry only when it still points at this transfer.  A
++        // different owner may have legitimately claimed that image already.
++        if (prior != m_wallet->m_key_images.end() &&
++            prior->second == index)
++          m_wallet->m_key_images.erase(prior);
++      }
++
++      const bool changed = !td.m_key_image_known ||
++                           td.m_key_image != effective_key_image ||
++                           m_wallet->m_key_images.find(effective_key_image) ==
++                               m_wallet->m_key_images.end();
++      td.m_key_image = effective_key_image;
++      td.m_key_image_known = true;
++      // td.m_key_image_partial is already false above; leave partial state
++      // untouched for all skipped entries.
++      m_wallet->m_key_images[effective_key_image] = index;
++      if (changed)
++        ++normalized;
++    }
++
++    if (normalized > 0)
++      m_wallet->invalidate_effective_ki_cache();
++    return normalized;
++  }
++
++  size_t reference_normalize_effective_key_images() {
++    if (!m_wallet || m_wallet->watch_only())
++      return 0;
++
++    size_t normalized = 0;
++    for (size_t index = 0; index < m_wallet->m_transfers.size(); ++index) {
++      auto &td = m_wallet->m_transfers[index];
++      if (td.m_key_image_partial)
++        continue;
++
++      crypto::key_image effective_key_image{};
++      try {
++        if (!tools::wallet::has_transfer_spend_authority(td, *m_wallet))
++          continue;
++        effective_key_image =
++            tools::wallet::get_effective_transfer_key_image(td, *m_wallet);
++        if (effective_key_image == crypto::key_image{})
+           continue;
+ 
+         // Structural authority is not enough for a repaired return image:
+@@ -8247,6 +8316,95 @@
+     return ingest_blocks_binary(binary_data);
+   }
+ 
++
++  std::string test_normalization_equivalence() {
++    if (!m_wallet || m_wallet->m_transfers.empty())
++      throw std::runtime_error("populated fixture required");
++    const auto base_transfers = m_wallet->m_transfers;
++    const auto base_images = m_wallet->m_key_images;
++    const auto reset = [&]() {
++      m_wallet->m_transfers = base_transfers;
++      m_wallet->m_key_images = base_images;
++      m_wallet->invalidate_effective_ki_cache();
++    };
++    size_t comparisons = 0, invalid_unchanged = 0, collisions = 0;
++    size_t repairs = 0;
++    try {
++      for (size_t target = 0; target < base_transfers.size(); ++target) {
++        for (int scenario = 0; scenario < 11; ++scenario) {
++          reset();
++          auto &td = m_wallet->m_transfers[target];
++          const auto effective = tools::wallet::get_effective_transfer_key_image(td, *m_wallet);
++          if (scenario == 1) m_wallet->m_key_images.erase(effective);
++          if (scenario == 2) td.m_key_image_known = false;
++          if (scenario == 3) td.m_key_image_partial = true;
++          if (scenario == 4) td.m_key_image = crypto::key_image{};
++          if (scenario == 5) m_wallet->m_key_images[effective] = base_transfers.size() + 5;
++          if (scenario == 6) {
++            // Invalid output context with otherwise consistent persisted image.
++            td.m_internal_output_index = std::numeric_limits<uint64_t>::max();
++            if (!tools::wallet::validate_transfer_spend_authority(td, *m_wallet))
++              ++invalid_unchanged;
++          }
++          if (scenario == 7) {
++            td.m_key_image_known = false;
++            m_wallet->m_key_images.erase(effective);
++          }
++          if (scenario == 8) {
++            td.m_key_image_partial = true;
++            m_wallet->m_key_images[effective] = base_transfers.size() + 5;
++          }
++          if (scenario == 9 || scenario == 10) {
++            m_wallet->m_key_images.erase(td.m_key_image);
++            reinterpret_cast<unsigned char *>(&td.m_key_image)[0] ^= 0x80;
++            td.m_key_image_known = true;
++            if (scenario == 9) m_wallet->m_key_images[td.m_key_image] = target;
++          }
++          const auto before_transfers = m_wallet->m_transfers;
++          const auto before_images = m_wallet->m_key_images;
++          size_t reference_count = 0, candidate_count = 0;
++          std::string reference_error, candidate_error;
++          try { reference_count = reference_normalize_effective_key_images(); }
++          catch (const std::exception &e) { reference_error = e.what(); }
++          const auto expected_transfers = m_wallet->m_transfers;
++          const auto expected_images = m_wallet->m_key_images;
++          m_wallet->m_transfers = before_transfers;
++          m_wallet->m_key_images = before_images;
++          m_wallet->invalidate_effective_ki_cache();
++          try { candidate_count = normalize_effective_key_images(); }
++          catch (const std::exception &e) { candidate_error = e.what(); }
++          if (reference_error != candidate_error || reference_count != candidate_count ||
++              expected_images != m_wallet->m_key_images)
++            throw std::runtime_error("normalization result/map mismatch");
++          for (size_t i = 0; i < expected_transfers.size(); ++i) {
++            const auto &a = expected_transfers[i];
++            const auto &b = m_wallet->m_transfers[i];
++            if (a.m_key_image != b.m_key_image || a.m_key_image_known != b.m_key_image_known ||
++                a.m_key_image_partial != b.m_key_image_partial)
++              throw std::runtime_error("normalization transfer mismatch");
++          }
++          ++comparisons;
++          repairs += candidate_count;
++          if (!candidate_error.empty()) ++collisions;
++        }
++      }
++      reset();
++      const auto old_start = std::chrono::steady_clock::now();
++      for (int i = 0; i < 16; ++i) reference_normalize_effective_key_images();
++      const auto old_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - old_start).count();
++      reset();
++      const auto new_start = std::chrono::steady_clock::now();
++      for (int i = 0; i < 16; ++i) normalize_effective_key_images();
++      const auto new_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - new_start).count();
++      reset();
++      std::ostringstream result;
++      result << "{\"comparisons\":" << comparisons << ",\"invalidUnchanged\":" << invalid_unchanged
++             << ",\"repairs\":" << repairs << ",\"collisions\":" << collisions
++             << ",\"referenceMs\":" << old_ms << ",\"candidateMs\":" << new_ms << "}";
++      return result.str();
++    } catch (...) { reset(); throw; }
++  }
++
+   std::string test_wasm() const {
+     std::ostringstream oss;
+     oss << "{"
+@@ -22657,6 +22815,7 @@
+       .function("advance_height_blind", &WasmWallet::advance_height_blind)
+       .function("detach_from_height", &WasmWallet::detach_from_height)
+ 
++      .function("test_normalization_equivalence", &WasmWallet::test_normalization_equivalence)
+       .function("test_wasm", &WasmWallet::test_wasm)
+ 
+       .function("get_last_error", &WasmWallet::get_last_error)

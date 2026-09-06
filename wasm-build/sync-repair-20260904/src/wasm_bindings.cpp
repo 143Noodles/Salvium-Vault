@@ -285,7 +285,7 @@ int donna64_ge_scalarmult(unsigned char *r, const unsigned char *p,
 using namespace emscripten;
 
 static const char *WASM_VERSION =
-  "5.54.15-hf14-v113c";
+  "5.54.16-hf14-v113c";
 
 #define WASM_DEBUG_LOGGING 0
 #if WASM_DEBUG_LOGGING
@@ -534,6 +534,19 @@ private:
         effective_key_image =
             tools::wallet::get_effective_transfer_key_image(td, *m_wallet);
         if (effective_key_image == crypto::key_image{})
+          continue;
+
+        // Normalization repairs persisted state; it does not certify spend
+        // authority. When the canonical image, known flag, and map owner are
+        // already identical, both validator outcomes leave that state intact.
+        // Avoid re-deriving every historical output solely to write it back
+        // unchanged. Computing the effective image above still validates return
+        // metadata. Every actual repair/promotion below retains full opening
+        // validation; conflicting map owners must also take that path.
+        const auto current = m_wallet->m_key_images.find(effective_key_image);
+        if (td.m_key_image_known && td.m_key_image == effective_key_image &&
+            current != m_wallet->m_key_images.end() &&
+            current->second == index)
           continue;
 
         // Structural authority is not enough for a repaired return image:
