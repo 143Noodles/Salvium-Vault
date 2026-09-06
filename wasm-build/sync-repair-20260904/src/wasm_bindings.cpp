@@ -285,7 +285,7 @@ int donna64_ge_scalarmult(unsigned char *r, const unsigned char *p,
 using namespace emscripten;
 
 static const char *WASM_VERSION =
-  "5.54.16-hf14-v113c";
+  "5.54.17-hf14-v113c";
 
 #define WASM_DEBUG_LOGGING 0
 #if WASM_DEBUG_LOGGING
@@ -20098,7 +20098,7 @@ static bool parse_audit_tx_minimal(const std::string &tx_blob,
         if (ivd.origin_tx_type != 0) {
           ba_rct.serialize_blob(ivd.aR_stake.data, 32);
           uint64_t temp_i_stake = 0;
-          ba_rct.serialize_varint(temp_i_stake);
+          ba_rct.serialize_int(temp_i_stake);
           ivd.i_stake = temp_i_stake;
         }
       }

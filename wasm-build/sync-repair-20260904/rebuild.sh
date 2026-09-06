@@ -10,9 +10,9 @@ for variant in simd baseline; do
   docker run --rm --network none --mount "type=bind,src=$repair_dir,dst=/repair" \
     -e REPAIR_VARIANT="$variant" --entrypoint sh "$build_image" -c '
       set -eu
+      patch -d /workspace/salvium -p1 < /repair/audit-index-width.patch
       cp /repair/src/wasm_bindings.cpp /workspace/src/wasm_bindings.cpp
-      em++ $COMPILE_FLAGS $INCLUDE_FLAGS $DEFINE_FLAGS -I/workspace/src/donna64 \
-        -c /workspace/src/wasm_bindings.cpp -o /workspace/build/wasm_bindings.o
+      python3 /repair/rebuild-core.py
       sh /repair/link.sh
       cp /workspace/build/SalviumWallet.js /workspace/build/SalviumWallet.wasm "/repair/output/$REPAIR_VARIANT/"
     '

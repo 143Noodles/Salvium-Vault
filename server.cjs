@@ -1143,7 +1143,7 @@ const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19081';
 const GLOBAL_DAEMON_BASE_URL = GLOBAL_DAEMON_URL.replace(/\/$/, '');
 const DEFAULT_WASM_BASENAME = 'SalviumWallet';
 const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c';
-const SALVIUM_WASM_RUNTIME_BUILD = '5.54.16-hf14-v113c';
+const SALVIUM_WASM_RUNTIME_BUILD = '5.54.17-hf14-v113c';
 const SALVIUM_WASM_BASENAME = String(process.env.SALVIUM_WASM_BASENAME || inferWasmBasenameFromNetwork(SALVIUM_NETWORK))
     .replace(/\.(js|wasm)$/i, '')
     .replace(/\.worker$/i, '') || inferWasmBasenameFromNetwork(SALVIUM_NETWORK);
@@ -1303,10 +1303,7 @@ const STAKE_CACHE_FILE = path.join(CACHE_DIR, 'stake-cache.json');
 const STAKE_LOCK_PERIOD = 21600;
 const STAKE_RETURN_OFFSET = STAKE_LOCK_PERIOD + 1;
 
-const AUDIT_LOCK_PERIOD = 7200;
-const AUDIT_RETURN_OFFSET = AUDIT_LOCK_PERIOD + 1;
-const AUDIT_START_HEIGHT = 154750;
-const AUDIT_END_HEIGHT = 172000;
+const { auditReturnOffset } = require('./utils/auditWireCacheMigration.cjs');
 
 let stakeCache = {
     version: 3,
@@ -1788,7 +1785,7 @@ async function extractStakesFromBin(binPath, chunkStart) {
             if (result.stakes && Array.isArray(result.stakes)) {
                 for (const entry of result.stakes) {
                     if (entry.return_address && entry.return_address !== '0000000000000000000000000000000000000000000000000000000000000000') {
-                        const returnOffset = entry.tx_type === 'AUDIT' ? AUDIT_RETURN_OFFSET : STAKE_RETURN_OFFSET;
+                        const returnOffset = entry.tx_type === 'AUDIT' ? auditReturnOffset(SALVIUM_NETWORK, entry.block_height) : STAKE_RETURN_OFFSET;
                         entry.return_height = entry.block_height + returnOffset;
                         stakes.push(entry);
                     }
@@ -3848,6 +3845,99 @@ async function enforceAssetIndexCacheEpoch() {
     await fs.mkdir(CACHE_DIR, { recursive: true });
     await fs.mkdir(CSP_CACHE_DIR, { recursive: true });
     await fs.writeFile(ASSET_INDEX_CACHE_EPOCH_FILE, ASSET_INDEX_CACHE_EPOCH + '\n');
+}
+
+async function repairAuditWireScanCaches() {
+    const { migrateAuditWireCaches, MAINNET_STARTS } = require('./utils/auditWireCacheMigration.cjs');
+    const auxiliaryRows = [];
+    return migrateAuditWireCaches({
+        cacheDir: CACHE_DIR, cspDir: CSP_CACHE_DIR, network: SALVIUM_NETWORK,
+        schema: CSP_CACHE_SCHEMA_VERSION, bundleFiles: [CSP_BUNDLE_FILE, TXI_BUNDLE_FILE],
+        auxiliaryFiles: [KEY_IMAGE_CACHE_FILE, STAKE_CACHE_FILE],
+        rebuild: async ({start, raw, oldTxi}) => {
+            const {result, cspBuffer, txiBuffer} = await convertEpeeToCspOffloaded('convert_epee_to_csp_with_index', raw, start);
+            if (!result?.success || result.user_tx_count !== result.user_tx_parsed)
+                throw new Error(`Audit cache conversion incomplete at ${start}`);
+            const fresh = parseTxiBuffer(txiBuffer);
+            const old = oldTxi ? parseTxiBuffer(oldTxi) : null;
+            const previous = new Map((old?.entries || []).map(e => [e.txHash.toString('hex'), e]));
+            const needed = [];
+            for (const entry of fresh.entries) {
+                const hash = entry.txHash.toString('hex'), prior = previous.get(hash);
+                if (old?.version === 4 && prior && arraysEqual(prior.outputIndices, entry.outputIndices)
+                    && prior.assetTypeOutputIndices?.length === entry.outputIndices.length
+                    && getTxiEntryBlob(old, prior).equals(getTxiEntryBlob(fresh, entry))) {
+                    entry.assetTypeOutputIndices = prior.assetTypeOutputIndices;
+                    entry.blockTimestamp = prior.blockTimestamp;
+                } else needed.push(entry);
+            }
+            const info = await fetchTxOutputAndAssetIndices(needed.map(e => e.txHash.toString('hex')));
+            const canonical = await fetchCanonicalTransactionHashes(info, height => rpcCallPrimaryNode('get_block', {height}));
+            const timestamps = await fetchBlockTimestamps([...new Set(needed.map(e => e.blockHeight))]);
+            for (const entry of needed) {
+                const hash = entry.txHash.toString('hex'), data = info.get(hash);
+                if (!canonical.has(hash) || data?.block_height !== entry.blockHeight
+                    || !arraysEqual(data.output_indices, entry.outputIndices)
+                    || !Array.isArray(data.asset_type_output_indices)
+                    || data.asset_type_output_indices.length !== entry.outputIndices.length)
+                    throw new Error(`Canonical Audit cache metadata mismatch at ${entry.blockHeight}`);
+                entry.assetTypeOutputIndices = data.asset_type_output_indices;
+                entry.blockTimestamp = timestamps.get(entry.blockHeight);
+                if (!Number.isFinite(entry.blockTimestamp) || entry.blockTimestamp <= 0)
+                    throw new Error('Missing canonical Audit block timestamp');
+            }
+            const ptr = wasmModule.allocate_binary_buffer(raw.length);
+            let images, stakeResult;
+            try {
+                wasmModule.HEAPU8.set(raw, ptr);
+                images = JSON.parse(wasmModule.extract_key_images(ptr, raw.length, start));
+                stakeResult = JSON.parse(wasmModule.extract_all_stakes(ptr, raw.length, start));
+            } finally { wasmModule.free_binary_buffer(ptr); }
+            if (!images?.success || !Array.isArray(images.key_images)) throw new Error('Audit spent-index repair failed');
+            if (!stakeResult?.success || !Array.isArray(stakeResult.stakes))
+                throw new Error('Audit stake-index repair failed');
+            const stakes = stakeResult.stakes.filter(entry => entry.return_address && !/^0+$/.test(entry.return_address))
+                .map(entry => ({...entry, return_height: entry.block_height + (entry.tx_type === 'AUDIT' ? auditReturnOffset(SALVIUM_NETWORK, entry.block_height) : STAKE_RETURN_OFFSET)}));
+            auxiliaryRows.push({start, images: images.key_images, stakes});
+            return {txi: encodeTxiV4(fresh.entries, fresh), csp: cspBuffer};
+        },
+        auxiliary: async changes => {
+            const outputs = [];
+            for (const [file, kind] of [[KEY_IMAGE_CACHE_FILE, 'spends'], [STAKE_CACHE_FILE, 'stakes']]) {
+                let current;
+                try { current = JSON.parse(await fs.readFile(file, 'utf8')); }
+                catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+                const missingMainnetHistory = SALVIUM_NETWORK === 'mainnet' && MAINNET_STARTS.some(start => start <= current.lastScannedHeight && !auxiliaryRows.some(row => row.start === start));
+                if (changes.some(c => !c.txiStaged) || missingMainnetHistory || (current.lastScannedHeight > 0 && auxiliaryRows.length === 0)) {
+                    // No raw history on bundle-only sidecars: an absent cache is
+                    // repopulated by the ordinary canonical synchronization path.
+                    outputs.push({path:file, data:null});
+                    continue;
+                }
+                const covered = height => auxiliaryRows.some(r => height >= r.start && height < r.start+1000);
+                if (kind === 'spends') {
+                    if (!Array.isArray(current.spends)) throw new Error('Invalid persisted spent index');
+                    const map = new Map(current.spends.filter(([,v]) => !covered(v.h)));
+                    for (const row of auxiliaryRows) for (const image of row.images) {
+                        if (!/^[0-9a-f]{64}$/.test(image.key_image) || !/^[0-9a-f]{64}$/.test(image.tx_hash)
+                            || !Number.isSafeInteger(image.height) || image.height < row.start || image.height >= row.start+1000)
+                            throw new Error('Invalid repaired spent-index record');
+                        const prior = map.get(image.key_image);
+                        if (prior && (prior.tx !== image.tx_hash || prior.h !== image.height))
+                            throw new Error('Conflicting canonical key-image spend during Audit repair');
+                        map.set(image.key_image, {tx:image.tx_hash,h:image.height,idx:image.tx_index});
+                    }
+                    current.spends = [...map];
+                } else {
+                    if (!Array.isArray(current.stakes)) throw new Error('Invalid persisted stake index');
+                    current.stakes = current.stakes.filter(s => !covered(s.block_height));
+                    current.stakes.push(...auxiliaryRows.flatMap(r => r.stakes));
+                }
+                outputs.push({path:file, data:Buffer.from(JSON.stringify(current))});
+            }
+            return outputs;
+        },
+    });
 }
 
 async function initBlockCache() {
@@ -6599,6 +6689,16 @@ let startupError = null;
 
 app.get(['/api/healthz', '/vault/api/healthz'], noCacheHeaders, (_req, res) => {
     res.json({ status: 'ok' });
+});
+
+app.use((req, res, next) => {
+    const route = req.path.replace(/^\/vault(?=\/)/, '');
+    const derivedCacheRoute = /^\/api\/(?:csp(?:[-/]|$)|txi-bundle(?:[/]|$)|cache-export(?:[/]|$)|wallet\/(?:sparse-txs|batch-sparse-txs|sparse-by-heights|get-spent-index(?:\.bin)?|is-key-image-spent|stake-cache|stake-return-heights|stake-tx-heights|stake-return-blocks|check-stake-returns)(?:[/]|$))/.test(route);
+    if (derivedCacheRoute && !startupReady) {
+        res.set('Cache-Control', 'no-store');
+        return res.status(503).json({error: 'Scan caches are initializing'});
+    }
+    next();
 });
 
 // Deployment readiness is deliberately stronger than liveness: do not cut
@@ -15000,6 +15100,8 @@ if (true) {
                 await initBlockCache();
 
                 await initWasmModule();
+
+                await repairAuditWireScanCaches();
 
                 await initCspCache();
 

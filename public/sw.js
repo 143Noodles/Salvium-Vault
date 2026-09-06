@@ -13,7 +13,7 @@ const CACHE_VERSION = 'salvium-vault-' + SW_BUILD_ID;
 const WASM_CACHE = 'salvium-wasm-v43';
 const STATIC_CACHE = 'salvium-static-' + SW_BUILD_ID;
 const API_CACHE = 'salvium-api-' + SW_BUILD_ID;
-const WASM_VERSION = '8.2.37-v113c';
+const WASM_VERSION = '8.2.38-v113c';
 
 // Critical assets that must be cached for offline use
 const PRECACHE_ASSETS = [

@@ -100,3 +100,40 @@ that copy, then run run-normalization-equivalence.cjs with isolated QA seed,
 cache, and canonical SPR7 fixture paths. Never include those fixtures or the
 extra bindings in production. Both production variants also require exact
 snapshot/history/reconciliation/flush parity against 5.54.15.
+
+
+## Canonical Audit stake-index width, 5.54.17
+
+Historical RCT type 8 Audit verification records include a fixed-width `i_stake`.
+The 64-bit daemon writes eight bytes. The core declared it `size_t`, causing the
+32-bit WASM parser to consume four; the binding's manual parser incorrectly used
+a varint. Valid transactions containing stake references consequently failed
+parsing or received incorrect fallback transaction IDs.
+
+`audit-index-width.patch` declares the serialized field `uint64_t`; the binding
+uses fixed-width `serialize_int`. No transaction validation is bypassed.
+`compile-commands.txt` preserves the pinned images' original compile commands.
+`rebuild-core.py` resolves compiler dependencies and rebuilds all 46 affected
+objects, including wallet2 and transaction/RingCT code, before the original link
+step. Rebuilding only the binding is insufficient because the core ABI changes.
+`rebuild.sh` performs this process for both pinned variants.
+
+Validation: each variant accepts canonical full and pruned historical Audit
+transactions and rejects 20 truncated, incorrectly encoded, hash-mismatched,
+and mutated stake-index cases. Run `node test-audit-wire.cjs RUNTIME_DIR
+PRIVATE_FIXTURE_DIR`; fixtures remain outside this repository. Both variants
+retain exact snapshot, history, reconciliation, and flush parity on the isolated
+67-output / 57-transaction QA wallet against 5.54.16.
+
+The server performs a versioned migration before scan-cache readiness. Mainnet
+Audit periods cover chunks 154000–161999 and 172000–179999. It stages all TXI/CSP
+and spent/stake-index replacements, verifies changed TXI metadata against
+canonical daemon blocks, preserves raw blocks and unrelated records, quarantines
+old derived files/bundles, and writes its completion marker last. Missing raw
+history invalidates the relevant derived cache for canonical repopulation. A
+preparation failure leaves the old files intact and readiness false.
+
+An isolated production-cache copy verified all 16 chunks: 363 canonical IDs
+added, 306 incorrect IDs removed (57 omitted records restored), exact regenerated
+CSP bytes, unchanged raw data and unaffected auxiliary entries. Audit return
+heights also follow the respective mainnet period: 7201 and 10081 block offsets.

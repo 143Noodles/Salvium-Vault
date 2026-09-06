@@ -1,0 +1,13 @@
+--- a/src/ringct/rctTypes.h
++++ b/src/ringct/rctTypes.h
+@@ -374,7 +374,9 @@
+       size_t i;
+       uint8_t origin_tx_type;
+       crypto::key_derivation aR_stake;
+-      size_t i_stake;
++      // This FIELD uses fixed-width binary serialization. The canonical
++      // daemon wire format is eight bytes, including on 32-bit WASM targets.
++      uint64_t i_stake;
+       
+       BEGIN_SERIALIZE_OBJECT()
+         FIELD(aR)
