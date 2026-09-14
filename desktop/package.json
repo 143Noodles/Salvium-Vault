@@ -39,6 +39,9 @@
           "utils/canonicalTxMembership.cjs",
           "utils/cspPolicy.cjs",
           "utils/salpayRelay.cjs",
+          "mempool-poller.cjs",
+          "utils/auditWireCacheMigration.cjs",
+          "utils/auditPeriods.json",
           "content-version.json"
         ]
       }
