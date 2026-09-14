@@ -137,3 +137,15 @@ An isolated production-cache copy verified all 16 chunks: 363 canonical IDs
 added, 306 incorrect IDs removed (57 omitted records restored), exact regenerated
 CSP bytes, unchanged raw data and unaffected auxiliary entries. Audit return
 heights also follow the respective mainnet period: 7201 and 10081 block offsets.
+
+## Input key images in constructed-transaction results, 5.54.17 (2026-09-14)
+The pinned build images were pruned from the host. `Dockerfile.repair` reconstructs
+them from the pinned core commit plus `deployed-core.patch` and
+`audit-index-width.patch` (`rebuild-images.sh`); the unmodified rebuild reproduced
+the deployed SIMD and baseline binaries and glue byte-for-byte before any change.
+`relink-bindings.sh` then recompiles only `wasm_bindings.cpp` and relinks.
+Change: every constructed-transaction result (send, sweep, stake, return, burn,
+convert) now carries `vin_key_images` so the client can reserve the selected
+inputs after broadcast. `scan_tx` feeds pool transactions to wallet2, which never
+sets spent for pool inputs, so the client fallback needs these key images. No
+core, export, or serialization change; the glue is unchanged.

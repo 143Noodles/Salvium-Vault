@@ -63,9 +63,9 @@ describe('validated fallback artifact integration', () => {
   it('installs the atomic v1.1.3c SIMD and baseline pair', () => {
     expect(WASM_CACHE_VERSION).toBe('8.2.38-v113c');
     expect(sha256('wallet/SalviumWallet.js')).toBe('66999f402264f2774f0dd01802b72097cb494f6402528ad3ee9ae369fc04e95c');
-    expect(sha256('wallet/SalviumWallet.wasm')).toBe('bbc38a7c711da62ce5973a4a908dbf1cdec9f42350e1cedcc9310d9ca66cfd2f');
+    expect(sha256('wallet/SalviumWallet.wasm')).toBe('5d61f134506877f57b520d3c13b7f70f7219574548ce48c54903c6536eb6d9d3');
     expect(sha256('wallet/SalviumWalletBaseline.js')).toBe('20fb62d1de4a864c6c59ca3db9b996506877b8c71c297b03dc44549546c480aa');
-    expect(sha256('wallet/SalviumWalletBaseline.wasm')).toBe('a1b5e9daf995e7ff8c779bbd2cc81029d901a16aaf8c2124e8eb561d129772ed');
+    expect(sha256('wallet/SalviumWalletBaseline.wasm')).toBe('d07e784a402adce864258ba2b4f54c196c25fb0527aec46d461337dcffb8dcb8');
   });
 
   it('excludes native test instrumentation from both release variants', () => {

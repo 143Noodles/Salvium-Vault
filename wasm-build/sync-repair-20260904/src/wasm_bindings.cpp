@@ -456,6 +456,22 @@ private:
     return priority;
   }
 
+  // Key images of every txin_to_key input, so the JS broadcast path can reserve the
+  // selected inputs locally without depending on scan_tx (pool scans never set spent).
+  static void append_vin_key_images_json(std::ostringstream &json,
+                                         const cryptonote::transaction &tx) {
+    json << R"("vin_key_images":[)";
+    bool first = true;
+    for (const auto &in : tx.vin) {
+      const auto *in_key = boost::get<cryptonote::txin_to_key>(&in);
+      if (!in_key) continue;
+      if (!first) json << ",";
+      first = false;
+      json << "\"" << epee::string_tools::pod_to_hex(in_key->k_image) << "\"";
+    }
+    json << "],";
+  }
+
   static void append_pending_tx_json(std::ostringstream &json,
                                      const tools::wallet2::pending_tx &ptx,
                                      uint64_t amount,
@@ -468,8 +484,9 @@ private:
     cryptonote::get_transaction_hash(ptx.tx, tx_hash);
     const std::string tx_hash_str = epee::string_tools::pod_to_hex(tx_hash);
 
-    json << "{"
-         << R"("tx_blob":")" << tx_blob << R"(",)"
+    json << "{";
+      append_vin_key_images_json(json, ptx.tx);
+      json << R"("tx_blob":")" << tx_blob << R"(",)"
          << R"("tx_key":")" << tx_key << R"(",)"
          << R"("tx_hash":")" << tx_hash_str << R"(",)"
          << R"("fee":)" << ptx.fee << ","
@@ -9234,8 +9251,9 @@ public:
         cryptonote::get_transaction_hash(ptx.tx, tx_hash);
         std::string tx_hash_str = epee::string_tools::pod_to_hex(tx_hash);
 
-        json << "{"
-             << R"("tx_blob":")" << tx_blob << R"(",)"
+        json << "{";
+          append_vin_key_images_json(json, ptx.tx);
+          json << R"("tx_blob":")" << tx_blob << R"(",)"
              << R"("tx_key":")" << tx_key << R"(",)"
              << R"("tx_hash":")" << tx_hash_str << R"(",)"
              << R"("fee":)" << ptx.fee << ","
@@ -9435,8 +9453,9 @@ public:
         cryptonote::get_transaction_hash(ptx.tx, tx_hash);
         std::string tx_hash_str = epee::string_tools::pod_to_hex(tx_hash);
 
-        json << "{"
-             << R"("tx_blob":")" << tx_blob << R"(",)"
+        json << "{";
+          append_vin_key_images_json(json, ptx.tx);
+          json << R"("tx_blob":")" << tx_blob << R"(",)"
              << R"("tx_key":")" << tx_key << R"(",)"
              << R"("tx_hash":")" << tx_hash_str << R"(",)"
              << R"("fee":)" << ptx.fee << ","
@@ -9607,8 +9626,9 @@ public:
         cryptonote::get_transaction_hash(ptx.tx, tx_hash);
         std::string tx_hash_str = epee::string_tools::pod_to_hex(tx_hash);
 
-        json << "{"
-             << R"("tx_blob":")" << tx_blob << R"(",)"
+        json << "{";
+          append_vin_key_images_json(json, ptx.tx);
+          json << R"("tx_blob":")" << tx_blob << R"(",)"
              << R"("tx_key":")" << tx_key << R"(",)"
              << R"("tx_hash":")" << tx_hash_str << R"(",)"
              << R"("fee":)" << ptx.fee << ","
@@ -9990,8 +10010,9 @@ public:
         cryptonote::get_transaction_hash(ptx.tx, tx_hash);
         std::string tx_hash_str = epee::string_tools::pod_to_hex(tx_hash);
 
-        json << "{"
-             << R"("tx_blob":")" << tx_blob << R"(",)"
+        json << "{";
+          append_vin_key_images_json(json, ptx.tx);
+          json << R"("tx_blob":")" << tx_blob << R"(",)"
              << R"("tx_key":")" << tx_key << R"(",)"
              << R"("tx_hash":")" << tx_hash_str << R"(",)"
              << R"("fee":)" << ptx.fee << ","
@@ -10215,8 +10236,9 @@ public:
         total_amount += tx_amount;
         total_fee += ptx.fee;
 
-        json << "{"
-             << R"("tx_blob":")" << tx_blob << R"(",)"
+        json << "{";
+          append_vin_key_images_json(json, ptx.tx);
+          json << R"("tx_blob":")" << tx_blob << R"(",)"
              << R"("tx_key":")" << tx_key << R"(",)"
              << R"("tx_hash":")" << tx_hash_str << R"(",)"
              << R"("fee":)" << ptx.fee << ","
@@ -10320,8 +10342,9 @@ public:
         cryptonote::get_transaction_hash(ptx.tx, tx_hash);
         std::string tx_hash_str = epee::string_tools::pod_to_hex(tx_hash);
 
-        json << "{"
-             << R"("tx_blob":")" << tx_blob << R"(",)"
+        json << "{";
+          append_vin_key_images_json(json, ptx.tx);
+          json << R"("tx_blob":")" << tx_blob << R"(",)"
              << R"("tx_key":")" << tx_key << R"(",)"
              << R"("tx_hash":")" << tx_hash_str << R"(",)"
              << R"("fee":)" << ptx.fee << ","
@@ -10535,8 +10558,9 @@ public:
             cryptonote::get_transaction_hash(ptx.tx, tx_hash);
             std::string tx_hash_str = epee::string_tools::pod_to_hex(tx_hash);
 
-            json << "{"
-                 << R"("tx_blob":")" << tx_blob << R"(",)"
+            json << "{";
+              append_vin_key_images_json(json, ptx.tx);
+              json << R"("tx_blob":")" << tx_blob << R"(",)"
                  << R"("tx_key":")" << tx_key << R"(",)"
                  << R"("tx_hash":")" << tx_hash_str << R"(",)"
                  << R"("fee":)" << ptx.fee << ","
@@ -10718,8 +10742,9 @@ public:
           cryptonote::get_transaction_hash(ptx.tx, tx_hash);
           std::string tx_hash_str = epee::string_tools::pod_to_hex(tx_hash);
 
-          json << "{"
-               << R"("tx_blob":")" << tx_blob << R"(",)"
+          json << "{";
+            append_vin_key_images_json(json, ptx.tx);
+            json << R"("tx_blob":")" << tx_blob << R"(",)"
                << R"("tx_key":")" << tx_key << R"(",)"
                << R"("tx_hash":")" << tx_hash_str << R"(",)"
                << R"("fee":)" << ptx.fee << ","
