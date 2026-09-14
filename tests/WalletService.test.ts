@@ -1706,6 +1706,8 @@ describe('WalletService', () => {
         candidateCount: 2,
         error: null,
       };
+      // an imported cache that was never ownership-revalidated must stay untrusted
+      (service as unknown as { cacheImportedThisGeneration: boolean }).cacheImportedThisGeneration = true;
       service.walletInstance = {
         check_wallet_health: () =>
           JSON.stringify({

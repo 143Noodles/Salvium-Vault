@@ -860,6 +860,7 @@ const cacheStats = {
 
 let wasmModule = null;
 let wasmModuleReady = false;
+let keyImageCacheUpdateInFlight = false;
 let wasmLoadError = null;
 
 const CSP_CACHE_DIR = resolveNetworkScopedDir('CSP_CACHE_DIR', 'salvium-csp', { scoped: true });
@@ -2544,6 +2545,16 @@ async function checkForNewBlocks() {
             realtimeWatcherStatus.tailRegenFailureStreak = 0;
             realtimeWatcherStatus.tailRegenBackoffUntil = 0;
 
+            // Per-block spent-index refresh BEFORE announcing the block: without it
+            // /get-spent-index answered "no spends" for up to an hour for blocks the tail
+            // chunk already held, and clients took that as proof. Awaited so a client that
+            // reacts to the block event never sees a stale index tip; a failure must not
+            // block the announcement (the hourly loop is the backstop).
+            try {
+                await updateKeyImageCache({ skipSave: true });
+            } catch (err) {
+                console.warn('[Key Image Cache] Per-block update failed:', err && err.message);
+            }
             broadcastNewBlock(prevHeight + 1, currentHeight, chunkStart, chunkEnd);
 
             lastKnownHeight = currentHeight;
@@ -14256,7 +14267,21 @@ async function loadKeyImageCache() {
     }
 }
 
-async function updateKeyImageCache() {
+async function updateKeyImageCache(opts) {
+    // Per-block and hourly callers can overlap; the scan mutates shared caches, so serialize.
+    if (keyImageCacheUpdateInFlight) return;
+    keyImageCacheUpdateInFlight = true;
+    try {
+        return await updateKeyImageCacheInner(opts);
+    } finally {
+        keyImageCacheUpdateInFlight = false;
+    }
+}
+
+// opts.skipSave: update the in-memory index only (per-block path); the hourly loop and
+// startup catch-up persist the 79 MB cache file, so a restart is at most an hour behind
+// and re-derives the rest from the tail bin files.
+async function updateKeyImageCacheInner(opts) {
     if (!wasmModule || typeof wasmModule.extract_key_images !== 'function') {
         return;
     }
@@ -14361,7 +14386,7 @@ async function updateKeyImageCache() {
             if (heightAdvanced && newSpends === 0) {
                 console.log(`[Key Image Cache] Advanced scanned height to ${keyImageCache.lastScannedHeight} (no new key images)`);
             }
-            await saveKeyImageCache();
+            if (!(opts && opts.skipSave)) await saveKeyImageCache();
         }
 
     } catch (e) {
@@ -14588,8 +14613,11 @@ app.post(['/api/wallet/get-spent-index', '/vault/api/wallet/get-spent-index'], e
             start_height: minHeight,
             next_height: chunk.length > 0 ? chunk[chunk.length - 1].h + 1 : minHeight,
             items: chunk,
-            remaining
+            remaining,
+            // Highest block the spend index covers; clients must not claim spent coverage past it.
+            indexed_through: keyImageCache.lastScannedHeight || 0
         };
+        res.setHeader('X-Spent-Indexed-Through', String(keyImageCache.lastScannedHeight || 0));
         res.on('finish', () => {
             if (Math.random() >= 0.02) return;
             console.log('[spent-index] json completed', JSON.stringify({
@@ -14653,6 +14681,7 @@ app.post(['/api/wallet/get-spent-index.bin', '/vault/api/wallet/get-spent-index.
         res.setHeader('X-Spent-Count', String(count));
         res.setHeader('X-Spent-Next-Height', String(nextHeight));
         res.setHeader('X-Spent-Remaining', String(remaining));
+        res.setHeader('X-Spent-Indexed-Through', String(keyImageCache.lastScannedHeight || 0));
         res.on('finish', () => {
             if (Math.random() >= 0.02) return;
             console.log('[spent-index] binary completed', JSON.stringify({

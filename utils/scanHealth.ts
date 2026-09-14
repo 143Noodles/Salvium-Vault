@@ -123,7 +123,9 @@ export const buildFailedScanHealth = ({
   terminalState: 'failed',
   committed: false,
   cacheCommitted: false,
-  repairRequired: true,
+  // A failed scan is retryable (worker timeout, network); it is not a wallet-repair
+  // condition. Only repair_required outcomes may demand a full rescan.
+  repairRequired: false,
   targetHeight: Math.max(previous.targetHeight, Math.max(0, Math.floor(targetHeight))),
   reason,
 });

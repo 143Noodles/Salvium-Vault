@@ -5,6 +5,7 @@ import {
   buildScanCoverageProof,
   coalesceChunksToRuns,
   computeChunksToScan,
+  computeIncrementalFloor,
   getExpectedScanChunks,
   hasCompleteCoverageManifest,
   selectSparseIngestLimits,
@@ -233,5 +234,15 @@ describe('coalesceChunksToRuns', () => {
 
   it('returns empty for empty input', () => {
     expect(coalesceChunksToRuns([], 1000)).toEqual([]);
+  });
+});
+
+describe('computeIncrementalFloor', () => {
+  it('keeps the block at walletHeight scannable (height is next-to-scan, never +1)', () => {
+    // Android 105k wallet, 2026-09-12: stake mined in 573605, walletHeight 573605, match dropped.
+    expect(computeIncrementalFloor(573605, 573605, 573605)).toBe(573605);
+    expect(computeIncrementalFloor(573605, 573604, 573605)).toBe(573604);
+    expect(computeIncrementalFloor(0, 573605, 573605)).toBe(573605);
+    expect(computeIncrementalFloor(573605, null, 573600)).toBe(573600);
   });
 });

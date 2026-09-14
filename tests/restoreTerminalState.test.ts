@@ -103,7 +103,8 @@ describe('computeRestoreTerminalGates', () => {
 
     expect(gates.scanHealth!.status).toBe('blocked_internal');
     expect(gates.scanHealth!.terminalState).toBe('failed');
-    expect(gates.scanHealth!.repairRequired).toBe(true);
+    // transient failure fails the session but never demands a full rescan
+    expect(gates.scanHealth!.repairRequired).toBe(false);
     expect(gates.scanHealth!.targetHeight).toBe(501000);
     expect(gates.scanHealth!.reason).toBe('worker crashed');
     expect(isScanHealthSynced(gates.scanHealth!)).toBe(false);

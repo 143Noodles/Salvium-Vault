@@ -1392,6 +1392,17 @@ function getSweepTransactionAmountAtomic(tx: Record<string, unknown>, debugConte
 }
 
 
+const INSUFFICIENT_FUNDS_RE = /not enough money in all inputs \(([\d.]+)\) to fund minimum output sum \(([\d.]+)\)/i;
+// Next amount to try after the builder reported insufficient funds: subtract the exact
+// shortfall it reported (plus one atomic unit), or 0.01 SAL when the message is unparseable.
+export function nextSweepAmount(currentAmount: number, errorMsg: string): number {
+  const toAtomic = (v: number) => Math.round(v * 1e8);
+  const m = INSUFFICIENT_FUNDS_RE.exec(errorMsg || '');
+  const shortfall = m ? toAtomic(parseFloat(m[2])) - toAtomic(parseFloat(m[1])) : 0;
+  const step = shortfall > 0 ? shortfall + 1 : 1_000_000;
+  return Math.max(0, toAtomic(currentAmount) - step) / 1e8;
+}
+
 function collectConstructedTxSpentKeyImages(tx: Record<string, unknown>): Record<string, number> {
   const spent: Record<string, number> = {};
   const addKeyImage = (value: unknown, heightValue: unknown = 0) => {
@@ -3240,7 +3251,7 @@ export class WalletService {
             reason: 'insufficient_funds',
             sendStage: 'sweep_retry',
           }, 'warn');
-          currentAmount = currentAmount * 0.99;
+          currentAmount = nextSweepAmount(currentAmount, errorMsg);
           if (currentAmount < 0.0001) {
             throw new Error('Amount too small after fee adjustment');
           }
@@ -4388,7 +4399,7 @@ export class WalletService {
             sweepRetry,
             reason: 'insufficient_funds',
           }, 'warn');
-          currentAmount = currentAmount * 0.99;
+          currentAmount = nextSweepAmount(currentAmount, errorMsg);
           if (currentAmount < 0.0001) {
             throw new Error('Amount too small after fee adjustment');
           }
@@ -4668,17 +4679,14 @@ export class WalletService {
               durationMs: Math.round(performance.now() - startedAt),
               broadcastAttempt: attempt,
               result: 'success',
+              stakedAmount: amount,
             });
             return txHash;
           }
 
-          const reason = broadcastResult.reason || broadcastResult.error || '';
-          const isPermanentRejection = reason.includes('double spend') ||
-            reason.includes('invalid') ||
-            reason.includes('already in') ||
-            reason.includes('too big');
+          const reason = this.getBroadcastFailureReason(broadcastResult);
 
-          if (isPermanentRejection) {
+          if (this.isPermanentBroadcastRejection(reason)) {
             reportAssetDiagnostic('task.failed', {
               task: 'staking.transaction',
               stage: 'broadcast',
@@ -4686,8 +4694,12 @@ export class WalletService {
               broadcastAttempt: attempt,
               durationMs: Math.round(performance.now() - startedAt),
               reason: 'permanent_rejection',
+              rejection: reason,
             }, 'warn');
-            throw new Error(`Stake transaction rejected: ${reason}`);
+            this.storePendingTransaction(txHash, txBlob, 'failed');
+            const rejectionError = new Error(`Stake transaction rejected: ${reason}`);
+            (rejectionError as any).permanentBroadcastRejection = true;
+            throw rejectionError;
           }
 
           if (attempt < MAX_BROADCAST_RETRIES) {
@@ -4708,6 +4720,10 @@ export class WalletService {
               reason: 'timeout',
             }, 'warn');
             throw new Error('Stake transaction broadcast timed out');
+          }
+
+          if (broadcastError?.permanentBroadcastRejection) {
+            throw broadcastError;
           }
 
           if (attempt === MAX_BROADCAST_RETRIES) {
@@ -7481,6 +7497,7 @@ export class WalletService {
   async importOutputs(outputs_hex: string): Promise<number> {
     this.invalidateStateSnapshot();
     this.importedOutputOwnershipRevalidated = false;
+    this.cacheImportedThisGeneration = true;
     if (!this.isWalletReadySync()) {
       return -1;
     }
@@ -7547,6 +7564,7 @@ export class WalletService {
   async importWalletCache(cache_hex: string, minTransfers: number = 1): Promise<boolean> {
     this.invalidateStateSnapshot();
     this.importedOutputOwnershipRevalidated = false;
+    this.cacheImportedThisGeneration = true;
     if (!this.isWalletReadySync()) {
       return false;
     }
@@ -7651,6 +7669,7 @@ export class WalletService {
     this.hydratedRuntimeFullTxHashes.clear();
     this.attemptedRuntimeFullTxHashes.clear();
     this.importedOutputOwnershipRevalidated = false;
+    this.cacheImportedThisGeneration = false;
     this.lastRuntimeFullTxHydration = {
       attempted: false,
       requested: 0,
@@ -8915,7 +8934,10 @@ export class WalletService {
 
     const selectedCount = Object.keys(selectedSpentKeyImages || {}).length;
     let markedCount = 0;
-    if (!scanChanged && selectedCount > 0) {
+    // scan_tx returns true unconditionally and a pool scan never sets m_spent, so the
+    // selected inputs must always be reserved explicitly (selectedCount === 0 means an
+    // old wallet runtime without vin_key_images — the warn level below surfaces that).
+    if (selectedCount > 0) {
       markedCount = await this.markOutputsSpent(selectedSpentKeyImages);
     }
 
@@ -8930,7 +8952,7 @@ export class WalletService {
       scanError,
       selectedSpentKeyImageCount: selectedCount,
       fallbackMarkedCount: markedCount,
-    }, scanChanged || markedCount > 0 ? 'info' : 'warn');
+    }, markedCount > 0 ? 'info' : 'warn');
   }
 
   async scanTransaction(txBlobHex: string): Promise<boolean> {
@@ -9942,9 +9964,17 @@ export class WalletService {
   }
 
   private importedOutputOwnershipRevalidated = false;
+  // True once a cache/outputs import happened in this wallet generation. A from-zero scan
+  // takes every output from daemon bytes, which is stronger provenance than cache
+  // revalidation, so the historical return-metadata exception must be reachable there too.
+  private cacheImportedThisGeneration = false;
 
   hasRevalidatedImportedOutputOwnership(): boolean {
     return this.importedOutputOwnershipRevalidated;
+  }
+
+  hasTrustedOutputProvenance(): boolean {
+    return this.importedOutputOwnershipRevalidated || !this.cacheImportedThisGeneration;
   }
 
   private reconcileReturnMetadataHealth<T extends Record<string, any>>(health: T): T {
@@ -9952,7 +9982,7 @@ export class WalletService {
       return health;
     }
 
-    if (!this.importedOutputOwnershipRevalidated) {
+    if (!this.hasTrustedOutputProvenance()) {
       return health;
     }
 

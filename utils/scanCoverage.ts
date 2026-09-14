@@ -218,6 +218,19 @@ export function assertScanCoverageProof(input: ScanCoverageProofInput): ScanCove
   return proof;
 }
 
+// Incremental ingest floor. Wallet height is the NEXT block to scan (WASM
+// m_blockchain.size()); the scan window starts AT walletHeight, so a match there is
+// unscanned and must pass. Never +1.
+export function computeIncrementalFloor(
+  walletHeight: number,
+  provenCoveredThrough: number | null,
+  scanStartFloor: number,
+): number {
+  return walletHeight > 0 && provenCoveredThrough !== null
+    ? Math.min(walletHeight, provenCoveredThrough)
+    : scanStartFloor;
+}
+
 export function validateSpentIndexProgress(
   currentHeight: number,
   nextHeight: number | undefined,

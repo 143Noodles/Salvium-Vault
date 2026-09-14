@@ -39,7 +39,8 @@ describe('scanHealth', () => {
 
     expect(health.status).toBe('blocked_internal');
     expect(health.terminalState).toBe('failed');
-    expect(health.repairRequired).toBe(true);
+    // transient failure must not demand a full rescan
+    expect(health.repairRequired).toBe(false);
     expect(isScanHealthSynced(health)).toBe(false);
   });
 });

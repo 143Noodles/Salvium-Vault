@@ -1963,7 +1963,8 @@ const getDeviceMemoryBucket = (): string => {
                     .filter(Boolean)
                 : [];
             if (
-                walletService.hasRevalidatedImportedOutputOwnership() &&
+                walletService.hasTrustedOutputProvenance() &&
+                !importedOutputOwnershipFailureRef.current &&
                 issueMessages.length > 0 &&
                 issueMessages.every(msg => KNOWN_BENIGN_ISSUE_PREFIXES.some(prefix => msg.startsWith(prefix)))
             ) {
@@ -6890,12 +6891,14 @@ const getDeviceMemoryBucket = (): string => {
                 // Nothing changed on this background catch-up — skip the heavy commit and advance the
                 // synced height (the unchanged cache stays valid; reload re-scans the empty tail).
                 // Preserve prior trust: a no-op must not upgrade an already repair-required wallet.
+                // Only a genuine repair_required terminal carries over; a failed (transient) scan
+                // must not latch every later no-op into repair_required.
                 scanCommitResult = {
                     terminalState: 'success',
                     committed: true,
                     coverageCursorCommitted: true,
                     cacheCommitted: true,
-                    balanceTrusted: !scanHealthRef.current.repairRequired,
+                    balanceTrusted: scanHealthRef.current.terminalState !== 'repair_required',
                     reason: 'incremental no-op (no wallet state change)',
                 };
                 reportClientEvent('scan.incremental_noop_skip', {
@@ -9619,13 +9622,28 @@ const getDeviceMemoryBucket = (): string => {
                 return persistBlocked('zero-transfer-export');
             }
             if (exported && exported.cache_hex) {
-                await saveToIndexedDB(`wallet_cache_${address}`, exported.cache_hex);
+                const saved = await saveToIndexedDB(`wallet_cache_${address}`, exported.cache_hex);
+                if (!saved.success) {
+                    reportClientEvent('wallet.cache_persist_failed', {
+                        level: 'warn',
+                        message: saved.message || saved.error || 'IndexedDB write failed',
+                        context: { reason: saved.error || 'unknown' },
+                    });
+                    return persistBlocked('indexeddb-write-failed');
+                }
                 reportClientEvent('wallet.cache_persisted', {
                     level: 'info',
                     context: { cacheSize: exported.cache_hex.length },
                 });
             }
-        } catch {}
+        } catch (e: any) {
+            reportClientEvent('wallet.cache_persist_failed', {
+                level: 'warn',
+                message: e?.message || String(e),
+                context: { reason: 'exception' },
+            });
+            return persistBlocked('indexeddb-write-failed');
+        }
         // Reuse the export above (was a second full O(wallet) serialize) and skip the send-readiness
         // recomputes -- this is a persistence-only path. Measured: 3.9s -> ~1 export per persist.
         const r = await refreshWalletState({ preExport: exported, light: true });

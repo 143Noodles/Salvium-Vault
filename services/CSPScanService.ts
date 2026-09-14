@@ -59,7 +59,7 @@ import {
   buildKeyImagePrefixMap,
   parseSpentIndexBinaryHeader,
 } from '../utils/cspBinary';
-import { coalesceChunksToRuns, getExpectedScanChunks, hasCompleteCoverageManifest, selectSparseIngestLimits, shouldCompletePhase2bJournal, validateSpentIndexProgress } from '../utils/scanCoverage';
+import { coalesceChunksToRuns, computeIncrementalFloor, getExpectedScanChunks, hasCompleteCoverageManifest, selectSparseIngestLimits, shouldCompletePhase2bJournal, validateSpentIndexProgress } from '../utils/scanCoverage';
 import { shouldUseBundle } from '../utils/scanMode';
 
 
@@ -3202,6 +3202,14 @@ class CSPScanService {
           if (spentBands.length === 0) spentBands.push({ start: spentIndexStartHeight, end: endHeight });
           spentBands[spentBands.length - 1].end = endHeight; // guarantee the union reaches endHeight
 
+          // Lowest server-indexed height seen across bands (absent on an old server => null).
+          let spentIndexedThrough: number | null = null;
+          const noteIndexedThrough = (raw: unknown) => {
+            if (raw == null || raw === '') return;
+            const v = Number(raw);
+            if (!Number.isFinite(v)) return;
+            spentIndexedThrough = spentIndexedThrough === null ? v : Math.min(spentIndexedThrough, v);
+          };
           const fetchSpentBand = async (bandStart: number, bandEnd: number): Promise<boolean> => {
             let cursor = bandStart;
             while (cursor <= bandEnd) {
@@ -3215,6 +3223,7 @@ class CSPScanService {
                     }, 30000);
                     if (!binaryResponse.ok) throw new Error(`HTTP ${binaryResponse.status}`);
                     const binaryData = new Uint8Array(await binaryResponse.arrayBuffer());
+                    noteIndexedThrough(binaryResponse.headers.get('X-Spent-Indexed-Through'));
                     const binaryHeader = parseSpentIndexBinaryHeader(binaryData);
                     if (binaryHeader.count === 0) {
                       if (binaryHeader.remaining !== 0) throw new Error(`Spent-index binary returned no items but ${binaryHeader.remaining} remaining at height ${cursor}`);
@@ -3253,6 +3262,7 @@ class CSPScanService {
                 }, 30000);
                 if (!response.ok) { scanIssues.push(`Spent-index fetch failed at height ${cursor}: HTTP ${response.status}`); return false; }
                 const data = await response.json();
+                noteIndexedThrough(data.indexed_through);
                 const jsonItems = Array.isArray(data.items) ? data.items : [];
                 const jsonRemaining = Number(data.remaining);
                 const jsonNextHeight = Number(data.next_height || 0);
@@ -3311,6 +3321,24 @@ class CSPScanService {
             // completion proof fails and the spent pass reruns. Never a silent gap (never a missed spend).
             spentIndexEndForProof = spentIndexStartHeight;
             scanIssues.push(`Spent-index incomplete: ${spentBandResults.filter(x => !x).length}/${spentBands.length} band(s) did not finish`);
+          }
+          // The server answers "no spends" for blocks it has not indexed yet, which is not
+          // proof. Clamp the wallet-height commit to the server's index tip (same path as CSP
+          // coverage) so the next scan re-runs the spent pass from there instead of trusting
+          // an empty answer for fresh blocks and never revisiting them.
+          // ponytail: the wallet cannot advance past the server index tip; server now indexes
+          // per block, so the lag is seconds. If it ever stalls, the watchdog re-scans until it moves.
+          if (spentIndexedThrough !== null && spentIndexedThrough < endHeight) {
+            spentIndexVerifiedEnd = Math.min(spentIndexVerifiedEnd, spentIndexedThrough);
+            coveredThroughHeight = coveredThroughHeight === null
+              ? spentIndexedThrough
+              : Math.min(coveredThroughHeight, spentIndexedThrough);
+            (result as any).coveredThroughSource = 'spent-index';
+            emitScanTelemetry('scan.spent_index_tip_behind', {
+              phase: '3',
+              indexedThrough: spentIndexedThrough,
+              endHeight,
+            }, 'warn');
           }
 
           const spentIndexMs = performance.now() - spentIndexStart;
@@ -4964,9 +4992,10 @@ class CSPScanService {
     const __floorIsProvenDurable = __provenCoveredThrough !== null;
     if (isIncremental && recoveryAction === 'continue' && __scanStartFloor > 0) {
       try { __walletHeightForFloor = wallet.mirror.getSyncStatus().walletHeight || 0; } catch {}
-      __incrFloor = __walletHeightForFloor > 0 && __provenCoveredThrough !== null
-        ? Math.min(__walletHeightForFloor, __provenCoveredThrough) + 1
-        : __scanStartFloor;
+      // Wallet height is the NEXT block to scan (m_blockchain.size()): a match at exactly
+      // walletHeight is unscanned, so the floor is min(...) itself, never +1 (that +1 dropped
+      // every tx mined in the block the previous commit stopped at, e.g. a just-broadcast stake).
+      __incrFloor = computeIncrementalFloor(__walletHeightForFloor, __provenCoveredThrough, __scanStartFloor);
     } else if (isIncremental && __scanStartFloor > 0) {
       __incrFloor = __scanStartFloor;
     }

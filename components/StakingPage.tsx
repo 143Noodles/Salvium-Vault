@@ -15,6 +15,7 @@ const StakingPage: React.FC = () => {
    const { t, i18n } = useTranslation();
    const wallet = useWallet();
    const [stakeAmount, setStakeAmount] = useState('');
+   const [maxPressed, setMaxPressed] = useState(false);
    const [currentApy, setCurrentApy] = useState<number | null>(null);
    const [apyLoading, setApyLoading] = useState(true);
    const [isStaking, setIsStaking] = useState(false);
@@ -292,6 +293,7 @@ const StakingPage: React.FC = () => {
    const handleMax = () => {
       const maxAmount = stakeableUnlockedBalance;
       setStakeAmount(maxAmount > 0 ? maxAmount.toString() : '');
+      setMaxPressed(maxAmount > 0);
       setStakeError(null);
    };
 
@@ -307,7 +309,7 @@ const StakingPage: React.FC = () => {
 
 
       startTaskTelemetry('staking.confirm_modal', 'StakingPage', {
-         sweepAll: validationState?.type === 'warning',
+         sweepAll: maxPressed || validationState?.type === 'warning',
       }).completed('opened');
       setShowStakeConfirm(true);
    };
@@ -320,15 +322,16 @@ const StakingPage: React.FC = () => {
       setStakeError(null);
       setStakeSuccess(null);
       const task = startTaskTelemetry('staking.submit', 'StakingPage', {
-         sweepAll: validationState?.type === 'warning',
+         sweepAll: maxPressed || validationState?.type === 'warning',
       }, 'wallet_call');
 
       try {
 
-         const sweepAll = validationState?.type === 'warning';
+         const sweepAll = maxPressed || validationState?.type === 'warning';
          const txHash = await wallet.stakeTransaction(numericAmount, sweepAll);
          setStakeSuccess(t('staking.stakeSubmitted'));
          setStakeAmount('');
+         setMaxPressed(false);
          task.completed();
 
          setTimeout(() => setStakeSuccess(null), 10000);
@@ -653,6 +656,7 @@ const StakingPage: React.FC = () => {
                            value={stakeAmount}
                            onChange={(e) => {
                               setStakeAmount(e.target.value);
+                              setMaxPressed(false);
                               setStakeError(null);
                            }}
                            className={`font-mono pr-16 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${isMobileOrTablet ? 'h-[var(--stake-nav-button-height)] py-2 text-[var(--stake-body-text)]' : ''}`}
