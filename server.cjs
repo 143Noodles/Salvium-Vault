@@ -9138,23 +9138,23 @@ app.get(['/api/price', '/vault/api/price'], async (req, res) => {
     }
 
     try {
-        const mexcResponse = await axiosInstance.get('https://api.mexc.com/api/v3/ticker/price?symbol=SALUSDT', {
+        const mexcResponse = await axiosInstance.get('https://api.nonkyc.io/api/v2/market/getbysymbol/SAL_USDT', {
             timeout: 2000
         });
 
-        if (mexcResponse.data && mexcResponse.data.price) {
-            const price = parseFloat(mexcResponse.data.price);
-            cachedPrice = { price, timestamp: Date.now(), source: 'mexc' };
+        if (mexcResponse.data && mexcResponse.data.lastPrice) {
+            const price = parseFloat(mexcResponse.data.lastPrice);
+            cachedPrice = { price, timestamp: Date.now(), source: 'nonkyc' };
             return res.json({
                 success: true,
                 price: price,
-                source: 'mexc',
+                source: 'nonkyc',
                 symbol: 'SALUSDT',
                 timestamp: Date.now()
             });
         }
     } catch (mexcErr) {
-        console.error('[price] MEXC failed:', mexcErr.message);
+        console.error('[price] NonKYC failed:', mexcErr.message);
     }
 
     try {
@@ -9217,68 +9217,30 @@ app.get(['/api/fx-rates', '/vault/api/fx-rates'], async (req, res) => {
 });
 
 
-async function fetchMEXCKlines(symbol, interval, startTime, endTime) {
-    const allKlines = [];
-    const maxCandlesPerRequest = 1000;
-    const intervalMs = interval === '60m' || interval === '1h' ? 60 * 60 * 1000 :
-        interval === '1d' ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
-    let currentStartTime = startTime;
-    const totalHours = Math.ceil((endTime - startTime) / (60 * 60 * 1000));
-    let requestCount = 0;
-
-    console.log(`[MEXC] Starting fetch: ${totalHours} hours total, will need ~${Math.ceil(totalHours / maxCandlesPerRequest)} requests`);
-
-    while (currentStartTime < endTime) {
-        const currentEndTime = Math.min(currentStartTime + (maxCandlesPerRequest * intervalMs), endTime);
-        requestCount++;
-
-        try {
-            const response = await axiosInstance.get('https://api.mexc.com/api/v3/klines', {
-                params: {
-                    symbol: symbol,
-                    interval: interval,
-                    startTime: currentStartTime,
-                    endTime: currentEndTime,
-                    limit: maxCandlesPerRequest
-                },
-                timeout: 30000
-            });
-
-            if (response.data && Array.isArray(response.data) && response.data.length > 0) {
-                allKlines.push(...response.data);
-                const progress = Math.min(100, Math.round((allKlines.length / totalHours) * 100));
-                console.log(`[MEXC] Request ${requestCount}: Fetched ${response.data.length} candles, total: ${allKlines.length}/${totalHours} (${progress}%)`);
-
-                const lastCandleCloseTime = response.data[response.data.length - 1][6];
-                currentStartTime = lastCandleCloseTime + intervalMs;
-
-                await new Promise(resolve => setTimeout(resolve, 100));
-            } else {
-                console.log(`[MEXC] No more data available after ${allKlines.length} candles`);
-                break;
-            }
-        } catch (error) {
-            console.error(`[MEXC] Error fetching klines (request ${requestCount}):`, error.message);
-            if (error.response) {
-                const errorData = error.response.data;
-                if (errorData && (errorData.code === -1121 ||
-                    errorData.msg?.includes('Invalid symbol') ||
-                    errorData.msg?.includes('Invalid interval'))) {
-                    console.error(`[MEXC] Invalid parameter error - stopping fetch.`);
-                    break;
-                }
-            }
-            currentStartTime = currentEndTime;
-        }
+// NonKYC hourly candles (MEXC delisted SAL, Sept 2026). Returns MEXC-shaped rows
+// [openTime, open, high, low, close, volume, closeTime] so callers are unchanged.
+// NonKYC answered a 2-year hourly range in one call; chunked anyway to stay polite.
+async function fetchNonKycKlines(symbol, interval, startTime, endTime) {
+    const intervalMs = interval === '1d' ? 86400000 : 3600000;
+    const resolution = interval === '1d' ? 1440 : 60;
+    const chunkMs = 5000 * intervalMs;
+    const rows = [];
+    for (let from = startTime; from < endTime; from += chunkMs) {
+        const to = Math.min(from + chunkMs, endTime);
+        const response = await axiosInstance.get('https://api.nonkyc.io/api/v2/market/candles', {
+            params: { symbol: 'SAL/USDT', resolution, from: Math.floor(from / 1000), to: Math.ceil(to / 1000) },
+            timeout: 30000
+        });
+        const bars = (response.data && Array.isArray(response.data.bars)) ? response.data.bars : [];
+        for (const b of bars) rows.push([b.time, b.open, b.high, b.low, b.close, b.volume, b.time + intervalMs - 1]);
     }
-
-    console.log(`[MEXC] Fetch complete: ${allKlines.length} total candles from ${requestCount} requests`);
-    return allKlines;
+    console.log(`[NonKYC] Fetched ${rows.length} ${resolution}m candles ${new Date(startTime).toISOString()} -> ${new Date(endTime).toISOString()}`);
+    return rows;
 }
 
 async function getFullPriceHistory() {
     try {
-        const symbol = 'SALUSDT';
+        const symbol = 'SAL/USDT';
         const interval = '60m';
         const LISTING_DATE_TIMESTAMP = new Date('2025-04-20T00:00:00Z').getTime();
 
@@ -9294,7 +9256,7 @@ async function getFullPriceHistory() {
             } else {
                 fullHistory = cachedFullHistory;
                 needsFullRebuild = false;
-                console.log(`[Price History] Using cached MEXC history: ${fullHistory.length} points`);
+                console.log(`[Price History] Using cached NonKYC history: ${fullHistory.length} points`);
             }
         }
 
@@ -9304,7 +9266,7 @@ async function getFullPriceHistory() {
             const lastPoint = fullHistory[fullHistory.length - 1];
             startTime = lastPoint[0] + (60 * 60 * 1000);
         } else {
-            console.log(`[Price History] Starting fresh fetch from MEXC (from April 2025)...`);
+            console.log(`[Price History] Starting fresh fetch from NonKYC (from April 2025)...`);
             fullHistory = [];
             startTime = LISTING_DATE_TIMESTAMP;
         }
@@ -9315,7 +9277,7 @@ async function getFullPriceHistory() {
         if (hoursGap > 2) {
             console.log(`[Price History] Fetching gap from ${new Date(startTime).toISOString()} to ${new Date(endTime).toISOString()} (${hoursGap.toFixed(1)} hours)`);
 
-            const newKlines = await fetchMEXCKlines(symbol, interval, startTime, endTime);
+            const newKlines = await fetchNonKycKlines(symbol, interval, startTime, endTime);
 
             if (newKlines && newKlines.length > 0) {
                 const newData = newKlines.map(kline => [kline[0], parseFloat(kline[4])]);
@@ -9332,7 +9294,7 @@ async function getFullPriceHistory() {
 
                 await setCached('price-history-full', fullHistory, 0);
             } else {
-                console.log(`[Price History] No new data from MEXC.`);
+                console.log(`[Price History] No new data from NonKYC.`);
             }
         } else {
             console.log(`[Price History] Data is up to date.`);
@@ -9340,7 +9302,7 @@ async function getFullPriceHistory() {
 
         return fullHistory;
     } catch (error) {
-        console.error('Error fetching full price history from MEXC:', error.message);
+        console.error('Error fetching full price history from NonKYC:', error.message);
         return await getCached('price-history-full') || [];
     }
 }
