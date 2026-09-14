@@ -1,4 +1,5 @@
 import { auditReturnHeight } from '../utils/auditReturnHeight';
+import { spentIndexCoverageHeight } from '../utils/scanPolicy';
 import { createActiveClock } from '../utils/activeTime';
 import { isBundledNativeRuntime, BUNDLED_API_BASE } from '../utils/bundledRuntime';
 import { debugLog, debugWarn } from '../utils/debug';
@@ -3328,11 +3329,16 @@ class CSPScanService {
           // an empty answer for fresh blocks and never revisiting them.
           // ponytail: the wallet cannot advance past the server index tip; server now indexes
           // per block, so the lag is seconds. If it ever stalls, the watchdog re-scans until it moves.
-          if (spentIndexedThrough !== null && spentIndexedThrough < endHeight) {
-            spentIndexVerifiedEnd = Math.min(spentIndexVerifiedEnd, spentIndexedThrough);
+          // X-Spent-Indexed-Through is the last block INDEX the server indexed (inclusive).
+          // endHeight / coveredThroughHeight are wallet heights (next block to scan), as the
+          // CSP chunk path already converts (cachedEnd + 1). Comparing the raw index left the
+          // wallet one block "behind" forever and every catch-up rescanned in a tight loop.
+          const spentIndexedHeight = spentIndexCoverageHeight(spentIndexedThrough);
+          if (spentIndexedHeight !== null && spentIndexedHeight < endHeight) {
+            spentIndexVerifiedEnd = Math.min(spentIndexVerifiedEnd, spentIndexedHeight);
             coveredThroughHeight = coveredThroughHeight === null
-              ? spentIndexedThrough
-              : Math.min(coveredThroughHeight, spentIndexedThrough);
+              ? spentIndexedHeight
+              : Math.min(coveredThroughHeight, spentIndexedHeight);
             (result as any).coveredThroughSource = 'spent-index';
             emitScanTelemetry('scan.spent_index_tip_behind', {
               phase: '3',

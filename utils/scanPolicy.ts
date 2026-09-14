@@ -382,3 +382,11 @@ export function isIncrementalScanRequest({
     sessionType === 'background' && fromHeight > 0 && fromHeight === nativeWalletHeight
   );
 }
+
+// The server's X-Spent-Indexed-Through / indexed_through is the last block INDEX it has
+// indexed (inclusive). Wallet heights count blocks (next block to scan), so coverage in
+// wallet-height units is index + 1. Null when the server did not report one.
+export function spentIndexCoverageHeight(indexedThrough: number | null | undefined): number | null {
+  if (indexedThrough === null || indexedThrough === undefined || !Number.isFinite(indexedThrough)) return null;
+  return indexedThrough + 1;
+}
