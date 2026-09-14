@@ -5722,12 +5722,12 @@ async function requestSeedFallbackRpc(config, method, originalError) {
     let lastError = originalError;
     for (const seed of SEED_FALLBACK_RPC_NODES) {
         try {
-            const response = await axiosInstance({
+            const response = await requestDaemonRpc({
                 ...config,
                 url: `${seed}/json_rpc`,
                 auth: undefined,
                 timeout: 10000,
-            });
+            }, 0);
             console.warn(`[JSON-RPC Proxy] served ${method} from seed fallback ${seed} (local daemon unreachable)`);
             return response;
         } catch (error) {
@@ -5806,9 +5806,12 @@ let healthyOrder = [...RPC_NODES];
 
 async function probeNodeHeight(node) {
     try {
-        const resp = await axiosInstance.post(node.replace(/\/$/, '') + '/json_rpc',
-            { jsonrpc: '2.0', id: '0', method: 'get_block_count' },
-            { timeout: 5000, headers: { 'Content-Type': 'application/json' } });
+        // Connection: close — seed01/03 allow 3 concurrent RPC conns per source IP,
+        // so a parked keep-alive socket here blocks real requests (2026-09-14).
+        const resp = await requestDaemonRpc({
+            method: 'POST', url: node.replace(/\/$/, '') + '/json_rpc',
+            data: { jsonrpc: '2.0', id: '0', method: 'get_block_count' },
+            timeout: 5000, headers: { 'Content-Type': 'application/json' } }, 0);
         nodeHeight[node] = Number(resp.data && resp.data.result && resp.data.result.count) || 0;
     } catch (e) {
         nodeHeight[node] = 0;
@@ -8907,9 +8910,10 @@ async function quickDaemonInfoFromAnyNode() {
     const order = [...new Set([...configured, ...SEED_FALLBACK_RPC_NODES])];
     for (const node of order) {
         try {
-            const resp = await axiosInstance.post(node.replace(/\/$/, '') + '/json_rpc',
-                { jsonrpc: '2.0', id: '0', method: 'get_info' },
-                { timeout: 2500, headers: { 'Content-Type': 'application/json' } });
+            const resp = await requestDaemonRpc({
+                method: 'POST', url: node.replace(/\/$/, '') + '/json_rpc',
+                data: { jsonrpc: '2.0', id: '0', method: 'get_info' },
+                timeout: 2500, headers: { 'Content-Type': 'application/json' } }, 0);
             const result = resp.data && resp.data.result;
             if (result && Number(result.height) > 0) {
                 const payload = buildDaemonInfoPayload(result, node, true);
@@ -9427,13 +9431,26 @@ app.post(['/api/wallet-rpc/json_rpc', '/json_rpc'], express.json({ limit: '2mb' 
             response = await requestDaemonRpc(config);
         } catch (error) {
             const method = String(req.body?.method || '');
-            // Fall back whenever NO HTTP response arrived (refused, reset, DNS,
-            // timeout — i.e. the local daemon is unreachable). A real HTTP error
-            // response means the daemon is alive and its answer stands.
-            if (!SEED_SAFE_RPC_METHODS.has(method) || error?.response) {
-                throw error;
+            // A pinned/seed node that gave no HTTP response (reset, refused,
+            // timeout) must not 500 the wallet: the hosted daemon serves every
+            // allowed method, so try it before anything else.
+            if (!error?.response && daemonBaseUrl !== HOSTED_DAEMON_URL) {
+                try {
+                    response = await requestDaemonRpc({ ...config, url: `${HOSTED_DAEMON_URL}/json_rpc` });
+                    console.warn(`[JSON-RPC Proxy] ${method}: ${daemonBaseUrl} unreachable (${error.code || error.message}), served by hosted daemon`);
+                } catch (hostedError) {
+                    error = hostedError;
+                }
             }
-            response = await requestSeedFallbackRpc(config, method, error);
+            if (!response) {
+                // Fall back whenever NO HTTP response arrived (refused, reset, DNS,
+                // timeout — i.e. the local daemon is unreachable). A real HTTP error
+                // response means the daemon is alive and its answer stands.
+                if (!SEED_SAFE_RPC_METHODS.has(method) || error?.response) {
+                    throw error;
+                }
+                response = await requestSeedFallbackRpc(config, method, error);
+            }
         }
         res.status(200).json(response.data);
     } catch (error) {
