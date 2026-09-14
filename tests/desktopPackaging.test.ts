@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+// @ts-ignore plain ESM helper shared with desktop/scripts/publish-content.mjs
+import { collectSidecarLocalModules } from '../scripts/sidecar-local-modules.mjs';
 
 const repoFile = (relativePath: string): string =>
   readFileSync(path.resolve(process.cwd(), relativePath), 'utf8');
@@ -63,8 +65,8 @@ describe('desktop package security policy', () => {
     expect(filters).not.toContain('services/**');
     expect(filters).not.toContain('utils/**');
     expect(filters).not.toContain('node_modules/**');
-    expect(publisher).toContain("'services/minerManager.cjs'");
-    expect(publisher).toContain("'utils/canonicalTxMembership.cjs'");
+    expect(publisher).toContain('collectSidecarLocalModules(REPO)');
+    expect(collectSidecarLocalModules(process.cwd())).toContain('services/minerManager.cjs');
     expect(publisher).not.toContain("'services'");
     expect(publisher).not.toContain("'utils'");
   });

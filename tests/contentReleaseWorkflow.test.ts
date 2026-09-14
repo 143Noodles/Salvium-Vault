@@ -3,6 +3,8 @@ import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+// @ts-ignore plain ESM helper shared with desktop/scripts/publish-content.mjs
+import { collectSidecarLocalModules } from '../scripts/sidecar-local-modules.mjs';
 
 const read = (relative: string): string => readFileSync(path.resolve(process.cwd(), relative), 'utf8');
 
@@ -52,7 +54,10 @@ describe('unified desktop and Android content release', () => {
 
   it('packages every sidecar module required by the updated server', () => {
     const desktop = read('desktop/scripts/publish-content.mjs');
-    expect(desktop).toContain("'utils/canonicalTxMembership.cjs'");
+    // The include list is derived from the sidecar require() graph, not hand-listed.
+    expect(desktop).toContain('collectSidecarLocalModules(REPO)');
+    expect(collectSidecarLocalModules(process.cwd())).toContain('utils/canonicalTxMembership.cjs');
+    expect(collectSidecarLocalModules(process.cwd())).toContain('mempool-poller.cjs');
     expect(desktop).toContain('[publish] required content is missing:');
     expect(desktop).toContain('assertNoSymlinks(src)');
     expect(read('desktop/package.json')).toContain('utils/canonicalTxMembership.cjs');
