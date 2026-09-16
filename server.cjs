@@ -7443,13 +7443,24 @@ async function ensureTxiBundleFresh() {
         const hash = crypto.createHash('sha256'); hash.update(header);
         const tmp = TXI_BUNDLE_FILE + '.part';
         const ws = fsSync.createWriteStream(tmp);
-        await new Promise((res, rej) => ws.write(header, e => e ? rej(e) : res()));
-        for (const c of chunks) {
-            const buf = await fs.readFile(c.file);
-            hash.update(buf);
-            await new Promise((res, rej) => ws.write(buf, e => e ? rej(e) : res()));
+        // A failed write (ENOSPC) rejects the callbacks below *and* emits 'error'. With no listener
+        // for that second signal it reaches uncaughtException and kills a server that can still
+        // serve wallets from the daemon. Bundle freshness is optional; absorb it and let the catch log.
+        ws.on('error', () => {});
+        try {
+            await new Promise((res, rej) => ws.write(header, e => e ? rej(e) : res()));
+            for (const c of chunks) {
+                const buf = await fs.readFile(c.file);
+                hash.update(buf);
+                await new Promise((res, rej) => ws.write(buf, e => e ? rej(e) : res()));
+            }
+            await new Promise(res => ws.end(res));
+        } catch (e) {
+            // A half-written bundle is dead weight on the disk that just ran out.
+            ws.destroy();
+            await fs.unlink(tmp).catch(() => {});
+            throw e;
         }
-        await new Promise(res => ws.end(res));
         const sha = hash.digest('hex');
         await fs.rename(tmp, TXI_BUNDLE_FILE);
         await atomicWriteFile(TXI_BUNDLE_FILE + '.sha256', Buffer.from(sha));
@@ -7480,6 +7491,8 @@ async function streamDownloadAndExtractTxi(url) {
                 if (chunks[ci].len < 4) throw new Error('TXI chunk too short @' + chunks[ci].start + ' (len ' + chunks[ci].len + ')');
                 curDest = getTxiFilename(chunks[ci].start, chunks[ci].end);
                 ws = fsSync.createWriteStream(curDest + '.part');
+                // writeChunk/endChunk surface the failure; an unheard 'error' event would kill the process.
+                ws.on('error', () => {});
                 writtenInChunk = 0; magicBuf = Buffer.alloc(0); magicOk = false;
             }
             const need = chunks[ci].len - writtenInChunk;
