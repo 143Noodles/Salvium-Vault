@@ -390,3 +390,37 @@ export function spentIndexCoverageHeight(indexedThrough: number | null | undefin
   if (indexedThrough === null || indexedThrough === undefined || !Number.isFinite(indexedThrough)) return null;
   return indexedThrough + 1;
 }
+
+// A scan the server clamped to its proven coverage leaves the wallet behind the daemon tip, so
+// every automatic trigger (block stream, watchdog, stall recovery, post-scan follow-up) saw it
+// as behind and started another scan at once. While coverage stays stuck (chunk 575000,
+// 2026-09-16..20) that loop ran every ~2s: it flooded telemetry into 429s and kept the scan
+// flag set so the wallet could never persist. Background catch-ups from the same clamped
+// height back off instead; any clamp at a new height, or an unclamped scan, clears it.
+export interface CoverageStall {
+  provenHeight: number;
+  consecutive: number;
+  retryAtMs: number;
+}
+
+const COVERAGE_STALL_BASE_MS = 15_000;
+const COVERAGE_STALL_MAX_MS = 5 * 60_000;
+
+export function nextCoverageStall(
+  previous: CoverageStall | null,
+  clampedToHeight: number | null,
+  nowMs: number
+): CoverageStall | null {
+  if (clampedToHeight === null) return null;
+  const consecutive = previous && previous.provenHeight === clampedToHeight ? previous.consecutive + 1 : 1;
+  const delayMs = Math.min(COVERAGE_STALL_MAX_MS, COVERAGE_STALL_BASE_MS * 2 ** (consecutive - 1));
+  return { provenHeight: clampedToHeight, consecutive, retryAtMs: nowMs + delayMs };
+}
+
+export function isCoverageStallBackingOff(
+  stall: CoverageStall | null,
+  nativeWalletHeight: number,
+  nowMs: number
+): boolean {
+  return !!stall && nativeWalletHeight <= stall.provenHeight && nowMs < stall.retryAtMs;
+}

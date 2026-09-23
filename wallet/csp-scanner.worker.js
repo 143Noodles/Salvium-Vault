@@ -294,18 +294,22 @@ async function handleLoadWasm(msg) {
             throw new Error('SalviumWallet factory unavailable');
         }
 
-        Module = await factory({
+        // A rejected instantiate (e.g. out of memory on a phone) must reach the catch below;
+        // unhandled, the factory never settles and the scanner only saw a 60s init timeout.
+        let rejectInstantiate;
+        const instantiateFailed = new Promise((_, reject) => { rejectInstantiate = reject; });
+        Module = await Promise.race([factory({
             wasmModule: wasmModule,
             instantiateWasm: (imports, successCallback) => {
                 WebAssembly.instantiate(wasmModule, imports).then(instance => {
                     successCallback(instance, wasmModule);
-                });
+                }, rejectInstantiate);
                 return {};
             },
             locateFile: (path) => path,
             PTHREAD_POOL_SIZE: 0,
             PTHREAD_POOL_SIZE_STRICT: 0
-        });
+        }), instantiateFailed]);
 
         isReady = true;
 

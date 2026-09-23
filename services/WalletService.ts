@@ -1392,7 +1392,16 @@ function getSweepTransactionAmountAtomic(tx: Record<string, unknown>, debugConte
 }
 
 
-const INSUFFICIENT_FUNDS_RE = /not enough money in all inputs \(([\d.]+)\) to fund minimum output sum \(([\d.]+)\)/i;
+// The builder reports either "Not enough money in all inputs (X)" or, when input
+// selection is capped, "Not enough usable money in top N inputs (X)".
+const INSUFFICIENT_FUNDS_RE = /not enough (?:usable )?money in (?:all|top \d+) inputs \(([\d.]+)\) to fund minimum output sum \(([\d.]+)\)/i;
+export function isInsufficientFundsError(errorMsg: string): boolean {
+  const normalized = (errorMsg || '').toLowerCase();
+  return INSUFFICIENT_FUNDS_RE.test(errorMsg || '') ||
+    normalized.includes('not enough money') ||
+    normalized.includes('insufficient') ||
+    normalized.includes('no single allowed subset');
+}
 // Next amount to try after the builder reported insufficient funds: subtract the exact
 // shortfall it reported (plus one atomic unit), or 0.01 SAL when the message is unparseable.
 export function nextSweepAmount(currentAmount: number, errorMsg: string): number {
@@ -3235,11 +3244,7 @@ export class WalletService {
       } catch (e: any) {
         const errorMsg = e?.message || String(e);
 
-        const normalizedErrorMsg = errorMsg.toLowerCase();
-        const isInsufficientFunds = normalizedErrorMsg.includes('not enough money') ||
-          (normalizedErrorMsg.includes('enough money') && normalizedErrorMsg.includes('fund')) ||
-          normalizedErrorMsg.includes('insufficient') ||
-          normalizedErrorMsg.includes('no single allowed subset');
+        const isInsufficientFunds = isInsufficientFundsError(errorMsg);
 
         if (sweepAll && isInsufficientFunds && sweepRetry < MAX_SWEEP_RETRIES) {
           sweepRetry++;
@@ -4214,7 +4219,8 @@ export class WalletService {
   }
 
   private async collectSal1SpendabilityDiagnostic(
-    requestedAmount: number
+    requestedAmount: number,
+    includeSpendChecks: boolean
   ): Promise<{ balance: DiagnosticTelemetryContext; sweep: DiagnosticTelemetryContext }> {
     const snapshot = this.getStateSnapshot();
     const sal1Asset = Array.isArray(snapshot?.assets)
@@ -4223,8 +4229,14 @@ export class WalletService {
 
     const contributors = await this.readWalletDebugJson('debug_balance_contributors', ['SAL1', 1]);
     const candidates = await this.readWalletDebugJson('debug_input_candidates');
-    const openings = await this.readWalletDebugJson('debug_spend_openings', ['SAL1', 1]);
-    const sweepInputs = await this.readWalletDebugJson('debug_sweep_inputs', ['SAL1']);
+    // Spend openings and sweep inputs re-derive every unspent output. Routine status
+    // snapshots (unlock, scan complete) skip them; only a real send/stake failure pays.
+    const openings = includeSpendChecks
+      ? await this.readWalletDebugJson('debug_spend_openings', ['SAL1', 1])
+      : null;
+    const sweepInputs = includeSpendChecks
+      ? await this.readWalletDebugJson('debug_sweep_inputs', ['SAL1'])
+      : null;
 
     const candidateSummary = diagnosticRecord(candidates?.summary);
     const openingFailures = diagnosticArray(openings?.failures);
@@ -4305,10 +4317,11 @@ export class WalletService {
     stage: string = 'insufficient_funds_diag'
   ): Promise<void> {
     try {
-      const diagnostic = await this.collectSal1SpendabilityDiagnostic(requestedAmount);
+      const isFailureDiagnostic = stage === 'insufficient_funds_diag';
+      const diagnostic = await this.collectSal1SpendabilityDiagnostic(requestedAmount, isFailureDiagnostic);
       // Routine status snapshots (unlock/balance-ready/scan-complete) are info-level;
       // only a real send/stake failure diagnostic warrants warn.
-      const diagLevel = stage === 'insufficient_funds_diag' ? 'warn' : 'info';
+      const diagLevel = isFailureDiagnostic ? 'warn' : 'info';
       reportAssetDiagnostic('staking.spendability_diag', {
         task: 'staking.transaction',
         stage,
@@ -4377,12 +4390,7 @@ export class WalletService {
         return await this._createAndBroadcastStakeTransaction(currentAmount, priority);
       } catch (e: any) {
         const errorMsg = e?.message || String(e);
-        const normalizedErrorMsg = errorMsg.toLowerCase();
-
-        const isInsufficientFunds = normalizedErrorMsg.includes('not enough money') ||
-          normalizedErrorMsg.includes('enough money to fund') ||
-          normalizedErrorMsg.includes('insufficient') ||
-          errorMsg.includes('No single allowed subset');
+        const isInsufficientFunds = isInsufficientFundsError(errorMsg);
 
         if (isInsufficientFunds && !insufficientFundsDiagReported) {
           insufficientFundsDiagReported = true;

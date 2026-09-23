@@ -65,6 +65,9 @@ import {
     shouldReportMissingNativeWalletState,
     shouldSchedulePostScanFollowup,
     shouldRunCompletedChunkGapCheck,
+    nextCoverageStall,
+    isCoverageStallBackingOff,
+    type CoverageStall,
     type ScanTriggerRequest,
 } from '../utils/scanPolicy';
 import {
@@ -1463,6 +1466,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     const lastIncrementalPersistAtRef = React.useRef<number>(0);
     const lastRefreshSnapshotKeyRef = React.useRef<string>('');
     const lastSuccessfulScanHeightRef = React.useRef<number>(0);
+    const coverageStallRef = React.useRef<CoverageStall | null>(null);
     // Cheap JS dirty-flag: set true only when a scan actually ingested a change (free signal from
     // result.outputsFound/matchCount) or on restore/real commit. Gates the O(wallet) refreshData
     // reload so empty catch-ups (the common case, esp. coin-unlocks on heavy wallets) do ZERO
@@ -6086,7 +6090,15 @@ const getDeviceMemoryBucket = (): string => {
             const provenNetworkHeight = Number.isFinite(coveredThroughRaw) && !clampImplausible && coveredThroughRaw < networkHeight
                 ? Math.max(actualStartHeight, coveredThroughRaw)
                 : networkHeight;
+            if (result.success) {
+                coverageStallRef.current = nextCoverageStall(
+                    coverageStallRef.current,
+                    provenNetworkHeight < networkHeight ? provenNetworkHeight : null,
+                    Date.now()
+                );
+            }
             if (provenNetworkHeight < networkHeight) {
+                const stall = coverageStallRef.current;
                 reportClientEvent('scan.commit_height_clamped_to_coverage', {
                     level: 'warn',
                     context: {
@@ -6094,6 +6106,8 @@ const getDeviceMemoryBucket = (): string => {
                         daemonHeight: networkHeight,
                         clampedBlocks: networkHeight - provenNetworkHeight,
                         sessionType: request?.sessionType || 'background',
+                        consecutiveClamps: stall?.consecutive ?? 0,
+                        backoffMs: stall ? Math.max(0, stall.retryAtMs - Date.now()) : 0,
                     },
                 });
             }
@@ -8103,6 +8117,25 @@ const getDeviceMemoryBucket = (): string => {
                 sessionId,
                 isResetting: isResettingRef.current,
                 scanRequestsSuspended: scanRequestsSuspendedRef.current,
+            });
+            return;
+        }
+
+        // Explicit starts (unlock, direct startScan) always run; only automatic catch-ups wait.
+        if (
+            sessionType === 'background' &&
+            reason !== 'direct-startScan' &&
+            !reason.startsWith('continueUnlockFlow') &&
+            isCoverageStallBackingOff(
+                coverageStallRef.current,
+                walletService.hasWallet() ? walletService.getSyncStatus().walletHeight || 0 : 0,
+                Date.now()
+            )
+        ) {
+            debugLog('[WalletContext] background scan deferred: server coverage has not advanced', {
+                reason,
+                provenHeight: coverageStallRef.current?.provenHeight,
+                retryAtMs: coverageStallRef.current?.retryAtMs,
             });
             return;
         }

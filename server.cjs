@@ -1144,7 +1144,7 @@ const GLOBAL_DAEMON_URL = process.env.SALVIUM_RPC_URL || 'http://salvium:19081';
 const GLOBAL_DAEMON_BASE_URL = GLOBAL_DAEMON_URL.replace(/\/$/, '');
 const DEFAULT_WASM_BASENAME = 'SalviumWallet';
 const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c';
-const SALVIUM_WASM_RUNTIME_BUILD = '5.54.17-hf14-v113c';
+const SALVIUM_WASM_RUNTIME_BUILD = '5.54.18-hf14-v113c';
 const SALVIUM_WASM_BASENAME = String(process.env.SALVIUM_WASM_BASENAME || inferWasmBasenameFromNetwork(SALVIUM_NETWORK))
     .replace(/\.(js|wasm)$/i, '')
     .replace(/\.worker$/i, '') || inferWasmBasenameFromNetwork(SALVIUM_NETWORK);
@@ -1722,6 +1722,7 @@ async function updateStakeCache() {
             const binPath = path.join(CACHE_DIR, binFile.file);
             const stakes = await extractStakesFromBin(binPath, binFile.start);
             txCount += stakes.txCount || 0;
+            const parsedEnd = getParsedBlockFileEnd(binFile, stakes.blocksParsed);
 
             for (const stake of (stakes.stakes || [])) {
                 const key = stake.tx_hash || stake.return_address;
@@ -1732,7 +1733,8 @@ async function updateStakeCache() {
                 }
             }
 
-            maxHeight = Math.max(maxHeight, binFile.scanEnd);
+            maxHeight = Math.max(maxHeight, parsedEnd);
+            if (parsedEnd < binFile.scanEnd) break;
             await new Promise(resolve => setImmediate(resolve));
         }
 
@@ -1760,6 +1762,7 @@ async function updateStakeCache() {
 async function extractStakesFromBin(binPath, chunkStart) {
     const stakes = [];
     let txCount = 0;
+    let blocksParsed = 0;
 
     try {
         const binData = await fs.readFile(binPath);
@@ -1777,8 +1780,9 @@ async function extractStakesFromBin(binPath, chunkStart) {
             const result = JSON.parse(resultJson);
             if (!result.success) {
                 console.warn(`[Stake Cache] extract_all_stakes failed for ${binPath}: ${result.error}`);
-                return { stakes, txCount: 0 };
+                return { stakes, txCount: 0, blocksParsed: 0 };
             }
+            blocksParsed = Number(result.stats?.blocks_parsed) || 0;
             txCount = result.stats?.txs_scanned || 0;
             const foundStakes = result.stats?.stakes_found || 0;
             console.log(`[Stake Cache] BIN chunk ${chunkStart}: ${result.stats?.blocks_parsed || 0} blocks, ${txCount} txs, ${foundStakes} stakes`);
@@ -1799,7 +1803,7 @@ async function extractStakesFromBin(binPath, chunkStart) {
         console.warn(`[Stake Cache] Error reading BIN ${binPath}:`, err.message);
     }
 
-    return { stakes, txCount };
+    return { stakes, txCount, blocksParsed };
 }
 
 async function initWasmModule() {
@@ -2230,6 +2234,7 @@ async function initCspCache() {
         const startupDelayMs = Math.max(0, startupBackgroundWorkReadyAt - Date.now());
         setTimeout(() => checkAndInvalidateStaleCspChunks(), startupDelayMs + 3000);
         setTimeout(() => checkAndFillMissingCspChunks(), startupDelayMs + 8000);
+        setTimeout(() => healIncompleteCspChunks(), startupDelayMs + 13000);
         setTimeout(() => startRealtimeBlockWatcher(), REALTIME_BLOCK_WATCHER_START_DELAY_MS);
     } catch (err) {
         console.error('[CSP-Cache] Init error:', err.message);
@@ -2699,7 +2704,9 @@ async function updateLatestCspChunk(fromHeight, toHeight) {
                     allChunksOk = false;
                     continue;
                 }
-                await saveBlocksToCache(chunkStart, chunkEnd, epeeBuffer);
+                if (!(await saveBlocksToCache(chunkStart, chunkEnd, epeeBuffer))) {
+                    allChunksOk = false;
+                }
                 // Conversion runs in the worker thread (in-process WASM fallback inside).
                 const { result, cspBuffer, txiBuffer } =
                     await convertEpeeToCspOffloaded('convert_epee_to_csp_with_index', epeeBuffer, regenerateStart);
@@ -2716,8 +2723,14 @@ async function updateLatestCspChunk(fromHeight, toHeight) {
                     recordCspChunkCoverage(chunkStart, result.blocks_count);
                     const txCount = cspData.readUInt32LE(8);
                     console.log(`[Realtime-Watcher] Updated CSP ${chunkStart}-${chunkEnd}: ${txCount} txs, ${cspData.length} bytes`);
-                    if (txiData && txiData.length > 0) {
-                        await saveTxiToCache(chunkStart, chunkEnd, txiData);
+                    // A CSP without its matching TXI leaves the chunk half-updated: once the
+                    // chain moves to the next chunk nothing rewrites this TXI, and outputs in
+                    // the missing tail cannot be resolved by key in get_outs.bin (chunk
+                    // 575000 stayed 156 txs short after the 2026-09-15 disk-full outage).
+                    // Report failure so the watcher retries the same range.
+                    if (!txiData || txiData.length === 0 || !(await saveTxiToCache(chunkStart, chunkEnd, txiData))) {
+                        console.warn(`[Realtime-Watcher] TXI not saved for ${chunkStart}-${chunkEnd}; chunk update incomplete`);
+                        allChunksOk = false;
                     }
                 } else {
                     allChunksOk = false;
@@ -2939,6 +2952,71 @@ async function checkAndFillMissingCspChunks() {
 
     } catch (err) {
         console.error('[CSP-Gap-Check] Error:', err.message);
+    }
+}
+
+// A chunk the chain has moved past must cover all of its blocks, with a TXI listing the same
+// transactions as its CSP. When a tail update is interrupted at the chunk boundary nothing
+// revisits it: chunk 575000 stayed at coverage 575988 with a 156-tx-short TXI after the
+// 2026-09-15 disk-full outage, stalling every wallet scanning across it at 575989.
+async function readChunkTxCount(filename, offset) {
+    const fh = await fs.open(filename, 'r');
+    try {
+        const header = Buffer.alloc(offset + 4);
+        const { bytesRead } = await fh.read(header, 0, header.length, 0);
+        return bytesRead === header.length ? header.readUInt32LE(offset) : null;
+    } finally {
+        await fh.close();
+    }
+}
+
+async function findIncompleteCspChunks(chainHeight) {
+    const incomplete = [];
+    const files = await fs.readdir(CSP_CACHE_DIR);
+    for (const file of files) {
+        const parsed = parseCspChunkFilename(file);
+        if (!parsed || !isValidCspChunkFile(file)) continue;
+        const chunkEnd = parsed.start + BLOCK_CHUNK_SIZE - 1;
+        if (chainHeight < chunkEnd + 50) continue;
+        const coveredEnd = getCspChunkCoveredEnd(parsed.start, chainHeight);
+        if (coveredEnd !== chunkEnd) {
+            incomplete.push({ start: parsed.start, end: chunkEnd, reason: `coverage ends at ${coveredEnd}` });
+            continue;
+        }
+        try {
+            const cspTxs = await readChunkTxCount(path.join(CSP_CACHE_DIR, file), 8);
+            const txiTxs = await readChunkTxCount(getTxiFilename(parsed.start, chunkEnd), 4);
+            if (cspTxs !== txiTxs) {
+                incomplete.push({ start: parsed.start, end: chunkEnd, reason: `CSP has ${cspTxs} txs, TXI has ${txiTxs}` });
+            }
+        } catch (err) {
+            if (err.code !== 'ENOENT') throw err;
+        }
+    }
+    return incomplete.sort((a, b) => a.start - b.start);
+}
+
+let incompleteCspHealRunning = false;
+const INCOMPLETE_CSP_HEAL_INTERVAL_MS = 60 * 60 * 1000;
+let lastIncompleteCspHealAt = Date.now();
+async function healIncompleteCspChunks() {
+    if (!CSP_CACHE_ENABLED || incompleteCspHealRunning) return;
+    // Desktop sidecar chunks come from the bundle without TXI siblings; see checkAndFillMissingCspChunks.
+    if (process.env.SALVIUM_ALLOW_PRIVATE_NODES === '1') return;
+    incompleteCspHealRunning = true;
+    try {
+        const chainHeight = await getCurrentChainHeightForCache();
+        if (!(chainHeight > 0)) return;
+        const incomplete = await findIncompleteCspChunks(chainHeight);
+        for (const chunk of incomplete) {
+            console.warn(`[CSP-Heal] Regenerating incomplete chunk ${chunk.start}-${chunk.end}: ${chunk.reason}`);
+            const ok = await updateLatestCspChunk(chunk.start, chunk.end);
+            console.log(`[CSP-Heal] Chunk ${chunk.start}-${chunk.end} ${ok ? 'regenerated' : 'still incomplete; will retry'}`);
+        }
+    } catch (err) {
+        console.warn('[CSP-Heal] Incomplete chunk check failed:', err.message);
+    } finally {
+        incompleteCspHealRunning = false;
     }
 }
 
@@ -4131,8 +4209,10 @@ async function getBlocksFromCache(startHeight, endHeight) {
     }
 }
 
+// Returns whether the file was written. Most callers treat the cache as optional, but
+// anything that records how far a chunk reaches must check it.
 async function saveBlocksToCache(startHeight, endHeight, data) {
-    if (!CACHE_ENABLED || !data || data.length === 0) return;
+    if (!CACHE_ENABLED || !data || data.length === 0) return false;
 
     const filename = getCacheFilename(startHeight, endHeight);
     try {
@@ -4141,9 +4221,11 @@ async function saveBlocksToCache(startHeight, endHeight, data) {
         cacheStats.cachedBlocks++;
         console.log(`Cache WRITE: blocks ${startHeight}-${endHeight} (${data.length} bytes)`);
         removeStaleChunkSiblings(startHeight, endHeight, 'bin').catch(() => {});
+        return true;
     } catch (err) {
         console.error(`Cache write error for ${startHeight}-${endHeight}:`, err.message);
         cacheStats.errors++;
+        return false;
     }
 }
 
@@ -4194,8 +4276,14 @@ async function refreshTailBlockCacheFromDaemon(chainHeight, reason = 'tail-refre
                 tailBlockCacheRefresh = { chainHeight: 0, at: 0, promise: null };
                 return { ok: false, changed: false, tailStart, tailEnd, topHeight };
             }
+            // The top marker vouches for the file's contents: written after a failed save
+            // (disk full, 2026-09-15) it made every later refresh skip the rewrite, leaving
+            // blocks-575000-575999.bin one block short for good.
             if (changed) {
-                await saveBlocksToCache(tailStart, tailEnd, blocks);
+                if (!(await saveBlocksToCache(tailStart, tailEnd, blocks))) {
+                    tailBlockCacheRefresh = { chainHeight: 0, at: 0, promise: null };
+                    return { ok: false, changed: false, tailStart, tailEnd, topHeight, error: 'block cache write failed' };
+                }
                 if (topHash) {
                     await atomicWriteFile(tailMetaFilename, JSON.stringify({
                         topHeight,
@@ -4629,6 +4717,28 @@ async function upgradeTxiFileToV4(startHeight, endHeight, existingBuffer = null)
     txiV4UpgradeInFlight.set(filename, promise);
     return promise;
 }
+// A TXI shorter than its CSP chunk (see updateLatestCspChunk) is regenerated together with
+// its CSP and raw blocks from the daemon: the cached epee chunk can itself be short (575000
+// held 999 of its 1000 blocks). At most once per interval, so a failing daemon cannot loop.
+const CHUNK_REGENERATION_INTERVAL_MS = 10 * 60 * 1000;
+const chunkRegenerationAttempts = new Map();
+function scheduleChunkRegeneration(startHeight, endHeight) {
+    if (!wasmModuleReady || !wasmModule) return;
+    const chunkKey = `${startHeight}-${endHeight}`;
+    const lastAttempt = chunkRegenerationAttempts.get(chunkKey);
+    if (lastAttempt && Date.now() - lastAttempt < CHUNK_REGENERATION_INTERVAL_MS) return;
+    chunkRegenerationAttempts.set(chunkKey, Date.now());
+    (async () => {
+        // Chain height is a block count; never request past the tip block (see the watcher).
+        const tipBlock = (await getCurrentChainHeightForCache()) - 1;
+        if (tipBlock < startHeight) return;
+        console.log(`[TXI] Regenerating stale chunk ${chunkKey} from the daemon`);
+        const ok = await updateLatestCspChunk(startHeight, Math.min(endHeight, tipBlock));
+        if (!ok) console.warn(`[TXI] Stale chunk ${chunkKey} regeneration incomplete; will retry`);
+    })().catch(err => {
+        console.warn(`[TXI] Stale chunk regeneration failed for ${chunkKey}: ${err.message}`);
+    });
+}
 async function getTxiIndex(startHeight, endHeight) {
     const filename = getTxiFilename(startHeight, endHeight);
     try {
@@ -4755,6 +4865,7 @@ async function extractSparseTxsFast(startHeight, endHeight, txIndices, preloaded
     const invalidTxIndex = txIndices.find(txIdx => txIdx < 0 || txIdx >= txi.entries.length);
     if (invalidTxIndex !== undefined) {
         console.warn(`[Fast Sparse] TXI index incomplete/stale for ${startHeight}-${endHeight}; requested tx index ${invalidTxIndex} (max ${txi.entries.length - 1})`);
+        scheduleChunkRegeneration(startHeight, endHeight);
         return null;
     }
     try {
@@ -5349,6 +5460,11 @@ function startBlockCacheSync() {
 
             if (CSP_CACHE_ENABLED && wasmModuleReady) {
                 await syncCspCache();
+
+                if (Date.now() - lastIncompleteCspHealAt >= INCOMPLETE_CSP_HEAL_INTERVAL_MS) {
+                    lastIncompleteCspHealAt = Date.now();
+                    await healIncompleteCspChunks();
+                }
 
                 await periodicBundleCheck();
             }
@@ -8178,31 +8294,61 @@ async function findTxiEntryForOutputKey(outputKeyHex) {
             return result;
         }
     }
-    getOutsKeyTxiCache.set(cacheKey, null);
-    boundKeyCache(getOutsKeyTxiCache);
+    // Not cached: a stale TXI chunk is rebuilt in place, after which the key is found.
+    // resolveCurrentAssetOutputIndexByKey throttles repeat misses.
     return null;
 }
 
-async function resolveCurrentAssetOutputIndexByKey(targetUrl, assetType, outputKeyHex, dist, timeoutMs) {
+// The daemon's global-index lookup is authoritative for an output's block height; the
+// key check guards against a wallet holding a wrong global index.
+async function findOutputHeightByGlobalIndex(targetUrl, globalIndex, outputKeyHex, timeoutMs) {
+    if (!Number.isInteger(globalIndex) || globalIndex < 0) return null;
+    try {
+        const response = await axiosInstance.post(targetUrl, {
+            outputs: [{ amount: 0, index: globalIndex }],
+            get_txid: true
+        }, { timeout: Math.max(1000, Math.min(timeoutMs, 20000)) });
+        const out = response.data?.status === 'OK' && Array.isArray(response.data.outs) ? response.data.outs[0] : null;
+        if (!out || String(out.key || '').toLowerCase() !== outputKeyHex) return null;
+        const height = Number(out.height);
+        return Number.isInteger(height) && height >= 0 ? { height, txHash: out.txid || null } : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+// Misses are only remembered briefly: an output from a block the local indexes have not
+// caught up with yet becomes resolvable once they do, and a permanent negative entry
+// left it unspendable until the process restarted.
+const GET_OUTS_KEY_MISS_TTL_MS = 60 * 1000;
+
+async function resolveCurrentAssetOutputIndexByKey(targetUrl, assetType, outputKeyHex, dist, timeoutMs, globalIndex = null) {
     const key = String(outputKeyHex || '').toLowerCase();
     const cacheKey = `${assetType}:${key}`;
-    if (getOutsKeyAssetIndexCache.has(cacheKey)) return getOutsKeyAssetIndexCache.get(cacheKey);
-    const txiEntry = await findTxiEntryForOutputKey(key);
-    const distribution = Array.isArray(dist?.distribution) ? dist.distribution : [];
-    const startHeight = Number(dist?.start_height || 0);
-    const height = Number(txiEntry?.height || 0);
-    if (!txiEntry || !Number.isInteger(height) || height < startHeight || height - startHeight >= distribution.length) {
-        getOutsKeyAssetIndexCache.set(cacheKey, null);
+    if (getOutsKeyAssetIndexCache.has(cacheKey)) {
+        const cached = getOutsKeyAssetIndexCache.get(cacheKey);
+        if (cached && !cached.missAt) return cached;
+        if (cached && Date.now() - cached.missAt < GET_OUTS_KEY_MISS_TTL_MS) return null;
+        getOutsKeyAssetIndexCache.delete(cacheKey);
+    }
+    const rememberMiss = () => {
+        getOutsKeyAssetIndexCache.set(cacheKey, { missAt: Date.now() });
         boundKeyCache(getOutsKeyAssetIndexCache);
         return null;
+    };
+    const located = await findOutputHeightByGlobalIndex(targetUrl, globalIndex, key, timeoutMs) ||
+        await findTxiEntryForOutputKey(key);
+    const distribution = Array.isArray(dist?.distribution) ? dist.distribution : [];
+    const startHeight = Number(dist?.start_height || 0);
+    const height = Number(located?.height || 0);
+    if (!located || !Number.isInteger(height) || height < startHeight || height - startHeight >= distribution.length) {
+        return rememberMiss();
     }
     let firstIndex = 0;
     for (let h = startHeight; h < height; h++) firstIndex += Number(distribution[h - startHeight] || 0);
     const heightOutputCount = Number(distribution[height - startHeight] || 0);
     if (!Number.isInteger(firstIndex) || !Number.isInteger(heightOutputCount) || heightOutputCount <= 0 || heightOutputCount > 10000) {
-        getOutsKeyAssetIndexCache.set(cacheKey, null);
-        boundKeyCache(getOutsKeyAssetIndexCache);
-        return null;
+        return rememberMiss();
     }
     const chunkSize = 500;
     for (let offset = 0; offset < heightOutputCount; offset += chunkSize) {
@@ -8221,7 +8367,7 @@ async function resolveCurrentAssetOutputIndexByKey(targetUrl, assetType, outputK
                     index: firstIndex + offset + n,
                     height,
                     mask: outs[n]?.mask || null,
-                    txHash: txiEntry.txHash,
+                    txHash: located.txHash,
                     source: 'distribution_height_scan'
                 };
                 getOutsKeyAssetIndexCache.set(cacheKey, result);
@@ -8230,9 +8376,7 @@ async function resolveCurrentAssetOutputIndexByKey(targetUrl, assetType, outputK
             }
         }
     }
-    getOutsKeyAssetIndexCache.set(cacheKey, null);
-    boundKeyCache(getOutsKeyAssetIndexCache);
-    return null;
+    return rememberMiss();
 }
 
 function isOkGetOutsResponse(data, expectedCount) {
@@ -8449,7 +8593,7 @@ app.post(['/api/wallet/get_outs.bin', '/vault/api/wallet/get_outs.bin'], express
                         const output = outputs[outputOffset];
                         const requestedIndex = Number(output?.index);
                         if (output?.is_global_out === true && output?.key) {
-                            const resolved = await resolveCurrentAssetOutputIndexByKey(targetUrl, assetType, output.key, dist, distTimeoutMs);
+                            const resolved = await resolveCurrentAssetOutputIndexByKey(targetUrl, assetType, output.key, dist, distTimeoutMs, requestedIndex);
                             if (resolved && Number.isInteger(resolved.index) && resolved.index >= 0 && resolved.index < tokenOutputCount) {
                                 usedOutputIndexes.add(resolved.index);
                                 repairedGlobalRealOutputCount += 1;
@@ -14259,6 +14403,22 @@ async function loadKeyImageCache() {
     }
 }
 
+// Last block a scanned .bin actually contained, capped at what the caller meant to cover.
+// Advancing lastScannedHeight by the file NAME made the spent index (X-Spent-Indexed-Through)
+// and the stake cache vouch for blocks missing from a short file: blocks-575000-575999.bin
+// held 999 blocks after the 2026-09-15 disk-full outage. Callers stop at a short file so
+// coverage stays contiguous; the chunk is regenerated from the daemon and scanned next pass.
+function getParsedBlockFileEnd(binFile, blocksParsed) {
+    const parsed = Number(blocksParsed) || 0;
+    const parsedEnd = binFile.start + parsed - 1;
+    if (parsedEnd < binFile.scanEnd) {
+        console.warn(`[Block Cache] ${binFile.file} holds ${parsed} block(s); expected through ${binFile.scanEnd}`);
+        scheduleChunkRegeneration(binFile.start, binFile.end);
+        return Math.max(binFile.start - 1, parsedEnd);
+    }
+    return binFile.scanEnd;
+}
+
 async function updateKeyImageCache(opts) {
     // Per-block and hourly callers can overlap; the scan mutates shared caches, so serialize.
     if (keyImageCacheUpdateInFlight) return;
@@ -14320,15 +14480,17 @@ async function updateKeyImageCacheInner(opts) {
             const binData = await fs.readFile(binPath);
 
             const ptr = wasmModule.allocate_binary_buffer(binData.length);
-            if (!ptr) continue;
+            if (!ptr) break;
 
             wasmModule.HEAPU8.set(new Uint8Array(binData), ptr);
             const jsonLines = wasmModule.extract_key_images(ptr, binData.length, binFile.start);
             wasmModule.free_binary_buffer(ptr);
 
+            let blocksParsed = 0;
             if (jsonLines) {
                 try {
                     const result = JSON.parse(jsonLines);
+                    if (result.success) blocksParsed = Number(result.stats?.blocks_parsed) || 0;
                     if (result.success && Array.isArray(result.key_images)) {
                         for (const entry of result.key_images) {
                             if (entry.key_image && !keyImageCache.spends.has(entry.key_image)) {
@@ -14353,9 +14515,11 @@ async function updateKeyImageCacheInner(opts) {
                     console.error(`[Key Image Cache] Parse error for ${binFile.file}:`, e.message);
                 }
             }
-            if (binFile.scanEnd > keyImageCache.lastScannedHeight) {
-                keyImageCache.lastScannedHeight = binFile.scanEnd;
+            const parsedEnd = getParsedBlockFileEnd(binFile, blocksParsed);
+            if (parsedEnd > keyImageCache.lastScannedHeight) {
+                keyImageCache.lastScannedHeight = parsedEnd;
             }
+            if (parsedEnd < binFile.scanEnd) break;
         }
 
         if (newSpends > 0) {
@@ -15094,6 +15258,22 @@ if (true) {
             console.log(' Server starting without daemon connection - will retry on requests');
         }
     })();
+
+    // Client errors, not server faults: a disallowed Origin or an unparseable JSON body. They
+    // reached Express's default handler, which answered 500 and printed a stack per request
+    // (1,300+ in bursts from one prober, 2026-09-18/21). Registered last so it follows every route.
+    app.use((error, req, res, next) => {
+        if (res.headersSent) return next(error);
+        if (error?.message === 'CORS not allowed') {
+            console.warn(`[HTTP] 403 CORS origin rejected: ${String(req.headers.origin || '').slice(0, 120)} ${req.method} ${req.path}`);
+            return res.status(403).json({ error: 'Origin not allowed' });
+        }
+        if (error?.type === 'entity.parse.failed') {
+            console.warn(`[HTTP] 400 unparseable JSON body: ${req.method} ${req.path}`);
+            return res.status(400).json({ error: 'Invalid JSON body' });
+        }
+        return next(error);
+    });
 
     const PORT = process.env.PORT || 3000;
     // Log unhandled rejections and keep serving; log uncaught exceptions then exit for a clean restart.

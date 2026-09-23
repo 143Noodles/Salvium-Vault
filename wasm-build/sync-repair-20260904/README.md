@@ -149,3 +149,26 @@ convert) now carries `vin_key_images` so the client can reserve the selected
 inputs after broadcast. `scan_tx` feeds pool transactions to wallet2, which never
 sets spent for pool inputs, so the client fallback needs these key images. No
 core, export, or serialization change; the glue is unchanged.
+
+## Spendability fixes, 5.54.18 (2026-09-23)
+Rebuilt with `relink-bindings.sh`, which now also applies the core patches listed in
+`CORE_PATCHES` and recompiles only their objects from `compile-commands.txt`. Before any
+change, the same script with `CORE_PATCHES=""` and the 5.54.17 sources reproduced all four
+deployed files byte-for-byte. The JS glue did not change.
+
+- `carrot-input-selection-shortfall.patch` changes only error text in
+  `carrot_impl/input_selection.cpp`. "Not enough usable money in top N inputs" now reports the
+  minimum at N inputs' fee instead of one input's fee. "No single allowed subset" names the
+  best allowed subset in the same form. Pre-Carrot, external and internal inputs cannot always
+  be mixed, so a max send or stake whose balance spans kinds could previously never size its
+  retry. Selection itself is unchanged. `harness/` (test-only, never linked into releases) runs
+  the real selector with and without the patch: the same inputs are selected, and the reported
+  figures now give a retry amount that succeeds.
+- The read-only diagnostics `debug_input_candidates`, `debug_spend_openings`,
+  `debug_sweep_inputs`, `debug_tx_input_selection`, `debug_fee_params` and
+  `get_wallet_diagnostic` are exported. The client already called them, and every result was
+  empty. `debug_sweep_transaction` and `debug_create_tx_path` stay unexported because they
+  build a transaction, which queues a get_outs request the next real send would consume.
+- `INITIAL_MEMORY` is 64 MiB instead of 256 MiB (growth was already enabled). The wallet worker
+  and each scan worker instantiate their own copy, and Android devices failed
+  `WebAssembly.instantiate` with out-of-memory.

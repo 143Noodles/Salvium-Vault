@@ -63,9 +63,9 @@ describe('validated fallback artifact integration', () => {
   it('installs the atomic v1.1.3c SIMD and baseline pair', () => {
     expect(WASM_CACHE_VERSION).toBe('8.2.38-v113c');
     expect(sha256('wallet/SalviumWallet.js')).toBe('66999f402264f2774f0dd01802b72097cb494f6402528ad3ee9ae369fc04e95c');
-    expect(sha256('wallet/SalviumWallet.wasm')).toBe('5d61f134506877f57b520d3c13b7f70f7219574548ce48c54903c6536eb6d9d3');
+    expect(sha256('wallet/SalviumWallet.wasm')).toBe('4ebacb1e3e283b872a44cf086ebf4a4389bf3e935a11398b86e6485a1f7ee0b5');
     expect(sha256('wallet/SalviumWalletBaseline.js')).toBe('20fb62d1de4a864c6c59ca3db9b996506877b8c71c297b03dc44549546c480aa');
-    expect(sha256('wallet/SalviumWalletBaseline.wasm')).toBe('d07e784a402adce864258ba2b4f54c196c25fb0527aec46d461337dcffb8dcb8');
+    expect(sha256('wallet/SalviumWalletBaseline.wasm')).toBe('0e8f8485bc0f98ec57e051876244299f9d6748c9526f4d0b7a63dd5487a16450');
   });
 
   it('excludes native test instrumentation from both release variants', () => {
@@ -97,7 +97,7 @@ describe('validated fallback artifact integration', () => {
     expect(server).toContain("getConfiguredWasmAssetInfo('SalviumWalletBaseline.wasm')");
     expect(server).toContain("getConfiguredWasmAssetInfo('SalviumWalletBaseline.js')");
     expect(server).toContain("const SALVIUM_WASM_RUNTIME_RELEASE = 'v1.1.3c'");
-    expect(server).toContain("const SALVIUM_WASM_RUNTIME_BUILD = '5.54.17-hf14-v113c'");
+    expect(server).toContain("const SALVIUM_WASM_RUNTIME_BUILD = '5.54.18-hf14-v113c'");
     expect(server).toContain('loadedRuntimeVersion.includes(SALVIUM_WASM_RUNTIME_BUILD)');
     expect(server).toContain('hf13-v1.1.3c-asset-index-20260709');
     expect(server).toContain('responseOuts[i].output_id = lookupOutputs[i].index');

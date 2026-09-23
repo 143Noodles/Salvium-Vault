@@ -1,0 +1,68 @@
+--- a/src/carrot_impl/input_selection.cpp	2026-09-23 00:06:04.038884763 -0400
++++ b/src/carrot_impl/input_selection.cpp	2026-09-23 00:06:04.046671261 -0400
+@@ -406,11 +406,16 @@
+         std::set<std::size_t> all_idxs; for (std::size_t i = 0; i < input_candidates.size(); ++i) all_idxs.insert(i);
+         const std::pair<std::size_t, boost::multiprecision::uint128_t> max_usable_money =
+             input_count_for_max_usable_money(input_candidates, all_idxs, CARROT_MAX_TX_INPUTS, fee_by_input_count, is_token_transfer);
++        // Report the minimum for the input count that was actually summed: pricing the fee
++        // at one input understated the shortfall, so a caller reducing the amount by it
++        // (max send/stake) needed another failed round per retry.
+         CARROT_CHECK_AND_THROW(max_usable_money.second >= absolute_minimum_required_money,
+             not_enough_usable_money,
+             "Not enough usable money in top " << max_usable_money.first << " inputs ("
+             << cryptonote::print_money(max_usable_money.second) << ") to fund minimum output sum ("
+-            << cryptonote::print_money(absolute_minimum_required_money) << ')');
++            << cryptonote::print_money(max_usable_money.first
++                ? required_money_by_input_count.at(max_usable_money.first)
++                : absolute_minimum_required_money) << ')');
+ 
+         // 5. Get preferred input candidate subsets
+         //! @TODO: dummy check num_normal_payment_proposals
+@@ -424,6 +429,10 @@
+ 
+         // 7. For each input candidate subset...
+         std::set<size_t> selected_inputs_indices;
++        // Best subset by usable money minus its requirement, reported if every subset falls short.
++        std::size_t best_subset_inputs = 0;
++        boost::multiprecision::uint128_t best_subset_money = 0;
++        boost::multiprecision::uint128_t best_subset_required = 0;
+         for (const std::set<std::size_t> &input_candidate_subset : input_candidate_subsets)
+         {
+             if (selected_inputs_indices.size()) break;
+@@ -433,7 +442,16 @@
+                 input_candidate_subset, CARROT_MAX_TX_INPUTS, fee_by_input_count, is_token_transfer);
+             if (!max_usable_money.first)
+                 continue;
+-            else if (max_usable_money.second < required_money_by_input_count.at(max_usable_money.first))
++            const boost::multiprecision::uint128_t &subset_required =
++                required_money_by_input_count.at(max_usable_money.first);
++            if (!best_subset_inputs ||
++                max_usable_money.second + best_subset_required > best_subset_money + subset_required)
++            {
++                best_subset_inputs = max_usable_money.first;
++                best_subset_money = max_usable_money.second;
++                best_subset_required = subset_required;
++            }
++            if (max_usable_money.second < subset_required)
+                 continue;
+ 
+             // Debug log input candidate subset
+@@ -506,6 +524,18 @@
+         };
+ 
+         // 8. Sanity check indices
++        // Input kinds (pre-Carrot, external, internal) cannot always be mixed, so a wallet whose
++        // balance spans kinds can fund less than its total. Name the best subset's figures in the
++        // same form as the check above so max send/stake can size the next attempt exactly.
++        if (selected_inputs_indices.empty() && best_subset_inputs)
++        {
++            CARROT_CHECK_AND_THROW(false,
++                not_enough_usable_money,
++                "No single allowed subset of candidates had enough money to fund payment proposals and fees for inputs"
++                << " (best allowed subset: not enough usable money in top " << best_subset_inputs << " inputs ("
++                << cryptonote::print_money(best_subset_money) << ") to fund minimum output sum ("
++                << cryptonote::print_money(best_subset_required) << "))");
++        }
+         CARROT_CHECK_AND_THROW(!selected_inputs_indices.empty(),
+             not_enough_usable_money,
+             "No single allowed subset of candidates had enough money to fund payment proposals and fees for inputs");

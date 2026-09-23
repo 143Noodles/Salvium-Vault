@@ -285,7 +285,7 @@ int donna64_ge_scalarmult(unsigned char *r, const unsigned char *p,
 using namespace emscripten;
 
 static const char *WASM_VERSION =
-  "5.54.17-hf14-v113c";
+  "5.54.18-hf14-v113c";
 
 #define WASM_DEBUG_LOGGING 0
 #if WASM_DEBUG_LOGGING
@@ -22642,6 +22642,19 @@ EMSCRIPTEN_BINDINGS(salvium_wallet) {
       .function("get_stake_lifecycle", &WasmWallet::get_stake_lifecycle)
       .function("debug_balance_contributors",
                 &WasmWallet::debug_balance_contributors)
+      // Read-only diagnostics the client already calls (spendability telemetry, native
+      // audit tools); they were never exported, so every report came back empty.
+      // debug_sweep_transaction and debug_create_tx_path stay unexported: they build a
+      // transaction, which queues a get_outs request that the next real send would consume.
+      .function("debug_input_candidates",
+                &WasmWallet::debug_input_candidates)
+      .function("debug_spend_openings",
+                &WasmWallet::debug_spend_openings)
+      .function("debug_sweep_inputs", &WasmWallet::debug_sweep_inputs)
+      .function("debug_tx_input_selection",
+                &WasmWallet::debug_tx_input_selection)
+      .function("debug_fee_params", &WasmWallet::debug_fee_params)
+      .function("get_wallet_diagnostic", &WasmWallet::get_wallet_diagnostic)
       .function("debug_confirmed_transfer",
                 &WasmWallet::debug_confirmed_transfer)
       .function("debug_locked_coin_provenance",
