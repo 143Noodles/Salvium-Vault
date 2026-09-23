@@ -141,6 +141,9 @@ export class WalletWorkerClient {
       this.handleMessage(event.data as WireResponse);
     };
     this.worker.onerror = (event: ErrorEvent) => {
+      // Handled here (crash -> init retry or respawn); without this the same error also
+      // bubbles to the page as an uncaught window error.
+      event?.preventDefault?.();
       const message = event?.message || 'wallet worker error';
       this.handleCrash(new WalletWorkerCrashedError(message));
     };
@@ -357,7 +360,7 @@ export class WalletWorkerClient {
           const tookMs = Math.round(performance.now() - entry.startedAt);
           if (tookMs > 2000) {
             reportClientEvent('wallet.slow_op', {
-              level: 'warn',
+              level: tookMs > 10000 ? 'warn' : 'info',
               message: `${entry.label} took ${tookMs}ms`,
               context: { label: entry.label, durationMs: tookMs, outcome: data.ok ? 'ok' : 'error' },
             });

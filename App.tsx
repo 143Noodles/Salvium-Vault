@@ -403,9 +403,9 @@ const AppContent: React.FC = () => {
             const permission = await navigator.permissions.query({ name: 'persistent-storage' as PermissionName });
             if (permission.state === 'denied') {
               setStorageDenied(true);
-              reportTaskEvent('failed', 'storage.persistence_check', 'permission_denied', 'App', {
-                reason: 'permission_denied',
-              }, 'warn');
+              reportTaskEvent('stage', 'storage.persistence_check', 'permission_denied', 'App', {
+                result: 'denied',
+              });
             }
             permission.onchange = () => {
               if (permission.state === 'granted') {
@@ -416,24 +416,29 @@ const AppContent: React.FC = () => {
               }
             };
           } catch (e) {
-            reportTaskEvent('failed', 'storage.persistence_check', 'permission_query', 'App', {
-              reason: 'permission_query_failed',
-            }, 'warn', e instanceof Error ? e.message : String(e || 'permission query failed'));
+            // Safari rejects the 'persistent-storage' permission name (TypeError) and some
+            // browsers throw "Illegal invocation": the query is unsupported, which is not a
+            // failure. The persist() request below still runs.
+            reportTaskEvent('stage', 'storage.persistence_check', 'permission_query_unsupported', 'App', {
+              result: 'unsupported',
+            }, 'info', e instanceof Error ? e.message : String(e || 'permission query unsupported'));
           }
         }
 
         task.stage('persist_request');
         const granted = await navigator.storage.persist();
+        // The browser decides persistence (engagement, install state, user choice); a refusal
+        // is an expected outcome the storage banner handles, not an app failure.
         if (!granted) {
           if (!isMobileOrTablet && !isSafariBrowser) {
             setShowStorageBanner(true);
           }
-          task.failed(new Error('persistent storage not granted'), 'persist_denied');
+          task.completed('persist_denied', { result: 'denied' });
         } else {
           task.completed('persist_granted');
         }
       } else {
-        task.failed(new Error('storage persistence unsupported'), 'unsupported');
+        task.completed('unsupported', { result: 'unsupported' });
       }
     };
     checkAndRequestPersistence().catch((error) => {
@@ -508,9 +513,14 @@ const AppContent: React.FC = () => {
           reportTaskEvent('completed', 'wake_lock.request', 'screen', 'App');
         }
       } catch (err) {
-        reportTaskEvent('failed', 'wake_lock.request', 'screen', 'App', {
-          reason: 'request_failed',
-        }, 'warn', err instanceof Error ? err.message : String(err || 'wake lock failed'));
+        // NotAllowedError is the browser declining without a user gesture (the mount-time
+        // request on iOS) or in power-saving mode; the click listener below retries on the
+        // next tap. Only other errors are failures.
+        const notAllowed = (err as { name?: string } | null)?.name === 'NotAllowedError';
+        reportTaskEvent(notAllowed ? 'stage' : 'failed', 'wake_lock.request', notAllowed ? 'deferred' : 'screen', 'App', {
+          reason: notAllowed ? 'not_allowed' : 'request_failed',
+          ...(notAllowed ? { result: 'deferred' } : {}),
+        }, notAllowed ? 'info' : 'warn', err instanceof Error ? err.message : String(err || 'wake lock failed'));
       }
     };
 

@@ -862,7 +862,7 @@ const AssetsPage: React.FC<AssetsPageProps> = ({ onNavigate }) => {
         });
 
       reportClientEvent('asset.ui_fallback_balances_loaded', {
-        level: fallbackEntries.some((entry) => !isZeroAtomic(entry.balanceAtomic) || !isZeroAtomic(entry.unlockedBalanceAtomic)) ? 'info' : 'warn',
+        level: 'info',
         context: {
           fallbackBalanceProbeCount: fallbackEntries.length,
           fallbackNonzeroCount: fallbackEntries.filter((entry) => !isZeroAtomic(entry.balanceAtomic) || !isZeroAtomic(entry.unlockedBalanceAtomic)).length,
@@ -903,7 +903,7 @@ const AssetsPage: React.FC<AssetsPageProps> = ({ onNavigate }) => {
       setWalletBalances(ownedAssets);
 
       reportClientEvent('asset.ui_owned_assets_ready', {
-        level: ownedAssets.length > 0 ? 'info' : 'warn',
+        level: 'info',
         context: {
           assetCandidateCount: assetCandidates.length,
           registryAssetCount: normalizedTokens.length,

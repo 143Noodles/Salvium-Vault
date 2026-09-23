@@ -227,7 +227,7 @@ const checkForStaleRuntimeAssets = async (source: string, force = false): Promis
     if (latestBundleId && latestBundleId !== BUILD_ID) {
       (window as typeof window & { __salviumRuntimeStale?: boolean }).__salviumRuntimeStale = true;
       reportClientEvent('frontend.stale_bundle_detected', {
-        level: 'warn',
+        level: 'info',
         context: {
           source,
           reason: 'bundle_mismatch',
@@ -414,7 +414,7 @@ const attemptStrictCspReadiness = async (source: string): Promise<void> => {
     const scope = await askServiceWorkerForCspReadiness(worker, runtime);
     if (scope.reason === 'service-worker-generation-mismatch') {
       reportClientEvent('frontend.service_worker_generation_recovery', {
-        level: 'warn',
+        level: 'info',
         context: { source, reason: scope.reason },
       });
       await clearVaultCachesAndReload(

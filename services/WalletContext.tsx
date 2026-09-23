@@ -2414,7 +2414,7 @@ const getDeviceMemoryBucket = (): string => {
                     pageHiddenTimestampRef.current = Date.now();
                     if (scanInProgressRef.current || cspScanService.isScanningInProgress()) {
                         reportClientEvent('scan.page_lifecycle', {
-                            level: 'warn',
+                            level: 'info',
                             context: {
                                 eventName: 'visibility-hidden',
                                 scanActive: scanInProgressRef.current,
@@ -2611,7 +2611,7 @@ const getDeviceMemoryBucket = (): string => {
         const handlePageHide = (event: PageTransitionEvent) => {
             if (scanInProgressRef.current || cspScanService.isScanningInProgress()) {
                 reportClientEvent('scan.page_lifecycle', {
-                    level: 'warn',
+                    level: 'info',
                     context: {
                         eventName: 'pagehide',
                         pagePersisted: event.persisted,
@@ -2629,7 +2629,7 @@ const getDeviceMemoryBucket = (): string => {
         const handlePageShow = async (event: PageTransitionEvent) => {
             if (event.persisted) {
                 reportClientEvent('scan.page_lifecycle', {
-                    level: 'warn',
+                    level: 'info',
                     context: {
                         eventName: 'pageshow',
                         pagePersisted: event.persisted,
@@ -3842,7 +3842,7 @@ const getDeviceMemoryBucket = (): string => {
                     if (incompleteJournal && scannedChunks.length >= 20) {
                         cspScanService.setJournalResumePlan({ walletAddress: wallet.address, scannedChunks, matchedChunks });
                         reportClientEvent('scan.journal_resume_planned', {
-                            level: 'warn',
+                            level: 'info',
                             context: {
                                 scannedChunkCount: scannedChunks.length,
                                 matchedChunkCount: matchedChunks.length,
@@ -3915,7 +3915,7 @@ const getDeviceMemoryBucket = (): string => {
                     if (alreadyPersistent) return;
                     const granted = await navigator.storage.persist();
                     reportClientEvent('storage.persist_request_after_unlock', {
-                        level: granted ? 'info' : 'warn',
+                        level: 'info',
                         context: { granted },
                     });
                 }).catch(() => {});
@@ -3942,7 +3942,7 @@ const getDeviceMemoryBucket = (): string => {
             const postUnlockHasExpectedNativeState =
                 hadData || postUnlockSpentKeyImageCount > 0;
             reportClientEvent('wallet.post_unlock_state_gate', {
-                level: 'warn',
+                level: postUnlockHasExpectedNativeState ? 'info' : 'warn',
                 context: {
                     hasExpectedNativeState: postUnlockHasExpectedNativeState,
                     hadData,
@@ -6099,8 +6099,9 @@ const getDeviceMemoryBucket = (): string => {
             }
             if (provenNetworkHeight < networkHeight) {
                 const stall = coverageStallRef.current;
+                // Warn only when server coverage is stuck (the 575989 pattern), not on tip lag.
                 reportClientEvent('scan.commit_height_clamped_to_coverage', {
-                    level: 'warn',
+                    level: (stall?.consecutive ?? 0) >= 3 ? 'warn' : 'info',
                     context: {
                         provenHeight: provenNetworkHeight,
                         daemonHeight: networkHeight,
@@ -8183,7 +8184,7 @@ const getDeviceMemoryBucket = (): string => {
         });
         if (expiredLedgerJob) {
             reportClientEvent('scan.ledger_recoverable_job_observed', {
-                level: 'warn',
+                level: 'info',
                 message: 'Previous scan job had an expired lease and is recoverable.',
                 context: {
                     previousReason: expiredLedgerJob.reason,
@@ -9165,7 +9166,7 @@ const getDeviceMemoryBucket = (): string => {
                 ) {
                     lastKickAt = now;
                     reportClientEvent('scan.watchdog_reconcile_needed', {
-                        level: 'warn',
+                        level: 'info',
                         message: resumeRestoreSession
                             ? 'Restore session idle - watchdog re-issuing restore scan.'
                             : 'Wallet behind with no active scanner - watchdog starting catch-up scan.',
@@ -9633,7 +9634,9 @@ const getDeviceMemoryBucket = (): string => {
     const lastPersistedWalletHeightRef = React.useRef<number>(0);
     const persistFullStateNow = useCallback(async (): Promise<boolean> => {
         const persistBlocked = (stage: string) => {
-            reportClientEvent('wallet.persist_blocked', { level: 'warn', message: stage });
+            // Deferrals (no wallet yet, scan running) are normal; the export anomalies are not.
+            const deferred = stage === 'no-wallet' || stage === 'scanInProgressRef' || stage === 'cspScanningInProgress';
+            reportClientEvent('wallet.persist_blocked', { level: deferred ? 'info' : 'warn', message: stage });
             return false;
         };
         if (!walletService.hasWallet() || !address) return persistBlocked('no-wallet');

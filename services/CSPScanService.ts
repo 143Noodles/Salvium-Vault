@@ -59,6 +59,8 @@ import {
   keyImagePrefixFromHex,
   buildKeyImagePrefixMap,
   parseSpentIndexBinaryHeader,
+  isSpentIndexBinaryUnsupported,
+  isTransientSpentIndexError,
 } from '../utils/cspBinary';
 import { coalesceChunksToRuns, computeIncrementalFloor, getExpectedScanChunks, hasCompleteCoverageManifest, selectSparseIngestLimits, shouldCompletePhase2bJournal, validateSpentIndexProgress } from '../utils/scanCoverage';
 import { shouldUseBundle } from '../utils/scanMode';
@@ -1735,7 +1737,7 @@ class CSPScanService {
         const runsSet = new Set(runs);
         journalSeededCoverageBlocks = plan.scannedChunks.filter((chunk) => !runsSet.has(chunk)).length * 1000;
         reportClientEvent('scan.journal_resume_applied', {
-          level: 'warn',
+          level: 'info',
           message: `journal resume: ${runs.length}/${totalChunkCount} chunks to scan`,
           context: {
             runChunkCount: runs.length,
@@ -1804,7 +1806,7 @@ class CSPScanService {
           }
           await flushPendingUpdates();
           reportClientEvent('scan.journal_resume_seeded', {
-            level: 'warn',
+            level: 'info',
             message: `Seeded ${seedCoverage.scannedChunks.length} chunk(s) of prior coverage into resumed scan`,
             context: {
               completedChunks: seedCoverage.scannedChunks.length,
@@ -3060,7 +3062,7 @@ class CSPScanService {
         forceReturnedTransferScan
       );
       reportClientEvent('scan.phase2b_gate', {
-        level: needsPhase2b || forceReturnedTransferScan ? 'info' : 'warn',
+        level: 'info',
         context: {
           needsPhase2b,
           forceReturnedTransferScan,
@@ -3211,8 +3213,11 @@ class CSPScanService {
             if (!Number.isFinite(v)) return;
             spentIndexedThrough = spentIndexedThrough === null ? v : Math.min(spentIndexedThrough, v);
           };
+          const MAX_TRANSIENT_SPENT_RETRIES = 2;
           const fetchSpentBand = async (bandStart: number, bandEnd: number): Promise<boolean> => {
             let cursor = bandStart;
+            // Consecutive transient failures on the current page; reset by every page that lands.
+            let transientRetries = 0;
             while (cursor <= bandEnd) {
               try {
                 if (useBinarySpentIndex) {
@@ -3247,12 +3252,15 @@ class CSPScanService {
                     this.noteScanActivity();
                     binaryChunksFetched += 1;
                     spentRecordsChecked += binaryHeader.count;
+                    transientRetries = 0;
                     if (binaryHeader.remaining === 0) return true;
                     cursor = validateSpentIndexProgress(cursor, binaryHeader.nextHeight, bandEnd, binaryHeader.remaining);
                     continue;
                   } catch (binErr: any) {
+                    const binMessage = binErr?.message || String(binErr);
+                    if (!isSpentIndexBinaryUnsupported(binMessage)) throw binErr;
                     useBinarySpentIndex = false;
-                    debugWarn('[CSPScanService] Binary spent-index unavailable; falling back to JSON', { cursor, error: binErr?.message || String(binErr) });
+                    debugWarn('[CSPScanService] Binary spent-index unsupported; falling back to JSON', { cursor, error: binMessage });
                   }
                 }
 
@@ -3261,7 +3269,7 @@ class CSPScanService {
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ start_height: cursor, max_height: bandEnd, max_items: JSON_BATCH_SIZE })
                 }, 30000);
-                if (!response.ok) { scanIssues.push(`Spent-index fetch failed at height ${cursor}: HTTP ${response.status}`); return false; }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
                 noteIndexedThrough(data.indexed_through);
                 const jsonItems = Array.isArray(data.items) ? data.items : [];
@@ -3275,6 +3283,7 @@ class CSPScanService {
                 }
                 jsonChunksFetched += 1;
                 spentRecordsChecked += jsonItems.length;
+                transientRetries = 0;
                 for (let i = 0; i < jsonItems.length; i += 1) {
                   const item = jsonItems[i];
                   if (ourKeyImages.has(item.ki)) spentMatches.push({ ki: item.ki, h: item.h, tx: typeof item.tx === "string" ? item.tx : undefined });
@@ -3283,7 +3292,15 @@ class CSPScanService {
                 if (jsonRemaining === 0) return true;
                 cursor = validateSpentIndexProgress(cursor, jsonNextHeight, bandEnd, jsonRemaining);
               } catch (error: any) {
-                scanIssues.push(`Spent-index processing failed at height ${cursor}: ${error?.message || String(error)}`);
+                const message = error?.message || String(error);
+                // Retry the same page from the same cursor: coverage stays exact, and one slow
+                // response on a busy phone no longer fails the whole restore.
+                if (isTransientSpentIndexError(message) && transientRetries < MAX_TRANSIENT_SPENT_RETRIES) {
+                  transientRetries += 1;
+                  await new Promise((resolve) => setTimeout(resolve, 2000 * transientRetries));
+                  continue;
+                }
+                scanIssues.push(`Spent-index processing failed at height ${cursor}: ${message}`);
                 return false;
               }
             }
@@ -3703,12 +3720,14 @@ class CSPScanService {
           ? Math.max(startHeight, coveredThroughHeight)
           : endHeight;
         if (provenEndHeight < endHeight) {
+          // Info: a single clamp is tip lag or an interrupted scan. The wallet commit path
+          // (scan.commit_height_clamped_to_coverage) warns when the same height repeats.
           emitScanTelemetry('scan.wallet_height_clamped_to_coverage', {
             phase: '1',
             requestedEndHeight: endHeight,
             provenEndHeight,
             clampedBlocks: endHeight - provenEndHeight,
-          }, 'warn', `Wallet height clamped to server-proven coverage ${provenEndHeight} (requested ${endHeight})`);
+          }, 'info', `Wallet height clamped to server-proven coverage ${provenEndHeight} (requested ${endHeight})`);
         }
         reportFinalizing(0.95);
         await wallet.call('set_wallet_height', [provenEndHeight]);
@@ -4923,7 +4942,7 @@ class CSPScanService {
         orderedContextHashCount: orderedContextHashes.length,
         persistenceSaved: shouldAdvanceSweepMarker,
         rangeCapped,
-      }, outputsFound > 0 ? 'info' : 'warn');
+      }, 'info');
       return { outputsFound, protocolTokenTxCount: hashes.length, rangeCapped, flushedDeferred };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

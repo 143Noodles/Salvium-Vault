@@ -338,7 +338,9 @@ async function handleInit(config) {
     } catch (err) {
         initInProgress = false;
         const message = (err && err.message) ? err.message : String(err);
-        postTelemetry('wallet.worker_init_failed', 'error', message, {
+        // Network blips are retried by the main thread, which reports the final failure.
+        const transient = /load failed|networkerror|network error|failed to fetch|timed? ?out/i.test(message);
+        postTelemetry('wallet.worker_init_failed', transient ? 'warn' : 'error', message, {
             endpoint: String(activeGlueUrl || ''),
             errorName: (err && err.name) || typeof err,
             asset: initConfig ? String(initConfig.wasmAssetVersion || '') : '',

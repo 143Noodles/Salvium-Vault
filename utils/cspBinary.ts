@@ -87,3 +87,17 @@ export function parseSpentIndexBinaryHeader(
 
   return { count, nextHeight, remaining };
 }
+
+// Whether a failed get-spent-index.bin request means the binary endpoint itself is
+// unusable (so the JSON endpoint should take over), as opposed to a transient failure.
+// A timeout used to switch every band to JSON for the rest of the scan: 50,000-item
+// JSON pages are several MB to parse on a phone, which starved the page into further
+// timeouts until the restore failed (Android, 2026-09-23).
+export function isSpentIndexBinaryUnsupported(message: string): boolean {
+  return /^HTTP (404|405|415|501)\b/.test(message) || message === 'Invalid spent-index binary magic';
+}
+
+// Timeouts, dropped connections and server errors are worth retrying from the same cursor.
+export function isTransientSpentIndexError(message: string): boolean {
+  return /Request timeout after|Failed to fetch|Load failed|NetworkError|network error|^HTTP 5\d\d\b|truncated/i.test(message);
+}

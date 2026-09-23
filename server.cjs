@@ -6499,6 +6499,12 @@ app.use((req, res, next) => {
         if (logged) return;
         const statusCode = res.statusCode || (aborted ? 499 : 0);
         if (!aborted && statusCode < 400) return;
+        // Not failures: a client closing an event stream (how every SSE ends), a 404 for a
+        // path no route matched (scanners probing /api/.env etc.), and the readiness probe
+        // answering 503 while the server boots.
+        if (aborted && String(res.getHeader('Content-Type') || '').includes('text/event-stream')) return;
+        if (!aborted && statusCode === 404 && (!req.route || req.route.path === '*')) return;
+        if (!aborted && statusCode === 503 && /\/readyz$/.test(req.path || '')) return;
         logged = true;
         logServerTaskTelemetry(aborted ? 'failed' : 'failed', {
             task: 'server.route',

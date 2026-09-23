@@ -1963,8 +1963,12 @@ export class WalletService {
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      // A load cut off by a committed update reload (the service worker activating a new
+      // build) is not a failure: the page is being replaced and the next load succeeds.
+      const reloadPending = typeof window !== 'undefined' &&
+        (window as typeof window & { __salviumRuntimeStale?: boolean }).__salviumRuntimeStale === true;
       reportClientEvent('wasm.script_load_failed', {
-        level: 'error',
+        level: reloadPending ? 'info' : 'error',
         message,
         context: { endpoint: glueUrl, errorName: e instanceof Error ? e.name : typeof e, wasmVariant: preferredVariant },
       });
@@ -2275,7 +2279,7 @@ export class WalletService {
         nativeBalanceHit: false,
         balanceProbeCount: 0,
         nonzeroBalance: false,
-      }, 'warn');
+      }, 'info');
 
       const cachedBalance = this.lastKnownAssetBalances.get(assetType);
       if (cachedBalance) {
@@ -3712,7 +3716,8 @@ export class WalletService {
             wasmReason: result.status === 'error' ? (result.reason || 'unknown') : 'ok',
             count: hasPendingRequest ? 1 : 0,
             sendStage: 'wasm_create_result',
-          }, result.status === 'error' ? 'warn' : 'info', wasmDebugSummary);
+            // An error with a pending get_outs request is the normal fetch round-trip.
+          }, result.status === 'error' && !hasPendingRequest ? 'warn' : 'info', wasmDebugSummary);
 
           if (result.status === 'error') {
             lastError = this.describeWasmResultError(result);
@@ -4086,7 +4091,7 @@ export class WalletService {
                 sendStage: 'timing_summary',
                 count: Object.values(sendStageTimes).reduce((a, b) => a + b, 0),
                 reason: Object.entries(sendStageTimes).map(([k, v]) => k + '=' + v + 'ms').join(' '),
-              }, 'warn');
+              }, 'info');
 
               break;
             }
@@ -4338,12 +4343,15 @@ export class WalletService {
         ...diagnostic.sweep,
       }, diagLevel, message);
     } catch (diagnosticError) {
+      const diagError = diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError);
+      // The worker being torn down (lock, restore restart) just cancels the snapshot.
+      const cancelled = /worker (terminated|crashed)/i.test(diagError);
       reportAssetDiagnostic('staking.spendability_diag_failed', {
         task: 'staking.transaction',
         stage,
         component: 'WalletService',
-        diagError: diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError),
-      }, 'warn', message);
+        diagError,
+      }, cancelled ? 'info' : 'warn', message);
     }
   }
 
@@ -7598,7 +7606,7 @@ export class WalletService {
       if (result && result.timings) {
         try {
           reportClientEvent('wallet.import_cache_phase_timings', {
-            level: 'warn',
+            level: 'info',
             message: 'importWalletCache phase breakdown (ms)',
             context: {
               ...result.timings,
@@ -9079,7 +9087,7 @@ export class WalletService {
         if (candidates?.timings || typeof candidates?.derived_rebuilt === 'boolean') {
           try {
             reportClientEvent('wallet.runtime_tx_candidate_timings', {
-              level: 'warn',
+              level: 'info',
               message: 'runtime tx candidate scan timing (ms)',
               context: {
                 pass,
