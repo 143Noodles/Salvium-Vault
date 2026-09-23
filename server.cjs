@@ -6504,7 +6504,7 @@ app.use((req, res, next) => {
         // answering 503 while the server boots.
         if (aborted && String(res.getHeader('Content-Type') || '').includes('text/event-stream')) return;
         if (!aborted && statusCode === 404 && (!req.route || req.route.path === '*')) return;
-        if (!aborted && statusCode === 503 && /\/readyz$/.test(req.path || '')) return;
+        if (!aborted && statusCode === 503 && (/\/readyz$/.test(req.path || '') || res.locals.startupGate)) return;
         logged = true;
         logServerTaskTelemetry(aborted ? 'failed' : 'failed', {
             task: 'server.route',
@@ -6831,6 +6831,7 @@ app.use((req, res, next) => {
     const route = req.path.replace(/^\/vault(?=\/)/, '');
     const derivedCacheRoute = /^\/api\/(?:csp(?:[-/]|$)|txi-bundle(?:[/]|$)|cache-export(?:[/]|$)|wallet\/(?:sparse-txs|batch-sparse-txs|sparse-by-heights|get-spent-index(?:\.bin)?|is-key-image-spent|stake-cache|stake-return-heights|stake-tx-heights|stake-return-blocks|check-stake-returns)(?:[/]|$))/.test(route);
     if (derivedCacheRoute && !startupReady) {
+        res.locals.startupGate = true;
         res.set('Cache-Control', 'no-store');
         return res.status(503).json({error: 'Scan caches are initializing'});
     }

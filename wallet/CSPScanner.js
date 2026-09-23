@@ -2284,6 +2284,10 @@ class CSPScanner {
 
         // Transient node/proxy conditions; skipping any would leave a silent gap, so always retry these.
         const isRetryable = this.isRetryableScanError(error);
+        // A first retry of a transient failure (a deploy's startup 503, one dropped request)
+        // is routine; repeated failures warn, and an exhausted budget is an error.
+        const willRetry = isRetryable && (scanPaused || currentRetries < MAX_RETRIES);
+        const retryableFailureLevel = !willRetry ? 'error' : (scanPaused || currentRetries === 0 ? 'info' : 'warn');
 
         this.emitTelemetry('scan.worker_task_failed', {
             requestHeight: startHeight,
@@ -2291,7 +2295,7 @@ class CSPScanner {
             requestKind: failedTask?.isBatch ? 'batch' : 'single',
             reason: error || 'worker scan error',
             scanIssueCount: currentRetries + 1,
-        }, (isRetryable && (scanPaused || currentRetries < MAX_RETRIES)) ? 'warn' : 'error', error || 'worker scan error');
+        }, retryableFailureLevel, error || 'worker scan error');
 
         if (
             error &&
@@ -2339,7 +2343,7 @@ class CSPScanner {
                 durationMs: delay,
                 scanIssueCount: currentRetries + 1,
                 reason: error || 'retryable worker scan error',
-            }, 'warn', error || 'retryable worker scan error');
+            }, retryableFailureLevel, error || 'retryable worker scan error');
 
             setTimeout(() => {
                 if (this._scanGeneration !== retryGeneration) return;

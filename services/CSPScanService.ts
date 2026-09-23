@@ -79,7 +79,7 @@ export const SUBADDRESS_OWNERSHIP_CACHE_VERSION = '8.2.22-v113c-dual-wasm-202607
 // CSPScanner.js changes independently of the WASM asset. Pin the script URL to
 // its exact bytes so a long-lived wallet cannot reuse an immutable pre-hardening
 // scanner from a prior deploy and silently fall back to blob workers.
-export const CSP_SCANNER_SCRIPT_SHA256 = '619c8beedf3cdcb5f0c8be2bc77f78c96c8201e814fb7550556cb751b1bbf335';
+export const CSP_SCANNER_SCRIPT_SHA256 = 'f8656e0b1f56e41214b46825a0d2beb13d6c95d322e196f5592e1de845241f37';
 
 interface CachedSubaddressOwnership {
   walletKey: string;
@@ -2452,11 +2452,13 @@ class CSPScanService {
         // state is NOT a failure: emit at warn so a backgrounded restore surfaces no errors. A
         // real, non-retried worker error stays error-level.
         const workerErrRecoverable = (err && err.willRetry === true) || isScanPaused();
+        // First retry of a transient failure is routine (see CSPScanner's retry levels).
+        const firstRetry = err?.willRetry === true && Number(err?.retryCount || 0) <= 1;
         emitScanTelemetry('scan.worker_error', {
           phase: this.activePhase || 'unknown',
           reason: err?.error || err?.message || 'Unknown scan error',
           willRetry: err?.willRetry === true,
-        }, workerErrRecoverable ? 'warn' : 'error', err?.error || err?.message || 'Unknown scan error');
+        }, workerErrRecoverable ? (firstRetry || isScanPaused() ? 'info' : 'warn') : 'error', err?.error || err?.message || 'Unknown scan error');
       },
       onTelemetry: (type: string, event: { level?: 'info' | 'warn' | 'error'; message?: string; context?: Record<string, string | number | boolean | null | undefined> } = {}) => {
         emitScanTelemetry(type, event.context || {}, event.level || 'info', event.message);
