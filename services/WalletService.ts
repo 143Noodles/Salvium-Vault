@@ -3780,7 +3780,10 @@ export class WalletService {
               continue;
             }
 
-            throw new Error(lastError);
+            // A build error with nothing left to fetch is final: rebuilding the same inputs
+            // with the same RNG state fails the same way. Throwing here landed in this loop's
+            // own catch, so every failed send ran all rounds before the user saw the error.
+            break;
           }
 
           break;
@@ -4550,7 +4553,9 @@ export class WalletService {
               }
             }
 
-            throw new Error(lastError);
+            // Final build error (see the send loop): throwing here was caught by this loop's
+            // own catch and retried up to MAX_FETCH_ROUNDS times (~4.5 min on a phone).
+            break;
           }
 
           break;
@@ -5552,7 +5557,8 @@ export class WalletService {
             }
           }
 
-          throw new Error(lastError);
+          // Final build error (see the send loop): leave instead of retrying the same build.
+          break;
         }
 
         break;
