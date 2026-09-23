@@ -6144,6 +6144,24 @@ axiosInstance.interceptors.request.use((config) => {
     return config;
 });
 
+// Timeouts never mark a node (a heavy request can outlast its budget on a healthy daemon).
+// Resets and hang-ups mark only non-hosted nodes: the seeds reset connections past their
+// per-IP cap, and the hosted daemon must not be sidelined by a transient reset.
+const NODE_DOWN_CODES = new Set(['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
+axiosInstance.interceptors.response.use((response) => {
+    const origin = nodeOrigin(response?.config?.url || '');
+    if (origin && nodeConnectionFailureAt.has(origin)) nodeConnectionFailureAt.delete(origin);
+    return response;
+}, (error) => {
+    // Only transport failures mark a node; an HTTP error response proves it is reachable.
+    const origin = error?.response ? null : nodeOrigin(error?.config?.url || '');
+    const hosted = origin && origin === nodeOrigin(HOSTED_DAEMON_URL);
+    const down = NODE_DOWN_CODES.has(error?.code) ||
+        (!hosted && (error?.code === 'ECONNRESET' || /socket hang up/i.test(error?.message || '')));
+    if (origin && down) nodeConnectionFailureAt.set(origin, Date.now());
+    return Promise.reject(error);
+});
+
 // Build this request's node failover order from the cookie. Returns null for
 // `auto`/unknown (caller uses the global health-aware healthyOrder).
 function resolveRequestNodeOrder(req) {
@@ -6219,7 +6237,26 @@ app.post('/api/nodes/validate', nodeValidateRateLimit, express.json({ limit: '4k
 // Current best daemon RPC base URL (honours the per-request node choice, else
 // the global health-aware order; local-first while local is healthy).
 // True unless the poller / custom-node cache positively knows this node is down or stale.
+// Connection-level failures per node origin, recorded by the axios interceptor below.
+// Single-node callers (pickDaemonNode) skip a node that just refused or dropped a
+// connection instead of sending every request to it: a user-pinned custom node that
+// went down (144.76.16.241, 2026-09-23) turned yield-info and protocol-token-txs into
+// 500s although seeds and the hosted daemon were next in that request's order.
+const NODE_CONNECTION_FAILURE_TTL_MS = 60 * 1000;
+const nodeConnectionFailureAt = new Map(); // origin -> ms
+function nodeOrigin(url) {
+    try { return new URL(url).origin; } catch (e) { return null; }
+}
+function nodeRecentlyUnreachable(node) {
+    const origin = nodeOrigin(node);
+    const failedAt = origin ? nodeConnectionFailureAt.get(origin) : undefined;
+    if (!failedAt) return false;
+    if (Date.now() - failedAt < NODE_CONNECTION_FAILURE_TTL_MS) return true;
+    nodeConnectionFailureAt.delete(origin);
+    return false;
+}
 function nodeHealthyForPick(node) {
+    if (nodeRecentlyUnreachable(node)) return false;
     let h = nodeHeight[node];
     if (h == null) { const c = customNodeCache.get(node); h = (c && c.ok) ? c.height : undefined; }
     if (h == null) return true; // unknown -> do not exclude
